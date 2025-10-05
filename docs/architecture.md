@@ -13,14 +13,18 @@
 
 ## Data Flow
 1. **User Action:** prompts or clicks UI element.
-2. **Frontend ? Backend:** invoke Tauri command (async) with input payload.
-3. **Backend:**
-   - Persists state to SQLite.
-   - Dispatches tool commands.
-  - Calls Ollama Cloud via HTTPS using `https://ollama.com` base without `/v1` (policy).
-  - Calls local daemon using `http://127.0.0.1:11434/v1` for OpenAI-compatible paths.
-4. **Backend ? Frontend:** emits events (`tauri::Window::emit`) streaming tool outputs, status updates, and save indicator states.
-5. **Frontend:** updates React state (windows, modals, indicators), renders sanitized HTML (client-side guardrails).
+2. **Frontend ↔ Backend (Tauri):**
+   - Chat uses the orchestrator path by default (non-mock): planner → actor via streaming.
+   - `streamOllamaCompletion()` invokes `chat_completion` with a generated `requestId`, subscribes to `ollama-completion` events, and exposes an async iterator of content/tool_call/done events.
+3. **Backend (Rust):**
+   - Accepts `chat_completion(request_id?, request)` and immediately spawns the streaming HTTP task keyed by `request_id`.
+   - Streams Server-Sent Events from cloud/local Ollama, emitting `ollama-completion` lines and a final `{ done: true }`.
+   - Supports `cancel_chat(request_id)` to abort an in-flight stream (used when the iterator is returned early on the frontend).
+   - Persists workspace state to SQLite and emits save indicator deltas.
+4. **Frontend (Aggregator and Queue):**
+   - The Tauri bridge aggregates commentary-channel text into a buffer and, on end, tries to parse a UICP `batch`.
+   - Aggregator now supports a gating callback. With Full Control ON it auto-applies via the queue; otherwise it surfaces a plan preview (pending plan). When the orchestrator is running, the bridge suppresses auto-apply/preview to avoid duplicates.
+5. **Frontend (Adapter Rendering):** updates React state (windows, modals, indicators), renders sanitized HTML (client-side guardrails) under `#workspace-root` based on queued batches.
 
 ## Modules
 ### Rust (`uicp/src-tauri/src/main.rs`)
@@ -39,6 +43,7 @@
 - `vite.config.ts`: Vite dev server pinned to port 1420 for Tauri.
 - Event listeners (`listen`) keep React state in sync with backend events.
 - LLM provider/orchestrator stream commentary JSON and validate via Zod before enqueueing batches.
+- Tauri bridge creates an Ollama aggregator with a gating callback to respect Full Control and orchestrator-in-flight suppression.
 
 ## Ollama Cloud Integration
 - Base URL (cloud): `https://ollama.com` (no `/v1` by policy; runtime assertion enforces this)
@@ -59,11 +64,20 @@
 - Autosave loop polls every 5s and emits only on state change.
 - Manual Save button calls `save_workspace` and updates the indicator immediately on success/failure.
 
-## Current Implementation Notes (2025-10-04)
+## Current Implementation Notes (2025-10-05)
 - react-rnd windows persisted to SQLite; default workspace seeded if empty.
 - API key stored in `~/Documents/UICP/.env` (Settings modal writes via Tauri command).
-- Streaming iterator `streamOllamaCompletion(messages, model, tools)` forwards SSE lines; frontend aggregator parses commentary-channel JSON into batches.
+- Streaming iterator `streamOllamaCompletion(messages, model, tools, options?)` forwards SSE lines and adds best-effort cancellation via `cancel_chat(requestId)` when the iterator is returned early. The frontend aggregator parses commentary-channel JSON into batches with a gating callback.
 - Plan/Batch validation in frontend: `validatePlan`, `validateBatch` with pointer-based errors and HTML guardrails.
+
+## Stop/Cancel Semantics
+- DockChat “Stop” enqueues a `txn.cancel` batch (which clears queues promptly), locks Full Control, and posts a system message. This is separate from LLM transport cancel and is always applied locally.
+- Early termination of the LLM stream (e.g., leaving the screen or canceling orchestrator flows) triggers the iterator `return()`, which calls `cancel_chat(requestId)` on the backend to abort the active HTTP stream.
+
+## Orchestrator & Aggregator Gating
+- Orchestrator path: `getPlannerClient → planWithDeepSeek → getActorClient → actWithKimi → runIntent`.
+- While orchestrating, the app state sets `suppressAutoApply=true` so the aggregator does not auto-apply/preview batches arriving from the bridge.
+- With Full Control ON (and not locked), aggregator auto-applies batches; otherwise, it surfaces a plan preview for user approval.
 
 ## Planned Extensions
 - Tool execution queue with persistence.

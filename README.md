@@ -1,6 +1,6 @@
 ﻿# Generative Desktop
 
-Local-first Tauri UI that exposes a clean desktop canvas and a DockChat surface. DockChat is the only control that users touch while the agent drives the UI through UICP Core commands. MOCK mode ships with a deterministic planner so the flow works without any backend.
+Local-first Tauri UI that exposes a clean desktop canvas and a DockChat surface. DockChat is the only control that users touch while the agent drives the UI through UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
 
 ## Quickstart
 
@@ -19,16 +19,15 @@ The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When
 - `npm run lint` – ESLint over `src`
 - `npm run typecheck` – strict TS compile
 - `npm run test` – Vitest unit suite (`tests/unit`)
-- `npm run test:e2e` – Playwright smoke (`tests/e2e/specs`)
+- `npm run test:e2e` - Playwright smoke (`tests/e2e/specs`), builds with MOCK mode then runs preview
 
 ## Environment
 
 | variable | default | notes |
 | --- | --- | --- |
-| `VITE_UICP_WS_URL` | `ws://localhost:7700` | backend websocket endpoint |
-| `VITE_DEV_MODE` | `true` | toggles hello payload dev flag |
+| `VITE_DEV_MODE` | `true` | enables developer UX touches |
 | `VITE_MOCK_MODE` | `true` | when true the deterministic planner + mock api are used |
-| `VITE_PLANNER_URL` | – | optional HTTP planner for non-mock mode |
+| `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend)
 
 ## Architecture
 
@@ -36,12 +35,12 @@ The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When
 - `src/components/DockChat.tsx` – chat surface with proximity reveal, STOP handling, and plan preview.
 - `src/state/app.ts` – global flags (chat open, streaming, full control) with persistence.
 - `src/state/chat.ts` – planner pipeline, plan queueing, STOP lock.
-- `src/lib/uicp` – Zod schemas, DOM adapter, websocket transport, and documentation.
+- `src/lib/uicp` - Zod schemas, DOM adapter, per-window FIFO queue with idempotency and txn.cancel, and documentation.
 - `src/lib/mock.ts` – deterministic planner outputs for common prompts.
 
 ## Testing
 
-1. `npm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, and adapter application.
-2. `npm run test:e2e` drives the notepad flow end-to-end in Playwright (requires `npm run dev`).
+1. `npm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation.
+2. `npm run test:e2e` drives the notepad flow end-to-end in Playwright. The config builds with `VITE_MOCK_MODE=true` and starts preview automatically. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests, e2e, and build on every push/PR.

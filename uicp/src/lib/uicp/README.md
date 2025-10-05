@@ -59,6 +59,24 @@ Validation
 
 * The chat pipeline turns these into system messages and toast notifications, including a friendly hint derived from the JSON pointer, so silently ignored commands never occur.
 
-## LLM Integration
+## LLM Integration & Aggregation
 
 Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider.ts`) streams completions using the Tauri-backed Ollama bridge, and the orchestrator (`lib/llm/orchestrator.ts`) parses commentary-channel JSON into validated plans/batches.
+
+### Aggregator
+
+`createOllamaAggregator(onBatch?)` collects commentary-channel text and, on stream end, attempts to parse a `batch` from the buffer. When a valid batch is found:
+
+- If `onBatch` is provided, it is called and may decide whether to auto-apply (`enqueueBatch`) or surface a preview (e.g., based on Full Control).
+- If `onBatch` is not provided, the aggregator calls `enqueueBatch(batch)` by default.
+
+The Tauri bridge installs an aggregator with a gating callback that:
+
+- Suppresses auto-apply when the orchestrator is running (prevents duplicates) using an app-level `suppressAutoApply` flag.
+- Auto-applies when Full Control is ON and not locked.
+- Otherwise, sets a pending plan for preview in the chat state.
+
+### STOP / Cancel
+
+- The chat layer's STOP enqueues `txn.cancel` through the queue (clears pending work) and locks Full Control.
+- The streaming transport supports best-effort cancellation: when the async iterator returned by `streamOllamaCompletion()` is closed, the frontend calls the Tauri command `cancel_chat(requestId)` to abort the backend HTTP request.

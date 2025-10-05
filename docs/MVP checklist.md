@@ -2,10 +2,10 @@
 
 Update log — 2025-10-04
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
-- WebSocket transport (hello/resume) with optional Mock Mode and latency indicator.
+- Tauri event transport (Ollama SSE bridged via Tauri events) with optional Mock Mode and latency indicator.
 - Inspector panel (Timeline, State, Events, Network) and Command Builder shipped.
 - Desktop canvas with draggable/resizable windows and sanitized DOM roots.
-- Hiding Connection Bar (WS URL, Connect/Disconnect, Dev Mode and Mock Mode toggles).
+- Hiding Connection Bar (Dev Mode and Mock Mode toggles).
 - Windows bundle icon configured; `tauri.conf.json` points to `icons/dev_logo_icon_267632.ico`.
 - Rust backend updated for Tauri 2 Emitter API and safe JSON serialization; autosave indicator stabilized.
 - Ollama streaming wired: async iterator `streamOllamaCompletion(messages, model, tools)` added; Rust `chat_completion` forwards `tools`; parser unit test added.
@@ -19,7 +19,7 @@ Update log — 2025-10-04
 ## Architecture Summary
 - Platform: Tauri desktop application (Windows MVP; Linux post-MVP)
 - Frontend: React + Tailwind CSS with DockChat proximity dock and orchestrator phases
-- Backend: Async Rust (Tokio) for filesystem, SQLite, WebSocket transport, and STOP cancellations
+- Backend: Async Rust (Tokio) for filesystem, SQLite, Tauri event transport, and STOP/cancel support
 - Database: SQLite (local, in ~/Documents/UICP/) with async operations
 - Planner LLM: DeepSeek v3.1 (cloud native or local offload)
 - Actor LLM: Kimi K2 (cloud native or local offload)
@@ -62,7 +62,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [x] Tauri + React + Tailwind desktop scaffold (2025-10-04)
 - [x] Async Rust backend for FS/SQLite/API
 - [x] Draggable/resizable windows (`react-rnd`)
-- [x] Hiding Connection Bar (WS URL, toggles, latency)
+- [x] Hiding Connection Bar (toggles, latency)
 - [x] Sanitized HTML rendering
 - [x] Event delegation at window root (capture → `ui_event`)
 - [x] Desktop layout persistence
@@ -74,7 +74,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - `OLLAMA_API_KEY=` (required when `USE_DIRECT_CLOUD=1`)
   - `PLANNER_MODEL=deepseek-v3.1:671b`
   - `ACTOR_MODEL=qwen3-coder:480b`
-  - `UICP_WS_URL=ws://localhost:7700`
+  - (deprecated) `UICP_WS_URL=ws://localhost:7700`
   - `OLLAMA_CLOUD_HOST=https://ollama.com`
   - `OLLAMA_LOCAL_BASE=http://127.0.0.1:11434/v1`
 - [x] Local offload (daemon) uses `*-cloud` model tags + `USE_DIRECT_CLOUD=0`.
@@ -175,3 +175,14 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - Full Control OFF by default; STOP disables auto-apply until re-consented.
 - Trace IDs logged per intent for observability.
 - DockChat remains the single control surface; no code shown to users.
+
+---
+
+## Update 2025-10-05
+
+- Transport: Frontend uses Tauri events with an Ollama aggregator; WebSocket mention is historical and slated for removal. Aggregator now supports a gating callback to auto-apply only when Full Control is ON and to suppress auto-apply during orchestrator runs.
+- Orchestrator: Chat non-mock path uses `runIntent` (planner → actor) with commentary JSON parsing hardened (fenced/noisy JSON extraction).
+- Cancel/STOP: Frontend stream assigns a `requestId` and calls `cancel_chat(requestId)` when the async iterator is closed; STOP still enqueues `txn.cancel`, clears queues, and locks Full Control.
+- Backend: `chat_completion` now accepts an optional `request_id` and spawns the streaming HTTP in a background task; `cancel_chat` aborts the task.
+- Tests: Added unit tests for orchestrator parse, aggregator batch extraction, queue idempotency/FIFO/txn.cancel, STOP cancel flow, and iterator cancellation.
+- E2E: Playwright builds with `VITE_MOCK_MODE=true` for deterministic mock flow; an optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a real backend and API key.

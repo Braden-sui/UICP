@@ -1,7 +1,7 @@
 ﻿import { z } from 'zod';
 import { sanitizeHtml } from '../utils';
 
-// Centralised schema map so planner results and websocket events are validated consistently before touching the DOM.
+// Centralised schema map so planner results and streamed events (via Tauri) are validated consistently before touching the DOM.
 export const OperationName = z.enum([
   'window.create',
   'window.update',
