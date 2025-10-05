@@ -187,7 +187,7 @@ async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePay
                 width: 720.0,
                 height: 420.0,
                 z_index: 0,
-                content: Some("<h2>Welcome to UICP</h2><p>Start asking Gui to build an app.</p>".into()),
+                content: Some("<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>".into()),
             }]
         } else {
             rows
