@@ -1,0 +1,37 @@
+﻿# CI workflow enforces lint, tests, e2e, and build gates.
+name: CI
+
+on:
+  push:
+    branches: ["main", "feature/**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: uicp/package-lock.json
+      - name: Install dependencies
+        working-directory: uicp
+        run: npm ci
+      - name: Lint
+        working-directory: uicp
+        run: npm run lint
+      - name: Typecheck
+        working-directory: uicp
+        run: npm run typecheck
+      - name: Unit tests
+        working-directory: uicp
+        run: npm run test
+      - name: E2E tests
+        working-directory: uicp
+        run: npm run test:e2e
+      - name: Build
+        working-directory: uicp
+        run: npm run build
+

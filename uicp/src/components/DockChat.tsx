@@ -1,0 +1,193 @@
+﻿import type { FormEvent, KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDockReveal } from '../hooks/useDockReveal';
+import { useChatStore } from '../state/chat';
+import { useAppStore } from '../state/app';
+import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
+
+// DockChat is the single control surface for the agent. It handles proximity reveal, input, plan review, and actions.
+export const DockChat = () => {
+  const { chatOpen, onFocus, onBlur, setChatOpen } = useDockReveal();
+  const { messages, pendingPlan, sending, sendMessage, applyPendingPlan, cancelStreaming } = useChatStore();
+  const streaming = useAppStore((state) => state.streaming);
+  const openGrantModal = useAppStore((state) => state.openGrantModal);
+  const fullControl = useAppStore((state) => state.fullControl);
+  const fullControlLocked = useAppStore((state) => state.fullControlLocked);
+  const [value, setValue] = useState('');
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  const systemMessages = useMemo(() => messages.filter((msg) => msg.role === 'system'), [messages]);
+
+  useEffect(() => {
+    if (!chatOpen) return;
+    inputRef.current?.focus();
+  }, [chatOpen]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, pendingPlan]);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!value.trim()) return;
+    await sendMessage(value);
+    setValue('');
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      handleSubmit(event as unknown as FormEvent);
+    }
+  };
+
+  return (
+    <div
+      className={`pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center transition-transform duration-200 ${
+        chatOpen ? 'translate-y-0' : 'translate-y-[calc(100%_-_32px)]'
+      }`}
+    >
+      <div className="pointer-events-auto mb-4 flex w-[min(640px,90vw)] flex-col gap-3 rounded-t-3xl border border-slate-200 bg-white/85 p-4 shadow-2xl backdrop-blur">
+        <header className="flex items-center justify-between text-xs font-medium text-slate-600">
+          <span>
+            {fullControl ? 'Full control enabled' : 'Full control disabled'}
+            {fullControlLocked && ' (locked)'}
+          </span>
+          <div className="flex items-center gap-2">
+            {!fullControl && (
+              <button
+                type="button"
+                onClick={openGrantModal}
+                className="rounded bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700"
+              >
+                Grant full control
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setChatOpen(false)}
+              className="rounded px-2 py-1 text-xs text-slate-500 hover:text-slate-800"
+            >
+              Hide
+            </button>
+          </div>
+        </header>
+
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white/80 p-3" ref={listRef}>
+          <ul className="space-y-3 text-sm">
+            {messages.map((message) => (
+              <li
+                key={message.id}
+                className={
+                  message.role === 'user'
+                    ? 'text-slate-800'
+                    : message.role === 'assistant'
+                      ? 'text-slate-600'
+                      : 'text-red-600'
+                }
+              >
+                <span className="block text-xs uppercase tracking-wide text-slate-400">
+                  {message.role}
+                  {message.errorCode ? ` • ${message.errorCode}` : ''}
+                </span>
+                <span>{message.content}</span>
+              </li>
+            ))}
+          </ul>
+          {pendingPlan && (
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <span>Plan preview</span>
+                <span>{pendingPlan.batch.length} steps</span>
+              </div>
+              <p className="mt-2 text-sm text-slate-600">{pendingPlan.summary}</p>
+              <ol className="mt-3 space-y-1 text-xs text-slate-500">
+                {pendingPlan.batch.map((command, index) => (
+                  <li key={`${pendingPlan.id}-${index}`}>
+                    <span className="font-mono text-[11px]">{command.op}</span>
+                    {command.windowId ? ` • ${command.windowId}` : ''}
+                  </li>
+                ))}
+              </ol>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={applyPendingPlan}
+                  className="rounded bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                >
+                  Apply plan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => useChatStore.setState({ pendingPlan: undefined })}
+                  className="rounded border border-slate-300 px-3 py-2 text-xs text-slate-600 hover:bg-slate-100"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:text-slate-800"
+              aria-label="Attach"
+            >
+              <PaperclipIcon className="h-4 w-4" />
+            </button>
+            <div className="relative flex-1">
+              <textarea
+                ref={inputRef}
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                onFocus={onFocus}
+                onBlur={onBlur}
+                onKeyDown={handleKeyDown}
+                placeholder="Describe what you want to build..."
+                className="h-20 w-full resize-none rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 text-sm text-slate-800 shadow-inner focus:border-slate-400"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={sending || streaming}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              aria-label="Send"
+            >
+              <SendIcon className="h-4 w-4" />
+            </button>
+            {streaming && (
+              <button
+                type="button"
+                onClick={cancelStreaming}
+                className="flex h-9 items-center gap-1 rounded-full border border-red-400 bg-red-50 px-3 text-xs font-semibold text-red-700 hover:bg-red-100"
+              >
+                <StopIcon className="h-4 w-4" />
+                Stop
+              </button>
+            )}
+          </div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-400">
+            Press Esc to collapse • Ctrl/Cmd + Enter to send
+          </div>
+        </form>
+
+        <div aria-live="polite" className="visually-hidden">
+          {systemMessages.map((message) => (
+            <span key={`live-${message.id}`}>{message.content}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default DockChat;
+
+
+

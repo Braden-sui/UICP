@@ -1,0 +1,10 @@
+{
+    "name":  "uicp-root",
+    "private":  true,
+    "version":  "0.1.0",
+    "scripts":  {
+                    "install":  "cd uicp \u0026\u0026 npm install",
+                    "dev":  "cd uicp \u0026\u0026 npm run tauri:dev",
+                    "build":  "cd uicp \u0026\u0026 npm run tauri:build"
+                }
+}

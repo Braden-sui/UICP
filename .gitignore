@@ -1,0 +1,19 @@
+# Node / frontend
+node_modules/
+dist/
+*.local
+
+# Rust
+uicp/src-tauri/target/
+*.pdb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env & data
+uicp/.env
+src-tauri/.env
+documents/
+*.sqlite
+tmp/
