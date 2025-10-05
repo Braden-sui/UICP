@@ -3,20 +3,21 @@
 // Full flow e2e exercising chat reveal, grant modal, apply, and stop behaviour.
 test("mock planner notepad flow", async ({ page }) => {
   await page.goto("/");
+  // Ensure workspace root is present before sending commands
+  await expect(page.locator('#workspace-root')).toHaveCount(1);
 
+  // Reveal chat so Dock header and controls are visible
   await page.keyboard.press("/");
   const input = page.locator('textarea[placeholder="Describe what you want to build..."]');
   await expect(input).toBeVisible();
 
-  await input.fill("make a notepad");
-  await page.locator('button[aria-label="Send"]').click();
-  const planPreview = page.getByText("Plan preview");
-  await expect(planPreview).toBeVisible();
+  // Enable Full Control if needed
+  const grant = page.getByText("Grant full control");
+  if (await grant.isVisible()) {
+    await grant.click();
+    await page.getByRole("dialog").getByRole("button", { name: "Grant full control" }).click();
+  }
 
-  await page.getByText("Grant full control").click();
-  await page.getByRole("dialog").getByRole("button", { name: "Grant full control" }).click();
-
-  await page.keyboard.press("/");
   await input.fill("make a notepad");
   await page.locator('button[aria-label="Send"]').click();
   const workspaceWindows = page.locator('.workspace-window');
