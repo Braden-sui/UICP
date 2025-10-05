@@ -26,3 +26,15 @@ export const LogsIcon = (props: SVGProps<SVGSVGElement>) => (
     <path d="M8.75 15.5h4.5" strokeLinecap="round" />
   </svg>
 );
+
+// NotepadIcon: lined page with a pencil marker for the local notes utility.
+export const NotepadIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
+    <rect x="5.5" y="3" width="13" height="18" rx="2" />
+    <path d="M9 7h6" strokeLinecap="round" />
+    <path d="M9 11h6" strokeLinecap="round" />
+    <path d="M9 15h4.5" strokeLinecap="round" />
+    <path d="M15.75 16.5l2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M16.5 15.75l-1.25 3.75 3.75-1.25" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);

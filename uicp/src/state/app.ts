@@ -53,6 +53,8 @@ export type AppState = {
   grantModalOpen: boolean;
   // Controls visibility of the LogsPanel.
   logsOpen: boolean;
+  // Keep a dedicated flag for the built-in Notepad utility window so local UI can toggle it.
+  notepadOpen: boolean;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
@@ -70,6 +72,7 @@ export type AppState = {
   openGrantModal: () => void;
   closeGrantModal: () => void;
   setLogsOpen: (value: boolean) => void;
+  setNotepadOpen: (value: boolean) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
   upsertWorkspaceWindow: (meta: WorkspaceWindowMeta) => void;
@@ -97,6 +100,7 @@ export const useAppStore = create<AppState>()(
       suppressAutoApply: false,
       grantModalOpen: false,
       logsOpen: false,
+      notepadOpen: false,
       desktopShortcuts: {},
       workspaceWindows: {},
       toasts: [],
@@ -112,6 +116,7 @@ export const useAppStore = create<AppState>()(
       openGrantModal: () => set({ grantModalOpen: true }),
       closeGrantModal: () => set({ grantModalOpen: false }),
       setLogsOpen: (value) => set({ logsOpen: value }),
+      setNotepadOpen: (value) => set({ notepadOpen: value }),
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
           if (state.desktopShortcuts[id]) {
@@ -167,6 +172,7 @@ export const useAppStore = create<AppState>()(
         chatOpen: state.chatOpen,
         desktopShortcuts: state.desktopShortcuts,
         workspaceWindows: state.workspaceWindows,
+        notepadOpen: state.notepadOpen,
         agentMode: state.agentMode,
       }),
     },

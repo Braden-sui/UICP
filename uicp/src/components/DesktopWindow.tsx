@@ -36,9 +36,12 @@ const DesktopWindow = ({
     moved: boolean;
   } | null>(null);
 
+  const initialX = initialPosition.x;
+  const initialY = initialPosition.y;
+
   useEffect(() => {
-    setPosition(initialPosition);
-  }, [initialPosition.x, initialPosition.y]);
+    setPosition({ x: initialX, y: initialY });
+  }, [initialX, initialY]);
 
   const clamp = useCallback((value: number, max: number) => {
     if (Number.isNaN(value)) return 0;

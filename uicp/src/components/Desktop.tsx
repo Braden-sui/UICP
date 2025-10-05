@@ -62,6 +62,8 @@ export const Desktop = () => {
 
   const logsPosition = shortcutPositions[LOGS_SHORTCUT_ID] ?? LOGS_SHORTCUT_DEFAULT;
 
+  const notepadPosition = shortcutPositions[NOTEPAD_SHORTCUT_ID] ?? NOTEPAD_SHORTCUT_DEFAULT;
+
   const handleOpenLogs = useCallback(() => {
     openLogs();
   }, [openLogs]);
@@ -83,7 +85,7 @@ export const Desktop = () => {
 
   const closeWindow = useCallback((id: string) => {
     closeWorkspaceWindow(id);
-  }, [closeWorkspaceWindow]);
+  }, []);
 
   const menus = useMemo<DesktopMenu[]>(() => {
     const entries = Object.values(workspaceWindows);
@@ -109,7 +111,7 @@ export const Desktop = () => {
           ],
         } satisfies DesktopMenu;
       });
-  }, [closeWindow, hideLogs, logsOpen, openLogs, workspaceWindows]);
+  }, [closeWindow, hideLogs, hideNotepad, logsOpen, notepadOpen, openLogs, openNotepad, workspaceWindows]);
 
   return (
     <div className="relative flex min-h-screen w-full flex-col items-center justify-center">

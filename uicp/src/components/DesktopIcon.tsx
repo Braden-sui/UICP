@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import clsx from 'clsx';
 import type { DesktopShortcutPosition } from '../state/app';
 
@@ -9,7 +9,7 @@ export type DesktopIconProps = {
   id: string;
   label: string;
   position: DesktopShortcutPosition;
-  containerRef: React.RefObject<HTMLDivElement>;
+  containerRef: RefObject<HTMLDivElement>;
   onOpen: () => void;
   onPositionChange: (position: DesktopShortcutPosition) => void;
   active?: boolean;
