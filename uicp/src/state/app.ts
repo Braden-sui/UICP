@@ -24,6 +24,21 @@ export type WorkspaceWindowMeta = {
   kind: WorkspaceWindowKind;
 };
 
+export type AgentMode = 'live' | 'mock';
+
+const resolveDefaultAgentMode = (): AgentMode => {
+  const env = import.meta.env;
+  // Keep unit tests deterministic by forcing mock mode during vitest runs.
+  if (env?.MODE === 'test') return 'mock';
+  const flag = env?.VITE_MOCK_MODE;
+  if (typeof flag === 'string') {
+    const normalized = flag.toLowerCase();
+    if (normalized === 'true' || normalized === '1') return 'mock';
+    if (normalized === 'false' || normalized === '0') return 'live';
+  }
+  return 'live';
+};
+
 export type AppState = {
   connectionStatus: ConnectionStatus;
   devMode: boolean;
@@ -31,6 +46,7 @@ export type AppState = {
   fullControlLocked: boolean;
   chatOpen: boolean;
   streaming: boolean;
+  agentMode: AgentMode;
   // When true, aggregator will not auto-apply or preview parsed batches.
   // Used to prevent duplicate application while orchestrator-driven flows run.
   suppressAutoApply: boolean;
@@ -50,6 +66,7 @@ export type AppState = {
   setChatOpen: (value: boolean) => void;
   setStreaming: (value: boolean) => void;
   setSuppressAutoApply: (value: boolean) => void;
+  setAgentMode: (mode: AgentMode) => void;
   openGrantModal: () => void;
   closeGrantModal: () => void;
   setLogsOpen: (value: boolean) => void;
@@ -76,6 +93,7 @@ export const useAppStore = create<AppState>()(
       fullControlLocked: false,
       chatOpen: false,
       streaming: false,
+      agentMode: resolveDefaultAgentMode(),
       suppressAutoApply: false,
       grantModalOpen: false,
       logsOpen: false,
@@ -90,6 +108,7 @@ export const useAppStore = create<AppState>()(
       setChatOpen: (value) => set({ chatOpen: value }),
       setStreaming: (value) => set({ streaming: value }),
       setSuppressAutoApply: (value) => set({ suppressAutoApply: value }),
+      setAgentMode: (mode) => set({ agentMode: mode }),
       openGrantModal: () => set({ grantModalOpen: true }),
       closeGrantModal: () => set({ grantModalOpen: false }),
       setLogsOpen: (value) => set({ logsOpen: value }),
@@ -148,6 +167,7 @@ export const useAppStore = create<AppState>()(
         chatOpen: state.chatOpen,
         desktopShortcuts: state.desktopShortcuts,
         workspaceWindows: state.workspaceWindows,
+        agentMode: state.agentMode,
       }),
     },
   ),

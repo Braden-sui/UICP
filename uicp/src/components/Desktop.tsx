@@ -54,7 +54,10 @@ export const Desktop = () => {
       const title = event.title ?? event.id;
       upsertWorkspaceWindow({ id: event.id, title, kind: 'workspace' });
     });
-    return unsubscribe;
+    return () => {
+      // Ensure the lifecycle handler is removed; discard unsubscribe status.
+      unsubscribe();
+    };
   }, [removeWorkspaceWindow, upsertWorkspaceWindow]);
 
   const logsPosition = shortcutPositions[LOGS_SHORTCUT_ID] ?? LOGS_SHORTCUT_DEFAULT;

@@ -35,11 +35,6 @@ export type ChatState = {
   pushSystemMessage: (content: string, errorCode?: string) => void;
 };
 
-const isMockMode = () => {
-  const flag = import.meta.env.VITE_MOCK_MODE as string | undefined;
-  return flag === undefined ? true : flag !== "false";
-};
-
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -85,7 +80,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let batch: Batch;
       let summary: string;
 
-      if (isMockMode()) {
+      if (app.agentMode === 'mock') {
         const mock = mockPlanner(prompt);
         const plan = validatePlan({ summary: mock.summary, batch: mock.batch }, "/batch");
         summary = plan.summary;
@@ -93,7 +88,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } else {
         // Orchestrator path: DeepSeek (planner) → Kimi (actor) via streaming transport.
         // Suppress aggregator auto-apply/preview while we orchestrate to avoid duplicates.
-        useAppStore.getState().setSuppressAutoApply(true);
+        app.setSuppressAutoApply(true);
         try {
           const { plan, batch: acted, notice } = await runIntent(prompt, /* applyNow */ false);
           // Validate defensively before surfacing to UI
@@ -107,7 +102,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             get().pushSystemMessage('Actor failed to produce a batch. Showing a safe error window.', 'actor_fallback');
           }
         } finally {
-          useAppStore.getState().setSuppressAutoApply(false);
+          app.setSuppressAutoApply(false);
         }
       }
 

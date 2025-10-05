@@ -159,6 +159,10 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [ ] Performance testing (ensure UI never blocks).
 - [ ] Sharing & Export (HTML/React/paste service/web viewer).
 - [ ] Post-MVP roadmap: cloud sync, analytics, multi-agent coordination, etc.
+- [ ] Backend command inbox for persisted tool calls (queue bridge, replay with drift detection).
+- [ ] Failure handling UI (retry/discard, surfaced error metrics, toast integration).
+- [ ] STOP mid-apply guard to bail out of long batches safely.
+- [ ] Observability: command.dispatch/apply structured logs + metrics dashboard.
 
 ## References
 - [ ] Ollama Cloud native docs: https://ollama.com/docs

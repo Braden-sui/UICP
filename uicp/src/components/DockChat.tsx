@@ -1,8 +1,8 @@
-import type { FormEvent, KeyboardEvent } from 'react';
+import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
-import { useAppStore } from '../state/app';
+import { useAppStore, type AgentMode } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
 import { streamOllamaCompletion } from '../lib/llm/ollama';
 
@@ -14,6 +14,9 @@ export const DockChat = () => {
   const openGrantModal = useAppStore((state) => state.openGrantModal);
   const fullControl = useAppStore((state) => state.fullControl);
   const fullControlLocked = useAppStore((state) => state.fullControlLocked);
+  const agentMode = useAppStore((state) => state.agentMode);
+  const setAgentMode = useAppStore((state) => state.setAgentMode);
+  const pushToast = useAppStore((state) => state.pushToast);
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -85,6 +88,16 @@ export const DockChat = () => {
     setValue('');
   };
 
+  const handleAgentModeChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const next = event.target.value as AgentMode;
+    if (next === agentMode) return;
+    setAgentMode(next);
+    pushToast({
+      variant: 'info',
+      message: next === 'live' ? 'Live agents enabled. Mock mode disabled.' : 'Mock mode enabled for testing.',
+    });
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
@@ -100,11 +113,27 @@ export const DockChat = () => {
     >
       <div className="pointer-events-auto mb-4 flex w-[min(640px,90vw)] flex-col gap-3 rounded-t-3xl border border-slate-200 bg-white/85 p-4 shadow-2xl backdrop-blur">
         <header className="flex items-center justify-between text-xs font-medium text-slate-600">
-          <span>
-            {fullControl ? 'Full control enabled' : 'Full control disabled'}
-            {fullControlLocked && ' (locked)'}
-          </span>
+          <div className="flex flex-col gap-1 text-left">
+            <span>
+              {fullControl ? 'Full control enabled' : 'Full control disabled'}
+              {fullControlLocked && ' (locked)'}
+            </span>
+            <span className="text-[11px] uppercase tracking-wide text-slate-400">
+              Agent mode: {agentMode === 'mock' ? 'Mock (testing)' : 'Live (DeepSeek → Qwen)'}
+            </span>
+          </div>
           <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] uppercase tracking-wide text-slate-500">
+              <span>Mode</span>
+              <select
+                value={agentMode}
+                onChange={handleAgentModeChange}
+                className="rounded border border-slate-300 bg-white px-1 py-0.5 text-[11px] text-slate-600 focus:outline-none"
+              >
+                <option value="live">Live</option>
+                <option value="mock">Mock</option>
+              </select>
+            </label>
             {!fullControl && (
               <button
                 type="button"
