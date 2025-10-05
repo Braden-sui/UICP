@@ -3,11 +3,33 @@ import { createFrameCoalescer, createId, sanitizeHtml } from "../utils";
 
 const coalescer = createFrameCoalescer();
 
+type WindowLifecycleEvent =
+  | { type: 'created'; id: string; title: string }
+  | { type: 'updated'; id: string; title: string }
+  | { type: 'destroyed'; id: string; title?: string };
+
+const windowListeners = new Set<(event: WindowLifecycleEvent) => void>();
+
+export const registerWindowLifecycle = (listener: (event: WindowLifecycleEvent) => void) => {
+  windowListeners.add(listener);
+  return () => windowListeners.delete(listener);
+};
+
+const emitWindowEvent = (event: WindowLifecycleEvent) => {
+  for (const listener of windowListeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      console.error('window lifecycle listener error', error);
+    }
+  }
+};
+
 type WindowRecord = {
   id: string;
   wrapper: HTMLElement;
   content: HTMLElement;
-  title: HTMLElement;
+  titleText: HTMLElement;
 };
 
 type ComponentRecord = {
@@ -117,6 +139,26 @@ export const resetWorkspace = () => {
   }
 };
 
+// Allows shared teardown from commands and UI controls.
+const destroyWindow = (id: string) => {
+  const record = windows.get(id);
+  if (!record) return;
+  record.wrapper.remove();
+  windows.delete(id);
+  emitWindowEvent({ type: 'destroyed', id, title: record.titleText.textContent ?? id });
+};
+
+export const listWorkspaceWindows = (): Array<{ id: string; title: string }> => {
+  return Array.from(windows.values()).map((record) => ({
+    id: record.id,
+    title: record.titleText.textContent ?? record.id,
+  }));
+};
+
+export const closeWorkspaceWindow = (id: string) => {
+  destroyWindow(id);
+};
+
 const ensureRoot = () => {
   if (!workspaceRoot) {
     throw new Error("Workspace root not registered.");
@@ -147,7 +189,8 @@ const executeWindowCreate = (
 
     if (existing) {
       applyWindowGeometry(existing, params);
-      existing.title.textContent = params.title;
+      existing.titleText.textContent = params.title;
+      emitWindowEvent({ type: 'updated', id, title: params.title });
       return { success: true, value: id };
     }
 
@@ -165,9 +208,13 @@ const executeWindowCreate = (
     wrapper.style.flexDirection = "column";
     wrapper.style.overflow = "hidden";
 
-    const header = document.createElement("div");
-    header.className = "window-title flex items-center justify-between bg-white/70 px-4 py-3 text-sm font-medium text-slate-700";
-    header.textContent = params.title;
+    const chrome = document.createElement("div");
+    chrome.className = "window-title flex items-center bg-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur";
+
+    const titleText = document.createElement("span");
+    titleText.className = "truncate";
+    titleText.textContent = params.title;
+    chrome.appendChild(titleText);
 
     const content = document.createElement("div");
     content.className = "window-content flex-1 overflow-auto bg-white/40 px-4 py-3 backdrop-blur";
@@ -175,13 +222,14 @@ const executeWindowCreate = (
     rootNode.id = "root";
     content.appendChild(rootNode);
 
-    wrapper.appendChild(header);
+    wrapper.appendChild(chrome);
     wrapper.appendChild(content);
     root.appendChild(wrapper);
 
-    const record: WindowRecord = { id, wrapper, content, title: header };
+    const record: WindowRecord = { id, wrapper, content, titleText };
     windows.set(id, record);
     applyWindowGeometry(record, params);
+    emitWindowEvent({ type: 'created', id, title: params.title });
     return { success: true, value: id };
   } catch (error) {
     return toFailure(error);
@@ -298,7 +346,10 @@ const applyCommand = (command: Envelope): CommandResult => {
         if (!record) {
           return { success: false, error: `Unknown window ${params.id}` };
         }
-        if (params.title) record.title.textContent = params.title;
+        if (params.title) {
+          record.titleText.textContent = params.title;
+          emitWindowEvent({ type: 'updated', id: params.id, title: params.title });
+        }
         applyWindowGeometry(record, params);
         return { success: true, value: params.id };
       } catch (error) {
@@ -308,12 +359,7 @@ const applyCommand = (command: Envelope): CommandResult => {
     case "window.close": {
       try {
         const params = command.params as OperationParamMap["window.close"];
-        const record = windows.get(params.id);
-        if (!record) {
-          return { success: true, value: params.id };
-        }
-        record.wrapper.remove();
-        windows.delete(params.id);
+        destroyWindow(params.id);
         return { success: true, value: params.id };
       } catch (error) {
         return toFailure(error);

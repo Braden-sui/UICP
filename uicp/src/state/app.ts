@@ -11,6 +11,19 @@ export type Toast = {
   variant: ToastVariant;
 };
 
+export type DesktopShortcutPosition = {
+  x: number;
+  y: number;
+};
+
+export type WorkspaceWindowKind = 'local' | 'workspace';
+
+export type WorkspaceWindowMeta = {
+  id: string;
+  title: string;
+  kind: WorkspaceWindowKind;
+};
+
 export type AppState = {
   connectionStatus: ConnectionStatus;
   devMode: boolean;
@@ -24,6 +37,10 @@ export type AppState = {
   grantModalOpen: boolean;
   // Controls visibility of the LogsPanel.
   logsOpen: boolean;
+  // Tracks user-placement of desktop shortcuts so the layout feels persistent.
+  desktopShortcuts: Record<string, DesktopShortcutPosition>;
+  // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
+  workspaceWindows: Record<string, WorkspaceWindowMeta>;
   toasts: Toast[];
   setConnectionStatus: (status: ConnectionStatus) => void;
   setDevMode: (devmode: boolean) => void;
@@ -36,6 +53,10 @@ export type AppState = {
   openGrantModal: () => void;
   closeGrantModal: () => void;
   setLogsOpen: (value: boolean) => void;
+  ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
+  setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
+  upsertWorkspaceWindow: (meta: WorkspaceWindowMeta) => void;
+  removeWorkspaceWindow: (id: string) => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
   dismissToast: (id: string) => void;
 };
@@ -58,6 +79,8 @@ export const useAppStore = create<AppState>()(
       suppressAutoApply: false,
       grantModalOpen: false,
       logsOpen: false,
+      desktopShortcuts: {},
+      workspaceWindows: {},
       toasts: [],
       setConnectionStatus: (status) => set({ connectionStatus: status }),
       setDevMode: (devMode) => set({ devMode }),
@@ -70,6 +93,45 @@ export const useAppStore = create<AppState>()(
       openGrantModal: () => set({ grantModalOpen: true }),
       closeGrantModal: () => set({ grantModalOpen: false }),
       setLogsOpen: (value) => set({ logsOpen: value }),
+      ensureDesktopShortcut: (id, fallback) =>
+        set((state) => {
+          if (state.desktopShortcuts[id]) {
+            return {};
+          }
+          return {
+            desktopShortcuts: {
+              ...state.desktopShortcuts,
+              [id]: fallback,
+            },
+          };
+        }),
+      setDesktopShortcutPosition: (id, position) =>
+        set((state) => {
+          const current = state.desktopShortcuts[id];
+          if (current && current.x === position.x && current.y === position.y) {
+            return {};
+          }
+          return {
+            desktopShortcuts: {
+              ...state.desktopShortcuts,
+              [id]: position,
+            },
+          };
+        }),
+      upsertWorkspaceWindow: (meta) =>
+        set((state) => ({
+          workspaceWindows: {
+            ...state.workspaceWindows,
+            [meta.id]: meta,
+          },
+        })),
+      removeWorkspaceWindow: (id) =>
+        set((state) => {
+          if (!state.workspaceWindows[id]) return {};
+          const next = { ...state.workspaceWindows };
+          delete next[id];
+          return { workspaceWindows: next };
+        }),
       pushToast: (toast) =>
         set((state) => ({
           toasts: [...state.toasts, { id: crypto.randomUUID(), ...toast }],
@@ -84,6 +146,8 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         fullControl: state.fullControl,
         chatOpen: state.chatOpen,
+        desktopShortcuts: state.desktopShortcuts,
+        workspaceWindows: state.workspaceWindows,
       }),
     },
   ),
