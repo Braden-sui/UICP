@@ -27,9 +27,76 @@ const stateStore = new Map<StateScope, Map<string, unknown>>([
 
 let workspaceRoot: HTMLElement | null = null;
 
+// Event delegation callback for UI events
+type UIEventCallback = (event: Event, payload: Record<string, unknown>) => void;
+let uiEventCallback: UIEventCallback | null = null;
+
 // Adapter mutates the isolated workspace DOM so commands remain pure data.
 export const registerWorkspaceRoot = (element: HTMLElement) => {
   workspaceRoot = element;
+
+  // Set up event delegation at the root
+  element.addEventListener('click', handleDelegatedEvent, true);
+  element.addEventListener('input', handleDelegatedEvent, true);
+  element.addEventListener('submit', handleDelegatedEvent, true);
+  element.addEventListener('change', handleDelegatedEvent, true);
+};
+
+// Register callback for UI events
+export const registerUIEventCallback = (callback: UIEventCallback) => {
+  uiEventCallback = callback;
+};
+
+// Handle delegated events and emit ui_event
+const handleDelegatedEvent = (event: Event) => {
+  const target = event.target as HTMLElement;
+
+  // Extract window and component IDs from the DOM hierarchy
+  let windowId: string | undefined;
+  let componentId: string | undefined;
+
+  let current: HTMLElement | null = target;
+  while (current && current !== workspaceRoot) {
+    if (current.dataset.windowId) {
+      windowId = current.dataset.windowId;
+    }
+    if (current.dataset.componentId) {
+      componentId = current.dataset.componentId;
+    }
+    current = current.parentElement;
+  }
+
+  // Build event payload
+  const payload: Record<string, unknown> = {
+    type: event.type,
+    windowId,
+    componentId,
+    targetTag: target.tagName.toLowerCase(),
+  };
+
+  // Add event-specific data
+  if (event.type === 'input' || event.type === 'change') {
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      payload.value = target.value;
+      payload.name = target.name;
+    }
+  } else if (event.type === 'submit') {
+    event.preventDefault(); // Prevent default form submission
+    if (target instanceof HTMLFormElement) {
+      const formData = new FormData(target);
+      payload.formData = Object.fromEntries(formData.entries());
+    }
+  } else if (event.type === 'click') {
+    if (target instanceof HTMLButtonElement) {
+      payload.buttonText = target.textContent?.trim();
+      payload.name = target.name;
+    }
+  }
+
+  // Invoke callback if registered
+  if (uiEventCallback) {
+    uiEventCallback(event, payload);
+  }
 };
 
 export const resetWorkspace = () => {

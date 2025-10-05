@@ -15,7 +15,8 @@ use tokio::{fs, sync::RwLock, time::interval};
 use tokio_stream::StreamExt;
 
 static APP_NAME: &str = "UICP";
-static OLLAMA_BASE_URL_FALLBACK: &str = "https://ollama.com/v1";
+static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
+static OLLAMA_LOCAL_BASE_DEFAULT: &str = "http://127.0.0.1:11434/v1";
 static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
     let base = document_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_NAME)
@@ -27,6 +28,7 @@ struct AppState {
     db_path: PathBuf,
     last_save_ok: RwLock<bool>,
     ollama_key: RwLock<Option<String>>,
+    use_direct_cloud: RwLock<bool>,
     http: Client,
 }
 
@@ -113,7 +115,7 @@ async fn test_api_key(state: State<'_, AppState>, window: tauri::Window) -> Resu
         return Ok(ApiKeyStatus { valid: false, message: Some("No API key configured".into()) });
     };
     let client = state.http.clone();
-    let base = std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| OLLAMA_BASE_URL_FALLBACK.into());
+    let base = get_ollama_base_url(&state).await?;
     let result = client
         .get(format!("{}/models", base))
         .header("Authorization", key)
@@ -290,16 +292,25 @@ async fn chat_completion(
         return Err("messages cannot be empty".into());
     }
 
+    let use_cloud = *state.use_direct_cloud.read().await;
     let model = request
         .model
-        .unwrap_or_else(|| std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "kimi-k2:1t-cloud".into()));
+        .unwrap_or_else(|| {
+            let base_model = std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "kimi-k2:1t".into());
+            if use_cloud && !base_model.ends_with("-cloud") {
+                format!("{}-cloud", base_model)
+            } else {
+                base_model
+            }
+        });
+
     let body = serde_json::json!({
         "model": model,
         "messages": request.messages,
         "stream": request.stream.unwrap_or(true)
     });
 
-    let base = std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| OLLAMA_BASE_URL_FALLBACK.into());
+    let base = get_ollama_base_url(&state).await?;
     let response = state
         .http
         .post(format!("{}/chat/completions", base))
@@ -410,6 +421,9 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
                     .ollama_key
                     .blocking_write()
                     .replace(value);
+            } else if key == "USE_DIRECT_CLOUD" {
+                let use_cloud = value == "1" || value.to_lowercase() == "true";
+                *state.use_direct_cloud.blocking_write() = use_cloud;
             }
         }
     } else {
@@ -418,8 +432,32 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
         if let Ok(val) = std::env::var("OLLAMA_API_KEY") {
             state.ollama_key.blocking_write().replace(val);
         }
+        if let Ok(val) = std::env::var("USE_DIRECT_CLOUD") {
+            let use_cloud = val == "1" || val.to_lowercase() == "true";
+            *state.use_direct_cloud.blocking_write() = use_cloud;
+        }
     }
     Ok(())
+}
+
+// Helper to get the appropriate Ollama base URL with validation
+async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
+    let use_cloud = *state.use_direct_cloud.read().await;
+
+    let base = if use_cloud {
+        std::env::var("OLLAMA_CLOUD_HOST")
+            .unwrap_or_else(|_| OLLAMA_CLOUD_HOST_DEFAULT.to_string())
+    } else {
+        std::env::var("OLLAMA_LOCAL_BASE")
+            .unwrap_or_else(|_| OLLAMA_LOCAL_BASE_DEFAULT.to_string())
+    };
+
+    // Runtime assertion: reject Cloud host containing /v1
+    if use_cloud && base.contains("/v1") {
+        return Err("Invalid configuration: Do not use /v1 for Cloud. Use https://ollama.com".to_string());
+    }
+
+    Ok(base)
 }
 
 fn derive_size_token(width: f64, height: f64) -> String {
@@ -482,6 +520,7 @@ fn main() {
         db_path: db_path.clone(),
         last_save_ok: RwLock::new(true),
         ollama_key: RwLock::new(None),
+        use_direct_cloud: RwLock::new(true), // default to cloud mode
         http: Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
