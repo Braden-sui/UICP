@@ -74,9 +74,9 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - `OLLAMA_API_KEY=` (required when `USE_DIRECT_CLOUD=1`)
   - `PLANNER_MODEL=deepseek-v3.1:671b`
   - `ACTOR_MODEL=qwen3-coder:480b`
-  - (deprecated) `UICP_WS_URL=ws://localhost:7700`
   - `OLLAMA_CLOUD_HOST=https://ollama.com`
   - `OLLAMA_LOCAL_BASE=http://127.0.0.1:11434/v1`
+- Legacy WebSocket env vars have been removed; streaming now relies on the Tauri event bridge exclusively.
 - [x] Local offload (daemon) uses `*-cloud` model tags + `USE_DIRECT_CLOUD=0`.
 - [x] Runtime assertion rejects any Cloud host containing `/v1` ("Do not use /v1 for Cloud. Use https://ollama.com").
 
@@ -110,7 +110,6 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 ## 4) Command/Tool Execution
 - [ ] Async commands bridging Rust -> frontend adapter for UICP ops (window.*, dom.*, component.*, state.*, api.call, txn.cancel).
-- [x] STOP (`txn.cancel`) wired end-to-end; auto-lock auto-apply until re-enabled.
 - [x] STOP (`txn.cancel`) wired end-to-end; auto-lock auto-apply until re-enabled.
 
 ## 5) Chat UI Enhancements

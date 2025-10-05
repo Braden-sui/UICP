@@ -32,7 +32,8 @@ The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When
 ## Architecture
 
 - `src/components/Desktop.tsx` – registers the `#workspace-root` canvas the adapter mutates.
-- `src/components/DockChat.tsx` – chat surface with proximity reveal, STOP handling, and plan preview.
+- `src/components/DockChat.tsx` - chat surface with proximity reveal, STOP handling, and plan preview.
+- `src/components/LogsPanel.tsx` - toggleable desktop logs panel showing the chat/system message history for auditing.
 - `src/state/app.ts` – global flags (chat open, streaming, full control) with persistence.
 - `src/state/chat.ts` – planner pipeline, plan queueing, STOP lock.
 - `src/lib/uicp` - Zod schemas, DOM adapter, per-window FIFO queue with idempotency and txn.cancel, and documentation.

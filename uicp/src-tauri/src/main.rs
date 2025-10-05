@@ -10,8 +10,7 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection};
-use tauri::{async_runtime::spawn, Emitter, Manager, State};
-use tokio::task::JoinHandle;
+use tauri::{async_runtime::{spawn, JoinHandle}, Emitter, Manager, State};
 use tokio::{fs, sync::RwLock, time::interval};
 use tokio_stream::StreamExt;
 
@@ -282,7 +281,6 @@ async fn save_workspace(
 }
 
 #[tauri::command]
-#[tauri::command]
 async fn cancel_chat(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
     if let Some(handle) = state.ongoing.write().await.remove(&request_id) {
         handle.abort();
@@ -330,22 +328,24 @@ async fn chat_completion(
 
     // Simple retry/backoff policy for rate limits and transient network failures
     let max_attempts = 3u8;
-    let mut attempt = 0u8;
 
     let rid = request_id.unwrap_or_else(|| format!("req-{}", Utc::now().timestamp_millis())) ;
-    let app_handle = window.app_handle();
-    let state_clone = state.inner().clone();
+    let app_handle = window.app_handle().clone();
+    let client = state.http.clone();
+    let base_url = base.clone();
+    let body_payload = body.clone();
+    let api_key_for_task = api_key_opt.clone();
+
     let join: JoinHandle<()> = spawn(async move {
-        let mut attempt_local = attempt;
+        let mut attempt_local: u8 = 0;
         'outer: loop {
             attempt_local += 1;
-            let mut builder = state_clone
-                .http
-                .post(format!("{}/chat/completions", base))
-                .json(&body);
+            let mut builder = client
+                .post(format!("{}/chat/completions", base_url))
+                .json(&body_payload);
 
             if use_cloud {
-                if let Some(key) = &api_key_opt {
+                if let Some(key) = &api_key_for_task {
                     builder = builder.header("Authorization", key);
                 }
             }

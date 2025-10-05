@@ -1,6 +1,5 @@
 import { useChatStore } from '../state/chat';
 import { useAppStore } from '../state/app';
-import { LogsIcon } from '../icons';
 
 const formatTimestamp = (value: number) => {
   try {
