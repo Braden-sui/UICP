@@ -1,4 +1,4 @@
-﻿import { create } from 'zustand';
+import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 // AppState keeps cross-cutting UI control flags so DockChat, modal flows, and transport logic stay in sync.
@@ -22,9 +22,11 @@ export type AppState = {
   // Used to prevent duplicate application while orchestrator-driven flows run.
   suppressAutoApply: boolean;
   grantModalOpen: boolean;
+  // Controls visibility of the LogsPanel.
+  logsOpen: boolean;
   toasts: Toast[];
   setConnectionStatus: (status: ConnectionStatus) => void;
-  setDevMode: (devMode: boolean) => void;
+  setDevMode: (devmode: boolean) => void;
   setFullControl: (value: boolean) => void;
   lockFullControl: () => void;
   unlockFullControl: () => void;
@@ -33,6 +35,7 @@ export type AppState = {
   setSuppressAutoApply: (value: boolean) => void;
   openGrantModal: () => void;
   closeGrantModal: () => void;
+  setLogsOpen: (value: boolean) => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
   dismissToast: (id: string) => void;
 };
@@ -54,6 +57,7 @@ export const useAppStore = create<AppState>()(
       streaming: false,
       suppressAutoApply: false,
       grantModalOpen: false,
+      logsOpen: false,
       toasts: [],
       setConnectionStatus: (status) => set({ connectionStatus: status }),
       setDevMode: (devMode) => set({ devMode }),
@@ -65,6 +69,7 @@ export const useAppStore = create<AppState>()(
       setSuppressAutoApply: (value) => set({ suppressAutoApply: value }),
       openGrantModal: () => set({ grantModalOpen: true }),
       closeGrantModal: () => set({ grantModalOpen: false }),
+      setLogsOpen: (value) => set({ logsOpen: value }),
       pushToast: (toast) =>
         set((state) => ({
           toasts: [...state.toasts, { id: crypto.randomUUID(), ...toast }],

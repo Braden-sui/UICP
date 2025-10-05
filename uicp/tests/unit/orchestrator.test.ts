@@ -63,9 +63,14 @@ describe('orchestrator integration', () => {
     expect(batch[0].op).toBe('window.create');
   });
 
-  it('runs end-to-end and returns plan + batch', async () => {
+  it('runs end-to-end and returns plan + batch with stamped metadata', async () => {
     const { plan, batch } = await runIntent('make a notepad', false);
     expect(plan.summary).toBeDefined();
     expect(batch.length).toBeGreaterThan(0);
+    expect(batch.every((env) => typeof env.idempotencyKey === 'string' && env.idempotencyKey.length > 0)).toBe(true);
+    const traceIds = new Set(batch.map((env) => env.traceId));
+    const txnIds = new Set(batch.map((env) => env.txnId));
+    expect(traceIds.size).toBe(1);
+    expect(txnIds.size).toBe(1);
   });
 });

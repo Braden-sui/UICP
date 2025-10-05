@@ -95,12 +95,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Suppress aggregator auto-apply/preview while we orchestrate to avoid duplicates.
         useAppStore.getState().setSuppressAutoApply(true);
         try {
-          const { plan, batch: acted } = await runIntent(prompt, /* applyNow */ false);
+          const { plan, batch: acted, notice } = await runIntent(prompt, /* applyNow */ false);
           // Validate defensively before surfacing to UI
           const safePlan = validatePlan({ summary: plan.summary, batch: plan.batch });
           const safeBatch = validateBatch(acted);
           summary = safePlan.summary;
           batch = safeBatch;
+          if (notice === 'planner_fallback') {
+            get().pushSystemMessage('Planner degraded: using actor-only fallback for this intent.', 'planner_fallback');
+          } else if (notice === 'actor_fallback') {
+            get().pushSystemMessage('Actor failed to produce a batch. Showing a safe error window.', 'actor_fallback');
+          }
         } finally {
           useAppStore.getState().setSuppressAutoApply(false);
         }

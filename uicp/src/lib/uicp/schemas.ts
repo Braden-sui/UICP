@@ -122,8 +122,10 @@ export const operationSchemas = {
 } satisfies Record<OperationNameT, z.ZodTypeAny>;
 
 const EnvelopeBase = z.object({
-  id: z.string().uuid().optional(),
+  id: z.string().optional(),
   idempotencyKey: z.string().optional(),
+  traceId: z.string().optional(),
+  txnId: z.string().optional(),
   windowId: z.string().min(1).optional(),
   op: OperationName,
   params: z.unknown().optional(),
@@ -152,6 +154,8 @@ export type OperationNameT = z.infer<typeof OperationName>;
 export type Envelope<T extends OperationNameT = OperationNameT> = {
   id?: string;
   idempotencyKey?: string;
+  traceId?: string;
+  txnId?: string;
   windowId?: string;
   op: T;
   params: OperationParamMap[T];
@@ -214,6 +218,8 @@ export const batchSchema = z.array(
     return {
       id: value.id,
       idempotencyKey: value.idempotencyKey,
+      traceId: value.traceId,
+      txnId: value.txnId,
       windowId: value.windowId ?? (parseResult.data as { windowId?: string }).windowId,
       op: value.op,
       params: parseResult.data,
@@ -253,6 +259,8 @@ const PlanEntryCamel = z
     type: z.literal('command').optional(),
     id: z.string().optional(),
     idempotencyKey: z.string().optional(),
+    traceId: z.string().optional(),
+    txnId: z.string().optional(),
     windowId: z.string().min(1).optional(),
     op: OperationName,
     params: z.unknown().optional(),
@@ -264,6 +272,7 @@ const PlanEntrySnake = z
     type: z.literal('command').optional(),
     txn_id: z.string().optional(),
     idempotency_key: z.string().optional(),
+    trace_id: z.string().optional(),
     window_id: z.string().min(1).optional(),
     op: OperationName,
     params: z.unknown().optional(),
@@ -273,6 +282,8 @@ const PlanEntrySnake = z
     type: v.type,
     // Do not map txn_id to Envelope.id as the Envelope id expects a UUID.
     idempotencyKey: v.idempotency_key,
+    traceId: v.trace_id,
+    txnId: v.txn_id,
     windowId: v.window_id,
     op: v.op,
     params: v.params,
