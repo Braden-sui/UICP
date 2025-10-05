@@ -2,7 +2,7 @@
 import { applyBatch } from "../lib/uicp/adapter";
 import { mockPlanner } from "../lib/mock";
 import type { Batch } from "../lib/uicp/schemas";
-import { UICPValidationError, validateBatch } from "../lib/uicp/schemas";
+import { UICPValidationError, validateBatch, validatePlan } from "../lib/uicp/schemas";
 import { createId } from "../lib/utils";
 import { useAppStore } from "./app";
 
@@ -86,8 +86,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (isMockMode()) {
         const mock = mockPlanner(prompt);
-        summary = mock.summary;
-        batch = validateBatch(mock.batch);
+        const plan = validatePlan({ summary: mock.summary, batch: mock.batch }, "/batch");
+        summary = plan.summary;
+        batch = plan.batch;
       } else {
         const plannerUrl = import.meta.env.VITE_PLANNER_URL as string | undefined;
         if (!plannerUrl) {
@@ -104,8 +105,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           throw new Error(`Planner responded ${response.status}`);
         }
         const payload = await response.json();
-        summary = typeof payload.summary === "string" ? payload.summary : "Planner result";
-        batch = validateBatch(payload.batch);
+        const plan = validatePlan(payload);
+        summary = plan.summary;
+        batch = plan.batch;
       }
 
       const plan: PlanPreview = {
@@ -166,7 +168,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const code = error instanceof UICPValidationError ? "validation_error" : "planner_error";
       const message =
         error instanceof UICPValidationError
-          ? `${error.message} (${error.pointer})`
+          ? formatValidationErrorMessage(error)
           : error instanceof Error
             ? error.message
             : String(error);
@@ -275,6 +277,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 }));
+
+// Helpers: Turn a validation pointer into a friendly hint for users.
+export const getValidationHint = (pointer: string): string => {
+  const p = pointer.toLowerCase();
+  if (p.includes("/params/html")) {
+    return "Provide safe HTML only; no <script>, inline event handlers, or javascript: URLs.";
+  }
+  if (p.includes("/params/windowid")) {
+    return "windowId must be a non-empty string referencing an existing window.";
+  }
+  if (p.includes("/params/target")) {
+    return "Target must be a valid CSS selector present in the window content.";
+  }
+  if (p.includes("/params/title")) {
+    return "Title is required and must be a non-empty string.";
+  }
+  if (p.includes("/params/width") || p.includes("/params/height")) {
+    return "Width/height must be numbers and at least 120.";
+  }
+  if (p.includes("/op")) {
+    return "Unsupported operation; use documented UICP ops only.";
+  }
+  if (p.includes("/batch")) {
+    return "Ensure plan.batch is a non-empty array of command entries.";
+  }
+  return "Check the field referenced by the pointer for required type and constraints.";
+};
+
+export const formatValidationErrorMessage = (err: UICPValidationError): string => {
+  const hint = getValidationHint(err.pointer);
+  return `${err.message} (${err.pointer}). Hint: ${hint}`;
+};
 
 useAppStore.subscribe((state) => {
   if (!state.fullControl || state.fullControlLocked) {

@@ -1,10 +1,12 @@
 ﻿import { z } from 'zod';
+import { sanitizeHtml } from '../utils';
 
 // Centralised schema map so planner results and websocket events are validated consistently before touching the DOM.
 export const OperationName = z.enum([
   'window.create',
   'window.update',
   'window.close',
+  'dom.set',
   'dom.replace',
   'dom.append',
   'component.render',
@@ -40,6 +42,13 @@ const WindowUpdateParams = z.object({
 });
 
 const WindowCloseParams = z.object({ id: z.string() });
+
+const DomSetParams = z.object({
+  windowId: z.string().min(1),
+  target: z.string().min(1),
+  html: z.string(),
+  sanitize: z.boolean().optional(),
+});
 
 const DomReplaceParams = z.object({
   windowId: z.string().min(1),
@@ -98,6 +107,7 @@ export const operationSchemas = {
   'window.create': WindowCreateParams,
   'window.update': WindowUpdateParams,
   'window.close': WindowCloseParams,
+  'dom.set': DomSetParams,
   'dom.replace': DomReplaceParams,
   'dom.append': DomAppendParams,
   'component.render': ComponentRenderParams,
@@ -123,6 +133,7 @@ export type OperationParamMap = {
   'window.create': z.infer<typeof WindowCreateParams>;
   'window.update': z.infer<typeof WindowUpdateParams>;
   'window.close': z.infer<typeof WindowCloseParams>;
+  'dom.set': z.infer<typeof DomSetParams>;
   'dom.replace': z.infer<typeof DomReplaceParams>;
   'dom.append': z.infer<typeof DomAppendParams>;
   'component.render': z.infer<typeof ComponentRenderParams>;
@@ -169,6 +180,22 @@ export const envelopeSchema = EnvelopeBase.superRefine((value, ctx) => {
         message: issue.message,
       });
     }
+    return;
+  }
+
+  // Guardrail: reject unsafe HTML at validation time.
+  if (value.op === 'dom.set' || value.op === 'dom.replace' || value.op === 'dom.append') {
+    const html = (parsed.data as { html?: unknown }).html;
+    if (typeof html === 'string') {
+      const cleaned = sanitizeHtml(html);
+      if (cleaned !== html) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [...ctx.path, 'params', 'html'],
+          message: 'HTML contains disallowed content (script/style/on* or javascript:). Provide safe HTML only.',
+        });
+      }
+    }
   }
 });
 
@@ -183,6 +210,7 @@ export const batchSchema = z.array(
         parseResult.error.issues,
       );
     }
+
     return {
       id: value.id,
       idempotencyKey: value.idempotencyKey,
@@ -196,7 +224,83 @@ export const batchSchema = z.array(
 export type Batch = z.infer<typeof batchSchema>;
 
 export function validateBatch(input: unknown, pointer = '/'): Batch {
-  const result = batchSchema.safeParse(input);
+  try {
+    return batchSchema.parse(input);
+  } catch (err) {
+    if (err instanceof UICPValidationError) {
+      const suffix = err.pointer.startsWith('/') ? err.pointer : `/${err.pointer}`;
+      throw new UICPValidationError(err.message, `${pointer}${suffix}`, err.issues);
+    }
+    if (err instanceof z.ZodError) {
+      const [firstIssue] = err.issues;
+      const suffix = firstIssue
+        ? firstIssue.path.map((piece) => `/${String(piece)}`).join('')
+        : '';
+      throw new UICPValidationError(err.message, `${pointer}${suffix}`, err.issues);
+    }
+    throw err;
+  }
+}
+
+// Plan validation -----------------------------------------------------------
+
+// The planner may emit either camelCase envelopes or snake_case entries like:
+// { type: "command", op, params, idempotency_key?, txn_id?, window_id? }
+// We accept both and normalise to the internal Envelope/Batch shape.
+
+const PlanEntryCamel = z
+  .object({
+    type: z.literal('command').optional(),
+    id: z.string().optional(),
+    idempotencyKey: z.string().optional(),
+    windowId: z.string().min(1).optional(),
+    op: OperationName,
+    params: z.unknown().optional(),
+  })
+  .strict();
+
+const PlanEntrySnake = z
+  .object({
+    type: z.literal('command').optional(),
+    txn_id: z.string().optional(),
+    idempotency_key: z.string().optional(),
+    window_id: z.string().min(1).optional(),
+    op: OperationName,
+    params: z.unknown().optional(),
+  })
+  .strict()
+  .transform((v) => ({
+    type: v.type,
+    // Do not map txn_id to Envelope.id as the Envelope id expects a UUID.
+    idempotencyKey: v.idempotency_key,
+    windowId: v.window_id,
+    op: v.op,
+    params: v.params,
+  }));
+
+const planEntryNormalized = z.union([PlanEntryCamel, PlanEntrySnake]);
+
+export const planSchema = z
+  .object({
+    summary: z.string().min(1, 'summary is required'),
+    risks: z
+      .union([z.string().min(1), z.array(z.string().min(1))])
+      .optional(),
+    batch: z.array(planEntryNormalized),
+  })
+  .strict()
+  .transform((v) => {
+    // Normalise risks to string[] for a stable surface
+    const risks = Array.isArray(v.risks) ? v.risks : v.risks ? [v.risks] : undefined;
+    // Reuse batchSchema to validate and coerce entries into typed envelopes
+    const parsedBatch = validateBatch(v.batch, '/batch');
+    return { summary: v.summary, risks, batch: parsedBatch };
+  });
+
+export type Plan = z.infer<typeof planSchema>;
+
+export function validatePlan(input: unknown, pointer = '/'): Plan {
+  const result = planSchema.safeParse(input);
   if (!result.success) {
     const [firstIssue] = result.error.issues;
     const suffix = firstIssue
@@ -206,6 +310,10 @@ export function validateBatch(input: unknown, pointer = '/'): Batch {
   }
   return result.data;
 }
+
+// Lightweight type guards for callers that only need a boolean check
+export const isBatch = (input: unknown): input is Batch => batchSchema.safeParse(input).success;
+export const isPlan = (input: unknown): input is Plan => planSchema.safeParse(input).success;
 
 
 

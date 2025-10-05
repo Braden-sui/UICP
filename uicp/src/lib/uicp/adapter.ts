@@ -27,6 +27,15 @@ const stateStore = new Map<StateScope, Map<string, unknown>>([
 
 let workspaceRoot: HTMLElement | null = null;
 
+type CommandResult<T = unknown> =
+  | { success: true; value: T }
+  | { success: false; error: string };
+
+const toFailure = (error: unknown): { success: false; error: string } => ({
+  success: false,
+  error: error instanceof Error ? error.message : String(error),
+});
+
 // Event delegation callback for UI events
 type UIEventCallback = (event: Event, payload: Record<string, unknown>) => void;
 let uiEventCallback: UIEventCallback | null = null;
@@ -127,32 +136,120 @@ const applyWindowGeometry = (
   if ("zIndex" in params && params.zIndex !== undefined) style.zIndex = String(params.zIndex);
 };
 
-const renderComponent = (params: OperationParamMap["component.render"]): ComponentRecord => {
-  const id = params.id ?? createId("component");
-  const hostWindow = windows.get(params.windowId);
-  if (!hostWindow) throw new Error(`Unknown window ${params.windowId}`);
-  const target = hostWindow.content.querySelector(params.target);
-  if (!target) throw new Error(`Target ${params.target} missing in window ${params.windowId}`);
+// Core command executors emit structured success so the queue can surface rich errors without throwing.
+const executeWindowCreate = (
+  params: OperationParamMap["window.create"],
+): CommandResult<string> => {
+  try {
+    const root = ensureRoot();
+    const id = params.id ?? createId("window");
+    const existing = windows.get(id);
 
-  const node = document.createElement("div");
-  node.dataset.componentId = id;
-  node.className = "component-block";
+    if (existing) {
+      applyWindowGeometry(existing, params);
+      existing.title.textContent = params.title;
+      return { success: true, value: id };
+    }
 
-  if (params.type.toLowerCase().includes("form")) {
-    node.innerHTML = '<form class="flex flex-col gap-2"><input class="rounded border border-slate-300 px-3 py-2" placeholder="Field" /><button type="submit" class="self-start rounded bg-slate-900 px-3 py-2 text-white">Submit</button></form>';
-  } else if (params.type.toLowerCase().includes("table")) {
-    node.innerHTML = '<div class="rounded border border-slate-200 bg-white/90 shadow-sm"><div class="border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase">Table</div><table class="w-full divide-y divide-slate-200 text-sm"><tbody><tr><td class="px-3 py-2">Sample row</td></tr></tbody></table></div>';
-  } else if (params.type.toLowerCase().includes("modal")) {
-    const title = typeof params.props === "object" && params.props && "title" in params.props ? String((params.props as Record<string, unknown>).title) : "Modal";
-    node.innerHTML = `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${title}</h2><p class="text-sm text-slate-600">Mock modal content.</p></div>`;
-  } else {
-    node.innerHTML = '<div class="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">Component placeholder</div>';
+    const wrapper = document.createElement("div");
+    wrapper.dataset.windowId = id;
+    wrapper.className = "workspace-window pointer-events-auto";
+    wrapper.style.position = "absolute";
+    wrapper.style.backdropFilter = "blur(12px)";
+    wrapper.style.background = "rgba(255,255,255,0.78)";
+    wrapper.style.border = "1px solid rgba(15,23,42,0.08)";
+    wrapper.style.borderRadius = "16px";
+    wrapper.style.boxShadow = "0 18px 38px rgba(15,23,42,0.18)";
+    wrapper.style.padding = "0";
+    wrapper.style.display = "flex";
+    wrapper.style.flexDirection = "column";
+    wrapper.style.overflow = "hidden";
+
+    const header = document.createElement("div");
+    header.className = "window-title flex items-center justify-between bg-white/70 px-4 py-3 text-sm font-medium text-slate-700";
+    header.textContent = params.title;
+
+    const content = document.createElement("div");
+    content.className = "window-content flex-1 overflow-auto bg-white/40 px-4 py-3 backdrop-blur";
+    const rootNode = document.createElement("div");
+    rootNode.id = "root";
+    content.appendChild(rootNode);
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(content);
+    root.appendChild(wrapper);
+
+    const record: WindowRecord = { id, wrapper, content, title: header };
+    windows.set(id, record);
+    applyWindowGeometry(record, params);
+    return { success: true, value: id };
+  } catch (error) {
+    return toFailure(error);
   }
+};
 
-  target.appendChild(node);
-  const record: ComponentRecord = { id, element: node };
-  components.set(id, record);
-  return record;
+// Replaces the target node contents while re-sanitising as a last line of defence.
+const executeDomSet = (params: OperationParamMap["dom.set"]): CommandResult<string> => {
+  try {
+    const record = windows.get(params.windowId);
+    if (!record) {
+      return { success: false, error: `Unknown window ${params.windowId}` };
+    }
+    const target = record.content.querySelector(params.target);
+    if (!target) {
+      return { success: false, error: `Target ${params.target} missing in window ${params.windowId}` };
+    }
+    target.innerHTML = sanitizeHtml(params.html);
+    return { success: true, value: params.windowId };
+  } catch (error) {
+    return toFailure(error);
+  }
+};
+
+// Produces a lightweight mock component shell so MOCK mode mirrors planner output.
+const executeComponentRender = (
+  params: OperationParamMap["component.render"],
+): CommandResult<string> => {
+  try {
+    const id = params.id ?? createId("component");
+    const hostWindow = windows.get(params.windowId);
+    if (!hostWindow) {
+      return { success: false, error: `Unknown window ${params.windowId}` };
+    }
+    const target = hostWindow.content.querySelector(params.target);
+    if (!target) {
+      return { success: false, error: `Target ${params.target} missing in window ${params.windowId}` };
+    }
+
+    const node = document.createElement("div");
+    node.dataset.componentId = id;
+    node.className = "component-block";
+    node.innerHTML = buildComponentMarkup(params);
+
+    target.appendChild(node);
+    const record: ComponentRecord = { id, element: node };
+    components.set(id, record);
+    return { success: true, value: id };
+  } catch (error) {
+    return toFailure(error);
+  }
+};
+
+const buildComponentMarkup = (params: OperationParamMap["component.render"]): string => {
+  const type = params.type.toLowerCase();
+  if (type.includes("form")) {
+    return '<form class="flex flex-col gap-2"><input class="rounded border border-slate-300 px-3 py-2" placeholder="Field" /><button type="submit" class="self-start rounded bg-slate-900 px-3 py-2 text-white">Submit</button></form>';
+  }
+  if (type.includes("table")) {
+    return '<div class="rounded border border-slate-200 bg-white/90 shadow-sm"><div class="border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase">Table</div><table class="w-full divide-y divide-slate-200 text-sm"><tbody><tr><td class="px-3 py-2">Sample row</td></tr></tbody></table></div>';
+  }
+  if (type.includes("modal")) {
+    const title = typeof params.props === "object" && params.props && "title" in params.props
+      ? String((params.props as Record<string, unknown>).title)
+      : "Modal";
+    return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${title}</h2><p class="text-sm text-slate-600">Mock modal content.</p></div>`;
+  }
+  return '<div class="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">Component placeholder</div>';
 };
 
 const updateComponent = (params: OperationParamMap["component.update"]) => {
@@ -184,124 +281,137 @@ const getStateValue = (params: OperationParamMap["state.get"]) => {
   return scopeStore.get(key);
 };
 
-const applyCommand = (command: Envelope) => {
+const applyCommand = (command: Envelope): CommandResult => {
   switch (command.op) {
     case "window.create": {
-      const root = ensureRoot();
       const params = command.params as OperationParamMap["window.create"];
-      const id = params.id ?? createId("window");
-      if (windows.has(id)) {
-        const record = windows.get(id)!;
-        applyWindowGeometry(record, params);
-        record.title.textContent = params.title;
-        return id;
-      }
-      const wrapper = document.createElement("div");
-      wrapper.dataset.windowId = id;
-      wrapper.className = "workspace-window pointer-events-auto";
-      wrapper.style.position = "absolute";
-      wrapper.style.backdropFilter = "blur(12px)";
-      wrapper.style.background = "rgba(255,255,255,0.78)";
-      wrapper.style.border = "1px solid rgba(15,23,42,0.08)";
-      wrapper.style.borderRadius = "16px";
-      wrapper.style.boxShadow = "0 18px 38px rgba(15,23,42,0.18)";
-      wrapper.style.padding = "0";
-      wrapper.style.display = "flex";
-      wrapper.style.flexDirection = "column";
-      wrapper.style.overflow = "hidden";
-
-      const header = document.createElement("div");
-      header.className = "window-title flex items-center justify-between bg-white/70 px-4 py-3 text-sm font-medium text-slate-700";
-      header.textContent = params.title;
-
-      const content = document.createElement("div");
-      content.className = "window-content flex-1 overflow-auto bg-white/40 px-4 py-3 backdrop-blur";
-      const rootNode = document.createElement("div");
-      rootNode.id = "root";
-      content.appendChild(rootNode);
-
-      wrapper.appendChild(header);
-      wrapper.appendChild(content);
-      root.appendChild(wrapper);
-      const record: WindowRecord = { id, wrapper, content, title: header };
-      windows.set(id, record);
-      applyWindowGeometry(record, params);
-      return id;
+      return executeWindowCreate(params);
+    }
+    case "dom.set": {
+      const params = command.params as OperationParamMap["dom.set"];
+      return executeDomSet(params);
     }
     case "window.update": {
-      const params = command.params as OperationParamMap["window.update"];
-      const record = windows.get(params.id);
-      if (!record) throw new Error(`Unknown window ${params.id}`);
-      if (params.title) record.title.textContent = params.title;
-      applyWindowGeometry(record, params);
-      return params.id;
+      try {
+        const params = command.params as OperationParamMap["window.update"];
+        const record = windows.get(params.id);
+        if (!record) {
+          return { success: false, error: `Unknown window ${params.id}` };
+        }
+        if (params.title) record.title.textContent = params.title;
+        applyWindowGeometry(record, params);
+        return { success: true, value: params.id };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "window.close": {
-      const params = command.params as OperationParamMap["window.close"];
-      const record = windows.get(params.id);
-      if (!record) return params.id;
-      record.wrapper.remove();
-      windows.delete(params.id);
-      return params.id;
+      try {
+        const params = command.params as OperationParamMap["window.close"];
+        const record = windows.get(params.id);
+        if (!record) {
+          return { success: true, value: params.id };
+        }
+        record.wrapper.remove();
+        windows.delete(params.id);
+        return { success: true, value: params.id };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "dom.replace": {
       const params = command.params as OperationParamMap["dom.replace"];
-      const record = windows.get(params.windowId);
-      if (!record) throw new Error(`Unknown window ${params.windowId}`);
-      const target = record.content.querySelector(params.target);
-      if (!target) throw new Error(`Target ${params.target} missing in window ${params.windowId}`);
-      target.innerHTML = sanitizeHtml(params.html);
-      return params.windowId;
+      return executeDomSet({
+        windowId: params.windowId,
+        target: params.target,
+        html: params.html,
+        sanitize: params.sanitize,
+      });
     }
     case "dom.append": {
-      const params = command.params as OperationParamMap["dom.append"];
-      const record = windows.get(params.windowId);
-      if (!record) throw new Error(`Unknown window ${params.windowId}`);
-      const target = record.content.querySelector(params.target);
-      if (!target) throw new Error(`Target ${params.target} missing in window ${params.windowId}`);
-      target.insertAdjacentHTML("beforeend", sanitizeHtml(params.html));
-      return params.windowId;
+      try {
+        const params = command.params as OperationParamMap["dom.append"];
+        const record = windows.get(params.windowId);
+        if (!record) {
+          return { success: false, error: `Unknown window ${params.windowId}` };
+        }
+        const target = record.content.querySelector(params.target);
+        if (!target) {
+          return { success: false, error: `Target ${params.target} missing in window ${params.windowId}` };
+        }
+        target.insertAdjacentHTML("beforeend", sanitizeHtml(params.html));
+        return { success: true, value: params.windowId };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "component.render": {
       const params = command.params as OperationParamMap["component.render"];
-      renderComponent(params);
-      return params.windowId;
+      return executeComponentRender(params);
     }
     case "component.update": {
-      const params = command.params as OperationParamMap["component.update"];
-      updateComponent(params);
-      return params.id;
+      try {
+        const params = command.params as OperationParamMap["component.update"];
+        updateComponent(params);
+        return { success: true, value: params.id };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "component.destroy": {
-      const params = command.params as OperationParamMap["component.destroy"];
-      destroyComponent(params);
-      return params.id;
+      try {
+        const params = command.params as OperationParamMap["component.destroy"];
+        destroyComponent(params);
+        return { success: true, value: params.id };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "state.set": {
-      const params = command.params as OperationParamMap["state.set"];
-      setStateValue(params);
-      return params.key;
+      try {
+        const params = command.params as OperationParamMap["state.set"];
+        setStateValue(params);
+        return { success: true, value: params.key };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "state.get": {
-      const params = command.params as OperationParamMap["state.get"];
-      return getStateValue(params);
+      try {
+        const params = command.params as OperationParamMap["state.get"];
+        return { success: true, value: getStateValue(params) };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "state.watch":
     case "state.unwatch": {
-      const params = command.params as OperationParamMap["state.watch"];
-      return params.key;
+      try {
+        const params = command.params as OperationParamMap["state.watch"];
+        return { success: true, value: params.key };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "api.call": {
-      const params = command.params as OperationParamMap["api.call"];
-      return params.idempotencyKey ?? command.id ?? createId("api");
+      try {
+        const params = command.params as OperationParamMap["api.call"];
+        return { success: true, value: params.idempotencyKey ?? command.id ?? createId("api") };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     case "txn.cancel": {
-      const params = command.params as OperationParamMap["txn.cancel"];
-      components.clear();
-      return params.id ?? "txn";
+      try {
+        const params = command.params as OperationParamMap["txn.cancel"];
+        components.clear();
+        return { success: true, value: params.id ?? "txn" };
+      } catch (error) {
+        return toFailure(error);
+      }
     }
     default:
-      throw new Error(`Unsupported op ${(command as Envelope).op}`);
+      return { success: false, error: `Unsupported op ${(command as Envelope).op}` };
   }
 };
 
@@ -318,13 +428,12 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
 
   for (const command of batch) {
     plannedJobs.push(() => {
-      try {
-        applyCommand(command);
+      const result = applyCommand(command);
+      if (result.success) {
         applied += 1;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${command.op}: ${message}`);
+        return;
       }
+      errors.push(`${command.op}: ${result.error}`);
     });
   }
 

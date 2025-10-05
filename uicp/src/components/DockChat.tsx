@@ -1,9 +1,10 @@
-﻿import type { FormEvent, KeyboardEvent } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
 import { useAppStore } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
+import { streamOllamaCompletion } from '../lib/llm/ollama';
 
 // DockChat is the single control surface for the agent. It handles proximity reveal, input, plan review, and actions.
 export const DockChat = () => {
@@ -29,6 +30,51 @@ export const DockChat = () => {
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages, pendingPlan]);
+
+  // DEV-only smoke test for Ollama streaming and tool-call parsing.
+  // Remove after verification.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const messages = [
+          { role: 'system', content: 'You are a function-calling assistant. Always use the provided function when applicable.' },
+          { role: 'user', content: 'Add 2 and 3 using the add function. Only call the tool.' },
+        ];
+        const tools = [
+          {
+            type: 'function',
+            function: {
+              name: 'add',
+              description: 'Add two numbers',
+              parameters: {
+                type: 'object',
+                properties: { a: { type: 'number' }, b: { type: 'number' } },
+                required: ['a', 'b'],
+              },
+            },
+          },
+        ];
+
+        for await (const ev of streamOllamaCompletion(messages, 'gpt-oss:120b-cloud', tools)) {
+          if (cancelled) break;
+          // eslint-disable-next-line no-console
+          console.log('[SMOKE]', ev);
+          if (ev.type === 'done') break;
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[SMOKE] stream error', err);
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();

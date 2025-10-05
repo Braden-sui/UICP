@@ -532,7 +532,7 @@ messages = [
 ]
 
 payload = {
-    "model": "kimi-k2:1t-cloud",
+    "model": "qwen3-coder:480b-cloud",
     "messages": messages
 }
 
@@ -541,7 +541,7 @@ response = requests.post(url, headers=headers, json=payload)
 print(response.json()["choices"][0]["message"]["content"])
 
 
-This example sends a system prompt and a user request to the kimi-k2:1t-cloud model. Because Kimi K2 does not use Harmony channels, the response is a single assistant message containing the answer and any reasoning. Always include the full conversation history when making follow‑up requests.
+This example sends a system prompt and a user request to the qwen3-coder:480b-cloud model. The response is a single assistant message containing the answer and any reasoning. Always include the full conversation history when making follow‑up requests.
 
 5. Comparison and best practices
 Model	Unique formatting requirements	Channels / modes	Notes

@@ -21,6 +21,8 @@ This package hosts the runtime schemas and adapter used by the desktop client to
 | `window.create`   | `{ id?, title, x?, y?, width?, height?, zIndex?, size? }` |
 | `window.update`   | `{ id, title?, x?, y?, width?, height?, zIndex? }` |
 | `window.close`    | `{ id }` |
+| `dom.set`         | `{ windowId, target, html, sanitize? }` |
+| `dom.set`         | `{ windowId, target, html, sanitize? }` (alias: replace content) |
 | `dom.replace`     | `{ windowId, target, html, sanitize? }` |
 | `dom.append`      | same as replace |
 | `component.render`| `{ id?, windowId, target, type, props? }` |
@@ -35,13 +37,17 @@ This package hosts the runtime schemas and adapter used by the desktop client to
 The adapter maintains per-window DOM islands under `#workspace-root`. Commands are applied in FIFO order per window, coalesced into a single animation frame.
 
 * `window.create` creates a draggable-ready shell with a header and content slot.
-* `dom.*` operations mutate the content slot. HTML is sanitised to strip scripts, inline event handlers, and `javascript:` URLs.
+* `dom.*` operations mutate the content slot. HTML is sanitised to remove `<script>`/`<style>` tags, neutralise inline `on*` handlers, and strip `javascript:` URLs.
+* `dom.set` is the preferred path for replacing the entire target subtree in one shot.
 * `component.*` calls are mapped onto lightweight mock components so MOCK mode can emulate planner output.
 * `state.*` stores values in memory to support planned future diffing. In MOCK mode watchers are inert.
 
 ## Error surface
 
-Validation failures raise `UICPValidationError` with:
+Validation
+
+* Planner plans are accepted in camelCase or snake_case and normalised.
+* Validation failures raise `UICPValidationError` with:
 
 ```ts
 {
@@ -51,4 +57,8 @@ Validation failures raise `UICPValidationError` with:
 }
 ```
 
-The chat pipeline turns these into system messages and toast notifications so that silently ignored commands never occur.
+* The chat pipeline turns these into system messages and toast notifications, including a friendly hint derived from the JSON pointer, so silently ignored commands never occur.
+
+## LLM Integration
+
+Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider.ts`) streams completions using the Tauri-backed Ollama bridge, and the orchestrator (`lib/llm/orchestrator.ts`) parses commentary-channel JSON into validated plans/batches.

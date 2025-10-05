@@ -6,10 +6,10 @@
   - SQLite persistence
   - Ollama Cloud API access
   - Tool/command queue
-  - HTML sanitisation (ammonia)
+  - Event streaming to the frontend (Tauri emit)
   - File operations (exports, .env management)
 - **Data Storage:** Local SQLite (`~/Documents/UICP/data.db`), `.env` for API key (MVP).
-- **Models:** Kimi K2 (`kimi-k2:1t-cloud`) primary; Qwen3-Coder (`qwen3-coder:480b`) fallback post-MVP.
+- **Models:** Qwen3-Coder (`qwen3-coder:480b-cloud`) primary; local fallback uses `qwen3-coder:480b` post-MVP.
 
 ## Data Flow
 1. **User Action:** prompts or clicks UI element.
@@ -17,9 +17,10 @@
 3. **Backend:**
    - Persists state to SQLite.
    - Dispatches tool commands.
-   - Calls Ollama Cloud via HTTPS (OpenAI-compatible `/v1/chat/completions`).
+  - Calls Ollama Cloud via HTTPS using `https://ollama.com` base without `/v1` (policy).
+  - Calls local daemon using `http://127.0.0.1:11434/v1` for OpenAI-compatible paths.
 4. **Backend ? Frontend:** emits events (`tauri::Window::emit`) streaming tool outputs, status updates, and save indicator states.
-5. **Frontend:** updates React state (windows, modals, indicators), renders sanitized HTML.
+5. **Frontend:** updates React state (windows, modals, indicators), renders sanitized HTML (client-side guardrails).
 
 ## Modules
 ### Rust (`uicp/src-tauri/src/main.rs`)
@@ -37,13 +38,15 @@
 - `global.css`: base styles, dark/light themes, modal layout, stream preview styling.
 - `vite.config.ts`: Vite dev server pinned to port 1420 for Tauri.
 - Event listeners (`listen`) keep React state in sync with backend events.
+- LLM provider/orchestrator stream commentary JSON and validate via Zod before enqueueing batches.
 
 ## Ollama Cloud Integration
-- Base URL: `https://ollama.com`
+- Base URL (cloud): `https://ollama.com` (no `/v1` by policy; runtime assertion enforces this)
+- Base URL (local): `http://127.0.0.1:11434/v1`
 - Authentication: `Authorization: <api-key>` (no `Bearer` prefix per https://docs.ollama.com/cloud#python-2)
 - Endpoints:
   - `GET /models`: validate key, list models.
-  - `POST /chat/completions`: stream completions for tool orchestration.
+- `POST /chat/completions`: stream completions for tool orchestration.
 - The HTTP client uses `reqwest` with Rustls TLS.
 
 ## Persistence
@@ -59,7 +62,8 @@
 ## Current Implementation Notes (2025-10-04)
 - react-rnd windows persisted to SQLite; default workspace seeded if empty.
 - API key stored in `~/Documents/UICP/.env` (Settings modal writes via Tauri command).
-- Streaming preview shows latest chunk from `chat_completion` for debugging.
+- Streaming iterator `streamOllamaCompletion(messages, model, tools)` forwards SSE lines; frontend aggregator parses commentary-channel JSON into batches.
+- Plan/Batch validation in frontend: `validatePlan`, `validateBatch` with pointer-based errors and HTML guardrails.
 
 ## Planned Extensions
 - Tool execution queue with persistence.

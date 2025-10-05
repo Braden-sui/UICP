@@ -78,7 +78,7 @@ On user filter click:
 - chart_render(target="#trend-chart", spec={/* filtered data */})
 
 ## Provider Settings (K2)
-- Model: `kimi-k2:1t-cloud`
+- Model: `qwen3-coder:480b-cloud`
 - Context: ~256K tokens
 - Temperature: 0.5–0.7
 - Streaming: OpenAI-compatible

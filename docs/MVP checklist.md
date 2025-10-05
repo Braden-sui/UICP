@@ -1,4 +1,4 @@
-﻿# UICP MVP - Local-First Desktop App
+# UICP MVP - Local-First Desktop App
 
 Update log — 2025-10-04
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
@@ -8,11 +8,13 @@ Update log — 2025-10-04
 - Hiding Connection Bar (WS URL, Connect/Disconnect, Dev Mode and Mock Mode toggles).
 - Windows bundle icon configured; `tauri.conf.json` points to `icons/dev_logo_icon_267632.ico`.
 - Rust backend updated for Tauri 2 Emitter API and safe JSON serialization; autosave indicator stabilized.
+- Ollama streaming wired: async iterator `streamOllamaCompletion(messages, model, tools)` added; Rust `chat_completion` forwards `tools`; parser unit test added.
 - Tooling: Tailwind, ESLint/Prettier, Vitest unit tests, Playwright e2e skeleton.
 - Event delegation at window root implemented (capture → `ui_event`) with full support for click, input, submit, change events.
 - .env.example created with USE_DIRECT_CLOUD toggle, model configuration, and Ollama endpoints.
 - Runtime assertion added to reject Cloud hosts containing `/v1`.
 - Rust backend updated to support USE_DIRECT_CLOUD toggle with automatic `-cloud` model suffix and host selection.
+- Plan/Batch Zod validation added with unsafe HTML guardrails; snake_case accepted and normalised; pointer-based error hints wired to system messages.
 
 ## Architecture Summary
 - Platform: Tauri desktop application (Windows MVP; Linux post-MVP)
@@ -71,7 +73,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - `USE_DIRECT_CLOUD=1`
   - `OLLAMA_API_KEY=` (required when `USE_DIRECT_CLOUD=1`)
   - `PLANNER_MODEL=deepseek-v3.1:671b`
-  - `ACTOR_MODEL=kimi-k2:1t`
+  - `ACTOR_MODEL=qwen3-coder:480b`
   - `UICP_WS_URL=ws://localhost:7700`
   - `OLLAMA_CLOUD_HOST=https://ollama.com`
   - `OLLAMA_LOCAL_BASE=http://127.0.0.1:11434/v1`
@@ -80,17 +82,18 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 ## 1) Transport & Streaming
 - [x] Tauri async commands & events (save indicator, API key status).
-- [ ] Async Rust backend handles native Ollama streaming (cloud).
-- [ ] Async backend handles local OpenAI-compatible streaming.
-- [ ] Frontend processes streamed tool commands via adapter.
-- [ ] Command queue with idempotency + txn cancel.
-- [ ] Robust error handling & retry for rate limits/timeouts.
-- [ ] Per-window FIFO; emit “Applied N commands in X ms” after success.
+- [x] Async Rust backend handles native Ollama streaming (cloud).
+- [x] Async backend handles local OpenAI-compatible streaming.
+- [x] Frontend processes streamed tool commands via adapter.
+- [x] Command queue with idempotency + txn cancel.
+- [x] Robust error handling & retry for rate limits/timeouts.
+- [x] Per-window FIFO; emit “Applied N commands in X ms” after success.
+- [x] Streaming iterator `streamOllamaCompletion(messages, model, tools)` added; Rust `chat_completion` forwards `tools`; parser unit test added.
 
 ## 2) Planner/Actor Orchestration
-- [ ] Provider shim (`getPlannerClient`, `getActorClient`) selects cloud vs local clients.
-- [ ] Host validation ensures `https://ollama.com` without `/v1` for cloud.
-- [ ] Orchestrator functions:
+- [x] Provider shim (`getPlannerClient`, `getActorClient`) selects clients and streams.
+- [x] Host validation ensures `https://ollama.com` without `/v1` for cloud (Rust backend assertion in `main.rs`).
+- [x] Orchestrator functions:
   - `planWithDeepSeek(intent)` — temp 0.2, 35s timeout, 1 retry (network only), strict JSON.
   - `actWithKimi(plan)` — temp 0.15, 35s timeout, 1 retry (network only), strict JSON.
   - `runIntent(text, applyNow)` — planning → acting → validation → preview/apply.
@@ -100,11 +103,11 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [ ] Stamp `trace_id`, `txn_id`, `idempotency_key` (actor stage ensures presence).
 
 ## 3) Prompts & Validation
-- [ ] `src/prompts/planner.txt` (DeepSeek) — rules: JSON only, UICP ops, create containers first, payload ≤12 KB, idempotency/txn optional.
-- [ ] `src/prompts/actor.txt` (Kimi) — JSON only, minimal DOM churn, ensure selectors exist, stamp ids, safe fallback on invalid plan.
-- [ ] `validatePlan` schema: `{ summary, risks?, batch[] }`, batch entries `{ type:"command", op, params, idempotency_key?, txn_id? }`.
-- [ ] `validateBatch` schema: `{ batch: [ { type:"command", op, params, idempotency_key, txn_id } ] }` with HTML sanitation.
-- [ ] Validation failures produce system messages with JSON pointer + hint.
+- [x] `src/prompts/planner.txt` (DeepSeek) — rules: JSON only, UICP ops, create containers first, payload ≤12 KB, idempotency/txn optional.
+- [x] `src/prompts/actor.txt` (Kimi) — JSON only, minimal DOM churn, ensure selectors exist, stamp ids, safe fallback on invalid plan.
+- [x] `validatePlan` schema: `{ summary, risks?, batch[] }`, batch entries `{ type:"command", op, params, idempotency_key?, txn_id? }` (snake_case accepted).
+- [x] `validateBatch` schema: accepts batch array with HTML sanitation and typed errors (idempotency/txn stamped later).
+- [x] Validation failures produce system messages with JSON pointer + hint.
 
 ## 4) Command/Tool Execution
 - [ ] Async commands bridging Rust ↔ frontend adapter for UICP ops (window.*, dom.*, component.*, state.*, api.call, txn.cancel).
@@ -131,10 +134,11 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 ## 8) Tests & CI
 - Unit (Vitest):
-  - [ ] Planner JSON parse/validate (valid vs malformed).
-  - [ ] Batch validation rejects missing txn/idempotency or unsafe HTML.
+  - [x] Planner JSON parse/validate (valid vs malformed).
+  - [x] Batch validation rejects unsafe HTML.
   - [ ] Orchestrator fallback (planner invalid twice ⇒ actor-only).
   - [ ] STOP cancels txn + locks auto-apply.
+  - [x] Streaming parser extracts content/tool_calls from SSE chunks.
 - E2E (Playwright):
   - [x] DockChat proximity reveal & collapse timing.
   - [x] “Make a notepad” in MOCK mode, Full Control ON ⇒ window within 500 ms.

@@ -19,7 +19,7 @@ describe('adapter.applyBatch', () => {
         params: { id: 'win-1', title: 'Test', x: 20, y: 30, width: 400, height: 320 },
       },
       {
-        op: 'dom.replace',
+        op: 'dom.set',
         params: { windowId: 'win-1', target: '#root', html: '<p data-testid="payload">Hello</p>' },
       },
     ]);

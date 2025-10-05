@@ -77,6 +77,7 @@ struct ChatCompletionRequest {
     model: Option<String>,
     messages: Vec<ChatMessageInput>,
     stream: Option<bool>,
+    tools: Option<serde_json::Value>,
 }
 
 #[tauri::command]
@@ -284,19 +285,21 @@ async fn chat_completion(
     state: State<'_, AppState>,
     request: ChatCompletionRequest,
 ) -> Result<(), String> {
-    let Some(api_key) = state.ollama_key.read().await.clone() else {
-        return Err("No API key configured".into());
-    };
-
     if request.messages.is_empty() {
         return Err("messages cannot be empty".into());
     }
 
     let use_cloud = *state.use_direct_cloud.read().await;
+    let api_key_opt = state.ollama_key.read().await.clone();
+    if use_cloud && api_key_opt.is_none() {
+        return Err("No API key configured".into());
+    }
+
     let model = request
         .model
         .unwrap_or_else(|| {
-            let base_model = std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "kimi-k2:1t".into());
+            // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
+            let base_model = std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into());
             if use_cloud && !base_model.ends_with("-cloud") {
                 format!("{}-cloud", base_model)
             } else {
@@ -307,42 +310,84 @@ async fn chat_completion(
     let body = serde_json::json!({
         "model": model,
         "messages": request.messages,
-        "stream": request.stream.unwrap_or(true)
+        "stream": request.stream.unwrap_or(true),
+        "tools": request.tools,
     });
 
     let base = get_ollama_base_url(&state).await?;
-    let response = state
-        .http
-        .post(format!("{}/chat/completions", base))
-        .header("Authorization", api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("HTTP error: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("HTTP status: {e}"))?;
 
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Stream error: {e}"))?;
-        let text = String::from_utf8_lossy(&chunk);
-        for line in text.split('\n') {
-            let line = line.trim();
-            if line.is_empty() || !line.starts_with("data:") {
-                continue;
+    // Simple retry/backoff policy for rate limits and transient network failures
+    let max_attempts = 3u8;
+    let mut attempt = 0u8;
+
+    loop {
+        attempt += 1;
+        let mut builder = state
+            .http
+            .post(format!("{}/chat/completions", base))
+            .json(&body);
+
+        if use_cloud {
+            if let Some(key) = &api_key_opt {
+                builder = builder.header("Authorization", key);
             }
-            let payload = line.trim_start_matches("data:").trim();
-            if payload == "[DONE]" {
-                window.emit("ollama-completion", serde_json::json!({ "done": true })).ok();
-                continue;
+        }
+
+        let resp_res = builder.send().await;
+
+        match resp_res {
+            Err(err) => {
+                let transient = err.is_timeout() || err.is_connect();
+                if transient && attempt < max_attempts {
+                    let backoff_ms = 200u64.saturating_mul(1u64 << (attempt as u32));
+                    tokio::time::sleep(Duration::from_millis(backoff_ms.min(3_000))).await;
+                    continue;
+                }
+                return Err(format!("HTTP error: {err}"));
             }
-            window
-                .emit("ollama-completion", serde_json::json!({ "done": false, "delta": payload }))
-                .ok();
+            Ok(resp) => {
+                let status = resp.status();
+                if !status.is_success() {
+                    // Respect Retry-After when available for 429/503
+                    if (status.as_u16() == 429 || status.as_u16() == 503) && attempt < max_attempts {
+                        let retry_after_ms = resp
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(|secs| secs.saturating_mul(1000))
+                            .unwrap_or_else(|| 200u64.saturating_mul(1u64 << (attempt as u32)));
+                        tokio::time::sleep(Duration::from_millis(retry_after_ms.min(5_000))).await;
+                        continue;
+                    }
+                    return Err(format!("HTTP status: {}", status));
+                }
+
+                // Stream Server-Sent Events style chunks (data: ...\n)
+                let mut stream = resp.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|e| format!("Stream error: {e}"))?;
+                    let text = String::from_utf8_lossy(&chunk);
+                    for line in text.split('\n') {
+                        let line = line.trim();
+                        if line.is_empty() || !line.starts_with("data:") {
+                            continue;
+                        }
+                        let payload = line.trim_start_matches("data:").trim();
+                        if payload == "[DONE]" {
+                            window.emit("ollama-completion", serde_json::json!({ "done": true })).ok();
+                            continue;
+                        }
+                        window
+                            .emit("ollama-completion", serde_json::json!({ "done": false, "delta": payload }))
+                            .ok();
+                    }
+                }
+
+                return Ok(());
+            }
         }
     }
-
-    Ok(())
 }
 
 fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {

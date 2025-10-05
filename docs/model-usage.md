@@ -9,8 +9,8 @@
 - Keys are user-provided and stored locally in `.env` (MVP).
 
 ## Default Models
-- Primary: `kimi-k2:1t-cloud`
-- Fallback (post-MVP): `qwen3-coder:480b-cloud`
+- Primary: `qwen3-coder:480b-cloud`
+- Fallback (post-MVP): `qwen3-coder:480b`
 
 ## Example Request (Python, from docs)
 ```python
@@ -19,7 +19,7 @@ headers = {
 }
 
 payload = {
-    "model": "kimi-k2:1t-cloud",
+    "model": "qwen3-coder:480b-cloud",
     "messages": [
         {"role": "system", "content": "You are Gui, an AI UI conductor."},
         {"role": "user", "content": "Create a dashboard"}

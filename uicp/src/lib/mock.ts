@@ -24,9 +24,9 @@ export const mockPlanner = (input: string): MockPlannerResult => {
   const text = input.trim().toLowerCase();
   if (text.includes('notepad')) {
     const windowEnvelope = buildWindowEnvelope('Notepad');
-    const replaceEnvelope: Envelope<'dom.replace'> = {
-      op: 'dom.replace',
-      idempotencyKey: createId('dom.replace'),
+    const replaceEnvelope: Envelope<'dom.set'> = {
+      op: 'dom.set',
+      idempotencyKey: createId('dom.set'),
       params: {
         windowId: windowEnvelope.params.id!,
         target: '#root',
@@ -41,9 +41,9 @@ export const mockPlanner = (input: string): MockPlannerResult => {
 
   if (text.includes('todo')) {
     const windowEnvelope = buildWindowEnvelope('Todo List');
-    const replaceEnvelope: Envelope<'dom.replace'> = {
-      op: 'dom.replace',
-      idempotencyKey: createId('dom.replace'),
+    const replaceEnvelope: Envelope<'dom.set'> = {
+      op: 'dom.set',
+      idempotencyKey: createId('dom.set'),
       params: {
         windowId: windowEnvelope.params.id!,
         target: '#root',
@@ -58,9 +58,9 @@ export const mockPlanner = (input: string): MockPlannerResult => {
 
   if (text.includes('dashboard')) {
     const windowEnvelope = buildWindowEnvelope('Dashboard');
-    const replaceEnvelope: Envelope<'dom.replace'> = {
-      op: 'dom.replace',
-      idempotencyKey: createId('dom.replace'),
+    const replaceEnvelope: Envelope<'dom.set'> = {
+      op: 'dom.set',
+      idempotencyKey: createId('dom.set'),
       params: {
         windowId: windowEnvelope.params.id!,
         target: '#root',
@@ -74,9 +74,9 @@ export const mockPlanner = (input: string): MockPlannerResult => {
   }
 
   const windowEnvelope = buildWindowEnvelope('Welcome Window');
-  const replaceEnvelope: Envelope<'dom.replace'> = {
-    op: 'dom.replace',
-    idempotencyKey: createId('dom.replace'),
+  const replaceEnvelope: Envelope<'dom.set'> = {
+    op: 'dom.set',
+    idempotencyKey: createId('dom.set'),
     params: {
       windowId: windowEnvelope.params.id!,
       target: '#root',

@@ -1,4 +1,4 @@
-﻿# UICP Desktop Setup (Windows MVP)
+# UICP Desktop Setup (Windows MVP)
 
 ## Prerequisites
 - **Rust**: Stable toolchain via `rustup` (https://rustup.rs/)
@@ -49,8 +49,8 @@ Artifacts land under `uicp/src-tauri/target/release/bundle/`.
 - Logs: `~/Documents/UICP/logs/` (planned)
 
 ## Models (default)
-- Primary: `kimi-k2:1t-cloud`
-- Fallback (post-MVP): `qwen3-coder:480b-cloud`
+- Primary: `qwen3-coder:480b-cloud`
+- Fallback (post-MVP): `qwen3-coder:480b`
 
 ## Authorization
 Requests to Ollama Cloud use:

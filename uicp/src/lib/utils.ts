@@ -39,8 +39,12 @@ export const createFrameCoalescer = () => {
 
 export const sanitizeHtml = (input: string) =>
   input
+    // Remove script/style tags entirely
     .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-    .replace(/on[a-z]+=/gi, 'data-attr=')
+    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '')
+    // Neutralise inline event handlers like onclick=, oninput=
+    .replace(/\son[a-z]+\s*=/gi, ' data-attr=')
+    // Disallow javascript: URLs
     .replace(/javascript:/gi, '');
 
 export const isTouchDevice = () =>
