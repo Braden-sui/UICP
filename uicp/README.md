@@ -34,7 +34,8 @@ The Vite dev server defaults to `http://localhost:5173`. Tauri uses the same bui
 ## Architecture Highlights
 
 - **DockChat**: Proximity-reveal chat dock with paperclip/send/stop controls, modal gating for full control, and live region system messages.
-- **State slices**: `useAppStore` and `useChatStore` persist chat-open/full-control flags and orchestrate planner → adapter flows.
+- **Desktop**: `Desktop.tsx` registers `#workspace-root`, renders the top menu bar, and mirrors workspace windows from adapter lifecycle events.
+- **State slices**: `useAppStore` and `useChatStore` persist chat-open/full-control flags, desktop shortcut positions, and orchestrate planner → adapter flows.
 - **UICP Core**: Zod-validated schemas, DOM adapter, per-window FIFO queue with idempotency and `txn.cancel`.
 - **Mock planner**: Deterministic batches for "notepad", "todo list", and "dashboard" prompts so MOCK mode works offline.
 - **Workspace DOM**: Sanitized HTML mutations under `#workspace-root`, mock component rendering, and memory stores for state APIs.

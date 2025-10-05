@@ -80,3 +80,8 @@ The Tauri bridge installs an aggregator with a gating callback that:
 
 - The chat layer's STOP enqueues `txn.cancel` through the queue (clears pending work) and locks Full Control.
 - The streaming transport supports best-effort cancellation: when the async iterator returned by `streamOllamaCompletion()` is closed, the frontend calls the Tauri command `cancel_chat(requestId)` to abort the backend HTTP request.
+
+## Window Lifecycle Helpers
+- `registerWindowLifecycle(listener)` subscribes to created/updated/destroyed events emitted by the adapter when windows change.
+- `listWorkspaceWindows()` returns the current window ids and titles for menu initialisation.
+- `closeWorkspaceWindow(id)` closes a workspace window and emits the matching lifecycle event.

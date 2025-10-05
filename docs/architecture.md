@@ -24,7 +24,7 @@
    - Suppress preview/apply when the orchestrator is running (prevents duplicate apply).
    - Auto-apply via the queue when Full Control is enabled.
    - Otherwise set a pending plan preview.
-5. **Frontend Rendering:** updates React state (windows, modals, indicators), renders sanitized HTML under `#workspace-root`, and exposes a Logs panel so users can review the conversation history (user / assistant / system messages with timestamps and error codes).
+5. **Frontend Rendering:** updates React state (windows, modals, indicators), renders sanitized HTML under `#workspace-root`, surfaces the desktop menu bar backed by workspace window metadata, and keeps a menu-controlled Logs panel so users can review the conversation history (user / assistant / system messages with timestamps and error codes).
 
 ## Modules
 ### Rust (`uicp/src-tauri/src/main.rs`)
@@ -38,7 +38,9 @@
 - `spawn_autosave`: emits save indicator when state changes.
 
 ### Frontend (`uicp/src`)
-- `App.tsx`: titlebar, save indicator, settings modal, theme toggle, window manager.
+- `App.tsx`: stitches the desktop canvas, DockChat, and modals; mounts toasts and global providers.
+- `components/Desktop.tsx`: registers `#workspace-root`, syncs workspace windows via lifecycle events, and renders the desktop menu bar.
+- `components/LogsPanel.tsx`: menu-controlled logs window reflecting chat/system history for auditing.
 - `global.css`: base styles, dark/light themes, modal layout, stream preview styling.
 - `vite.config.ts`: Vite dev server pinned to port 1420 for Tauri.
 - Event listeners (`listen`) keep React state in sync with backend events.
@@ -68,7 +70,8 @@
 - API key stored in `~/Documents/UICP/.env` (Settings modal writes via Tauri command).
 - Streaming iterator `streamOllamaCompletion(messages, model, tools, options?)` forwards SSE lines, stamps a requestId, and supports cancellation. The aggregator parses commentary-channel JSON into batches and the orchestrator stamps `traceId`, `txnId`, and `idempotencyKey` on each envelope.
 - Plan/Batch validation in frontend: `validatePlan`, `validateBatch` with pointer-based errors and HTML guardrails.
-- Logs panel on the desktop surfaces the conversation history (user / assistant / system messages) for quick auditing.
+- Logs panel is opened via the desktop menu and mirrors chat/system history for quick auditing.
+- Adapter emits window lifecycle events so the desktop menu stays in sync with planner-created windows.
 
 ## Planned Extensions
 - Tool execution queue with persistence.

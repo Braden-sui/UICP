@@ -5,6 +5,8 @@ Update log - 2025-10-05
 - Tauri event transport (Ollama SSE bridged via Tauri events) with optional Mock Mode and latency indicator.
 - Inspector panel (Timeline, State, Events, Network) and Command Builder shipped.
 - Desktop canvas with draggable/resizable windows and sanitized DOM roots.
+- Desktop menu bar surfaces agent-created windows; window chrome controls migrated to the menu.
+- Adapter now emits window lifecycle events consumed by the desktop store for menu sync.
 - Hiding Connection Bar (Dev Mode and Mock Mode toggles).
 - Windows bundle icon configured; `tauri.conf.json` points to `icons/dev_logo_icon_267632.ico`.
 - Rust backend updated for Tauri 2 Emitter API and safe JSON serialization; autosave indicator stabilized.
@@ -36,7 +38,8 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 2. Launch app, DockChat reveals on proximity or `/` hotkey.
 3. Planner (DeepSeek) produces plan, Actor (Kimi) translates to batches.
 4. Full Control OFF -> preview; ON -> auto-apply; STOP cancels txn.
-5. Workspace state persists in SQLite; reconnect recovers cleanly.
+5. Use the desktop menu to open/hide logs and manage active workspace windows.
+6. Workspace state persists in SQLite; reconnect recovers cleanly.
 
 ## Technical Priorities
 1. Async orchestration: planner -> actor -> validator -> adapter.
