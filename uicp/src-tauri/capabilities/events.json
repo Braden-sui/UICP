@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities.schema.json",
+  "identifier": "events",
+  "description": "Allow the main window to listen to Tauri core events (frontend subscribe).",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "core:event:default",
+    "core:webview:allow-internal-toggle-devtools"
+  ]
+}

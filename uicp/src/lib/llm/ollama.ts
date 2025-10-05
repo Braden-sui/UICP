@@ -68,7 +68,6 @@ class AsyncQueue<T> implements AsyncIterable<T> {
     if (this.resolvers.length) {
       const res = this.resolvers.shift()!;
       // surface the error to the consumer on next()
-      // eslint-disable-next-line @typescript-eslint/no-throw-literal
       res(Promise.reject(err) as unknown as IteratorResult<T>);
     } else {
       this.buffer.push(err);
@@ -121,7 +120,10 @@ export function streamOllamaCompletion(
       if (unlisten) {
         try {
           unlisten();
-        } catch {}
+        } catch (err) {
+          // ignore teardown errors
+          void err;
+        }
         unlisten = null;
       }
       queue.end();
@@ -163,7 +165,10 @@ export function streamOllamaCompletion(
           if (unlisten) {
             try {
               unlisten();
-            } catch {}
+            } catch (err) {
+              // ignore teardown errors
+              void err;
+            }
             unlisten = null;
           }
           queue.end();

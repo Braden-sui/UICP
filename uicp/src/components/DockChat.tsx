@@ -35,6 +35,10 @@ export const DockChat = () => {
   // Remove after verification.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
+    // Only run inside the Tauri WebView (not in a plain browser tab)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasTauri = typeof (window as any).__TAURI__ !== 'undefined';
+    if (!hasTauri) return;
     let cancelled = false;
 
     const run = async () => {
@@ -60,12 +64,10 @@ export const DockChat = () => {
 
         for await (const ev of streamOllamaCompletion(messages, 'gpt-oss:120b-cloud', tools)) {
           if (cancelled) break;
-          // eslint-disable-next-line no-console
           console.log('[SMOKE]', ev);
           if (ev.type === 'done') break;
         }
       } catch (err) {
-        // eslint-disable-next-line no-console
         console.error('[SMOKE] stream error', err);
       }
     };
