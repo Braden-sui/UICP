@@ -13,7 +13,7 @@ export type NotepadState = {
   reset: () => void;
 };
 
-const DEFAULT_TITLE = 'Untitled note';
+export const DEFAULT_TITLE = 'Untitled note';
 
 export const useNotepadStore = create<NotepadState>()(
   persist(

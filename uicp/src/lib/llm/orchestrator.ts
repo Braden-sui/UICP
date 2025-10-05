@@ -5,50 +5,85 @@ import { createId } from '../utils';
 
 const toJsonSafe = (s: string) => s.replace(/```(json)?/gi, '').trim();
 
-async function collectCommentaryJson<T = unknown>(stream: AsyncIterable<StreamEvent>, timeoutMs = 35_000): Promise<T> {
+async function collectCommentaryJson<T = unknown>(
+  stream: AsyncIterable<StreamEvent>,
+  timeoutMs = 35_000,
+): Promise<T> {
+  const iterator = stream[Symbol.asyncIterator]();
   let buf = '';
-  const timer = setTimeout(() => {
-    // The iterator consumer will see an abort when they next await
-    throw new Error('LLM timeout after 35s');
-  }, timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
 
-  try {
-    for await (const ev of stream) {
-      if (ev.type === 'content' && (!ev.channel || ev.channel === 'commentary')) {
-        buf += ev.text;
+  const parseBuffer = () => {
+    const raw = toJsonSafe(buf);
+    try {
+      return JSON.parse(raw) as T;
+    } catch (e) {
+      const firstBrace = raw.indexOf('{');
+      const firstBracket = raw.indexOf('[');
+      const startIndex = [firstBrace, firstBracket].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? -1;
+      const lastBrace = raw.lastIndexOf('}');
+      const lastBracket = raw.lastIndexOf(']');
+      const endIndex = Math.max(lastBrace, lastBracket);
+      if (startIndex >= 0 && endIndex > startIndex) {
+        const slice = raw.slice(startIndex, endIndex + 1);
+        return JSON.parse(slice) as T;
       }
-      if (ev.type === 'done') break;
+      throw e;
     }
-  } finally {
-    clearTimeout(timer);
-  }
+  };
 
-  const raw = toJsonSafe(buf);
-  try {
-    return JSON.parse(raw) as T;
-  } catch (e) {
-    // Try extracting the first JSON object/array if model leaked extra commentary
-    const firstBrace = raw.indexOf('{');
-    const firstBracket = raw.indexOf('[');
-    const start = [firstBrace, firstBracket].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? -1;
-    const lastBrace = raw.lastIndexOf('}');
-    const lastBracket = raw.lastIndexOf(']');
-    const end = Math.max(lastBrace, lastBracket);
-    if (start >= 0 && end > start) {
-      const slice = raw.slice(start, end + 1);
-      return JSON.parse(slice) as T;
+  const consume = (async () => {
+    try {
+      while (true) {
+        const { value, done } = await iterator.next();
+        if (done) break;
+        const event = value as StreamEvent;
+        if (event.type === 'done') break;
+        if (event.type === 'content' && (!event.channel || event.channel === 'commentary')) {
+          buf += event.text;
+        }
+      }
+      return parseBuffer();
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
     }
-    throw e;
+  })();
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([consume, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (timedOut && typeof iterator.return === 'function') {
+      try {
+        await iterator.return();
+      } catch {
+        // ignore iterator return errors
+      }
+    }
   }
 }
 
-export async function planWithDeepSeek(intent: string): Promise<Plan> {
+export async function planWithDeepSeek(intent: string, options?: { timeoutMs?: number }): Promise<Plan> {
   const client = getPlannerClient();
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamIntent(intent);
-      const payload = await collectCommentaryJson(stream);
+      const payload = await collectCommentaryJson(stream, options?.timeoutMs);
       return validatePlan(payload);
     } catch (err) {
       lastErr = err;
@@ -57,14 +92,14 @@ export async function planWithDeepSeek(intent: string): Promise<Plan> {
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-export async function actWithKimi(plan: Plan): Promise<Batch> {
+export async function actWithKimi(plan: Plan, options?: { timeoutMs?: number }): Promise<Batch> {
   const client = getActorClient();
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamPlan(planJson);
-      const payload = await collectCommentaryJson<{ batch?: unknown }>(stream);
+      const payload = await collectCommentaryJson<{ batch?: unknown }>(stream, options?.timeoutMs);
       return validateBatch(payload?.batch as unknown);
     } catch (err) {
       lastErr = err;

@@ -1,4 +1,4 @@
-import { ChangeEvent, useCallback, useMemo } from 'react';
+import { type ChangeEvent, useCallback, useMemo } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useNotepadStore } from '../state/notepad';
 import { useAppStore } from '../state/app';
@@ -16,6 +16,8 @@ const toSafeFilename = (raw: string) => {
   const base = raw.trim() || 'note';
   return `${base.replace(/[^a-z0-9\-_. ]/gi, '_')}.txt`;
 };
+
+const TITLE_INPUT_ID = 'notepad-title-input';
 
 // NotepadWindow gives users a manual scratchpad so they can capture ideas without waiting on the agent.
 const NotepadWindow = () => {
@@ -88,10 +90,10 @@ const NotepadWindow = () => {
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <label className="flex flex-1 min-w-[220px] flex-col gap-2" htmlFor="notepad-title">
+          <label className="flex flex-1 min-w-[220px] flex-col gap-2" htmlFor={TITLE_INPUT_ID}>
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Title</span>
             <input
-              id="notepad-title"
+              id={TITLE_INPUT_ID}
               value={title}
               onChange={handleTitleChange}
               className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"

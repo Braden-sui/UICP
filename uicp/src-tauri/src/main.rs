@@ -118,9 +118,19 @@ async fn test_api_key(state: State<'_, AppState>, window: tauri::Window) -> Resu
     };
     let client = state.http.clone();
     let base = get_ollama_base_url(&state).await?;
-    let result = client
-        .get(format!("{}/models", base))
-        .header("Authorization", key)
+    let use_cloud = *state.use_direct_cloud.read().await;
+    let url = if use_cloud {
+        format!("{}/api/tags", base)
+    } else {
+        // Local OpenAI-compatible server exposes /v1/models; base already includes /v1
+        format!("{}/models", base)
+    };
+
+    let mut req = client.get(url);
+    if use_cloud {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+    let result = req
         .send()
         .await
         .map_err(|e| format!("HTTP error: {e}"))?;
@@ -340,13 +350,18 @@ async fn chat_completion(
         let mut attempt_local: u8 = 0;
         'outer: loop {
             attempt_local += 1;
-            let mut builder = client
-                .post(format!("{}/chat/completions", base_url))
-                .json(&body_payload);
+            // Endpoint differs between Cloud and Local
+            let url = if use_cloud {
+                format!("{}/api/chat", base_url)
+            } else {
+                format!("{}/chat/completions", base_url)
+            };
+
+            let mut builder = client.post(url).json(&body_payload);
 
             if use_cloud {
                 if let Some(key) = &api_key_for_task {
-                    builder = builder.header("Authorization", key);
+                    builder = builder.header("Authorization", format!("Bearer {}", key));
                 }
             }
 
@@ -389,20 +404,59 @@ async fn chat_completion(
                             }
                             Ok(bytes) => {
                                 let text = String::from_utf8_lossy(&bytes);
-                                for line in text.split('\n') {
-                                    let line = line.trim();
-                                    if line.is_empty() || !line.starts_with("data:") {
-                                        continue;
-                                    }
-                                    let payload = line.trim_start_matches("data:").trim();
-                                    if payload == "[DONE]" {
+                                for raw_line in text.split('\n') {
+                                    let trimmed = raw_line.trim();
+                                    if trimmed.is_empty() { continue; }
+
+                                    // Support SSE (data: ...) and JSON Lines
+                                    let payload_str = if trimmed.starts_with("data:") {
+                                        trimmed.trim_start_matches("data:").trim().to_string()
+                                    } else {
+                                        trimmed.to_string()
+                                    };
+
+                                    if payload_str == "[DONE]" {
                                         let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
                                         continue;
                                     }
-                                    let _ = app_handle.emit(
-                                        "ollama-completion",
-                                        serde_json::json!({ "done": false, "delta": payload }),
-                                    );
+
+                                    // Try parsing JSON to normalize Cloud-native shape
+                                    match serde_json::from_str::<serde_json::Value>(&payload_str) {
+                                        Ok(val) => {
+                                            // { done: true }
+                                            if val.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                                let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                                                continue;
+                                            }
+                                            // Cloud native: { message: { content, channel? } }
+                                            if let Some(msg) = val.get("message").and_then(|m| m.as_object()) {
+                                                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                                                    let channel = msg.get("channel").and_then(|c| c.as_str()).unwrap_or("commentary");
+                                                    let wrapped = serde_json::json!({
+                                                        "choices": [{ "delta": { "channel": channel, "content": content } }]
+                                                    });
+                                                    let wrapped_str = wrapped.to_string();
+                                                    let _ = app_handle.emit(
+                                                        "ollama-completion",
+                                                        serde_json::json!({ "done": false, "delta": wrapped_str }),
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                            // Pass through original JSON string
+                                            let _ = app_handle.emit(
+                                                "ollama-completion",
+                                                serde_json::json!({ "done": false, "delta": payload_str }),
+                                            );
+                                        }
+                                        Err(_) => {
+                                            // Pass through plain text
+                                            let _ = app_handle.emit(
+                                                "ollama-completion",
+                                                serde_json::json!({ "done": false, "delta": payload_str }),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -3,11 +3,14 @@ import { registerWorkspaceRoot, registerWindowLifecycle, listWorkspaceWindows, c
 import LogsPanel from './LogsPanel';
 import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
-import { LogsIcon } from '../icons';
+import NotepadWindow from './NotepadWindow';
+import { LogsIcon, NotepadIcon } from '../icons';
 import { useAppStore, type DesktopShortcutPosition } from '../state/app';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
+const NOTEPAD_SHORTCUT_ID = 'notepad';
+const NOTEPAD_SHORTCUT_DEFAULT = { x: 32, y: 128 } as const;
 
 // Desktop hosts the empty canvas the agent mutates via the adapter and surfaces shortcuts for manual control.
 export const Desktop = () => {
@@ -16,8 +19,12 @@ export const Desktop = () => {
   const [showImg, setShowImg] = useState(true);
   const logsOpen = useAppStore((s) => s.logsOpen);
   const setLogsOpen = useAppStore((s) => s.setLogsOpen);
+  const notepadOpen = useAppStore((s) => s.notepadOpen);
+  const setNotepadOpen = useAppStore((s) => s.setNotepadOpen);
   const openLogs = useCallback(() => setLogsOpen(true), [setLogsOpen]);
   const hideLogs = useCallback(() => setLogsOpen(false), [setLogsOpen]);
+  const openNotepad = useCallback(() => setNotepadOpen(true), [setNotepadOpen]);
+  const hideNotepad = useCallback(() => setNotepadOpen(false), [setNotepadOpen]);
   const ensureShortcut = useAppStore((s) => s.ensureDesktopShortcut);
   const setShortcutPosition = useAppStore((s) => s.setDesktopShortcutPosition);
   const shortcutPositions = useAppStore((s) => s.desktopShortcuts);
@@ -30,12 +37,15 @@ export const Desktop = () => {
     registerWorkspaceRoot(rootRef.current);
   }, []);
 
-  // Register a default so the logs shortcut renders even on first run.
+  // Register defaults so the built-in shortcuts render even on first run.
   useEffect(() => {
     ensureShortcut(LOGS_SHORTCUT_ID, { ...LOGS_SHORTCUT_DEFAULT });
+    ensureShortcut(NOTEPAD_SHORTCUT_ID, { ...NOTEPAD_SHORTCUT_DEFAULT });
     upsertWorkspaceWindow({ id: 'logs', title: 'Logs', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'notepad', title: 'Notepad', kind: 'local' });
     return () => {
       removeWorkspaceWindow('logs');
+      removeWorkspaceWindow('notepad');
     };
   }, [ensureShortcut, removeWorkspaceWindow, upsertWorkspaceWindow]);
 
@@ -61,16 +71,26 @@ export const Desktop = () => {
   }, [removeWorkspaceWindow, upsertWorkspaceWindow]);
 
   const logsPosition = shortcutPositions[LOGS_SHORTCUT_ID] ?? LOGS_SHORTCUT_DEFAULT;
-
   const notepadPosition = shortcutPositions[NOTEPAD_SHORTCUT_ID] ?? NOTEPAD_SHORTCUT_DEFAULT;
 
   const handleOpenLogs = useCallback(() => {
     openLogs();
   }, [openLogs]);
 
+  const handleOpenNotepad = useCallback(() => {
+    openNotepad();
+  }, [openNotepad]);
+
   const handleLogsPosition = useCallback(
     (position: DesktopShortcutPosition) => {
       setShortcutPosition(LOGS_SHORTCUT_ID, position);
+    },
+    [setShortcutPosition],
+  );
+
+  const handleNotepadPosition = useCallback(
+    (position: DesktopShortcutPosition) => {
+      setShortcutPosition(NOTEPAD_SHORTCUT_ID, position);
     },
     [setShortcutPosition],
   );
@@ -82,6 +102,8 @@ export const Desktop = () => {
       <LogsIcon className="h-8 w-8" />
     )
   ), [showImg]);
+
+  const notepadIconVisual = useMemo(() => <NotepadIcon className="h-8 w-8" />, []);
 
   const closeWindow = useCallback((id: string) => {
     closeWorkspaceWindow(id);
@@ -100,6 +122,16 @@ export const Desktop = () => {
             actions: [
               { id: 'open', label: 'Open Logs', onSelect: openLogs, disabled: logsOpen },
               { id: 'hide', label: 'Hide Logs', onSelect: hideLogs, disabled: !logsOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
+        if (meta.id === NOTEPAD_SHORTCUT_ID) {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Notepad', onSelect: openNotepad, disabled: notepadOpen },
+              { id: 'hide', label: 'Hide Notepad', onSelect: hideNotepad, disabled: !notepadOpen },
             ],
           } satisfies DesktopMenu;
         }
@@ -133,7 +165,19 @@ export const Desktop = () => {
           icon={iconVisual}
           active={logsOpen}
         />
+        {/* Notepad shortcut surfaces the manual scratchpad utility. */}
+        <DesktopIcon
+          id="notepad-shortcut"
+          label="Notepad"
+          position={notepadPosition}
+          containerRef={overlayRef}
+          onOpen={handleOpenNotepad}
+          onPositionChange={handleNotepadPosition}
+          icon={notepadIconVisual}
+          active={notepadOpen}
+        />
       </div>
+      <NotepadWindow />
       <LogsPanel />
     </div>
   );
