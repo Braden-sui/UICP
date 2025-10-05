@@ -18,6 +18,9 @@ export type AppState = {
   fullControlLocked: boolean;
   chatOpen: boolean;
   streaming: boolean;
+  // When true, aggregator will not auto-apply or preview parsed batches.
+  // Used to prevent duplicate application while orchestrator-driven flows run.
+  suppressAutoApply: boolean;
   grantModalOpen: boolean;
   toasts: Toast[];
   setConnectionStatus: (status: ConnectionStatus) => void;
@@ -27,6 +30,7 @@ export type AppState = {
   unlockFullControl: () => void;
   setChatOpen: (value: boolean) => void;
   setStreaming: (value: boolean) => void;
+  setSuppressAutoApply: (value: boolean) => void;
   openGrantModal: () => void;
   closeGrantModal: () => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
@@ -48,6 +52,7 @@ export const useAppStore = create<AppState>()(
       fullControlLocked: false,
       chatOpen: false,
       streaming: false,
+      suppressAutoApply: false,
       grantModalOpen: false,
       toasts: [],
       setConnectionStatus: (status) => set({ connectionStatus: status }),
@@ -57,6 +62,7 @@ export const useAppStore = create<AppState>()(
       unlockFullControl: () => set({ fullControlLocked: false }),
       setChatOpen: (value) => set({ chatOpen: value }),
       setStreaming: (value) => set({ streaming: value }),
+      setSuppressAutoApply: (value) => set({ suppressAutoApply: value }),
       openGrantModal: () => set({ grantModalOpen: true }),
       closeGrantModal: () => set({ grantModalOpen: false }),
       pushToast: (toast) =>

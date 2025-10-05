@@ -5,6 +5,7 @@ import type { Batch } from "../lib/uicp/schemas";
 import { UICPValidationError, validateBatch, validatePlan } from "../lib/uicp/schemas";
 import { createId } from "../lib/utils";
 import { useAppStore } from "./app";
+import { runIntent } from "../lib/llm/orchestrator";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -90,24 +91,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         summary = plan.summary;
         batch = plan.batch;
       } else {
-        const plannerUrl = import.meta.env.VITE_PLANNER_URL as string | undefined;
-        if (!plannerUrl) {
-          throw new Error("Planner URL missing.");
+        // Orchestrator path: DeepSeek (planner) → Kimi (actor) via streaming transport.
+        // Suppress aggregator auto-apply/preview while we orchestrate to avoid duplicates.
+        useAppStore.getState().setSuppressAutoApply(true);
+        try {
+          const { plan, batch: acted } = await runIntent(prompt, /* applyNow */ false);
+          // Validate defensively before surfacing to UI
+          const safePlan = validatePlan({ summary: plan.summary, batch: plan.batch });
+          const safeBatch = validateBatch(acted);
+          summary = safePlan.summary;
+          batch = safeBatch;
+        } finally {
+          useAppStore.getState().setSuppressAutoApply(false);
         }
-        const response = await fetch(plannerUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ prompt }),
-        });
-        if (!response.ok) {
-          throw new Error(`Planner responded ${response.status}`);
-        }
-        const payload = await response.json();
-        const plan = validatePlan(payload);
-        summary = plan.summary;
-        batch = plan.batch;
       }
 
       const plan: PlanPreview = {

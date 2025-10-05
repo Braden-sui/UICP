@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use anyhow::Context;
 use chrono::Utc;
@@ -11,6 +11,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection};
 use tauri::{async_runtime::spawn, Emitter, Manager, State};
+use tokio::task::JoinHandle;
 use tokio::{fs, sync::RwLock, time::interval};
 use tokio_stream::StreamExt;
 
@@ -30,6 +31,7 @@ struct AppState {
     ollama_key: RwLock<Option<String>>,
     use_direct_cloud: RwLock<bool>,
     http: Client,
+    ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -280,9 +282,19 @@ async fn save_workspace(
 }
 
 #[tauri::command]
+#[tauri::command]
+async fn cancel_chat(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
+    if let Some(handle) = state.ongoing.write().await.remove(&request_id) {
+        handle.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn chat_completion(
     window: tauri::Window,
     state: State<'_, AppState>,
+    request_id: Option<String>,
     request: ChatCompletionRequest,
 ) -> Result<(), String> {
     if request.messages.is_empty() {
@@ -320,74 +332,91 @@ async fn chat_completion(
     let max_attempts = 3u8;
     let mut attempt = 0u8;
 
-    loop {
-        attempt += 1;
-        let mut builder = state
-            .http
-            .post(format!("{}/chat/completions", base))
-            .json(&body);
+    let rid = request_id.unwrap_or_else(|| format!("req-{}", Utc::now().timestamp_millis())) ;
+    let app_handle = window.app_handle();
+    let state_clone = state.inner().clone();
+    let join: JoinHandle<()> = spawn(async move {
+        let mut attempt_local = attempt;
+        'outer: loop {
+            attempt_local += 1;
+            let mut builder = state_clone
+                .http
+                .post(format!("{}/chat/completions", base))
+                .json(&body);
 
-        if use_cloud {
-            if let Some(key) = &api_key_opt {
-                builder = builder.header("Authorization", key);
+            if use_cloud {
+                if let Some(key) = &api_key_opt {
+                    builder = builder.header("Authorization", key);
+                }
+            }
+
+            let resp_res = builder.send().await;
+
+            match resp_res {
+                Err(err) => {
+                    let transient = err.is_timeout() || err.is_connect();
+                    if transient && attempt_local < max_attempts {
+                        let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
+                        tokio::time::sleep(Duration::from_millis(backoff_ms.min(3_000))).await;
+                        continue 'outer;
+                    }
+                    let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                    break;
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        if (status.as_u16() == 429 || status.as_u16() == 503) && attempt_local < max_attempts {
+                            let retry_after_ms = resp
+                                .headers()
+                                .get("retry-after")
+                                .and_then(|h| h.to_str().ok())
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .map(|secs| secs.saturating_mul(1000))
+                                .unwrap_or_else(|| 200u64.saturating_mul(1u64 << (attempt_local as u32)));
+                            tokio::time::sleep(Duration::from_millis(retry_after_ms.min(5_000))).await;
+                            continue 'outer;
+                        }
+                        let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                        break;
+                    }
+
+                    let mut stream = resp.bytes_stream();
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Err(_) => {
+                                break 'outer;
+                            }
+                            Ok(bytes) => {
+                                let text = String::from_utf8_lossy(&bytes);
+                                for line in text.split('\n') {
+                                    let line = line.trim();
+                                    if line.is_empty() || !line.starts_with("data:") {
+                                        continue;
+                                    }
+                                    let payload = line.trim_start_matches("data:").trim();
+                                    if payload == "[DONE]" {
+                                        let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                                        continue;
+                                    }
+                                    let _ = app_handle.emit(
+                                        "ollama-completion",
+                                        serde_json::json!({ "done": false, "delta": payload }),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                    break;
+                }
             }
         }
+    });
 
-        let resp_res = builder.send().await;
-
-        match resp_res {
-            Err(err) => {
-                let transient = err.is_timeout() || err.is_connect();
-                if transient && attempt < max_attempts {
-                    let backoff_ms = 200u64.saturating_mul(1u64 << (attempt as u32));
-                    tokio::time::sleep(Duration::from_millis(backoff_ms.min(3_000))).await;
-                    continue;
-                }
-                return Err(format!("HTTP error: {err}"));
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                if !status.is_success() {
-                    // Respect Retry-After when available for 429/503
-                    if (status.as_u16() == 429 || status.as_u16() == 503) && attempt < max_attempts {
-                        let retry_after_ms = resp
-                            .headers()
-                            .get("retry-after")
-                            .and_then(|h| h.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .map(|secs| secs.saturating_mul(1000))
-                            .unwrap_or_else(|| 200u64.saturating_mul(1u64 << (attempt as u32)));
-                        tokio::time::sleep(Duration::from_millis(retry_after_ms.min(5_000))).await;
-                        continue;
-                    }
-                    return Err(format!("HTTP status: {}", status));
-                }
-
-                // Stream Server-Sent Events style chunks (data: ...\n)
-                let mut stream = resp.bytes_stream();
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.map_err(|e| format!("Stream error: {e}"))?;
-                    let text = String::from_utf8_lossy(&chunk);
-                    for line in text.split('\n') {
-                        let line = line.trim();
-                        if line.is_empty() || !line.starts_with("data:") {
-                            continue;
-                        }
-                        let payload = line.trim_start_matches("data:").trim();
-                        if payload == "[DONE]" {
-                            window.emit("ollama-completion", serde_json::json!({ "done": true })).ok();
-                            continue;
-                        }
-                        window
-                            .emit("ollama-completion", serde_json::json!({ "done": false, "delta": payload }))
-                            .ok();
-                    }
-                }
-
-                return Ok(());
-            }
-        }
-    }
+    state.ongoing.write().await.insert(rid.clone(), join);
+    Ok(())
 }
 
 fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
@@ -570,6 +599,7 @@ fn main() {
             .timeout(Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client"),
+        ongoing: RwLock::new(HashMap::new()),
     };
 
     let _ = init_database(&db_path);
@@ -590,7 +620,8 @@ fn main() {
             enqueue_command,
             load_workspace,
             save_workspace,
-            chat_completion
+            chat_completion,
+            cancel_chat
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

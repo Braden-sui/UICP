@@ -1,4 +1,4 @@
-﻿# CI workflow enforces lint, tests, e2e, and build gates.
+# CI workflow enforces lint, tests, e2e, and build gates.
 name: CI
 
 on:
@@ -28,10 +28,12 @@ jobs:
       - name: Unit tests
         working-directory: uicp
         run: npm run test
-      - name: E2E tests
-        working-directory: uicp
-        run: npm run test:e2e
       - name: Build
         working-directory: uicp
         run: npm run build
-
+      - name: Install Playwright Browsers
+        working-directory: uicp
+        run: npx playwright install --with-deps
+      - name: E2E tests
+        working-directory: uicp
+        run: npm run test:e2e

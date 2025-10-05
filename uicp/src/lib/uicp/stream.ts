@@ -50,7 +50,8 @@ const extractChannelContent = (payload: OllamaChunk): { channel?: string; conten
   return { channel, content };
 };
 
-export const createOllamaAggregator = () => {
+// Optional onBatch allows the caller to gate application (e.g., Full Control)
+export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<void> | void) => {
   let commentaryBuffer = '';
 
   const processDelta = async (raw: string) => {
@@ -90,7 +91,11 @@ export const createOllamaAggregator = () => {
     const batch = tryExtractBatch(candidate as unknown);
     if (batch && Array.isArray(batch) && batch.length > 0) {
       try {
-        await enqueueBatch(batch);
+        if (onBatch) {
+          await onBatch(batch);
+        } else {
+          await enqueueBatch(batch);
+        }
       } catch (err) {
         console.error('enqueueBatch failed', err);
       }

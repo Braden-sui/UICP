@@ -105,11 +105,13 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 export function streamOllamaCompletion(
   messages: ChatMessage[],
   model?: string,
-  tools?: ToolSpec[]
+  tools?: ToolSpec[],
+  options?: { requestId?: string; signal?: AbortSignal }
 ): AsyncIterable<StreamEvent> {
   const queue = new AsyncQueue<StreamEvent>();
   let unlisten: UnlistenFn | null = null;
   let started = false;
+  const requestId = options?.requestId ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
 
   // Attach the event listener first to avoid missing early chunks
   void listen('ollama-completion', (event) => {
@@ -145,6 +147,7 @@ export function streamOllamaCompletion(
       started = true;
       // Do not await: the command resolves after the stream finishes
       void invoke('chat_completion', {
+        requestId,
         request: { model, messages, stream: true, tools },
       }).catch((err) => {
         queue.fail(err instanceof Error ? err : new Error(String(err)));
@@ -170,6 +173,12 @@ export function streamOllamaCompletion(
               void err;
             }
             unlisten = null;
+          }
+          try {
+            // Best-effort backend cancel to stop network usage
+            await invoke('cancel_chat', { requestId });
+          } catch {
+            // ignore
           }
           queue.end();
           return { value: undefined as unknown as StreamEvent, done: true };

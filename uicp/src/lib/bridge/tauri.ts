@@ -1,8 +1,10 @@
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { createOllamaAggregator } from '../uicp/stream';
-import { setQueueAppliedListener } from '../uicp/queue';
+import { enqueueBatch, setQueueAppliedListener } from '../uicp/queue';
 import { useAppStore } from '../../state/app';
+import { useChatStore } from '../../state/chat';
+import { createId } from '../../lib/utils';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -16,7 +18,30 @@ export async function initializeTauriBridge() {
   const hasTauri = typeof (window as any).__TAURI__ !== 'undefined';
   if (!hasTauri) return;
 
-  const aggregator = createOllamaAggregator();
+  const aggregator = createOllamaAggregator(async (batch) => {
+    const app = useAppStore.getState();
+    // If an orchestrator-managed run is in flight, avoid duplicate apply/preview.
+    // Orchestrator code will surface plan/act results into chat state and apply as needed.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const suppress = (app as any).suppressAutoApply as boolean | undefined;
+    if (suppress) return;
+
+    const canAutoApply = app.fullControl && !app.fullControlLocked;
+    if (canAutoApply) {
+      await enqueueBatch(batch);
+      return;
+    }
+    const chat = useChatStore.getState();
+    if (!chat.pendingPlan) {
+      useChatStore.setState({
+        pendingPlan: {
+          id: createId('plan'),
+          summary: 'Generated plan',
+          batch,
+        },
+      });
+    }
+  });
 
   setQueueAppliedListener(({ windowId, applied, ms }) => {
     const tag = windowId && windowId !== '__global__' ? ` • ${windowId}` : '';
