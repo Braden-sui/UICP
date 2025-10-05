@@ -1,12 +1,10 @@
-# UICP MVP - Local-First Desktop App
+﻿# UICP MVP - Local-First Desktop App
 
 Update log - 2025-10-05
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
 - Tauri event transport (Ollama SSE bridged via Tauri events) with optional Mock Mode and latency indicator.
 - Inspector panel (Timeline, State, Events, Network) and Command Builder shipped.
 - Desktop canvas with draggable/resizable windows and sanitized DOM roots.
-- Desktop menu bar surfaces agent-created windows; window chrome controls migrated to the menu.
-- Adapter now emits window lifecycle events consumed by the desktop store for menu sync.
 - Hiding Connection Bar (Dev Mode and Mock Mode toggles).
 - Windows bundle icon configured; `tauri.conf.json` points to `icons/dev_logo_icon_267632.ico`.
 - Rust backend updated for Tauri 2 Emitter API and safe JSON serialization; autosave indicator stabilized.
@@ -24,7 +22,7 @@ Update log - 2025-10-05
 - Backend: Async Rust (Tokio) for filesystem, SQLite, Tauri event transport, and STOP/cancel support
 - Database: SQLite (local, in ~/Documents/UICP/) with async operations
 - Planner LLM: DeepSeek v3.1 (cloud native or local offload)
-- Actor LLM: Kimi K2 (cloud native or local offload)
+- Actor LLM: Qwen3-Coder:480b (cloud native or local offload)
 - Cloud Host: `https://ollama.com`
 - Local Host (OpenAI-compatible): `http://127.0.0.1:11434/v1`
 - API Key: User provides Ollama Cloud key when `USE_DIRECT_CLOUD=1`
@@ -36,10 +34,9 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 ## User Flow
 1. Configure `.env` with planner/actor models and cloud/local toggle.
 2. Launch app, DockChat reveals on proximity or `/` hotkey.
-3. Planner (DeepSeek) produces plan, Actor (Kimi) translates to batches.
+3. Planner (DeepSeek) produces plan, Actor (Qwen3-Coder:480b) translates to batches.
 4. Full Control OFF -> preview; ON -> auto-apply; STOP cancels txn.
-5. Use the desktop menu to open/hide logs and manage active workspace windows.
-6. Workspace state persists in SQLite; reconnect recovers cleanly.
+5. Workspace state persists in SQLite; reconnect recovers cleanly.
 
 ## Technical Priorities
 1. Async orchestration: planner -> actor -> validator -> adapter.
@@ -97,7 +94,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [x] Host validation ensures `https://ollama.com` without `/v1` for cloud (Rust backend assertion in `main.rs`).
 - [x] Orchestrator functions:
   - `planWithDeepSeek(intent)` -> temp 0.2, 35s timeout, 1 retry (network only), strict JSON.
-  - `actWithKimi(plan)` -> temp 0.15, 35s timeout, 1 retry (network only), strict JSON.
+  - `actWithQwen(plan)` -> temp 0.15, 35s timeout, 1 retry (network only), strict JSON.
   - `runIntent(text, applyNow)` -> planning -> acting -> validation -> preview/apply.
 - [x] Fallbacks:
   - Planner invalid/timeout twice -> actor-only fallback + system message.
@@ -106,7 +103,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 ## 3) Prompts & Validation
 - [x] `src/prompts/planner.txt` (DeepSeek) -  rules: JSON only, UICP ops, create containers first, payload <=12 KB, idempotency/txn optional.
-- [x] `src/prompts/actor.txt` (Kimi) -  JSON only, minimal DOM churn, ensure selectors exist, stamp ids, safe fallback on invalid plan.
+- [x] `src/prompts/actor.txt` (Qwen3-Coder:480b) -  JSON only, minimal DOM churn, ensure selectors exist, stamp ids, safe fallback on invalid plan.
 - [x] `validatePlan` schema: `{ summary, risks?, batch[] }`, batch entries `{ type:"command", op, params, idempotency_key?, txn_id? }` (snake_case accepted).
 - [x] `validateBatch` schema: accepts batch array with HTML sanitation and typed errors (idempotency/txn stamped later).
 - [x] Validation failures produce system messages with JSON pointer + hint.
@@ -149,7 +146,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 ## 9) Acceptance Criteria (Updated)
 - [ ] Intent "make a notepad with title and a save button" -> window visible <=1 s on Turbo; system message "Applied N commands in X ms".
-- [ ] DeepSeek (planner) and Kimi (actor) invoked; DockChat shows phase statuses.
+- [ ] DeepSeek (planner) and Qwen3-Coder:480b (actor) invoked; DockChat shows phase statuses.
 - [ ] Cloud path never uses `/v1`; local path always uses `/v1`.
 - [ ] Full Control gate + STOP behave per spec (STOP cancel <=1 s).
 - [ ] Planner fallback logs "Planner degraded: using Actor-only" when triggered.
@@ -167,7 +164,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [ ] Ollama Cloud native docs: https://ollama.com/docs
 - [ ] Ollama local OpenAI compatibility: https://ollama.com/blog/openai-compatibility
 - [ ] DeepSeek v3.1 prompt guidance.
-- [ ] Kimi K2 usage docs.
+- [ ] Qwen3-Coder:480b usage docs.
 - [ ] UICP Core README (`uicp/src/lib/uicp/README.md`).
 - [ ] Playwright docs for auto-install and preview usage.
 
