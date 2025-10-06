@@ -44,7 +44,7 @@ export const DockChat = () => {
     if (agentStatus.actMs !== null) parts.push(`act ${agentStatus.actMs} ms`);
     if (agentStatus.applyMs !== null) parts.push(`apply ${agentStatus.applyMs} ms`);
     if (agentStatus.error) parts.push(`last error: ${agentStatus.error}`);
-    return parts.length ? parts.join(' • ') : 'No trace yet';
+    return parts.length ? parts.join(' - ') : 'No trace yet';
   }, [agentStatus]);
 
   const phaseBadgeLabel = useMemo(() => STATUS_PHASE_LABEL[agentStatus.phase], [agentStatus.phase]);
@@ -145,7 +145,7 @@ export const DockChat = () => {
               {fullControlLocked && ' (locked)'}
             </span>
             <span className="text-[11px] uppercase tracking-wide text-slate-400">
-              Agent mode: {agentMode === 'mock' ? 'Mock (testing)' : 'Live (DeepSeek → Qwen)'}
+              Agent mode: {agentMode === 'mock' ? 'Mock (testing)' : 'Live (DeepSeek -> Qwen)'}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -199,7 +199,7 @@ export const DockChat = () => {
                 return (
                   <Fragment key={phaseKey}>
                     <span className={phaseClass}>{STATUS_PHASE_LABEL[phaseKey]}</span>
-                    {index < STATUS_PHASE_SEQUENCE.length - 1 && <span className="text-slate-300">→</span>}
+                    {index < STATUS_PHASE_SEQUENCE.length - 1 && <span className="text-slate-300">{'→'}</span>}
                   </Fragment>
                 );
               })}
@@ -225,7 +225,7 @@ export const DockChat = () => {
               >
                 <span className="block text-xs uppercase tracking-wide text-slate-400">
                   {message.role}
-                  {message.errorCode ? ` • ${message.errorCode}` : ''}
+                  {message.errorCode ? ` - ${message.errorCode}` : ''}
                 </span>
                 <span>{message.content}</span>
               </li>
@@ -242,7 +242,7 @@ export const DockChat = () => {
                 {pendingPlan.batch.map((command, index) => (
                   <li key={`${pendingPlan.id}-${index}`}>
                     <span className="font-mono text-[11px]">{command.op}</span>
-                    {command.windowId ? ` • ${command.windowId}` : ''}
+                    {command.windowId ? ` - ${command.windowId}` : ''}
                   </li>
                 ))}
               </ol>
@@ -277,6 +277,7 @@ export const DockChat = () => {
             </button>
             <div className="relative flex-1">
               <textarea
+                data-dock-chat-input
                 ref={inputRef}
                 value={value}
                 onChange={(event) => setValue(event.target.value)}
@@ -307,7 +308,7 @@ export const DockChat = () => {
             )}
           </div>
           <div className="text-[11px] uppercase tracking-wide text-slate-400">
-            Press / to focus • Ctrl/Cmd + Enter to send • Esc collapses when idle
+            Press / to focus - Ctrl/Cmd + Enter to send - Esc collapses when idle
           </div>
         </form>
 

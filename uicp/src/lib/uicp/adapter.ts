@@ -2,6 +2,7 @@ import type { Batch, Envelope, OperationParamMap } from "./schemas";
 import { createFrameCoalescer, createId, sanitizeHtml } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 
 const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
@@ -64,6 +65,29 @@ const toFailure = (error: unknown): { success: false; error: string } => ({
   success: false,
   error: error instanceof Error ? error.message : String(error),
 });
+
+// Persist command to database for replay on restart
+// Skip ephemeral operations that shouldn't be replayed
+const persistCommand = async (command: Envelope): Promise<void> => {
+  // Skip ephemeral operations
+  const ephemeralOps = ['txn.cancel', 'state.get', 'state.watch', 'state.unwatch'];
+  if (ephemeralOps.includes(command.op)) {
+    return;
+  }
+
+  try {
+    await invoke('persist_command', {
+      cmd: {
+        id: command.idempotencyKey ?? command.id ?? createId('cmd'),
+        tool: command.op,
+        args: command.params,
+      },
+    });
+  } catch (error) {
+    // Log but don't throw - persistence failures shouldn't break command execution
+    console.error('Failed to persist command', command.op, error);
+  }
+};
 
 // Event delegation callback for UI events
 type UIEventCallback = (event: Event, payload: Record<string, unknown>) => void;
@@ -212,6 +236,44 @@ export const resetWorkspace = () => {
   if (workspaceRoot) {
     workspaceRoot.innerHTML = "";
   }
+  // Clear persisted commands so they don't replay on next startup
+  void invoke('clear_workspace_commands').catch((error) => {
+    console.error('Failed to clear workspace commands', error);
+  });
+};
+
+// Replay persisted commands from database to restore workspace state
+export const replayWorkspace = async (): Promise<{ applied: number; errors: string[] }> => {
+  try {
+    const commands = await invoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
+    const errors: string[] = [];
+    let applied = 0;
+
+    for (const cmd of commands) {
+      try {
+        // Reconstruct envelope from persisted command
+        const envelope: Envelope = {
+          op: cmd.tool as Envelope['op'],
+          params: cmd.args as OperationParamMap[Envelope['op']],
+          idempotencyKey: cmd.id,
+        };
+
+        const result = applyCommand(envelope);
+        if (result.success) {
+          applied += 1;
+        } else {
+          errors.push(`${cmd.tool}: ${result.error}`);
+        }
+      } catch (error) {
+        errors.push(`${cmd.tool}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    return { applied, errors };
+  } catch (error) {
+    console.error('Failed to replay workspace', error);
+    return { applied: 0, errors: [error instanceof Error ? error.message : String(error)] };
+  }
 };
 
 // Allows shared teardown from commands and UI controls.
@@ -229,6 +291,11 @@ const destroyWindow = (id: string) => {
   record.wrapper.remove();
   windows.delete(id);
   emitWindowEvent({ type: 'destroyed', id, title: record.titleText.textContent ?? id });
+
+  // Delete persisted commands for this window so it doesn't reappear on restart
+  void invoke('delete_window_commands', { windowId: id }).catch((error) => {
+    console.error('Failed to delete window commands', id, error);
+  });
 };
 
 export const listWorkspaceWindows = (): Array<{ id: string; title: string }> => {
@@ -674,6 +741,8 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
       const result = applyCommand(command);
       if (result.success) {
         applied += 1;
+        // Persist command for replay on restart (async, fire-and-forget)
+        void persistCommand(command);
         return;
       }
       errors.push(`${command.op}: ${result.error}`);

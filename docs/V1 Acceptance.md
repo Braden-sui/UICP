@@ -24,6 +24,12 @@ Reliability & Safety
 
 Persistence
 - Workspace/window state persists to SQLite in `~/Documents/UICP/` and restores on restart.
+- **Command persistence** (implemented 2025-10-06):
+  - All successfully executed commands persist to `tool_call` table after execution.
+  - On app startup, `replayWorkspace()` fetches and replays all commands in creation order.
+  - Window closure deletes window-specific commands (prevents closed windows from reappearing).
+  - Workspace reset clears all persisted commands.
+  - **Acceptance test**: Build notepad → close app → reopen → notepad reappears with last state.
 - Save indicator events reflect success/failure.
 
 Performance
@@ -44,6 +50,7 @@ Security & Config
 Tests & CI
 - Unit: schemas, sanitizer, orchestrator/aggregator, STOP/cancel, queue semantics.
 - E2E: MOCK notepad flow; preview→Apply path; STOP smoke.
+- E2E (future): Persistence flow (build app → close → reopen → verify state restored).
 - CI: lint, typecheck, unit, e2e, build all green.
 
 Release Declaration (V1)

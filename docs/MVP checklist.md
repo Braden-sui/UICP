@@ -150,10 +150,10 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 ## 5) Chat UI Enhancements
 - [x] DockChat proximity reveal + collapse after blur when idle.
 - [x] Logs panel on desktop surfaces the conversation history (messages + system notices).
-- [ ] Status line shows phases: planning -> acting -> applying (with trace ID tooltip).
-- [ ] Planner summary surfaces as agent message before apply.
+- [x] Status line shows phases: planning -> acting -> applying (with trace ID tooltip).
+- [x] Planner summary surfaces as agent message before apply.
 - [x] STOP cancels within 1s, emits message, locks auto-apply until re-consented.
-- [ ] Hotkeys: `/` focus, Ctrl/Cmd+Enter send, Esc collapses when not streaming.
+- [x] Hotkeys: `/` focus, Ctrl/Cmd+Enter send, Esc collapses when not streaming.
 
 ## 6) Mock Mode -- deprecated --- keep stable no enhancements
 ## 7) Observability & Logging
@@ -191,7 +191,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [ ] Performance testing (ensure UI never blocks).
 - [ ] Sharing & Export (HTML/React/paste service/web viewer).
 - [ ] Post-MVP roadmap: cloud sync, analytics, multi-agent coordination, etc.
-- [ ] Backend command inbox for persisted tool calls (queue bridge, replay with drift detection).
+- [x] Backend command inbox for persisted tool calls (basic replay implemented; drift detection deferred to post-V1).
 - [ ] Failure handling UI (retry/discard, surfaced error metrics, toast integration).
 - [ ] STOP mid-apply guard to bail out of long batches safely.
 - [ ] Observability: command.dispatch/apply structured logs + metrics dashboard.
@@ -214,15 +214,21 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 
 ## !!! things to address !!!
- 1. Wire command persistence + replay (Section 4 Item 1)
-    - Persist every applied command to tool_call table
-    - On startup, replay commands for current workspace
-    - Prove: Build notepad → close app → reopen → notepad still exists
+ 1. [x] Wire command persistence + replay (Section 4 Item 1) - COMPLETED 2025-10-06
+    - [x] Persist every applied command to tool_call table
+    - [x] On startup, replay commands for current workspace
+    - [x] Per-window cleanup: window.close deletes persisted commands
+    - [x] Workspace reset clears all persisted commands
+    - Persistence details:
+      - Backend: `persist_command`, `get_workspace_commands`, `clear_workspace_commands`, `delete_window_commands`
+      - Frontend: `persistCommand` (fire-and-forget after successful apply), `replayWorkspace` (on Desktop mount)
+      - Ephemeral ops skipped: `txn.cancel`, `state.get`, `state.watch`, `state.unwatch`
+      - Commands persist indefinitely until window closed or workspace reset
   2. Build ONE reference app YOU use daily
     - Example: "Meeting notes scratchpad" or "Daily todo list"
     - Dogfood it for a week
     - Find 5 painful UX issues from real usage
-  3. Fix those 5 issues (they'll probably be: slow apply, no undo, clarify loop is clunky, errors are opaque, iteration        
+  3. Fix those 5 issues (they'll probably be: slow apply, no undo, clarify loop is clunky, errors are opaque, iteration
   creates duplicates)
 ## Update 2025-10-05
 
@@ -240,6 +246,45 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - Tests: Added unit tests for orchestrator parse, aggregator batch extraction, queue idempotency/FIFO/txn.cancel, STOP cancel flow, and iterator cancellation.
 - E2E: Playwright builds with `VITE_MOCK_MODE=true` for deterministic mock flow; an optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a real backend and API key.
 
+## Update 2025-10-06 - Command Persistence & Replay
+
+**Implemented**: Apps now persist across restarts via command persistence to SQLite.
+
+**Backend (Rust - main.rs:176-269)**:
+- `persist_command`: Inserts successfully executed commands into `tool_call` table
+- `get_workspace_commands`: Retrieves all persisted commands for replay on startup
+- `clear_workspace_commands`: Deletes all commands for current workspace
+- `delete_window_commands`: Deletes all commands associated with a specific window ID (called on window.close)
+
+**Frontend (TypeScript - adapter.ts:69-277)**:
+- `persistCommand`: Fire-and-forget async function called after successful command execution
+  - Skips ephemeral operations: `txn.cancel`, `state.get`, `state.watch`, `state.unwatch`
+  - Errors logged but don't block execution
+- `replayWorkspace`: Called on Desktop component mount (Desktop.tsx:42-55)
+  - Fetches persisted commands from database
+  - Reapplies commands in creation order
+  - Returns `{ applied, errors }` for observability
+- `resetWorkspace`: Clears both DOM and persisted commands
+- `destroyWindow`: Deletes window's persisted commands so closed windows don't reappear
+
+**Persistence Lifecycle**:
+1. User asks agent to build an app (e.g., "make a notepad")
+2. Orchestrator produces batch → adapter executes → commands persist to SQLite
+3. User closes app
+4. User reopens app → `replayWorkspace` runs → notepad reappears with last state
+5. User closes window via menu → `delete_window_commands` ensures it stays closed
+6. User resets workspace → `clear_workspace_commands` wipes all apps
+
+**Retention Policy**: Commands persist indefinitely until:
+- Window is closed (deletes window-specific commands)
+- Workspace is reset (deletes all commands)
+- User manually deletes `~/Documents/UICP/data.db`
+
+**Post-V1 Considerations**:
+- Drift detection (reconcile persisted commands with actual DOM state)
+- Workspace snapshots (save/load named states)
+- Command versioning (replay only incremental changes)
+- Undo/redo via command history
 
 
 

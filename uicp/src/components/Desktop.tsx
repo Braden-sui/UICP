@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { registerWorkspaceRoot, registerWindowLifecycle, listWorkspaceWindows, closeWorkspaceWindow } from '../lib/uicp/adapter';
+import { registerWorkspaceRoot, registerWindowLifecycle, listWorkspaceWindows, closeWorkspaceWindow, replayWorkspace } from '../lib/uicp/adapter';
 import LogsPanel from './LogsPanel';
 import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
@@ -42,6 +42,16 @@ export const Desktop = () => {
   useEffect(() => {
     if (!rootRef.current) return;
     registerWorkspaceRoot(rootRef.current);
+
+    // Replay persisted commands to restore workspace state
+    void replayWorkspace().then(({ applied, errors }) => {
+      if (applied > 0) {
+        console.log(`Replayed ${applied} command(s) from workspace`);
+      }
+      if (errors.length > 0) {
+        console.warn('Replay errors:', errors);
+      }
+    });
   }, []);
 
   // Register defaults so the built-in shortcuts render even on first run.

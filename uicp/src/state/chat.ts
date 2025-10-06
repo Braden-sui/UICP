@@ -220,9 +220,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (planDuration !== null) metrics.push(`plan ${planDuration} ms`);
         if (actDuration !== null) metrics.push(`act ${actDuration} ms`);
         metrics.push(`${plan.batch.length} command${plan.batch.length === 1 ? '' : 's'}`);
-        get().pushSystemMessage(`Trace ${traceId}: ${metrics.join(' • ')}`, 'telemetry_metrics');
+        get().pushSystemMessage(`Trace ${traceId}: ${metrics.join(' - ')}`, 'telemetry_metrics');
       }
 
+      // Surface the planner summary as an assistant message before we consider auto-apply.
       const summaryContent =
         app.fullControl && !app.fullControlLocked
           ? summary

@@ -76,6 +76,41 @@
 - Future tables (per checklist): `app_state`, `collection`, `collection_row`, `workflow`.
 - Journaling: WAL mode for resilience.
 
+### Command Persistence & Replay (Implemented 2025-10-06)
+Apps now persist across restarts via command replay:
+
+**Backend Commands** (main.rs:176-269):
+- `persist_command(cmd)`: Inserts command into `tool_call` table after successful execution
+  - Stores: `id` (idempotencyKey), `tool` (operation name), `args_json` (params), `workspace_id`, `created_at`
+  - Fire-and-forget: failures logged but don't block execution
+- `get_workspace_commands()`: Returns all commands for current workspace ordered by creation time
+- `clear_workspace_commands()`: Deletes all commands for workspace (called on `resetWorkspace`)
+- `delete_window_commands(windowId)`: Deletes commands where:
+  - `tool = "window.create" AND args.id = windowId`
+  - OR `args.windowId = windowId` (dom.*, component.*, etc.)
+  - Called when window closes to prevent it from reappearing on restart
+
+**Frontend Integration** (adapter.ts:69-277):
+- `persistCommand(envelope)`: Called after successful `applyCommand`
+  - Skips ephemeral ops: `txn.cancel`, `state.get`, `state.watch`, `state.unwatch`
+  - Async fire-and-forget (errors logged, don't throw)
+- `replayWorkspace()`: Called on Desktop mount (Desktop.tsx:42-55)
+  - Fetches commands from DB
+  - Reapplies in creation order
+  - Returns `{ applied, errors }` for observability
+- `resetWorkspace()`: Clears both in-memory state and persisted commands
+- `destroyWindow(id)`: Removes window from DOM and deletes its persisted commands
+
+**Lifecycle**:
+1. User asks agent: "make a notepad"
+2. Orchestrator → batch → adapter executes → `persistCommand` fires
+3. User closes app
+4. User reopens → `replayWorkspace` runs on mount → notepad reappears
+5. User closes window via menu → `delete_window_commands` ensures it stays closed
+6. User resets workspace → all commands deleted
+
+**Retention**: Commands persist indefinitely until window closed or workspace reset.
+
 ## Save Indicator Logic
 - `AppState.last_save_ok` tracks status.
 - Autosave loop polls every 5s and emits only on state change.
@@ -93,7 +128,9 @@
 - Adapter emits window lifecycle events so the desktop menu stays in sync with planner-created windows.
 
 ## Planned Extensions
-- Tool execution queue with persistence.
+- ~~Tool execution queue with persistence~~ (implemented 2025-10-06; see Command Persistence & Replay above).
+- Drift detection for command replay (reconcile DB state with actual DOM).
+- Workspace snapshots (save/load named states).
 - State/CRUD/`api_call` tools.
 - Component library renderer.
 - Export (HTML/React) + sharing.

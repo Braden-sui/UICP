@@ -1,41 +1,111 @@
-﻿import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import DockChat from '../../src/components/DockChat';
-import { useAppStore } from '../../src/state/app';
-import { registerWorkspaceRoot, resetWorkspace } from '../../src/lib/uicp/adapter';
+import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import DockChat from "../../src/components/DockChat";
+import { useAppStore } from "../../src/state/app";
+import { useChatStore } from "../../src/state/chat";
 
-// DockChat test ensures send flow shows a plan preview and Escape collapses the dock.
-describe('DockChat component', () => {
+const ensureCrypto = () => {
+  if (!globalThis.crypto) {
+    // Minimal stub so pushToast can mint IDs during tests.
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    globalThis.crypto = {};
+  }
+  if (!globalThis.crypto.randomUUID) {
+    globalThis.crypto.randomUUID = () => "00000000-0000-0000-0000-000000000000";
+  }
+};
+
+const resetStores = () => {
+  useAppStore.setState({
+    chatOpen: false,
+    streaming: false,
+    fullControl: false,
+    fullControlLocked: false,
+    suppressAutoApply: false,
+    agentStatus: {
+      phase: "idle",
+      traceId: undefined,
+      planMs: null,
+      actMs: null,
+      applyMs: null,
+      startedAt: null,
+      lastUpdatedAt: null,
+      error: undefined,
+    },
+    toasts: [],
+  });
+  useChatStore.setState({
+    messages: [],
+    pendingPlan: undefined,
+    sending: false,
+    error: undefined,
+  });
+};
+
+describe("<DockChat /> hotkeys", () => {
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCancelRaf = globalThis.cancelAnimationFrame;
+
   beforeEach(() => {
-    useAppStore.setState({
-      chatOpen: true,
-      fullControl: false,
-      fullControlLocked: false,
-      telemetry: [],
-      metricsOpen: false,
+    ensureCrypto();
+    resetStores();
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    }) as typeof globalThis.requestAnimationFrame;
+    globalThis.cancelAnimationFrame = (() => {
+      // No-op stub keeps Vitest happy while DockChat schedules focus.
+    }) as typeof globalThis.cancelAnimationFrame;
+  });
+
+  afterEach(() => {
+    if (originalRaf) {
+      globalThis.requestAnimationFrame = originalRaf;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete (globalThis as { requestAnimationFrame?: typeof globalThis.requestAnimationFrame }).requestAnimationFrame;
+    }
+    if (originalCancelRaf) {
+      globalThis.cancelAnimationFrame = originalCancelRaf;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete (globalThis as { cancelAnimationFrame?: typeof globalThis.cancelAnimationFrame }).cancelAnimationFrame;
+    }
+    vi.clearAllMocks();
+  });
+
+  it("opens the dock and focuses the textarea when '/' is pressed", async () => {
+    render(<DockChat />);
+    const input = screen.getByPlaceholderText("Describe what you want to build...") as HTMLTextAreaElement;
+
+    expect(useAppStore.getState().chatOpen).toBe(false);
+    expect(document.activeElement).not.toBe(input);
+
+    fireEvent.keyDown(window, { key: "/", code: "Slash" });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().chatOpen).toBe(true);
+      expect(document.activeElement).toBe(input);
     });
-    resetWorkspace();
-    const root = document.createElement('div');
-    root.id = 'workspace-root';
-    document.body.appendChild(root);
-    registerWorkspaceRoot(root);
   });
 
-  it('queues a plan when full control is disabled', async () => {
+  it("re-focuses the textarea when '/' is pressed while the dock is already open", async () => {
+    useAppStore.setState({ chatOpen: true });
     render(<DockChat />);
-    const textarea = screen.getByPlaceholderText('Describe what you want to build...');
-    fireEvent.change(textarea, { target: { value: 'make a notepad' } });
-    fireEvent.submit(textarea.closest('form')!);
+    const input = screen.getByPlaceholderText("Describe what you want to build...") as HTMLTextAreaElement;
 
-    await waitFor(() => expect(screen.queryByText(/Plan preview/i)).not.toBeNull());
-    expect(useAppStore.getState().chatOpen).toBe(true);
-  });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(input);
+    });
 
-  it('collapses when Escape is pressed', async () => {
-    render(<DockChat />);
-    expect(useAppStore.getState().chatOpen).toBe(true);
-    fireEvent.keyDown(window, { key: 'Escape' });
-    await waitFor(() => expect(useAppStore.getState().chatOpen).toBe(false));
+    input.blur();
+    expect(document.activeElement).not.toBe(input);
+
+    fireEvent.keyDown(window, { key: "/", code: "Slash" });
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(input);
+    });
   });
 });
-

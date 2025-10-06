@@ -30,6 +30,14 @@ export const useDockReveal = (hideDelayMs = 2500) => {
         if (!isInput) {
           event.preventDefault();
           setChatOpen(true);
+          // Defer focus so DockChat can mount/update before we reach for the textarea.
+          requestAnimationFrame(() => {
+            const input = document.querySelector<HTMLTextAreaElement>("[data-dock-chat-input]");
+            if (input) {
+              input.focus();
+              input.setSelectionRange(input.value.length, input.value.length);
+            }
+          });
         }
       }
       if (event.key === "Escape") {

@@ -174,9 +174,98 @@ async fn test_api_key(
 }
 
 #[tauri::command]
-async fn enqueue_command(_state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
-    // TODO: insert into command queue table (future milestone)
-    println!("Received command: {:?}", cmd);
+async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
+    let db_path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = Connection::open(db_path).context("open sqlite persist command")?;
+        let now = Utc::now().timestamp();
+        let args_json = serde_json::to_string(&cmd.args)
+            .context("serialize command args")?;
+        conn.execute(
+            "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+            params![cmd.id, "default", cmd.tool, args_json, now],
+        )
+        .context("insert tool_call")?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?
+    .map_err(|e| format!("DB error: {e:?}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<CommandRequest>, String> {
+    let db_path = state.db_path.clone();
+    let commands = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<CommandRequest>> {
+        let conn = Connection::open(db_path).context("open sqlite get commands")?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, tool, args_json FROM tool_call
+                 WHERE workspace_id = ?1
+                 ORDER BY created_at ASC",
+            )
+            .context("prepare tool_call select")?;
+        let rows = stmt
+            .query_map(params!["default"], |row| {
+                let id: String = row.get(0)?;
+                let tool: String = row.get(1)?;
+                let args_json: String = row.get(2)?;
+                let args = serde_json::from_str(&args_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                Ok(CommandRequest { id, tool, args })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?
+    .map_err(|e| format!("DB error: {e:?}"))?;
+    Ok(commands)
+}
+
+#[tauri::command]
+async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), String> {
+    let db_path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = Connection::open(db_path).context("open sqlite clear commands")?;
+        conn.execute(
+            "DELETE FROM tool_call WHERE workspace_id = ?1",
+            params!["default"],
+        )
+        .context("delete tool_calls")?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?
+    .map_err(|e| format!("DB error: {e:?}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_window_commands(state: State<'_, AppState>, window_id: String) -> Result<(), String> {
+    let db_path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = Connection::open(db_path).context("open sqlite delete window commands")?;
+        // Delete commands where:
+        // 1. tool = "window.create" AND args.id = window_id
+        // 2. OR args.windowId = window_id (for dom.*, component.*, etc.)
+        conn.execute(
+            "DELETE FROM tool_call
+             WHERE workspace_id = ?1
+             AND (
+                 (tool = 'window.create' AND json_extract(args_json, '$.id') = ?2)
+                 OR json_extract(args_json, '$.windowId') = ?2
+             )",
+            params!["default", window_id],
+        )
+        .context("delete window commands")?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?
+    .map_err(|e| format!("DB error: {e:?}"))?;
     Ok(())
 }
 
@@ -759,7 +848,10 @@ fn main() {
             load_api_key,
             save_api_key,
             test_api_key,
-            enqueue_command,
+            persist_command,
+            get_workspace_commands,
+            clear_workspace_commands,
+            delete_window_commands,
             load_workspace,
             save_workspace,
             chat_completion,
