@@ -64,7 +64,7 @@ describe('orchestrator integration', () => {
   });
 
   it('runs end-to-end and returns plan + batch with stamped metadata', async () => {
-    const { plan, batch } = await runIntent('make a notepad', false);
+    const { plan, batch, traceId, timings } = await runIntent('make a notepad', false);
     expect(plan.summary).toBeDefined();
     expect(batch.length).toBeGreaterThan(0);
     expect(batch.every((env) => typeof env.idempotencyKey === 'string' && env.idempotencyKey.length > 0)).toBe(true);
@@ -72,5 +72,23 @@ describe('orchestrator integration', () => {
     const txnIds = new Set(batch.map((env) => env.txnId));
     expect(traceIds.size).toBe(1);
     expect(txnIds.size).toBe(1);
+    expect(typeof traceId).toBe('string');
+    expect(traceId.length).toBeGreaterThan(0);
+    expect(timings.planMs).toBeGreaterThanOrEqual(0);
+    expect(timings.actMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('emits phase updates to observers', async () => {
+    const phases: Array<{ phase: string; planMs?: number }> = [];
+    await runIntent('make a notepad', false, {
+      onPhaseChange: (detail) => {
+        phases.push(detail);
+      },
+    });
+    expect(phases.length).toBeGreaterThanOrEqual(2);
+    expect(phases[0]?.phase).toBe('planning');
+    expect(phases[1]?.phase).toBe('acting');
+    expect(typeof phases[1]?.planMs).toBe('number');
+    expect((phases[1]?.planMs ?? 0)).toBeGreaterThanOrEqual(0);
   });
 });

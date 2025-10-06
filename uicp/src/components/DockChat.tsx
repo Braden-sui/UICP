@@ -1,16 +1,25 @@
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
-import { useAppStore, type AgentMode } from '../state/app';
+import { useAppStore, type AgentMode, type AgentPhase } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
 import { streamOllamaCompletion } from '../lib/llm/ollama';
+
+const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'applying'];
+const STATUS_PHASE_LABEL: Record<AgentPhase, string> = {
+  idle: 'Idle',
+  planning: 'Planning',
+  acting: 'Acting',
+  applying: 'Applying',
+};
 
 // DockChat is the single control surface for the agent. It handles proximity reveal, input, plan review, and actions.
 export const DockChat = () => {
   const { chatOpen, onFocus, onBlur, setChatOpen } = useDockReveal();
   const { messages, pendingPlan, sending, sendMessage, applyPendingPlan, cancelStreaming } = useChatStore();
   const streaming = useAppStore((state) => state.streaming);
+  const agentStatus = useAppStore((state) => state.agentStatus);
   const openGrantModal = useAppStore((state) => state.openGrantModal);
   const fullControl = useAppStore((state) => state.fullControl);
   const fullControlLocked = useAppStore((state) => state.fullControlLocked);
@@ -22,6 +31,23 @@ export const DockChat = () => {
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const systemMessages = useMemo(() => messages.filter((msg) => msg.role === 'system'), [messages]);
+
+  const currentPhaseIndex = useMemo(() => {
+    if (agentStatus.phase === 'idle') return -1;
+    return STATUS_PHASE_SEQUENCE.indexOf(agentStatus.phase);
+  }, [agentStatus.phase]);
+
+  const statusTooltip = useMemo(() => {
+    const parts: string[] = [];
+    if (agentStatus.traceId) parts.push(`Trace ${agentStatus.traceId}`);
+    if (agentStatus.planMs !== null) parts.push(`plan ${agentStatus.planMs} ms`);
+    if (agentStatus.actMs !== null) parts.push(`act ${agentStatus.actMs} ms`);
+    if (agentStatus.applyMs !== null) parts.push(`apply ${agentStatus.applyMs} ms`);
+    if (agentStatus.error) parts.push(`last error: ${agentStatus.error}`);
+    return parts.length ? parts.join(' • ') : 'No trace yet';
+  }, [agentStatus]);
+
+  const phaseBadgeLabel = useMemo(() => STATUS_PHASE_LABEL[agentStatus.phase], [agentStatus.phase]);
 
   useEffect(() => {
     if (!chatOpen) return;
@@ -153,6 +179,37 @@ export const DockChat = () => {
           </div>
         </header>
 
+        {/* Status line surfaces orchestrator progress and trace metadata. */}
+        <div
+          className="flex items-center justify-between rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-500"
+          title={statusTooltip}
+        >
+          <span>Status</span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 text-[10px]">
+              {STATUS_PHASE_SEQUENCE.map((phaseKey, index) => {
+                const phaseClass =
+                  currentPhaseIndex === -1
+                    ? 'text-slate-400'
+                    : currentPhaseIndex === index
+                      ? 'text-slate-900 font-semibold'
+                      : currentPhaseIndex > index
+                        ? 'text-slate-600'
+                        : 'text-slate-400';
+                return (
+                  <Fragment key={phaseKey}>
+                    <span className={phaseClass}>{STATUS_PHASE_LABEL[phaseKey]}</span>
+                    {index < STATUS_PHASE_SEQUENCE.length - 1 && <span className="text-slate-300">→</span>}
+                  </Fragment>
+                );
+              })}
+            </div>
+            <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+              {phaseBadgeLabel}
+            </span>
+          </div>
+        </div>
+
         <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white/80 p-3" ref={listRef}>
           <ul className="space-y-3 text-sm">
             {messages.map((message) => (
@@ -250,7 +307,7 @@ export const DockChat = () => {
             )}
           </div>
           <div className="text-[11px] uppercase tracking-wide text-slate-400">
-            Press Esc to collapse • Ctrl/Cmd + Enter to send
+            Press / to focus • Ctrl/Cmd + Enter to send • Esc collapses when idle
           </div>
         </form>
 

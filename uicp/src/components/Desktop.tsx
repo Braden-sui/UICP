@@ -4,13 +4,16 @@ import LogsPanel from './LogsPanel';
 import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
 import NotepadWindow from './NotepadWindow';
-import { LogsIcon, NotepadIcon } from '../icons';
+import MetricsPanel from './MetricsPanel';
+import { LogsIcon, NotepadIcon, GaugeIcon } from '../icons';
 import { useAppStore, type DesktopShortcutPosition } from '../state/app';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
 const NOTEPAD_SHORTCUT_ID = 'notepad';
 const NOTEPAD_SHORTCUT_DEFAULT = { x: 32, y: 128 } as const;
+const METRICS_SHORTCUT_ID = 'metrics';
+const METRICS_SHORTCUT_DEFAULT = { x: 32, y: 224 } as const;
 
 // Desktop hosts the empty canvas the agent mutates via the adapter and surfaces shortcuts for manual control.
 export const Desktop = () => {
@@ -19,10 +22,14 @@ export const Desktop = () => {
   const [showImg, setShowImg] = useState(true);
   const logsOpen = useAppStore((s) => s.logsOpen);
   const setLogsOpen = useAppStore((s) => s.setLogsOpen);
+  const metricsOpen = useAppStore((s) => s.metricsOpen);
+  const setMetricsOpen = useAppStore((s) => s.setMetricsOpen);
   const notepadOpen = useAppStore((s) => s.notepadOpen);
   const setNotepadOpen = useAppStore((s) => s.setNotepadOpen);
   const openLogs = useCallback(() => setLogsOpen(true), [setLogsOpen]);
   const hideLogs = useCallback(() => setLogsOpen(false), [setLogsOpen]);
+  const openMetrics = useCallback(() => setMetricsOpen(true), [setMetricsOpen]);
+  const hideMetrics = useCallback(() => setMetricsOpen(false), [setMetricsOpen]);
   const openNotepad = useCallback(() => setNotepadOpen(true), [setNotepadOpen]);
   const hideNotepad = useCallback(() => setNotepadOpen(false), [setNotepadOpen]);
   const ensureShortcut = useAppStore((s) => s.ensureDesktopShortcut);
@@ -41,11 +48,14 @@ export const Desktop = () => {
   useEffect(() => {
     ensureShortcut(LOGS_SHORTCUT_ID, { ...LOGS_SHORTCUT_DEFAULT });
     ensureShortcut(NOTEPAD_SHORTCUT_ID, { ...NOTEPAD_SHORTCUT_DEFAULT });
+    ensureShortcut(METRICS_SHORTCUT_ID, { ...METRICS_SHORTCUT_DEFAULT });
     upsertWorkspaceWindow({ id: 'logs', title: 'Logs', kind: 'local' });
     upsertWorkspaceWindow({ id: 'notepad', title: 'Notepad', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'metrics', title: 'Metrics', kind: 'local' });
     return () => {
       removeWorkspaceWindow('logs');
       removeWorkspaceWindow('notepad');
+      removeWorkspaceWindow('metrics');
     };
   }, [ensureShortcut, removeWorkspaceWindow, upsertWorkspaceWindow]);
 
@@ -72,6 +82,7 @@ export const Desktop = () => {
 
   const logsPosition = shortcutPositions[LOGS_SHORTCUT_ID] ?? LOGS_SHORTCUT_DEFAULT;
   const notepadPosition = shortcutPositions[NOTEPAD_SHORTCUT_ID] ?? NOTEPAD_SHORTCUT_DEFAULT;
+  const metricsPosition = shortcutPositions[METRICS_SHORTCUT_ID] ?? METRICS_SHORTCUT_DEFAULT;
 
   const handleOpenLogs = useCallback(() => {
     openLogs();
@@ -91,6 +102,13 @@ export const Desktop = () => {
   const handleNotepadPosition = useCallback(
     (position: DesktopShortcutPosition) => {
       setShortcutPosition(NOTEPAD_SHORTCUT_ID, position);
+    },
+    [setShortcutPosition],
+  );
+
+  const handleMetricsPosition = useCallback(
+    (position: DesktopShortcutPosition) => {
+      setShortcutPosition(METRICS_SHORTCUT_ID, position);
     },
     [setShortcutPosition],
   );
@@ -133,6 +151,16 @@ export const Desktop = () => {
             ],
           } satisfies DesktopMenu;
         }
+        if (meta.id === 'metrics') {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Metrics', onSelect: openMetrics, disabled: metricsOpen },
+              { id: 'hide', label: 'Hide Metrics', onSelect: hideMetrics, disabled: !metricsOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
         if (meta.id === NOTEPAD_SHORTCUT_ID) {
           return {
             id: meta.id,
@@ -151,7 +179,7 @@ export const Desktop = () => {
           ],
         } satisfies DesktopMenu;
       });
-  }, [closeWindow, hideLogs, hideNotepad, logsOpen, notepadOpen, openLogs, openNotepad, workspaceWindows]);
+  }, [closeWindow, hideLogs, hideMetrics, hideNotepad, logsOpen, metricsOpen, notepadOpen, openLogs, openMetrics, openNotepad, workspaceWindows]);
 
   return (
     <div className="relative flex min-h-screen w-full flex-col items-center justify-center">
@@ -173,6 +201,16 @@ export const Desktop = () => {
           icon={iconVisual}
           active={logsOpen}
         />
+        <DesktopIcon
+          id="metrics-shortcut"
+          label="Metrics"
+          position={metricsPosition}
+          containerRef={overlayRef}
+          onOpen={openMetrics}
+          onPositionChange={handleMetricsPosition}
+          icon={<GaugeIcon className="h-8 w-8" />}
+          active={metricsOpen}
+        />
         {/* Notepad shortcut surfaces the manual scratchpad utility. */}
         <DesktopIcon
           id="notepad-shortcut"
@@ -186,6 +224,7 @@ export const Desktop = () => {
         />
       </div>
       <NotepadWindow />
+      <MetricsPanel />
       <LogsPanel />
     </div>
   );

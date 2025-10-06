@@ -38,3 +38,13 @@ export const NotepadIcon = (props: SVGProps<SVGSVGElement>) => (
     <path d="M16.5 15.75l-1.25 3.75 3.75-1.25" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+
+// GaugeIcon: simple speedometer used for telemetry dashboards.
+export const GaugeIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
+    <path d="M4 16a8 8 0 1 1 16 0" strokeLinejoin="round" />
+    <path d="M12 8v4" strokeLinecap="round" />
+    <path d="M12 12l3 3" strokeLinecap="round" strokeLinejoin="round" />
+    <circle cx="12" cy="16" r="1.5" />
+  </svg>
+);

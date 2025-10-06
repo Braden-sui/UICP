@@ -7,7 +7,13 @@ import { registerWorkspaceRoot, resetWorkspace } from '../../src/lib/uicp/adapte
 // DockChat test ensures send flow shows a plan preview and Escape collapses the dock.
 describe('DockChat component', () => {
   beforeEach(() => {
-    useAppStore.setState({ chatOpen: true, fullControl: false, fullControlLocked: false });
+    useAppStore.setState({
+      chatOpen: true,
+      fullControl: false,
+      fullControlLocked: false,
+      telemetry: [],
+      metricsOpen: false,
+    });
     resetWorkspace();
     const root = document.createElement('div');
     root.id = 'workspace-root';

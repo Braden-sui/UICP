@@ -1,4 +1,4 @@
-# UICP MVP - Local-First Desktop App
+﻿# UICP MVP - Local-First Desktop App
 
 Update log - 2025-10-05
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
@@ -61,7 +61,8 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 - [x] Tauri + React + Tailwind desktop scaffold (2025-10-04)
 - [x] Async Rust backend for FS/SQLite/API
-- [x] Draggable/resizable windows (`react-rnd`)
+- [x] Draggable windows (pointer-drag on chrome)
+- [ ] Window resizing (backlog)
 - [x] Hiding Connection Bar (toggles, latency)
 - [x] Sanitized HTML rendering
 - [x] Event delegation at window root (capture -> `ui_event`)
@@ -100,16 +101,50 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - Planner invalid/timeout twice -> actor-only fallback + system message.
   - Actor invalid twice -> safe error window batch + system message (no partial apply).
 - [x] Stamp `trace_id`, `txn_id`, `idempotency_key` (actor stage ensures presence).
+- [x] Deterministic plan augmentation: `augmentPlan(plan)` injects safe hints when missing: `gui: reuse window id win-<slug>` and `gui: include small aria-live status region updated via dom.set`; called before `actWithGui` (no templates or app catalogs).
 
 ## 3) Prompts & Validation
-- [x] `src/prompts/planner.txt` (DeepSeek) -  rules: JSON only, UICP ops, create containers first, payload <=12 KB, idempotency/txn optional.
-- [x] `src/prompts/actor.txt` (Qwen3-Coder:480b) -  JSON only, minimal DOM churn, ensure selectors exist, stamp ids, safe fallback on invalid plan.
+- [x] `src/prompts/planner.txt` (DeepSeek) - rules: JSON only; UICP ops; create containers before targeting; output ≤ 8 KB; summary is 1 concise sentence; implementation hints go in `risks` as `gui:` lines (≤ 5); minimal or empty `batch` allowed; idempotency/txn optional.
+- [x] `src/prompts/actor.txt` (Gui, Qwen3-Coder:480b) - JSON only; minimal DOM churn (`dom.replace` only for initial `#root`, prefer `dom.set` thereafter); ensure targets exist; stamp stable ids; include Quality Checklist (status region, input+output pairing, avoid tall single-column stacks); safe fallback on invalid plan.
 - [x] `validatePlan` schema: `{ summary, risks?, batch[] }`, batch entries `{ type:"command", op, params, idempotency_key?, txn_id? }` (snake_case accepted).
 - [x] `validateBatch` schema: accepts batch array with HTML sanitation and typed errors (idempotency/txn stamped later).
 - [x] Validation failures produce system messages with JSON pointer + hint.
 
 ## 4) Command/Tool Execution
-- [ ] Async commands bridging Rust -> frontend adapter for UICP ops (window.*, dom.*, component.*, state.*, api.call, txn.cancel).
+- [x] Async command execution via adapter for all UICP ops. See `uicp/src/lib/uicp/adapter.ts` switch `applyCommand()`.
+- [x] Window ops
+  - `window.create`: creates or updates a window (stable id, chrome title, `window-content` with `#root`), applies geometry, installs drag on the chrome, and emits lifecycle events (`registerWindowLifecycle`).
+  - `window.update`: updates title/geometry for an existing window.
+  - `window.close`: destroys the window and detaches drag listeners.
+- [x] DOM ops
+  - `dom.replace`: routed to `dom.set` internally; reserve for the first population of `#root` after `window.create`.
+  - `dom.set`: sanitized, targeted updates; returns an error if `windowId` or `target` is missing.
+  - `dom.append`: sanitized `insertAdjacentHTML` at end of the target.
+- [x] Component ops
+  - `component.render`: appends a mock component block with `data-component-id`; basic markup for form/table/modal via `buildComponentMarkup()`.
+  - `component.update`: stores `props` on the element for inspection.
+  - `component.destroy`: removes the component node.
+- [x] State ops
+  - `state.set` / `state.get`: scopes `window|workspace|global`; window-scoped keys are prefixed with the window id.
+  - `state.watch` / `state.unwatch`: stubbed no-ops that return success (watch bus to be added).
+- [x] API ops
+  - `api.call` schemes:
+    - `tauri://fs/writeTextFile`: writes `body.contents` to `body.path` under `BaseDirectory` (default Desktop) using `@tauri-apps/plugin-fs`.
+    - `uicp://intent`: dispatches a `uicp-intent` event `{ text, windowId }` back into the chat pipeline.
+    - `http(s)://`: fire-and-forget `fetch`; response is not yet piped to UI (future: response routing).
+    - other schemes: treated as no-op success.
+- [x] Transaction ops
+  - `txn.cancel`: clears in-memory components and returns success. STOP also locks auto-apply until re-enabled.
+- [x] Event delegation and command attributes
+  - Root listeners capture `click`, `input`, `submit`, `change` (capture phase).
+  - Inputs with `data-state-scope` + `data-state-key` auto-bind to `state.set` on input/change.
+  - `data-command` JSON on click/submit enqueues validated batches (`enqueueBatch`); template tokens supported: `{{value}}`, `{{form.FIELD}}`, plus `windowId` and `componentId`.
+- [x] Sanitization and validation
+  - All DOM HTML is sanitized by `sanitizeHtml` and also rejected at validation time if unsafe (see `schemas.ts` superRefine).
+  - Missing windows/targets produce typed errors collected per frame.
+- [x] Coalesced apply and reset
+  - Batches are coalesced within an animation frame via `createFrameCoalescer`.
+  - `resetWorkspace()` clears windows/components/state, empties DOM, and calls `clearAllQueues()`.
 - [x] STOP (`txn.cancel`) wired end-to-end; auto-lock auto-apply until re-enabled.
 
 ## 5) Chat UI Enhancements
@@ -121,8 +156,8 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [ ] Hotkeys: `/` focus, Ctrl/Cmd+Enter send, Esc collapses when not streaming.
 
 ## 6) Mock Mode -- deprecated --- keep stable no enhancements
-
 ## 7) Observability & Logging
+- [x] Logs panel surfaces planner `risks` as “Planner hints [traceId]: ...” system messages (including any `gui:` lines) for traceable reasoning.
 - [ ] Emit trace_id, plan ms, act ms, apply ms, batch size per intent.
 - [ ] Structured logs redact secrets, include error codes, STOP events.
 - [ ] System toasts + DockChat system messages for any errors/fallbacks.
@@ -177,6 +212,18 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 ---
 
+
+## !!! things to address !!!
+ 1. Wire command persistence + replay (Section 4 Item 1)
+    - Persist every applied command to tool_call table
+    - On startup, replay commands for current workspace
+    - Prove: Build notepad → close app → reopen → notepad still exists
+  2. Build ONE reference app YOU use daily
+    - Example: "Meeting notes scratchpad" or "Daily todo list"
+    - Dogfood it for a week
+    - Find 5 painful UX issues from real usage
+  3. Fix those 5 issues (they'll probably be: slow apply, no undo, clarify loop is clunky, errors are opaque, iteration        
+  creates duplicates)
 ## Update 2025-10-05
 
 ## 11) V1 Declaration

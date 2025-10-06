@@ -25,7 +25,23 @@ describe('chat.cancelStreaming', () => {
       streaming: true,
       suppressAutoApply: false,
       grantModalOpen: false,
+      logsOpen: false,
+      metricsOpen: false,
+      notepadOpen: false,
       toasts: [],
+      telemetry: [],
+      desktopShortcuts: {},
+      workspaceWindows: {},
+      agentStatus: {
+        phase: 'idle',
+        traceId: undefined,
+        planMs: null,
+        actMs: null,
+        applyMs: null,
+        startedAt: null,
+        lastUpdatedAt: null,
+        error: undefined,
+      },
     });
     useChatStore.setState({ messages: [], pendingPlan: undefined, sending: false, error: undefined });
   });
@@ -43,6 +59,10 @@ describe('chat.cancelStreaming', () => {
     expect(app.fullControl).toBe(false);
     expect(app.fullControlLocked).toBe(true);
     expect(app.streaming).toBe(false);
+
+    const status = useAppStore.getState().agentStatus;
+    expect(status.phase).toBe('idle');
+    expect(status.error).toBe('cancelled');
 
     const { messages } = useChatStore.getState();
     expect(messages[messages.length - 1]?.errorCode).toBe('txn_cancelled');

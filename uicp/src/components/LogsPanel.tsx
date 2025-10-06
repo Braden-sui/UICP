@@ -10,10 +10,18 @@ const formatTimestamp = (value: number) => {
   }
 };
 
+const formatDuration = (value: number | null) => {
+  if (value == null) return '—';
+  return `${value} ms`;
+};
+
 export const LogsPanel = () => {
   const messages = useChatStore((state) => state.messages);
   const logsOpen = useAppStore((s) => s.logsOpen);
   const setLogsOpen = useAppStore((s) => s.setLogsOpen);
+  const setMetricsOpen = useAppStore((s) => s.setMetricsOpen);
+  const telemetry = useAppStore((s) => s.telemetry);
+  const metrics = telemetry.slice(0, 3);
 
   return (
     <>
@@ -31,6 +39,53 @@ export const LogsPanel = () => {
             <span>Conversation Logs</span>
             <span className="text-[10px] font-mono lowercase text-slate-400">{messages.length} entries</span>
           </header>
+          {metrics.length > 0 && (
+            <section className="rounded border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-500">
+              <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide">
+                <span>Recent metrics</span>
+                <button
+                  type="button"
+                  onClick={() => setMetricsOpen(true)}
+                  className="rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 hover:bg-slate-100"
+                >
+                  Open dashboard
+                </button>
+              </div>
+              <ul className="space-y-2">
+                {metrics.map((entry) => (
+                  <li key={`metric-${entry.traceId}`} className="flex flex-col gap-1 rounded border border-slate-200 bg-white/90 px-2 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono uppercase tracking-wide text-slate-400">
+                      <span>{entry.traceId}</span>
+                      <span>{formatTimestamp(entry.startedAt)}</span>
+                    </div>
+                    <div className="text-[11px] font-semibold text-slate-600">{entry.summary || '—'}</div>
+                    <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-500">
+                      <span>plan {formatDuration(entry.planMs)}</span>
+                      <span>act {formatDuration(entry.actMs)}</span>
+                      <span>apply {formatDuration(entry.applyMs)}</span>
+                      {entry.batchSize != null && <span>{entry.batchSize} cmd</span>}
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                          entry.status === 'applied'
+                            ? 'bg-emerald-50 text-emerald-600'
+                            : entry.status === 'error'
+                              ? 'bg-red-50 text-red-600'
+                              : entry.status === 'cancelled'
+                                ? 'bg-slate-100 text-slate-500'
+                                : 'bg-sky-50 text-sky-600'
+                        }`}
+                      >
+                        {entry.status}
+                      </span>
+                    </div>
+                    {entry.error && (
+                      <div className="text-[10px] font-mono uppercase text-red-500">{entry.error}</div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <ul className="flex flex-col gap-2 text-slate-700">
             {messages.length === 0 && <li className="text-slate-400">No messages yet.</li>}
             {messages.map((message) => (

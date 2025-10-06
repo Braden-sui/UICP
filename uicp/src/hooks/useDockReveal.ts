@@ -33,12 +33,13 @@ export const useDockReveal = (hideDelayMs = 2500) => {
         }
       }
       if (event.key === "Escape") {
+        if (streaming) return; // Keep dock visible while requests are in flight so STOP stays reachable.
         setChatOpen(false);
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [setChatOpen]);
+  }, [setChatOpen, streaming]);
 
   useEffect(() => {
     if (!isTouchDevice()) return;

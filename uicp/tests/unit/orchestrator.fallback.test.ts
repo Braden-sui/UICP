@@ -38,6 +38,9 @@ describe('orchestrator fallbacks', () => {
     expect(res.notice).toBe('planner_fallback');
     expect(res.batch.length).toBeGreaterThan(0);
     expect(res.batch.every((env) => env.traceId && env.txnId && env.idempotencyKey)).toBe(true);
+    expect(typeof res.traceId).toBe('string');
+    expect(res.timings.planMs).toBeGreaterThanOrEqual(0);
+    expect(res.timings.actMs).toBeGreaterThanOrEqual(0);
   });
 
   it('returns safe error window when actor fails', async () => {
@@ -64,5 +67,8 @@ describe('orchestrator fallbacks', () => {
     // expect first op to be window.create with Action Failed title
     expect(res.batch[0].op).toBe('window.create');
     expect(res.batch.every((env) => env.traceId && env.txnId && env.idempotencyKey)).toBe(true);
+    expect(typeof res.traceId).toBe('string');
+    expect(res.timings.planMs).toBeGreaterThanOrEqual(0);
+    expect(res.timings.actMs).toBeGreaterThanOrEqual(0);
   });
 });

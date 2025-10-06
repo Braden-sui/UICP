@@ -16,6 +16,24 @@ const readEnvMs = (key: string, fallback: number): number => {
 const DEFAULT_PLANNER_TIMEOUT_MS = readEnvMs('VITE_PLANNER_TIMEOUT_MS', 120_000);
 const DEFAULT_ACTOR_TIMEOUT_MS = readEnvMs('VITE_ACTOR_TIMEOUT_MS', 180_000);
 
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+export type RunIntentPhaseDetail =
+  | { phase: 'planning'; traceId: string }
+  | { phase: 'acting'; traceId: string; planMs: number };
+
+export type RunIntentHooks = {
+  onPhaseChange?: (detail: RunIntentPhaseDetail) => void;
+};
+
+export type RunIntentResult = {
+  plan: Plan;
+  batch: Batch;
+  notice?: 'planner_fallback' | 'actor_fallback';
+  traceId: string;
+  timings: { planMs: number; actMs: number };
+};
+
 async function collectCommentaryJson<T = unknown>(
   stream: AsyncIterable<StreamEvent>,
   timeoutMs = 35_000,
@@ -154,13 +172,18 @@ export async function actWithGui(plan: Plan, options?: { timeoutMs?: number }): 
 export async function runIntent(
   text: string,
   applyNow: boolean,
-): Promise<{ plan: Plan; batch: Batch; notice?: 'planner_fallback' | 'actor_fallback' }> {
+  hooks?: RunIntentHooks,
+): Promise<RunIntentResult> {
   // applyNow will be handled by the UI layer; reference here to satisfy strict noUnusedParameters
   void applyNow;
 
   let notice: 'planner_fallback' | 'actor_fallback' | undefined;
   const traceId = createId('trace');
   const txnId = createId('txn');
+
+  hooks?.onPhaseChange?.({ phase: 'planning', traceId });
+
+  const planningStarted = now();
 
   // Step 1: Plan
   let plan: Plan;
@@ -174,6 +197,11 @@ export async function runIntent(
   }
   // Deterministically augment plan with light hints for the actor
   plan = augmentPlan(plan);
+
+  const planMs = Math.max(0, Math.round(now() - planningStarted));
+  hooks?.onPhaseChange?.({ phase: 'acting', traceId, planMs });
+
+  const actingStarted = now();
 
   // Step 2: Act
   let batch: Batch;
@@ -212,5 +240,12 @@ export async function runIntent(
   }));
 
   // Orchestrator wiring to preview/apply is handled by chat/UI layers
-  return { plan, batch: stamped, notice };
+  const actMs = Math.max(0, Math.round(now() - actingStarted));
+  return {
+    plan,
+    batch: stamped,
+    notice,
+    traceId,
+    timings: { planMs, actMs },
+  };
 }

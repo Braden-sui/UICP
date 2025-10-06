@@ -22,6 +22,11 @@ export type PlanPreview = {
   id: string;
   summary: string;
   batch: Batch;
+  traceId?: string;
+  timings?: {
+    planMs: number | null;
+    actMs: number | null;
+  };
 };
 
 export type ChatState = {
@@ -36,6 +41,25 @@ export type ChatState = {
 };
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+const ensureBatchMetadata = (input: Batch, fallbackTraceId?: string): { batch: Batch; traceId: string } => {
+  let trace = fallbackTraceId ?? input.find((env) => env.traceId)?.traceId;
+  if (!trace) {
+    trace = createId("trace");
+  }
+  let txn = input.find((env) => env.txnId)?.txnId ?? createId("txn");
+
+  const stamped = input.map((env) => ({
+    ...env,
+    idempotencyKey: env.idempotencyKey ?? createId("idemp"),
+    traceId: env.traceId ?? trace!,
+    txnId: env.txnId ?? txn,
+  })) as Batch;
+
+  return { batch: stamped, traceId: trace };
+};
 
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
@@ -74,31 +98,99 @@ export const useChatStore = create<ChatState>((set, get) => ({
       error: undefined,
     }));
 
+    const startedAt = Date.now();
+    app.transitionAgentPhase("planning", {
+      startedAt,
+      traceId: undefined,
+      planMs: null,
+      actMs: null,
+      applyMs: null,
+      error: undefined,
+    });
+
     app.setStreaming(true);
+
+    let traceId: string | undefined;
+    let planDuration: number | null = null;
+    let actDuration: number | null = null;
 
     try {
       let batch: Batch;
       let summary: string;
+      let notice: 'planner_fallback' | 'actor_fallback' | undefined;
 
       if (app.agentMode === 'mock') {
         const mock = mockPlanner(prompt);
         const plan = validatePlan({ summary: mock.summary, batch: mock.batch }, "/batch");
         summary = plan.summary;
-        batch = plan.batch;
+        const stamped = ensureBatchMetadata(plan.batch);
+        batch = stamped.batch;
+        traceId = stamped.traceId;
+        planDuration = 0;
+        actDuration = 0;
+        app.transitionAgentPhase('acting', {
+          traceId,
+          planMs: planDuration,
+          actMs: actDuration,
+        });
+        app.upsertTelemetry(traceId, {
+          summary,
+          startedAt,
+          planMs: planDuration,
+          actMs: actDuration,
+          batchSize: batch.length,
+          status: app.fullControl && !app.fullControlLocked ? 'applying' : 'acting',
+        });
       } else {
-        // Orchestrator path: DeepSeek (planner) → Kimi (actor) via streaming transport.
-        // Suppress aggregator auto-apply/preview while we orchestrate to avoid duplicates.
+        // Orchestrator path: DeepSeek (planner) → Qwen (actor) via streaming transport.
         app.setSuppressAutoApply(true);
         try {
-          const { plan, batch: acted, notice } = await runIntent(prompt, /* applyNow */ false);
-          // Validate defensively before surfacing to UI; preserve risks for logging
-          const safePlan = validatePlan({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
-          const safeBatch = validateBatch(acted);
+          const result = await runIntent(prompt, /* applyNow */ false, {
+            onPhaseChange: (detail) => {
+              if (detail.phase === 'planning') {
+                traceId = detail.traceId;
+                app.transitionAgentPhase('planning', {
+                  startedAt,
+                  traceId,
+                  planMs: null,
+                  actMs: null,
+                  applyMs: null,
+                  error: undefined,
+                });
+              } else {
+                traceId = detail.traceId;
+                planDuration = detail.planMs;
+                app.transitionAgentPhase('acting', {
+                  traceId,
+                  planMs: planDuration,
+                  actMs: null,
+                });
+              }
+            },
+          });
+          notice = result.notice;
+          const safePlan = validatePlan({ summary: result.plan.summary, risks: result.plan.risks, batch: result.plan.batch });
+          const safeBatch = validateBatch(result.batch);
           summary = safePlan.summary;
-          batch = safeBatch;
-          // Log planner verbose hints (including any `gui:` lines) to the Logs panel
+          planDuration = result.timings.planMs;
+          actDuration = result.timings.actMs;
+          const stamped = ensureBatchMetadata(safeBatch, result.traceId);
+          batch = stamped.batch;
+          traceId = stamped.traceId;
+          app.transitionAgentPhase('acting', {
+            traceId,
+            planMs: planDuration,
+            actMs: actDuration,
+          });
+          app.upsertTelemetry(traceId, {
+            summary,
+            startedAt,
+            planMs: planDuration,
+            actMs: actDuration,
+            batchSize: batch.length,
+            status: app.fullControl && !app.fullControlLocked ? 'applying' : 'acting',
+          });
           if (safePlan.risks && safePlan.risks.length > 0) {
-            const traceId = safeBatch.find((env) => typeof env.traceId === 'string' && env.traceId.length > 0)?.traceId;
             const lines = safePlan.risks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
             get().pushSystemMessage(`Planner hints${traceId ? ` [${traceId}]` : ''}:\n${lines}`, 'planner_hints');
           }
@@ -113,61 +205,120 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       const plan: PlanPreview = {
-        id: createId("plan"),
+        id: createId('plan'),
         summary,
         batch,
+        traceId,
+        timings: {
+          planMs: planDuration,
+          actMs: actDuration,
+        },
       };
+
+      if (traceId) {
+        const metrics: string[] = [];
+        if (planDuration !== null) metrics.push(`plan ${planDuration} ms`);
+        if (actDuration !== null) metrics.push(`act ${actDuration} ms`);
+        metrics.push(`${plan.batch.length} command${plan.batch.length === 1 ? '' : 's'}`);
+        get().pushSystemMessage(`Trace ${traceId}: ${metrics.join(' • ')}`, 'telemetry_metrics');
+      }
+
+      const summaryContent =
+        app.fullControl && !app.fullControlLocked
+          ? summary
+          : `${summary}\nReview the plan and press Apply when ready.`;
+
+      set((state) => ({
+        messages: [
+          ...state.messages,
+          {
+            id: createId('msg'),
+            role: 'assistant',
+            content: summaryContent,
+            createdAt: Date.now(),
+            planId: plan.id,
+          },
+        ],
+      }));
 
       const fullControlEnabled = app.fullControl && !app.fullControlLocked;
       if (fullControlEnabled) {
         await delay(120);
+        const applyStarted = nowMs();
+        app.transitionAgentPhase('applying', {
+          traceId,
+          planMs: planDuration,
+          actMs: actDuration,
+        });
+        if (traceId) {
+          app.upsertTelemetry(traceId, {
+            status: 'applying',
+          });
+        }
         const outcome = await applyBatch(plan.batch);
+        const applyDuration = Math.max(0, Math.round(nowMs() - applyStarted));
         if (!outcome.success) {
-          const errorMessage = outcome.errors.join("; ");
+          const errorMessage = outcome.errors.join('; ');
           set((state) => ({
             messages: [
               ...state.messages,
               {
-                id: createId("msg"),
-                role: "system",
+                id: createId('msg'),
+                role: 'system',
                 content: `Apply completed with errors: ${errorMessage}`,
                 createdAt: Date.now(),
-                errorCode: "apply_errors",
+                errorCode: 'apply_errors',
               },
             ],
           }));
-          app.pushToast({ variant: "error", message: "Some commands failed during apply." });
+          app.pushToast({ variant: 'error', message: 'Some commands failed during apply.' });
+          app.transitionAgentPhase('idle', {
+            traceId,
+            planMs: planDuration,
+            actMs: actDuration,
+            applyMs: applyDuration,
+            error: errorMessage,
+          });
+          if (traceId) {
+            app.upsertTelemetry(traceId, {
+              applyMs: applyDuration,
+              status: 'error',
+              error: errorMessage,
+            });
+          }
         } else {
+          const appliedMessage = `Applied ${outcome.applied} commands in ${applyDuration} ms${traceId ? ` [${traceId}]` : ''}.`;
           set((state) => ({
             messages: [
               ...state.messages,
               {
-                id: createId("msg"),
-                role: "assistant",
-                content: summary,
+                id: createId('msg'),
+                role: 'system',
+                content: appliedMessage,
                 createdAt: Date.now(),
               },
             ],
           }));
-          app.pushToast({ variant: "success", message: "Plan applied." });
+          app.pushToast({ variant: 'success', message: 'Plan applied.' });
+          app.transitionAgentPhase('idle', {
+            traceId,
+            planMs: planDuration,
+            actMs: actDuration,
+            applyMs: applyDuration,
+          });
+          if (traceId) {
+            app.upsertTelemetry(traceId, {
+              applyMs: applyDuration,
+              status: 'applied',
+              error: undefined,
+            });
+          }
         }
       } else {
         set({ pendingPlan: plan });
-        set((state) => ({
-          messages: [
-            ...state.messages,
-            {
-              id: createId("msg"),
-              role: "assistant",
-              content: `${summary}\nReview the plan and press Apply when ready.`,
-              createdAt: Date.now(),
-              planId: plan.id,
-            },
-          ],
-        }));
       }
     } catch (error) {
-      const code = error instanceof UICPValidationError ? "validation_error" : "planner_error";
+      const code = error instanceof UICPValidationError ? 'validation_error' : 'planner_error';
       const message =
         error instanceof UICPValidationError
           ? formatValidationErrorMessage(error)
@@ -179,17 +330,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: [
           ...state.messages,
           {
-            id: createId("msg"),
-            role: "system",
+            id: createId('msg'),
+            role: 'system',
             content: `Planner failed: ${message}`,
             createdAt: Date.now(),
             errorCode: code,
           },
         ],
       }));
-      useAppStore.getState().pushToast({ variant: "error", message: "Planner failed. Check system message for details." });
+      app.transitionAgentPhase('idle', {
+        traceId,
+        planMs: planDuration,
+        actMs: actDuration,
+        applyMs: null,
+        error: message,
+      });
+      if (traceId) {
+        app.upsertTelemetry(traceId, {
+          planMs: planDuration,
+          actMs: actDuration,
+          status: 'error',
+          error: message,
+        });
+      }
+      useAppStore.getState().pushToast({ variant: 'error', message: 'Planner failed. Check system message for details.' });
     } finally {
-      useAppStore.getState().setStreaming(false);
+      app.setStreaming(false);
       set({ sending: false });
     }
   },
@@ -198,40 +364,81 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!plan) return;
     const app = useAppStore.getState();
     if (!app.fullControl || app.fullControlLocked) {
-      app.pushToast({ variant: "error", message: "Enable full control before applying." });
+      app.pushToast({ variant: 'error', message: 'Enable full control before applying.' });
       return;
     }
     app.setStreaming(true);
+    app.transitionAgentPhase('applying', {
+      traceId: plan.traceId,
+      planMs: plan.timings?.planMs ?? null,
+      actMs: plan.timings?.actMs ?? null,
+    });
+    if (plan.traceId) {
+      app.upsertTelemetry(plan.traceId, {
+        status: 'applying',
+      });
+    }
     try {
       await delay(120);
+      const applyStarted = nowMs();
       const outcome = await applyBatch(plan.batch);
+      const applyDuration = Math.max(0, Math.round(nowMs() - applyStarted));
       if (!outcome.success) {
+        const errorMessage = outcome.errors.join('; ');
         set((state) => ({
           messages: [
             ...state.messages,
             {
-              id: createId("msg"),
-              role: "system",
-              content: `Apply completed with errors: ${outcome.errors.join("; ")}`,
+              id: createId('msg'),
+              role: 'system',
+              content: `Apply completed with errors: ${errorMessage}`,
               createdAt: Date.now(),
-              errorCode: "apply_errors",
+              errorCode: 'apply_errors',
             },
           ],
         }));
-        app.pushToast({ variant: "error", message: "Apply encountered errors." });
+        app.pushToast({ variant: 'error', message: 'Apply encountered errors.' });
+        app.transitionAgentPhase('idle', {
+          traceId: plan.traceId,
+          planMs: plan.timings?.planMs ?? null,
+          actMs: plan.timings?.actMs ?? null,
+          applyMs: applyDuration,
+          error: errorMessage,
+        });
+        if (plan.traceId) {
+          app.upsertTelemetry(plan.traceId, {
+            applyMs: applyDuration,
+            status: 'error',
+            error: errorMessage,
+          });
+        }
       } else {
+        const appliedMessage = `Applied ${outcome.applied} commands in ${applyDuration} ms${plan.traceId ? ` [${plan.traceId}]` : ''}.`;
         set((state) => ({
           messages: [
             ...state.messages,
             {
-              id: createId("msg"),
-              role: "assistant",
-              content: plan.summary,
+              id: createId('msg'),
+              role: 'system',
+              content: appliedMessage,
               createdAt: Date.now(),
             },
           ],
         }));
-        app.pushToast({ variant: "success", message: "Plan applied." });
+        app.pushToast({ variant: 'success', message: 'Plan applied.' });
+        app.transitionAgentPhase('idle', {
+          traceId: plan.traceId,
+          planMs: plan.timings?.planMs ?? null,
+          actMs: plan.timings?.actMs ?? null,
+          applyMs: applyDuration,
+        });
+        if (plan.traceId) {
+          app.upsertTelemetry(plan.traceId, {
+            applyMs: applyDuration,
+            status: 'applied',
+            error: undefined,
+          });
+        }
       }
     } finally {
       set({ pendingPlan: undefined });
@@ -242,24 +449,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const app = useAppStore.getState();
     const cancelBatch = validateBatch([
       {
-        op: "txn.cancel",
-        idempotencyKey: createId("txn.cancel"),
-        params: { id: createId("txn") },
+        op: 'txn.cancel',
+        idempotencyKey: createId('txn.cancel'),
+        params: { id: createId('txn') },
       },
     ]);
     void applyBatch(cancelBatch);
     app.lockFullControl();
+    const lastTrace = app.agentStatus.traceId;
+    app.transitionAgentPhase('idle', {
+      traceId: undefined,
+      planMs: null,
+      actMs: null,
+      applyMs: null,
+      error: 'cancelled',
+    });
+    if (lastTrace) {
+      app.upsertTelemetry(lastTrace, {
+        status: 'cancelled',
+        error: 'cancelled',
+      });
+    }
     app.setStreaming(false);
     set((state) => ({
       pendingPlan: undefined,
       messages: [
         ...state.messages,
         {
-          id: createId("msg"),
-          role: "system",
-          content: "Streaming cancelled. Full control disabled until re-enabled.",
+          id: createId('msg'),
+          role: 'system',
+          content: 'Streaming cancelled. Full control disabled until re-enabled.',
           createdAt: Date.now(),
-          errorCode: "txn_cancelled",
+          errorCode: 'txn_cancelled',
         },
       ],
     }));
@@ -314,6 +535,9 @@ export const formatValidationErrorMessage = (err: UICPValidationError): string =
 
 useAppStore.subscribe((state) => {
   if (!state.fullControl || state.fullControlLocked) {
+    return;
+  }
+  if (state.streaming) {
     return;
   }
   const { pendingPlan, applyPendingPlan } = useChatStore.getState();

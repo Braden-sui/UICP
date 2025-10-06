@@ -26,6 +26,34 @@ export type WorkspaceWindowMeta = {
 
 export type AgentMode = 'live' | 'mock';
 
+export type AgentPhase = 'idle' | 'planning' | 'acting' | 'applying';
+
+export type AgentStatus = {
+  phase: AgentPhase;
+  traceId?: string;
+  planMs: number | null;
+  actMs: number | null;
+  applyMs: number | null;
+  startedAt: number | null;
+  lastUpdatedAt: number | null;
+  error?: string;
+};
+
+export type IntentTelemetryStatus = 'planning' | 'acting' | 'applying' | 'applied' | 'error' | 'cancelled';
+
+export type IntentTelemetry = {
+  traceId: string;
+  summary: string;
+  startedAt: number;
+  planMs: number | null;
+  actMs: number | null;
+  applyMs: number | null;
+  batchSize: number | null;
+  status: IntentTelemetryStatus;
+  error?: string;
+  updatedAt: number;
+};
+
 const resolveDefaultAgentMode = (): AgentMode => {
   const env = import.meta.env;
   // Keep unit tests deterministic by forcing mock mode during vitest runs.
@@ -47,18 +75,21 @@ export type AppState = {
   chatOpen: boolean;
   streaming: boolean;
   agentMode: AgentMode;
+  agentStatus: AgentStatus;
   // When true, aggregator will not auto-apply or preview parsed batches.
   // Used to prevent duplicate application while orchestrator-driven flows run.
   suppressAutoApply: boolean;
   grantModalOpen: boolean;
   // Controls visibility of the LogsPanel.
   logsOpen: boolean;
+  metricsOpen: boolean;
   // Keep a dedicated flag for the built-in Notepad utility window so local UI can toggle it.
   notepadOpen: boolean;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
   workspaceWindows: Record<string, WorkspaceWindowMeta>;
+  telemetry: IntentTelemetry[];
   toasts: Toast[];
   setConnectionStatus: (status: ConnectionStatus) => void;
   setDevMode: (devmode: boolean) => void;
@@ -72,6 +103,7 @@ export type AppState = {
   openGrantModal: () => void;
   closeGrantModal: () => void;
   setLogsOpen: (value: boolean) => void;
+  setMetricsOpen: (value: boolean) => void;
   setNotepadOpen: (value: boolean) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
@@ -79,6 +111,9 @@ export type AppState = {
   removeWorkspaceWindow: (id: string) => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
   dismissToast: (id: string) => void;
+  transitionAgentPhase: (phase: AgentPhase, patch?: Partial<Omit<AgentStatus, 'phase'>>) => void;
+  upsertTelemetry: (traceId: string, patch: Partial<Omit<IntentTelemetry, 'traceId'>>) => void;
+  clearTelemetry: () => void;
 };
 
 const getEnvFlag = (value: string | boolean | undefined, fallback: boolean) => {
@@ -97,12 +132,24 @@ export const useAppStore = create<AppState>()(
       chatOpen: false,
       streaming: false,
       agentMode: resolveDefaultAgentMode(),
+      agentStatus: {
+        phase: 'idle',
+        traceId: undefined,
+        planMs: null,
+        actMs: null,
+        applyMs: null,
+        startedAt: null,
+        lastUpdatedAt: null,
+        error: undefined,
+      },
       suppressAutoApply: false,
       grantModalOpen: false,
       logsOpen: false,
+      metricsOpen: false,
       notepadOpen: false,
       desktopShortcuts: {},
       workspaceWindows: {},
+      telemetry: [],
       toasts: [],
       setConnectionStatus: (status) => set({ connectionStatus: status }),
       setDevMode: (devMode) => set({ devMode }),
@@ -116,6 +163,7 @@ export const useAppStore = create<AppState>()(
       openGrantModal: () => set({ grantModalOpen: true }),
       closeGrantModal: () => set({ grantModalOpen: false }),
       setLogsOpen: (value) => set({ logsOpen: value }),
+      setMetricsOpen: (value) => set({ metricsOpen: value }),
       setNotepadOpen: (value) => set({ notepadOpen: value }),
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
@@ -164,6 +212,93 @@ export const useAppStore = create<AppState>()(
         set((state) => ({
           toasts: state.toasts.filter((toast) => toast.id !== id),
         })),
+      transitionAgentPhase: (phase, patch) =>
+        set((state) => {
+          const now = Date.now();
+          if (phase === 'planning') {
+            return {
+              agentStatus: {
+                phase,
+                traceId: patch?.traceId,
+                planMs: patch?.planMs ?? null,
+                actMs: patch?.actMs ?? null,
+                applyMs: patch?.applyMs ?? null,
+                startedAt: patch?.startedAt ?? now,
+                lastUpdatedAt: now,
+                error: patch?.error,
+              },
+            };
+          }
+
+          const next: AgentStatus = {
+            ...state.agentStatus,
+            phase,
+            lastUpdatedAt: now,
+          };
+
+          if (patch) {
+            if (patch.traceId !== undefined) next.traceId = patch.traceId;
+            if (patch.planMs !== undefined) next.planMs = patch.planMs;
+            if (patch.actMs !== undefined) next.actMs = patch.actMs;
+            if (patch.applyMs !== undefined) next.applyMs = patch.applyMs;
+            if (patch.startedAt !== undefined) next.startedAt = patch.startedAt;
+            if (patch.error !== undefined) {
+              next.error = patch.error;
+            } else if (phase !== 'idle') {
+              next.error = undefined;
+            }
+          } else if (phase !== 'idle') {
+            next.error = undefined;
+          }
+
+          return { agentStatus: next };
+        }),
+      upsertTelemetry: (traceId, patch) =>
+        set((state) => {
+          if (!traceId) {
+            return {};
+          }
+          const now = Date.now();
+          const existingIndex = state.telemetry.findIndex((entry) => entry.traceId === traceId);
+          const draft: IntentTelemetry = existingIndex >= 0
+            ? { ...state.telemetry[existingIndex] }
+            : {
+                traceId,
+                summary: patch.summary ?? '',
+                startedAt: patch.startedAt ?? now,
+                planMs: patch.planMs ?? null,
+                actMs: patch.actMs ?? null,
+                applyMs: patch.applyMs ?? null,
+                batchSize: patch.batchSize ?? null,
+                status: patch.status ?? 'planning',
+                error: patch.error,
+                updatedAt: now,
+              };
+
+          if (patch.summary !== undefined) draft.summary = patch.summary;
+          if (patch.startedAt !== undefined) draft.startedAt = patch.startedAt;
+          if (patch.planMs !== undefined) draft.planMs = patch.planMs;
+          if (patch.actMs !== undefined) draft.actMs = patch.actMs;
+          if (patch.applyMs !== undefined) draft.applyMs = patch.applyMs;
+          if (patch.batchSize !== undefined) draft.batchSize = patch.batchSize;
+          if (patch.status !== undefined) draft.status = patch.status;
+          if (patch.error !== undefined) {
+            draft.error = patch.error;
+          }
+          draft.updatedAt = now;
+          const next = [...state.telemetry];
+          if (existingIndex >= 0) {
+            next[existingIndex] = draft;
+          } else {
+            next.unshift(draft);
+          }
+          const MAX_ENTRIES = 25;
+          if (next.length > MAX_ENTRIES) {
+            next.length = MAX_ENTRIES;
+          }
+          return { telemetry: next };
+        }),
+      clearTelemetry: () => set({ telemetry: [] }),
     }),
     {
       name: 'uicp-app',
