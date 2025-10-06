@@ -16,6 +16,16 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: uicp/package-lock.json
+      - name: Create .env for tests
+        working-directory: uicp
+        env:
+          E2E_ORCHESTRATOR: ${{ secrets.E2E_ORCHESTRATOR != '' && secrets.E2E_ORCHESTRATOR || '0' }}
+          VITE_MOCK_MODE: ${{ secrets.VITE_MOCK_MODE != '' && secrets.VITE_MOCK_MODE || 'true' }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+        run: |
+          printf "E2E_ORCHESTRATOR=%s\n" "$E2E_ORCHESTRATOR" > .env
+          printf "VITE_MOCK_MODE=%s\n" "$VITE_MOCK_MODE" >> .env
+          if [ -n "$OLLAMA_API_KEY" ]; then printf "OLLAMA_API_KEY=%s\n" "$OLLAMA_API_KEY" >> .env; fi
       - name: Install dependencies
         working-directory: uicp
         run: npm ci

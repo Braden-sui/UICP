@@ -41,7 +41,7 @@ function makeStream(events: StreamEvent[]): AsyncIterable<StreamEvent> {
 }
 
 // Import under test AFTER mocks
-import { planWithDeepSeek, actWithKimi, runIntent } from '../../src/lib/llm/orchestrator';
+import { planWithDeepSeek, actWithGui, runIntent } from '../../src/lib/llm/orchestrator';
 
 describe('orchestrator integration', () => {
   beforeEach(() => {
@@ -57,7 +57,7 @@ describe('orchestrator integration', () => {
 
   it('extracts batch array from commentary buffer with surrounding noise', async () => {
     const plan = await planWithDeepSeek('make a notepad');
-    const batch = await actWithKimi(plan);
+    const batch = await actWithGui(plan);
     expect(Array.isArray(batch)).toBe(true);
     expect(batch.length).toBe(1);
     expect(batch[0].op).toBe('window.create');

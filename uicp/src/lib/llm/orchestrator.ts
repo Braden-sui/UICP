@@ -118,7 +118,7 @@ export async function planWithDeepSeek(intent: string, options?: { timeoutMs?: n
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-export async function actWithKimi(plan: Plan, options?: { timeoutMs?: number }): Promise<Batch> {
+export async function actWithGui(plan: Plan, options?: { timeoutMs?: number }): Promise<Batch> {
   const client = getActorClient();
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
   let lastErr: unknown;
@@ -159,7 +159,7 @@ export async function runIntent(
   // Step 2: Act
   let batch: Batch;
   try {
-    batch = await actWithKimi(plan);
+    batch = await actWithGui(plan);
   } catch {
     // Actor failed: return a safe error window batch to surface failure without partial apply
     notice = 'actor_fallback';

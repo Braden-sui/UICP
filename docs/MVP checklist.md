@@ -1,4 +1,4 @@
-﻿# UICP MVP - Local-First Desktop App
+# UICP MVP - Local-First Desktop App
 
 Update log - 2025-10-05
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
@@ -94,7 +94,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [x] Host validation ensures `https://ollama.com` without `/v1` for cloud (Rust backend assertion in `main.rs`).
 - [x] Orchestrator functions:
   - `planWithDeepSeek(intent)` -> temp 0.2, 35s timeout, 1 retry (network only), strict JSON.
-  - `actWithQwen(plan)` -> temp 0.15, 35s timeout, 1 retry (network only), strict JSON.
+  - `actWithGui(plan)` -> temp 0.15, 35s timeout, 1 retry (network only), strict JSON.
   - `runIntent(text, applyNow)` -> planning -> acting -> validation -> preview/apply.
 - [x] Fallbacks:
   - Planner invalid/timeout twice -> actor-only fallback + system message.
@@ -120,10 +120,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [x] STOP cancels within 1s, emits message, locks auto-apply until re-consented.
 - [ ] Hotkeys: `/` focus, Ctrl/Cmd+Enter send, Esc collapses when not streaming.
 
-## 6) Mock Mode
-- [ ] MOCK planner returns deterministic plans for "notepad", "todo list", "dashboard"; fallback echo window.
-- [ ] MOCK actor stamps ids and ensures valid batch.
-- [ ] Adapter applies normally; STOP and preview flows supported.
+## 6) Mock Mode -- deprecated --- keep stable no enhancements
 
 ## 7) Observability & Logging
 - [ ] Emit trace_id, plan ms, act ms, apply ms, batch size per intent.

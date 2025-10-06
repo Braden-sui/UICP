@@ -110,7 +110,15 @@ export const Desktop = () => {
   }, []);
 
   const menus = useMemo<DesktopMenu[]>(() => {
-    const entries = Object.values(workspaceWindows);
+    const entries = Object.values(workspaceWindows)
+      // Hide ephemeral or system windows from the menu bar
+      .filter((meta) => {
+        if (meta.kind !== 'workspace') return true;
+        const title = meta.title.toLowerCase();
+        if (title === 'action failed') return false;
+        if (title === 'browser') return false;
+        return true;
+      });
     if (!entries.length) return [];
     return entries
       .sort((a, b) => a.title.localeCompare(b.title))

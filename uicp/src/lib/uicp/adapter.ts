@@ -51,6 +51,9 @@ const stateStore = new Map<StateScope, Map<string, unknown>>([
   ["global", new Map()],
 ]);
 
+// Track per-window drag cleanup so we can detach listeners on destroy.
+const windowDragCleanup = new WeakMap<HTMLElement, () => void>();
+
 let workspaceRoot: HTMLElement | null = null;
 
 type CommandResult<T = unknown> =
@@ -214,6 +217,14 @@ export const resetWorkspace = () => {
 const destroyWindow = (id: string) => {
   const record = windows.get(id);
   if (!record) return;
+  // Detach drag listeners if present
+  try {
+    const off = windowDragCleanup.get(record.wrapper);
+    if (off) off();
+    windowDragCleanup.delete(record.wrapper);
+  } catch {
+    // ignore
+  }
   record.wrapper.remove();
   windows.delete(id);
   emitWindowEvent({ type: 'destroyed', id, title: record.titleText.textContent ?? id });
@@ -280,7 +291,7 @@ const executeWindowCreate = (
     wrapper.style.overflow = "hidden";
 
     const chrome = document.createElement("div");
-    chrome.className = "window-title flex items-center bg-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur";
+    chrome.className = "window-title flex items-center bg-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur select-none cursor-grab";
 
     const titleText = document.createElement("span");
     titleText.className = "truncate";
@@ -301,6 +312,80 @@ const executeWindowCreate = (
     windows.set(id, record);
     applyWindowGeometry(record, params);
     emitWindowEvent({ type: 'created', id, title: params.title });
+
+    // Install lightweight pointer-drag on the chrome to move the window
+    let pointerId: number | null = null;
+    let offsetX = 0;
+    let offsetY = 0;
+    let originX = 0;
+    let originY = 0;
+    let moved = false;
+
+    const clamp = (value: number, max: number) => {
+      if (Number.isNaN(value)) return 0;
+      if (!Number.isFinite(max) || max <= 0) return 0;
+      return Math.min(Math.max(0, value), max);
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      pointerId = event.pointerId;
+      const rect = wrapper.getBoundingClientRect();
+      offsetX = event.clientX - rect.left;
+      offsetY = event.clientY - rect.top;
+      originX = event.clientX;
+      originY = event.clientY;
+      moved = false;
+      chrome.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (pointerId === null || event.pointerId !== pointerId) return;
+      const boundsWidth = wrapper.offsetWidth;
+      const boundsHeight = wrapper.offsetHeight;
+      const maxX = window.innerWidth - boundsWidth - 16;
+      const maxY = window.innerHeight - boundsHeight - 16;
+      const nextX = clamp(event.clientX - offsetX, maxX);
+      const nextY = clamp(event.clientY - offsetY, maxY);
+
+      if (!moved) {
+        const dx = Math.abs(event.clientX - originX);
+        const dy = Math.abs(event.clientY - originY);
+        if (dx > 2 || dy > 2) moved = true;
+      }
+      if (!moved) {
+        event.preventDefault();
+        return;
+      }
+      wrapper.style.left = `${Math.round(nextX)}px`;
+      wrapper.style.top = `${Math.round(nextY)}px`;
+      originX = event.clientX;
+      originY = event.clientY;
+      event.preventDefault();
+    };
+
+    const endPointerTracking = (event: PointerEvent) => {
+      if (pointerId === null || event.pointerId !== pointerId) return;
+      pointerId = null;
+      try {
+        chrome.releasePointerCapture?.(event.pointerId);
+      } catch {
+        // ignore
+      }
+    };
+
+    chrome.addEventListener('pointerdown', onPointerDown);
+    chrome.addEventListener('pointermove', onPointerMove);
+    chrome.addEventListener('pointerup', endPointerTracking);
+    chrome.addEventListener('pointercancel', endPointerTracking);
+
+    windowDragCleanup.set(wrapper, () => {
+      chrome.removeEventListener('pointerdown', onPointerDown);
+      chrome.removeEventListener('pointermove', onPointerMove);
+      chrome.removeEventListener('pointerup', endPointerTracking);
+      chrome.removeEventListener('pointercancel', endPointerTracking);
+    });
     return { success: true, value: id };
   } catch (error) {
     return toFailure(error);
