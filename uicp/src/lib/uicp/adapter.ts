@@ -1,6 +1,6 @@
 import type { Batch, Envelope, OperationParamMap } from "./schemas";
 import { createFrameCoalescer, createId, sanitizeHtml } from "../utils";
-import { enqueueBatch } from "./queue";
+import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 
 const coalescer = createFrameCoalescer();
@@ -208,6 +208,7 @@ export const resetWorkspace = () => {
   windows.clear();
   components.clear();
   for (const scope of stateStore.values()) scope.clear();
+  clearAllQueues();
   if (workspaceRoot) {
     workspaceRoot.innerHTML = "";
   }

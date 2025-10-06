@@ -1,4 +1,4 @@
-﻿import { create } from "zustand";
+import { create } from "zustand";
 import { applyBatch } from "../lib/uicp/adapter";
 import { mockPlanner } from "../lib/mock";
 import type { Batch } from "../lib/uicp/schemas";
@@ -91,11 +91,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         app.setSuppressAutoApply(true);
         try {
           const { plan, batch: acted, notice } = await runIntent(prompt, /* applyNow */ false);
-          // Validate defensively before surfacing to UI
-          const safePlan = validatePlan({ summary: plan.summary, batch: plan.batch });
+          // Validate defensively before surfacing to UI; preserve risks for logging
+          const safePlan = validatePlan({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
           const safeBatch = validateBatch(acted);
           summary = safePlan.summary;
           batch = safeBatch;
+          // Log planner verbose hints (including any `gui:` lines) to the Logs panel
+          if (safePlan.risks && safePlan.risks.length > 0) {
+            const traceId = safeBatch.find((env) => typeof env.traceId === 'string' && env.traceId.length > 0)?.traceId;
+            const lines = safePlan.risks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
+            get().pushSystemMessage(`Planner hints${traceId ? ` [${traceId}]` : ''}:\n${lines}`, 'planner_hints');
+          }
           if (notice === 'planner_fallback') {
             get().pushSystemMessage('Planner degraded: using actor-only fallback for this intent.', 'planner_fallback');
           } else if (notice === 'actor_fallback') {

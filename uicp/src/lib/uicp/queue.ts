@@ -9,6 +9,8 @@ import { applyBatch, type ApplyOutcome } from './adapter';
 // - txn.cancel clears all pending queues immediately
 
 const GLOBAL_KEY = '__global__';
+const IDEMPOTENCY_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const CLEANUP_THRESHOLD = 1000; // Cleanup when map exceeds this size
 
 let onApplied: ((summary: { windowId: string; applied: number; ms: number }) => void) | null = null;
 export const setQueueAppliedListener = (
@@ -17,8 +19,8 @@ export const setQueueAppliedListener = (
   onApplied = handler;
 };
 
-// Tracks seen idempotency keys to drop duplicates.
-const seenIdempotency = new Set<string>();
+// Tracks seen idempotency keys with timestamps for TTL-based expiration.
+const seenIdempotency = new Map<string, number>();
 
 // Chains per-window execution promises to ensure FIFO.
 const chains = new Map<string, Promise<ApplyOutcome>>();
@@ -26,17 +28,33 @@ const chains = new Map<string, Promise<ApplyOutcome>>();
 // Clears the queues; does not modify DOM. Callers should enqueue a txn.cancel batch to reset UI if needed.
 export const clearAllQueues = () => {
   chains.clear();
+  seenIdempotency.clear();
 };
 
 // Filters envelopes by idempotencyKey; returns filtered Batch and how many were dropped.
 const filterByIdempotency = (batch: Batch): { filtered: Batch; dropped: number } => {
+  const now = Date.now();
+
   const filtered = batch.filter((env) => {
     const key = env.idempotencyKey;
     if (!key) return true;
-    if (seenIdempotency.has(key)) return false;
-    seenIdempotency.add(key);
+
+    const seen = seenIdempotency.get(key);
+    if (seen && now - seen < IDEMPOTENCY_TTL_MS) return false;
+
+    seenIdempotency.set(key, now);
     return true;
   });
+
+  // Lazy cleanup: remove expired entries when map grows beyond threshold
+  if (seenIdempotency.size > CLEANUP_THRESHOLD) {
+    for (const [k, ts] of seenIdempotency.entries()) {
+      if (now - ts > IDEMPOTENCY_TTL_MS) {
+        seenIdempotency.delete(k);
+      }
+    }
+  }
+
   return { filtered, dropped: batch.length - filtered.length };
 };
 

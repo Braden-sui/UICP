@@ -54,12 +54,17 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   private buffer: (T | Error | symbol)[] = [];
   private resolvers: Array<(v: IteratorResult<T>) => void> = [];
   private readonly END = Symbol('end');
+  private readonly MAX_BUFFER_SIZE = 2000;
 
   push(value: T) {
     if (this.resolvers.length) {
       const res = this.resolvers.shift()!;
       res({ value, done: false });
     } else {
+      // Drop oldest event if buffer is full to prevent OOM
+      if (this.buffer.length >= this.MAX_BUFFER_SIZE) {
+        this.buffer.shift();
+      }
       this.buffer.push(value);
     }
   }
