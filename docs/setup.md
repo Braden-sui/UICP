@@ -53,11 +53,15 @@ Artifacts land under `uicp/src-tauri/target/release/bundle/`.
 - Fallback (post-MVP): `qwen3-coder:480b`
 
 ## Authorization
-Requests to Ollama Cloud use:
+Requests to Ollama Cloud use the Bearer token header:
 ```
-Authorization: <api-key>
+Authorization: Bearer <api-key>
 ```
-No `Bearer` prefix is required (see https://docs.ollama.com/cloud#python-2).
+Primary endpoints invoked by the app:
+```
+GET  https://ollama.com/api/tags   # key validation / model list
+POST https://ollama.com/api/chat   # streaming chat completions
+```
 
 ## Notes
 - Workspace state persists once you click **Save** (writes to `~/Documents/UICP/data.db`).

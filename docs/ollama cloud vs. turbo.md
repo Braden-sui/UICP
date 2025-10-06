@@ -8,161 +8,41 @@ Ollama Cloud – Ollama introduced a “cloud models” feature that offloads in
 Authentication – Cloud models require an account on ollama.com. Use ollama signin in the CLI or create an API key on the web site. You pass the API key in the Authorization header when using the API. The cloud service does not retain your input data and is located in datacenters in the U.S.
 docs.ollama.com
 .
-
 Differences between local and cloud endpoints
 Item	Local Ollama	Ollama Cloud (remote)
 Host	http://localhost:11434	https://ollama.com
 API endpoints	/api/* (Ollama‑specific) and /v1/* (OpenAI‑compatible)	Same paths (/api/generate, /api/chat, /api/tags etc.) but hosted on ollama.com
 Models	Local models have names such as llama3:8b and can be pulled via ollama pull. They must fit on local VRAM.	Cloud models have names ending in ‑cloud and use datacenter GPUs. You don’t download them; the inference runs in the cloud.
-Authentication	No API key is needed for local access; the API listens on localhost only.	API key required. Include Authorization: <api‑key> in HTTP headers.
+Authentication	No API key is needed for local access; the API listens on localhost only.	API key required. Include Authorization: Bearer <api‑key> in HTTP headers.
+
 Usage	Models are stored on disk; inference happens locally.	Offloads inference to Ollama’s cloud hardware but allows you to use the same CLI/API.
 Ollama Cloud models
 
 The Ollama documentation lists cloud models that can be run via the CLI/API. As of September 2025, the documentation and official blog show the following models:
 
-Model	Description	Source
-qwen3‑coder:480b‑cloud	480‑billion‑parameter coding specialist. Allows running a massive coding model through the same API.	Blog on cloud models
-ollama.com
- and Medium article
-blog.gopenai.com
-
-gpt‑oss:120b‑cloud	120‑billion‑parameter general‑purpose model designed for reasoning and agentic tasks.	Cloud docs and blog
-ollama.com
-
-gpt‑oss:20b‑cloud	20‑billion‑parameter compact model.	Cloud docs and blog
-ollama.com
-
-deepseek‑v3.1:671b‑cloud	671‑billion‑parameter model that was listed in the documentation
-docs.ollama.com
-. It may be in limited preview and might not yet appear in later blog posts.	
-kimi‑k2:1t‑cloud (preview)	A 1‑trillion‑parameter model referenced in the cloud docs
-docs.ollama.com
-. Availability may vary because this model wasn’t mentioned in later blog posts.	
-
-The blog notes that these models can be listed via the CLI (e.g., ollama ls) or via the cloud API. A CLI listing shows that gpt‑oss:120b‑cloud, gpt‑oss:20b‑cloud, deepseek‑v3.1:671b‑cloud and qwen3‑coder:480b‑cloud are available
-ollama.com
-. A more recent Medium article summarised the available models as qwen3‑coder:480b‑cloud, gpt‑oss:120b‑cloud and gpt‑oss:20b‑cloud
-blog.gopenai.com
-.
-
-Using the Ollama cloud API (Ollama‑specific endpoints)
-
-Ollama’s REST API provides endpoints for generating text, chatting, listing models, creating/pushing models and more. The same endpoints exist for local and cloud usage—the only difference is the host and the need for an API key. Key points from the API reference:
-
-Endpoint to generate a completion: POST /api/generate. This is a streaming endpoint that returns a series of JSON objects; it can be converted to a single response by passing { "stream": false }
-. Required parameters include model (the model name) and prompt (the input text)
-. Optional parameters include suffix, images (for multimodal models), format (e.g., json), options (for temperature, etc.), system (system prompt), template (custom prompt template), stream (set to false for non‑streaming), raw (turn off template formatting), keep_alive (how long the model stays loaded) and context (deprecated)
-.
-
-Endpoint to generate a chat completion: POST /api/chat. It accepts a model and a list of messages with role (user, assistant or system) and content. The response is streamed unless stream: false is provided. Parameters mirror those of /api/generate.
-
-List available models: GET /api/tags returns a list of model tags. In the cloud context, call https://ollama.com/api/tags with your API key to list available cloud models
-docs.ollama.com
-.
+{{ ... }}
 
 Example calls using cURL
 
 List available cloud models (replace <API_KEY> with your API key):
 
-curl -H "Authorization: <API_KEY>" \
+curl -H "Authorization: Bearer <API_KEY>" \
      https://ollama.com/api/tags
+
 
 
 Generate a chat response using a cloud model via the Ollama‑specific API:
 
 curl https://ollama.com/api/chat \
-  -H "Authorization: <API_KEY>" \
+  -H "Authorization: Bearer <API_KEY>" \
   -H "Content-Type: application/json" \
+
   -d '{
     "model": "gpt-oss:120b-cloud",
     "messages": [
       {"role": "user", "content": "Why is the sky blue?"}
     ],
-    "stream": false
-  }'
-
-
-This request calls the remote API and returns a JSON object with the model’s reply. Use "stream": true (default) to receive a stream of partial responses.
-
-Python integration using ollama library
-
-Ollama maintains a Python library that can connect to both local and cloud endpoints. To use it with cloud models, set the host to https://ollama.com and provide an API key in the Authorization header. The cloud documentation provides an example
-docs.ollama.com
-:
-
-from ollama import Client
-
-client = Client(
-    host="https://ollama.com",
-    headers={'Authorization': '<API_KEY>'}
-)
-
-messages = [
-    {'role': 'user', 'content': 'Why is the sky blue?'}
-]
-
-# Stream the response from the cloud model
-for part in client.chat('gpt-oss:120b', messages=messages, stream=True):
-    print(part['message']['content'], end='', flush=True)
-
-
-Key points:
-
-The model name should include the -cloud suffix when addressing cloud models (e.g., gpt-oss:120b-cloud).
-
-host must be set to https://ollama.com for cloud access; the default is http://localhost:11434 for local usage.
-
-Provide the API key in the Authorization header.
-
-You can disable streaming by adding stream=False to client.chat() or by passing {"stream": false} in raw requests.
-
-JavaScript example (Node.js)
-
-Ollama also offers a JavaScript library. The blog provides an example of using a cloud model via the library: after installing ollama and pulling a cloud model, you call ollama.chat with the model name
-ollama.com
-:
-
-import ollama from "ollama";
-
-// Set the host and API key
-const client = new ollama.Client({
-  host: "https://ollama.com",
-  headers: { Authorization: process.env.OLLAMA_API_KEY },
-});
-
-const response = await client.chat({
-  model: "gpt-oss:120b-cloud",
-  messages: [{ role: "user", content: "Why is the sky blue?" }],
-});
-
-console.log(response.message.content);
-
-Using the OpenAI‑compatible endpoints
-
-Ollama exposes an OpenAI‑compatible API under the /v1 path. This API makes it possible to reuse existing OpenAI clients by simply changing the base URL and API key. The documentation notes that you can call the Chat Completions endpoint with the same request body you would send to OpenAI but change the hostname to your Ollama instance
-. Example:
-
-curl http://localhost:11434/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: ollama" \
-  -d '{
-    "model": "llama2",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-
-
-For cloud usage, change the base URL to https://ollama.com and provide your API key:
-
-curl https://ollama.com \
-  -H "Content-Type: application/json" \
-  -H "Authorization: <API_KEY>" \
-  -d '{
-    "model": "gpt-oss:120b-cloud",
-    "messages": [{"role": "user", "content": "Explain gravitational lensing."}],
-    "stream": false
-  }'
-
-
+{{ ... }}
 OpenAI‑compatible endpoints available:
 
 Endpoint	Description

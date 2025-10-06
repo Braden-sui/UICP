@@ -1,4 +1,4 @@
-﻿# UICP Architecture Overview
+# UICP Architecture Overview
 
 ## High-Level
 - **Frontend:** React + Tailwind running inside a Tauri webview.
@@ -31,7 +31,7 @@
 - `AppState`: shared state (SQLite path, HTTP client, API key cache).
 - `get_paths`: exposes filesystem paths to the frontend.
 - `load_api_key` / `save_api_key`: manage `.env` storage.
-- `test_api_key`: validates credentials against `https://ollama.com/models` with `Authorization: <api-key>` header (no `Bearer`).
+- `test_api_key`: validates credentials against `https://ollama.com/api/tags` with an `Authorization: Bearer <api-key>` header.
 - `load_workspace` / `save_workspace`: persist draggable window layout to SQLite.
 - `chat_completion`: streams Ollama Cloud responses (`ollama-completion` events).
 - `enqueue_command`: placeholder for the tool queue.
@@ -49,10 +49,10 @@
 ## Ollama Cloud Integration
 - Base URL (cloud): `https://ollama.com` (no `/v1` by policy; runtime assertion enforces this)
 - Base URL (local): `http://127.0.0.1:11434/v1`
-- Authentication: `Authorization: <api-key>` (no `Bearer` prefix per https://docs.ollama.com/cloud#python-2)
+- Authentication: `Authorization: Bearer <api-key>`.
 - Endpoints:
-  - `GET /models`: validate key, list models.
-- `POST /chat/completions`: stream completions for tool orchestration.
+  - `GET /api/tags`: validate key, list models.
+  - `POST /api/chat`: stream completions for tool orchestration.
 - The HTTP client uses `reqwest` with Rustls TLS.
 
 ## Persistence

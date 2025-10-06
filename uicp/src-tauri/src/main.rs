@@ -144,14 +144,22 @@ async fn test_api_key(state: State<'_, AppState>, window: tauri::Window) -> Resu
                     message: Some("API key validated against Ollama Cloud".into()),
                 },
             )
-            .ok();
+            .map_err(|e| format!("Failed to emit api-key-status: {e}"))?;
         Ok(ApiKeyStatus {
             valid: true,
             message: Some("API key validated against Ollama Cloud".into()),
         })
     } else {
         let msg = format!("Ollama responded with status {}", result.status());
-        window.emit("api-key-status", ApiKeyStatus { valid: false, message: Some(msg.clone()) }).ok();
+        window
+            .emit(
+                "api-key-status",
+                ApiKeyStatus {
+                    valid: false,
+                    message: Some(msg.clone()),
+                },
+            )
+            .map_err(|e| format!("Failed to emit api-key-status: {e}"))?;
         Ok(ApiKeyStatus { valid: false, message: Some(msg) })
     }
 }
@@ -375,7 +383,7 @@ async fn chat_completion(
                         tokio::time::sleep(Duration::from_millis(backoff_ms.min(3_000))).await;
                         continue 'outer;
                     }
-                    let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                    emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
                     break;
                 }
                 Ok(resp) => {
@@ -392,7 +400,7 @@ async fn chat_completion(
                             tokio::time::sleep(Duration::from_millis(retry_after_ms.min(5_000))).await;
                             continue 'outer;
                         }
-                        let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                        emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
                         break;
                     }
 
@@ -416,7 +424,7 @@ async fn chat_completion(
                                     };
 
                                     if payload_str == "[DONE]" {
-                                        let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                                        emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
                                         continue;
                                     }
 
@@ -425,7 +433,7 @@ async fn chat_completion(
                                         Ok(val) => {
                                             // { done: true }
                                             if val.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                                let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                                                emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
                                                 continue;
                                             }
                                             // Cloud native: { message: { content, channel? } }
@@ -436,7 +444,7 @@ async fn chat_completion(
                                                         "choices": [{ "delta": { "channel": channel, "content": content } }]
                                                     });
                                                     let wrapped_str = wrapped.to_string();
-                                                    let _ = app_handle.emit(
+                                                    emit_or_log(&app_handle, 
                                                         "ollama-completion",
                                                         serde_json::json!({ "done": false, "delta": wrapped_str }),
                                                     );
@@ -444,14 +452,14 @@ async fn chat_completion(
                                                 }
                                             }
                                             // Pass through original JSON string
-                                            let _ = app_handle.emit(
+                                            emit_or_log(&app_handle, 
                                                 "ollama-completion",
                                                 serde_json::json!({ "done": false, "delta": payload_str }),
                                             );
                                         }
                                         Err(_) => {
                                             // Pass through plain text
-                                            let _ = app_handle.emit(
+                                            emit_or_log(&app_handle, 
                                                 "ollama-completion",
                                                 serde_json::json!({ "done": false, "delta": payload_str }),
                                             );
@@ -462,7 +470,7 @@ async fn chat_completion(
                         }
                     }
 
-                    let _ = app_handle.emit("ollama-completion", serde_json::json!({ "done": true }));
+                    emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
                     break;
                 }
             }
@@ -521,10 +529,12 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     )
     .context("apply migrations")?;
 
-    conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", [])
-        .ok();
-    conn.execute("ALTER TABLE window ADD COLUMN height REAL DEFAULT 480", [])
-        .ok();
+    if let Err(err) = conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
+        eprintln!("Failed to add width column migration: {err:?}");
+    }
+    if let Err(err) = conn.execute("ALTER TABLE window ADD COLUMN height REAL DEFAULT 480", []) {
+        eprintln!("Failed to add height column migration: {err:?}");
+    }
 
     Ok(())
 }
@@ -556,7 +566,9 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
         }
     } else {
         // still load default .env if present elsewhere
-        let _ = dotenv();
+        if let Err(err) = dotenv() {
+            eprintln!("Failed to load fallback .env: {err:?}");
+        }
         if let Ok(val) = std::env::var("OLLAMA_API_KEY") {
             state.ollama_key.blocking_write().replace(val);
         }
@@ -611,7 +623,7 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
         let mut last_emitted = {
             let state: State<'_, AppState> = app_handle.state();
             let current = *state.last_save_ok.read().await;
-            let _ = app_handle.emit(
+            emit_or_log(&app_handle, 
                 "save-indicator",
                 SaveIndicatorPayload {
                     ok: current,
@@ -628,7 +640,7 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
                 continue;
             }
             last_emitted = Some(current);
-            let _ = app_handle.emit(
+            emit_or_log(&app_handle, 
                 "save-indicator",
                 SaveIndicatorPayload {
                     ok: current,
@@ -640,7 +652,9 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
 }
 
 fn main() {
-    dotenv().ok();
+    if let Err(err) = dotenv() {
+        eprintln!("Failed to load .env: {err:?}");
+    }
 
     let db_path = DB_PATH.clone();
 
@@ -656,9 +670,18 @@ fn main() {
         ongoing: RwLock::new(HashMap::new()),
     };
 
-    let _ = init_database(&db_path);
-    let _ = ensure_default_workspace(&db_path);
-    let _ = load_env_key(&state);
+    if let Err(err) = init_database(&db_path) {
+        eprintln!("Failed to initialize database: {err:?}");
+        std::process::exit(1);
+    }
+    if let Err(err) = ensure_default_workspace(&db_path) {
+        eprintln!("Failed to ensure default workspace: {err:?}");
+        std::process::exit(1);
+    }
+    if let Err(err) = load_env_key(&state) {
+        eprintln!("Failed to load environment keys: {err:?}");
+        std::process::exit(1);
+    }
 
     tauri::Builder::default()
         .manage(state)
@@ -680,3 +703,4 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

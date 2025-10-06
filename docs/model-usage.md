@@ -4,8 +4,7 @@
 - `https://ollama.com`
 
 ## Authentication
-- Header: `Authorization: <api-key>`
-- No `Bearer` prefix (per https://docs.ollama.com/cloud#python-2)
+- Header: `Authorization: Bearer <api-key>`
 - Keys are user-provided and stored locally in `.env` (MVP).
 
 ## Default Models
@@ -27,7 +26,7 @@ payload = {
 }
 
 response = requests.post(
-    "https://ollama.com",
+    "https://ollama.com/api/chat",
     headers=headers,
     json=payload,
     stream=True

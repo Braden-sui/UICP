@@ -4,7 +4,7 @@ Purpose of this document – Ollama Cloud gives you access to very large open‑
 
 Important: The instructions below refer to the cloud models hosted by Ollama. Models served locally via the ollama CLI may use different chat templates and should not be confused with the cloud endpoints.
 
-Authentication: All Ollama Cloud requests use `Authorization: <api-key>` (no `Bearer` prefix) as documented at https://docs.ollama.com/cloud#python-2.
+Authentication: All Ollama Cloud requests use `Authorization: Bearer <api-key>` as documented at https://docs.ollama.com/cloud.
 
 1. GPT‑OSS models (gpt‑oss‑20b‑cloud & gpt‑oss‑120b‑cloud)
 1.1 Harmony response format
@@ -52,18 +52,14 @@ Developer message (role developer). Contains high‑level rules, allowed tools a
 
 User messages – use the user role. Provide the conversation history just like ChatML; no channels are specified for users.
 
-Assistant messages – each assistant response must include a channel. After each turn, keep the previous assistant messages (including analysis and commentary) in the conversation history unless you explicitly drop them. The Harmony spec emphasises that calls to tools must go to the commentary channel
-cookbook.openai.com
-.
-
 1.3 Example request to the Ollama Cloud API
 
-The cloud API uses the standard OpenAI chat endpoint but the host is https://ollama.com or via the OpenAI‑compatible endpoint. An example using Python’s requests library:
+The cloud API exposes Ollama-native endpoints under https://ollama.com/api/*. An example using Python’s requests library:
 
 import os, json, requests
 
 api_key = os.environ["OLLAMA_API_KEY"]  # store your key securely
-url = "https://ollama.com"
+url = "https://ollama.com/api/chat"
 
 messages = [
     {
@@ -83,7 +79,7 @@ payload = {
     "stream": True  # enable streaming if desired
 }
 
-headers = {"Authorization": api_key}
+headers = {"Authorization": f"Bearer {api_key}"}
 
 response = requests.post(url, headers=headers, json=payload, stream=True)
 for chunk in response.iter_lines():
@@ -104,7 +100,7 @@ for chunk in response.iter_lines():
 
 A cURL example for a one‑shot query:
 
-curl https://ollama.com \ 
+curl https://ollama.com/api/chat \ 
   -H "Authorization: Bearer $OLLAMA_API_KEY" \ 
   -H "Content-Type: application/json" \ 
   -d '{
@@ -169,7 +165,7 @@ Inspect the assistant’s JSON response; if a tool call is present, execute the 
 import os, requests
 
 api_key = os.environ["OLLAMA_API_KEY"]
-url = "https://ollama.com"
+url = "https://ollama.com/api/chat"
 
 messages = [
     {"role": "system", "content": "You are Qwen‑Coder, a coding assistant that writes idiomatic Python."},
@@ -217,7 +213,7 @@ Assistant message – returned by the API. In thinking mode, the response may in
 import os, requests
 
 api_key = os.environ["OLLAMA_API_KEY"]
-url = "https://ollama.com"
+url = "https://ollama.com/api/chat"
 
 messages = [
     {"role": "system", "content": "You are a knowledgeable assistant."},
