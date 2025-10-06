@@ -22,9 +22,7 @@ export async function initializeTauriBridge() {
     const app = useAppStore.getState();
     // If an orchestrator-managed run is in flight, avoid duplicate apply/preview.
     // Orchestrator code will surface plan/act results into chat state and apply as needed.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const suppress = (app as any).suppressAutoApply as boolean | undefined;
-    if (suppress) return;
+    if (app.suppressAutoApply) return;
 
     const canAutoApply = app.fullControl && !app.fullControlLocked;
     if (canAutoApply) {
@@ -85,25 +83,32 @@ export async function initializeTauriBridge() {
   );
 
   // Bridge custom frontend intents to the chat pipeline so planner-built forms can trigger new runs.
-  const onIntent = async (evt: Event) => {
-    try {
-      const detail = (evt as CustomEvent<{ text: string; windowId?: string }>).detail;
-      const text = detail?.text?.trim();
-      if (!text) return;
-      // Avoid double-run during orchestrator-managed flow
-      const app = useAppStore.getState();
-      if ((app as any).suppressAutoApply) return;
-      const chat = useChatStore.getState();
-      // Merge with the most recent user ask so the planner has full context.
-      const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user')?.content;
-      const merged = lastUser ? `${lastUser}\n\nAdditional details: ${text}` : text;
-      await chat.sendMessage(merged);
-    } catch (err) {
-      console.error('uicp-intent handler failed', err);
-    }
+  type IntentDetail = { text: string; windowId?: string };
+
+  const handleIntent = async (detail: IntentDetail) => {
+    const text = detail.text?.trim();
+    if (!text) return;
+    // Avoid double-run during orchestrator-managed flow
+    const app = useAppStore.getState();
+    if (app.suppressAutoApply) return;
+    const chat = useChatStore.getState();
+    // Merge with the most recent user ask so the planner has full context.
+    const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user')?.content;
+    const merged = lastUser ? `${lastUser}\n\nAdditional details: ${text}` : text;
+    await chat.sendMessage(merged);
   };
-  window.addEventListener('uicp-intent', onIntent as EventListener, false);
-  unsubs.push(() => window.removeEventListener('uicp-intent', onIntent as EventListener, false));
+
+  const onIntent = (evt: Event) => {
+    const detail = (evt as CustomEvent<IntentDetail>).detail;
+    if (!detail) return;
+    // Fire-and-forget to keep the DOM listener signature synchronous.
+    void handleIntent(detail).catch((err) => {
+      console.error('uicp-intent handler failed', err);
+    });
+  };
+
+  window.addEventListener('uicp-intent', onIntent, false);
+  unsubs.push(() => window.removeEventListener('uicp-intent', onIntent, false));
 }
 
 export function teardownTauriBridge() {

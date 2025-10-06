@@ -4,6 +4,8 @@ import { enqueueBatch } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 
 const coalescer = createFrameCoalescer();
+// Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
+type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;
 
 type WindowLifecycleEvent =
   | { type: 'created'; id: string; title: string }
@@ -542,7 +544,7 @@ const applyCommand = (command: Envelope): CommandResult => {
         }
         // Basic fetch for http(s)
         if (url.startsWith('http://') || url.startsWith('https://')) {
-          const init: RequestInit = { method: params.method ?? 'GET', headers: params.headers };
+          const init: FetchRequestInit = { method: params.method ?? 'GET', headers: params.headers };
           if (params.body !== undefined) {
             init.body = typeof params.body === 'string' ? params.body : JSON.stringify(params.body);
             init.headers = { 'content-type': 'application/json', ...(params.headers ?? {}) };
