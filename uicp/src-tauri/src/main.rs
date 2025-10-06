@@ -729,7 +729,6 @@ fn main() {
         use_direct_cloud: RwLock::new(true), // default to cloud mode
         http: Client::builder()
             // Allow long-lived streaming responses; UI can cancel via cancel_chat.
-            .timeout(None)
             .build()
             .expect("Failed to build HTTP client"),
         ongoing: RwLock::new(HashMap::new()),
