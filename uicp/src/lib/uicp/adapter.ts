@@ -277,7 +277,7 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
 };
 
 // Allows shared teardown from commands and UI controls.
-const destroyWindow = (id: string) => {
+function destroyWindow(id: string) {
   const record = windows.get(id);
   if (!record) return;
   // Detach drag listeners if present
@@ -296,7 +296,7 @@ const destroyWindow = (id: string) => {
   void invoke('delete_window_commands', { windowId: id }).catch((error) => {
     console.error('Failed to delete window commands', id, error);
   });
-};
+}
 
 export const listWorkspaceWindows = (): Array<{ id: string; title: string }> => {
   return Array.from(windows.values()).map((record) => ({
@@ -359,12 +359,35 @@ const executeWindowCreate = (
     wrapper.style.overflow = "hidden";
 
     const chrome = document.createElement("div");
-    chrome.className = "window-title flex items-center bg-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur select-none cursor-grab";
+    chrome.className = "window-title flex items-center justify-between bg-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur select-none cursor-grab";
 
     const titleText = document.createElement("span");
     titleText.className = "truncate";
     titleText.textContent = params.title;
     chrome.appendChild(titleText);
+
+    const controls = document.createElement("div");
+    controls.className = "ml-3 flex items-center gap-2";
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.setAttribute("aria-label", "Close window");
+    closeButton.textContent = "×";
+    closeButton.className = "flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 bg-white text-xs text-slate-500 transition hover:bg-slate-100 hover:text-slate-900";
+    const stopPointerPropagation = (event: Event) => {
+      event.stopPropagation();
+    };
+    closeButton.addEventListener('pointerdown', stopPointerPropagation);
+    closeButton.addEventListener('pointerup', stopPointerPropagation);
+    closeButton.addEventListener('mousedown', stopPointerPropagation);
+    closeButton.addEventListener('mouseup', stopPointerPropagation);
+    closeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      destroyWindow(id);
+    });
+
+    controls.appendChild(closeButton);
+    chrome.appendChild(controls);
 
     const content = document.createElement("div");
     content.className = "window-content flex-1 overflow-auto bg-white/40 px-4 py-3 backdrop-blur";

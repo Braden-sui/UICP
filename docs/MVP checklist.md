@@ -104,7 +104,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [x] Deterministic plan augmentation: `augmentPlan(plan)` injects safe hints when missing: `gui: reuse window id win-<slug>` and `gui: include small aria-live status region updated via dom.set`; called before `actWithGui` (no templates or app catalogs).
 
 ## 3) Prompts & Validation
-- [x] `src/prompts/planner.txt` (DeepSeek) - rules: JSON only; UICP ops; create containers before targeting; output ≤ 8 KB; summary is 1 concise sentence; implementation hints go in `risks` as `gui:` lines (≤ 5); minimal or empty `batch` allowed; idempotency/txn optional.
+- [x] `src/prompts/planner.txt` (DeepSeek) - rules: JSON only; UICP ops; create containers before targeting; output ≤ 32 KB; summary is 1 concise sentence; implementation hints go in `risks` as `gui:` lines (≤ 5); minimal or empty `batch` allowed; idempotency/txn optional.
 - [x] `src/prompts/actor.txt` (Gui, Qwen3-Coder:480b) - JSON only; minimal DOM churn (`dom.replace` only for initial `#root`, prefer `dom.set` thereafter); ensure targets exist; stamp stable ids; include Quality Checklist (status region, input+output pairing, avoid tall single-column stacks); safe fallback on invalid plan.
 - [x] `validatePlan` schema: `{ summary, risks?, batch[] }`, batch entries `{ type:"command", op, params, idempotency_key?, txn_id? }` (snake_case accepted).
 - [x] `validateBatch` schema: accepts batch array with HTML sanitation and typed errors (idempotency/txn stamped later).
