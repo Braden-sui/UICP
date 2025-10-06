@@ -118,6 +118,23 @@ export async function planWithDeepSeek(intent: string, options?: { timeoutMs?: n
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+// Augment the planner output with minimal, deterministic hints for the actor (Gui).
+// - Reuse a stable window id derived from the summary when none is suggested.
+// - Encourage inclusion of a small aria-live status region for progress.
+function augmentPlan(input: Plan): Plan {
+  const risks = Array.isArray(input.risks) ? input.risks.slice() : [];
+  const hasReuseId = risks.some((r) => /gui:\s*reuse\s*window\s*id/i.test(r));
+  const hasStatus = risks.some((r) => /aria-live|status\s*region/i.test(r));
+  const slug = input.summary
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32) || 'app';
+  if (!hasReuseId) risks.push(`gui: reuse window id win-${slug}`);
+  if (!hasStatus) risks.push('gui: include small aria-live status region updated via dom.set');
+  return { summary: input.summary, risks, batch: input.batch };
+}
+
 export async function actWithGui(plan: Plan, options?: { timeoutMs?: number }): Promise<Batch> {
   const client = getActorClient();
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
@@ -155,6 +172,8 @@ export async function runIntent(
     const fallback = validatePlan({ summary: `Planner degraded: using actor-only`, batch: [] });
     plan = fallback;
   }
+  // Deterministically augment plan with light hints for the actor
+  plan = augmentPlan(plan);
 
   // Step 2: Act
   let batch: Batch;

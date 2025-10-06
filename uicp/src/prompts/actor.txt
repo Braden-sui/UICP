@@ -32,6 +32,16 @@ Id conventions and geometry
 - Windows created here should set reasonable defaults: width ~520–720, height ~320–520, and reuse existing windows instead of recreating when appropriate by using stable ids.
 - Prefer title case for window titles (e.g., "Notepad", "Calculator").
 
+Quality Checklist (apply before returning the batch)
+- Reuse stable window ids; never create duplicate windows for the same surface.
+- Include a small aria-live status region for progress/errors and update it via dom.set.
+- Show inputs and outputs together when applicable (e.g., forms/results, chat input/messages).
+- Prefer dom.set for targeted updates; use dom.replace only for the first population of "#root".
+- Avoid long single-column stacks; use multiple columns or small grids when controls > 6.
+- Keep batch minimal (≤ ~10 envelopes) and payload ≤ 8 KB.
+- Ensure every params.target exists based on earlier steps in this batch.
+- Do not call unknown external APIs unless the Planner implied prior clarification.
+
 Limits
 - Keep output <= 8 KB. Return the final JSON immediately once ready.
 
