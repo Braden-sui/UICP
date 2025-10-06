@@ -30,6 +30,8 @@ The Vite dev server defaults to `http://localhost:5173`. Tauri uses the same bui
 | `VITE_DEV_MODE` | `true` | Enables dev-only UX touches |
 | `VITE_MOCK_MODE` | `true` | Use deterministic planner + mock API for offline & tests |
 | `E2E_ORCHESTRATOR` | unset | When `1`, opt-in E2E spec for orchestrator (requires real backend) |
+| `VITE_PLANNER_TIMEOUT_MS` | `120000` | Planner stream timeout (ms); early-stop parses sooner |
+| `VITE_ACTOR_TIMEOUT_MS` | `180000` | Actor stream timeout (ms); early-stop parses sooner |
 
 ## Architecture Highlights
 
@@ -40,6 +42,7 @@ The Vite dev server defaults to `http://localhost:5173`. Tauri uses the same bui
 - **UICP Core**: Zod-validated schemas, DOM adapter, per-window FIFO queue with idempotency and `txn.cancel`.
 - **Mock planner**: Deterministic batches for "notepad", "todo list", and "dashboard" prompts so MOCK mode works offline.
 - **Workspace DOM**: Sanitized HTML mutations under `#workspace-root`, mock component rendering, and memory stores for state APIs.
+- **Event actions**: `data-state-scope`/`data-state-key` auto-bind inputs; `data-command` enqueues JSON batches on click/submit; template tokens like `{{form.title}}` resolve at event time.
 - **Streaming**: Frontend `streamOllamaCompletion` subscribes to Tauri `ollama-completion` events and supports best-effort cancel via `cancel_chat(requestId)` when the iterator is closed.
 - **Aggregator gating**: The Tauri bridge uses a gating callback—auto-apply when Full Control is ON, otherwise preview; suppresses auto-apply during orchestrator runs.
 
@@ -58,3 +61,4 @@ The Vite dev server defaults to `http://localhost:5173`. Tauri uses the same bui
 - All HTML from planner commands is sanitized before insertion.
 - Planner validation failures raise typed errors and surface through toast + system message.
 - Full control is opt-in; STOP enqueues `txn.cancel`, locks control until modal consent toggles it back on, and the streaming transport is canceled best-effort via `cancel_chat`.
+- File save in Tauri builds: use `api.call` with `url: "tauri://fs/writeTextFile"` and body `{ path, contents, directory?: "Desktop" }` from planner output.

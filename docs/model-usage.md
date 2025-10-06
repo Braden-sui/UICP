@@ -1,7 +1,8 @@
 # Model Usage (Ollama Cloud)
 
-## Base Endpoint
-- `https://ollama.com`
+## Base Endpoints
+- Cloud: `https://ollama.com` (use native `/api/*` paths; do not append `/v1` in this app)
+- Local: `http://127.0.0.1:11434/v1` (OpenAI-compatible)
 
 ## Authentication
 - Header: `Authorization: Bearer <api-key>`
@@ -34,8 +35,9 @@ response = requests.post(
 ```
 
 ## Notes
-- Streaming responses follow the OpenAI Chat Completions protocol (`data: {...}` lines).
-- Tool/function calling is supported via the same `function_call` schema.
-- Local Ollama (localhost:11434) uses the same format but requires no `Authorization` header.
+- Cloud requests standardize on `POST https://ollama.com/api/chat` with `Authorization: Bearer <api-key>`.
+- Local offload uses `POST http://127.0.0.1:11434/v1/chat/completions` with no auth.
+- Streaming responses arrive as newline-delimited JSON; the Tauri backend re-emits chunks to the webview for parsing.
+- Optional: add `"format": "json"` to bias models toward strict JSON outputs when needed.
 
 

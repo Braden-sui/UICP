@@ -6,6 +6,12 @@ Important: The instructions below refer to the cloud models hosted by Ollama. Mo
 
 Authentication: All Ollama Cloud requests use `Authorization: Bearer <api-key>` as documented at https://docs.ollama.com/cloud.
 
+UICP output constraints (planner/actor)
+- When targeting the desktop builder, models must emit a single JSON object for the planner, and `{ "batch": [...] }` for the actor, using the UICP operation names (e.g., `window.create`, `dom.set`).
+- No JavaScript, `<script>`/`<style>` tags, or inline event handlers. Interactivity is declared via HTML `data-*` attributes that the runtime executes (`data-command`, `data-state-scope`, `data-state-key`).
+- Prefer compact HTML; avoid excessive whitespace.
+- For follow-ups, render a "Clarify" window and wire Submit to `api.call` with `url: "uicp://intent"` and body `{ text: "{{form.answer}}" }` — the app converts this to a new user message automatically.
+
 1. GPT‑OSS models (gpt‑oss‑20b‑cloud & gpt‑oss‑120b‑cloud)
 1.1 Harmony response format
 

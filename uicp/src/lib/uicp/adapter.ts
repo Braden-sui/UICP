@@ -1,5 +1,7 @@
 ﻿import type { Batch, Envelope, OperationParamMap } from "./schemas";
 import { createFrameCoalescer, createId, sanitizeHtml } from "../utils";
+import { enqueueBatch } from "./queue";
+import { writeTextFile, BaseDirectory } from '@tauri-apps/api/fs';
 
 const coalescer = createFrameCoalescer();
 
@@ -78,6 +80,32 @@ export const registerUIEventCallback = (callback: UIEventCallback) => {
   uiEventCallback = callback;
 };
 
+// Shallow template evaluation for JSON command attributes
+// Replaces string values like "{{value}}" or "{{form.field}}" using the event payload.
+const evalTemplates = (input: unknown, ctx: Record<string, unknown>): unknown => {
+  if (typeof input === 'string') {
+    return input.replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g, (_, path) => {
+      const parts = String(path).split('.');
+      let cur: unknown = ctx;
+      for (const p of parts) {
+        if (cur && typeof cur === 'object' && p in (cur as Record<string, unknown>)) {
+          cur = (cur as Record<string, unknown>)[p];
+        } else {
+          return '';
+        }
+      }
+      return cur == null ? '' : String(cur);
+    });
+  }
+  if (Array.isArray(input)) return input.map((v) => evalTemplates(v, ctx));
+  if (input && typeof input === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input as Record<string, unknown>)) out[k] = evalTemplates(v, ctx);
+    return out;
+  }
+  return input;
+};
+
 // Handle delegated events and emit ui_event
 const handleDelegatedEvent = (event: Event) => {
   const target = event.target as HTMLElement;
@@ -121,6 +149,47 @@ const handleDelegatedEvent = (event: Event) => {
     if (target instanceof HTMLButtonElement) {
       payload.buttonText = target.textContent?.trim();
       payload.name = target.name;
+    }
+  }
+
+  // Auto bind state updates when data-state-scope/key are present on inputs
+  if ((event.type === 'input' || event.type === 'change') && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+    const scopeAttr = target.getAttribute('data-state-scope') as StateScope | null;
+    const keyAttr = target.getAttribute('data-state-key');
+    if (scopeAttr && keyAttr) {
+      try {
+        setStateValue({ scope: scopeAttr, key: keyAttr, value: target.value, windowId });
+      } catch (err) {
+        console.error('state.set from data-state-* failed', err);
+      }
+    }
+  }
+
+  // Execute data-command JSON on click/submit when present
+  if (event.type === 'click' || event.type === 'submit') {
+    let cmdHost: HTMLElement | null = target;
+    let commandJson: string | null = null;
+    while (cmdHost && cmdHost !== workspaceRoot) {
+      commandJson = cmdHost.getAttribute('data-command');
+      if (commandJson) break;
+      cmdHost = cmdHost.parentElement;
+    }
+    if (commandJson) {
+      try {
+        const raw = JSON.parse(commandJson) as unknown;
+        const evaluated = evalTemplates(raw, {
+          ...payload,
+          value: (target as HTMLInputElement | HTMLTextAreaElement).value,
+          form: (payload.formData as Record<string, unknown> | undefined) ?? {},
+        });
+        const batch = Array.isArray(evaluated) ? (evaluated as Batch) : ((evaluated as { batch?: unknown })?.batch as Batch);
+        if (batch && Array.isArray(batch) && batch.length > 0) {
+          // Fire and forget; queue validates internally
+          void enqueueBatch(batch);
+        }
+      } catch (err) {
+        console.error('Failed to process data-command JSON', err);
+      }
     }
   }
 
@@ -442,7 +511,45 @@ const applyCommand = (command: Envelope): CommandResult => {
     case "api.call": {
       try {
         const params = command.params as OperationParamMap["api.call"];
-        return { success: true, value: params.idempotencyKey ?? command.id ?? createId("api") };
+        const url = params.url;
+        // Tauri FS special-case
+        if (url.startsWith('tauri://fs/writeTextFile')) {
+          // Expect body: { path: string, contents: string, directory?: 'Desktop' | 'Document' | ... }
+          const body = (params.body ?? {}) as Record<string, unknown>;
+          const path = String(body.path ?? 'uicp.txt');
+          const contents = String(body.contents ?? '');
+          const dirToken = String(body.directory ?? 'Desktop');
+          const dir = (BaseDirectory as unknown as Record<string, BaseDirectory>)[dirToken] ?? BaseDirectory.Desktop;
+          void writeTextFile({ path, contents }, { dir }).catch((err) => console.error('tauri fs write failed', err));
+          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
+        }
+        // UICP intent dispatch: hand off to app chat pipeline
+        if (url.startsWith('uicp://intent')) {
+          try {
+            const body = (params.body ?? {}) as Record<string, unknown>;
+            const text = typeof body.text === 'string' ? body.text : '';
+            const meta = { windowId: (body.windowId as string | undefined) ?? command.windowId };
+            if (text.trim()) {
+              const evt = new CustomEvent('uicp-intent', { detail: { text, ...meta } });
+              window.dispatchEvent(evt);
+            }
+          } catch (err) {
+            console.error('uicp://intent dispatch failed', err);
+          }
+          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
+        }
+        // Basic fetch for http(s)
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+          const init: RequestInit = { method: params.method ?? 'GET', headers: params.headers };
+          if (params.body !== undefined) {
+            init.body = typeof params.body === 'string' ? params.body : JSON.stringify(params.body);
+            init.headers = { 'content-type': 'application/json', ...(params.headers ?? {}) };
+          }
+          void fetch(url, init).catch((err) => console.error('api.call fetch failed', err));
+          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
+        }
+        // Unknown scheme: treat as no-op success for now
+        return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
       } catch (error) {
         return toFailure(error);
       }

@@ -182,6 +182,13 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 ## Update 2025-10-05
 
+## 11) V1 Declaration
+- [ ] All items in docs/V1 Acceptance.md satisfied (Functional, Reliability, Persistence, Performance, Observability, Security, Tests/CI).
+- [ ] PR opened: "V1: Generative Desktop (Windows MVP)" linking acceptance doc and CI run.
+- [ ] CI green (lint, typecheck, unit, e2e, build).
+- [ ] Tag `v1.0.0` on merge and publish release notes.
+- [ ] CHANGELOG.md updated with V1 section; README quickstart verified.
+- [ ] Create milestone "Post‑V1: External APIs" and move remaining items.
 - Transport: Frontend uses Tauri events with an Ollama aggregator; WebSocket mention is historical and slated for removal. Aggregator now supports a gating callback to auto-apply only when Full Control is ON and to suppress auto-apply during orchestrator runs.
 - Orchestrator: Chat non-mock path uses `runIntent` (planner -> actor) with commentary JSON parsing hardened (fenced/noisy JSON extraction).
 - Cancel/STOP: Frontend stream assigns a `requestId` and calls `cancel_chat(requestId)` when the async iterator is closed; STOP still enqueues `txn.cancel`, clears queues, and locks Full Control.

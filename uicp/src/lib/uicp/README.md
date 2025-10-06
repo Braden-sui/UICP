@@ -21,9 +21,8 @@ This package hosts the runtime schemas and adapter used by the desktop client to
 | `window.create`   | `{ id?, title, x?, y?, width?, height?, zIndex?, size? }` |
 | `window.update`   | `{ id, title?, x?, y?, width?, height?, zIndex? }` |
 | `window.close`    | `{ id }` |
-| `dom.set`         | `{ windowId, target, html, sanitize? }` |
-| `dom.set`         | `{ windowId, target, html, sanitize? }` (alias: replace content) |
-| `dom.replace`     | `{ windowId, target, html, sanitize? }` |
+| `dom.set`         | `{ windowId, target, html, sanitize? }` (preferred full-target replace) |
+| `dom.replace`     | `{ windowId, target, html, sanitize? }` (same shape, planner may use either) |
 | `dom.append`      | same as replace |
 | `component.render`| `{ id?, windowId, target, type, props? }` |
 | `component.update`| `{ id, props }` |
@@ -38,9 +37,41 @@ The adapter maintains per-window DOM islands under `#workspace-root`. Commands a
 
 * `window.create` creates a draggable-ready shell with a header and content slot.
 * `dom.*` operations mutate the content slot. HTML is sanitised to remove `<script>`/`<style>` tags, neutralise inline `on*` handlers, and strip `javascript:` URLs.
-* `dom.set` is the preferred path for replacing the entire target subtree in one shot.
+* `dom.set` is the preferred path for replacing the entire target subtree in one shot; `dom.append` appends sanitized HTML at the end of the target.
 * `component.*` calls are mapped onto lightweight mock components so MOCK mode can emulate planner output.
 * `state.*` stores values in memory to support planned future diffing. In MOCK mode watchers are inert.
+
+## Interactivity via data-* attributes (no JS)
+
+To keep planner output pure HTML, the adapter wires simple event actions via attributes:
+
+- `data-state-scope` + `data-state-key` on `<input>`/`<textarea>` bind values into the in-memory state store on `input`/`change`.
+  - Example: `<input data-state-scope="window" data-state-key="note_title">`
+- `data-command` on any clickable or form element carries JSON for a batch of envelopes to enqueue on `click`/`submit`.
+  - The JSON is evaluated with shallow template tokens:
+    - `{{value}}` – current control value (for inputs)
+    - `{{form.FIELD}}` – nearest form field by `name`
+    - `{{windowId}}`, `{{componentId}}` – inferred from DOM ancestry
+  - Example: `<button data-command='[{"op":"dom.set","params":{"windowId":"win","target":"#status","html":"Saved: {{form.title}}"}}]'>Save</button>`
+
+These hooks let models build functional apps without emitting JavaScript. All generated HTML remains subject to the sanitizer.
+
+## `api.call` special schemes
+
+`api.call` is side-effectful and runs best-effort on the frontend:
+
+- `uicp://intent`
+  - Body: `{ text: string, windowId?: string }`
+  - Dispatches a new chat message through the app pipeline with `text`. The bridge automatically merges it with the most recent user ask:
+    - `"<last user message>\n\nAdditional details: <text>"`
+    This ensures the planner receives both the original request and the user’s follow‑up.
+- `tauri://fs/writeTextFile`
+  - Body: `{ path: string, contents: string, directory?: "Desktop" | "Document" | ... }`
+  - Writes `contents` to `path` under the given base directory (defaults to Desktop) using Tauri's filesystem API.
+- `http://` or `https://`
+  - Performs a `fetch` with optional JSON `body` and `headers`. Errors are logged; no response is surfaced to the planner.
+
+Unknown schemes are treated as no-ops (success result), preserving idempotency sequencing.
 
 ## Error surface
 
@@ -65,7 +96,7 @@ Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider
 
 ### Aggregator
 
-`createOllamaAggregator(onBatch?)` collects commentary-channel text and, on stream end, attempts to parse a `batch` from the buffer. When a valid batch is found:
+`createOllamaAggregator(onBatch?)` collects commentary-channel text and attempts a fast parse on each delta. When a valid JSON object/array is detected, it can short-circuit and emit immediately. On stream end it tries a final parse of the buffer. When a valid batch is found:
 
 - If `onBatch` is provided, it is called and may decide whether to auto-apply (`enqueueBatch`) or surface a preview (e.g., based on Full Control).
 - If `onBatch` is not provided, the aggregator calls `enqueueBatch(batch)` by default.
@@ -80,6 +111,12 @@ The Tauri bridge installs an aggregator with a gating callback that:
 
 - The chat layer's STOP enqueues `txn.cancel` through the queue (clears pending work) and locks Full Control.
 - The streaming transport supports best-effort cancellation: when the async iterator returned by `streamOllamaCompletion()` is closed, the frontend calls the Tauri command `cancel_chat(requestId)` to abort the backend HTTP request.
+
+### Planner/Actor timeouts
+- Default planner timeout: 120s; actor: 180s. Both are overridable via Vite env at build time:
+  - `VITE_PLANNER_TIMEOUT_MS=120000`
+  - `VITE_ACTOR_TIMEOUT_MS=180000`
+The early-stop parser returns as soon as a complete JSON batch is observed, so long timeouts do not add latency when outputs finish early.
 
 ## Window Lifecycle Helpers
 - `registerWindowLifecycle(listener)` subscribes to created/updated/destroyed events emitted by the adapter when windows change.

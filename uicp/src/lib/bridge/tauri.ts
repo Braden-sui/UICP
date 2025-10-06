@@ -83,6 +83,27 @@ export async function initializeTauriBridge() {
       }
     }),
   );
+
+  // Bridge custom frontend intents to the chat pipeline so planner-built forms can trigger new runs.
+  const onIntent = async (evt: Event) => {
+    try {
+      const detail = (evt as CustomEvent<{ text: string; windowId?: string }>).detail;
+      const text = detail?.text?.trim();
+      if (!text) return;
+      // Avoid double-run during orchestrator-managed flow
+      const app = useAppStore.getState();
+      if ((app as any).suppressAutoApply) return;
+      const chat = useChatStore.getState();
+      // Merge with the most recent user ask so the planner has full context.
+      const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user')?.content;
+      const merged = lastUser ? `${lastUser}\n\nAdditional details: ${text}` : text;
+      await chat.sendMessage(merged);
+    } catch (err) {
+      console.error('uicp-intent handler failed', err);
+    }
+  };
+  window.addEventListener('uicp-intent', onIntent as EventListener, false);
+  unsubs.push(() => window.removeEventListener('uicp-intent', onIntent as EventListener, false));
 }
 
 export function teardownTauriBridge() {

@@ -20,11 +20,27 @@
    - Calls Ollama Cloud via HTTPS using `https://ollama.com` (no `/v1`).
    - Calls the local daemon using `http://127.0.0.1:11434/v1` when `USE_DIRECT_CLOUD=0`.
    - For `chat_completion`, spawns the streaming HTTP task keyed by `request_id` and emits `ollama-completion` events. `cancel_chat` aborts the task when requested.
-4. **Frontend Aggregation:** the Tauri bridge accumulates commentary-channel chunks into a buffer. On completion it tries to parse a UICP batch and uses a gating callback:
+4. **Frontend Aggregation:** the Tauri bridge accumulates commentary-channel deltas and attempts a fast parse on each chunk. If a complete JSON object/array appears, it short-circuits; otherwise it parses on completion. A gating callback then decides:
    - Suppress preview/apply when the orchestrator is running (prevents duplicate apply).
    - Auto-apply via the queue when Full Control is enabled.
    - Otherwise set a pending plan preview.
 5. **Frontend Rendering:** updates React state (windows, modals, indicators), renders sanitized HTML under `#workspace-root`, surfaces the desktop menu bar backed by workspace window metadata, and keeps a menu-controlled Logs panel so users can review the conversation history (user / assistant / system messages with timestamps and error codes).
+
+## Interactivity Runtime (no JS in model output)
+- Inputs/Textareas with `data-state-scope` + `data-state-key` auto-update in-memory state on `input`/`change`.
+- Any clickable or form element may include `data-command` with a JSON batch to enqueue on `click`/`submit`.
+- Template tokens inside `data-command` strings are resolved at event time: `{{value}}`, `{{form.FIELD}}`, `{{windowId}}`, `{{componentId}}`.
+- `dom.set` is preferred for replacing specific regions; `dom.append` adds content without re-rendering entire windows.
+
+### Follow-up intents from UI
+- Planner-built forms can trigger a new chat run with `api.call` using the special URL `uicp://intent` and body `{ text }`.
+- The frontend adapter dispatches a `uicp-intent` CustomEvent. The bridge merges `{ text }` with the most recent user message as:
+  `"<last user message>\n\nAdditional details: <text>"`, then calls the chat store's `sendMessage(merged)` so the planner gets the full context.
+
+## File IO (Tauri)
+- `api.call` supports a special scheme `tauri://fs/writeTextFile` to save text files locally.
+  - Body: `{ path, contents, directory?: "Desktop" | "Document" | ... }`
+- HTTP(S) URLs are fetched best-effort; errors are logged.
 
 ## Modules
 ### Rust (`uicp/src-tauri/src/main.rs`)
@@ -33,7 +49,7 @@
 - `load_api_key` / `save_api_key`: manage `.env` storage.
 - `test_api_key`: validates credentials against `https://ollama.com/api/tags` with an `Authorization: Bearer <api-key>` header.
 - `load_workspace` / `save_workspace`: persist draggable window layout to SQLite.
-- `chat_completion`: streams Ollama Cloud responses (`ollama-completion` events).
+- `chat_completion`: streams Ollama Cloud responses (`ollama-completion` events). The HTTP client has no hard timeout; STOP cancels via `cancel_chat`.
 - `enqueue_command`: placeholder for the tool queue.
 - `spawn_autosave`: emits save indicator when state changes.
 
@@ -68,7 +84,10 @@
 ## Current Implementation Notes (2025-10-05)
 - react-rnd windows persisted to SQLite; default workspace seeded if empty.
 - API key stored in `~/Documents/UICP/.env` (Settings modal writes via Tauri command).
-- Streaming iterator `streamOllamaCompletion(messages, model, tools, options?)` forwards SSE lines, stamps a requestId, and supports cancellation. The aggregator parses commentary-channel JSON into batches and the orchestrator stamps `traceId`, `txnId`, and `idempotencyKey` on each envelope.
+- Streaming iterator `streamOllamaCompletion(messages, model, tools, options?)` forwards SSE lines, stamps a requestId, and supports cancellation. The aggregator attempts early JSON detection to return sooner; the orchestrator stamps `traceId`, `txnId`, and `idempotencyKey` on each envelope.
+
+## Timeouts
+- Planner timeout defaults to 120s; Actor 180s. Both are configurable via Vite env (`VITE_PLANNER_TIMEOUT_MS`, `VITE_ACTOR_TIMEOUT_MS`). Early-stop parsing returns results as soon as valid JSON is available.
 - Plan/Batch validation in frontend: `validatePlan`, `validateBatch` with pointer-based errors and HTML guardrails.
 - Logs panel is opened via the desktop menu and mirrors chat/system history for quick auditing.
 - Adapter emits window lifecycle events so the desktop menu stays in sync with planner-created windows.
@@ -79,4 +98,3 @@
 - Component library renderer.
 - Export (HTML/React) + sharing.
 - Linux packaging after Windows MVP.
-

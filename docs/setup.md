@@ -29,6 +29,15 @@ Set-Content "$env:USERPROFILE\Documents\UICP\.env" "OLLAMA_API_KEY=your_key_here
 ```
 You can also paste the key in the in-app Settings modal (writes the same `.env`).
 
+### Optional: Planner/Actor timeouts (build-time)
+Add generous timeouts (in milliseconds) if you expect long generations. Early-stop parsing still returns as soon as the JSON is complete.
+
+```env
+# Vite build-time env
+VITE_PLANNER_TIMEOUT_MS=120000
+VITE_ACTOR_TIMEOUT_MS=180000
+```
+
 ## Run in Development
 ```powershell
 cd uicp
@@ -62,6 +71,10 @@ Primary endpoints invoked by the app:
 GET  https://ollama.com/api/tags   # key validation / model list
 POST https://ollama.com/api/chat   # streaming chat completions
 ```
+
+Notes:
+- Do not append `/v1` to the Cloud base URL in app config. We standardize on `https://ollama.com` + `/api/chat` for Cloud. Local offload uses `/v1` endpoints.
+- STOP cancels long generations via a Tauri backend command; the HTTP client has no hard timeout.
 
 ## Notes
 - Workspace state persists once you click **Save** (writes to `~/Documents/UICP/data.db`).

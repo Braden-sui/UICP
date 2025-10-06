@@ -5,6 +5,17 @@ import { createId } from '../utils';
 
 const toJsonSafe = (s: string) => s.replace(/```(json)?/gi, '').trim();
 
+const readEnvMs = (key: string, fallback: number): number => {
+  // Vite exposes env via import.meta.env; coerce string → number if valid
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = (import.meta as any)?.env?.[key] as unknown;
+  const n = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : undefined;
+  return Number.isFinite(n) && (n as number) > 0 ? (n as number) : fallback;
+};
+
+const DEFAULT_PLANNER_TIMEOUT_MS = readEnvMs('VITE_PLANNER_TIMEOUT_MS', 120_000);
+const DEFAULT_ACTOR_TIMEOUT_MS = readEnvMs('VITE_ACTOR_TIMEOUT_MS', 180_000);
+
 async function collectCommentaryJson<T = unknown>(
   stream: AsyncIterable<StreamEvent>,
   timeoutMs = 35_000,
@@ -43,6 +54,21 @@ async function collectCommentaryJson<T = unknown>(
         if (event.type === 'done') break;
         if (event.type === 'content' && (!event.channel || event.channel === 'commentary')) {
           buf += event.text;
+          // Attempt fast-path parse on each chunk: if a full JSON object/array is present, parse and stop streaming.
+          try {
+            const parsed = parseBuffer();
+            // If parse succeeds, stop upstream stream early to cut latency and token usage.
+            if (typeof iterator.return === 'function') {
+              try {
+                await iterator.return();
+              } catch {
+                // ignore iterator return errors
+              }
+            }
+            return parsed as T;
+          } catch {
+            // keep accumulating until valid JSON is detected or stream ends
+          }
         }
       }
       return parseBuffer();
@@ -83,7 +109,7 @@ export async function planWithDeepSeek(intent: string, options?: { timeoutMs?: n
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamIntent(intent);
-      const payload = await collectCommentaryJson(stream, options?.timeoutMs);
+      const payload = await collectCommentaryJson(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
       return validatePlan(payload);
     } catch (err) {
       lastErr = err;
@@ -99,7 +125,7 @@ export async function actWithKimi(plan: Plan, options?: { timeoutMs?: number }):
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamPlan(planJson);
-      const payload = await collectCommentaryJson<{ batch?: unknown }>(stream, options?.timeoutMs);
+      const payload = await collectCommentaryJson<{ batch?: unknown }>(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
       return validateBatch(payload?.batch as unknown);
     } catch (err) {
       lastErr = err;

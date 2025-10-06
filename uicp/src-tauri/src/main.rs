@@ -8,9 +8,12 @@ use dirs::document_dir;
 use dotenvy::dotenv;
 use once_cell::sync::Lazy;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection};
-use tauri::{async_runtime::{spawn, JoinHandle}, Emitter, Manager, State};
+use serde::{Deserialize, Serialize};
+use tauri::{
+    async_runtime::{spawn, JoinHandle},
+    Emitter, Manager, State,
+};
 use tokio::{fs, sync::RwLock, time::interval};
 use tokio_stream::StreamExt;
 
@@ -112,9 +115,15 @@ async fn save_api_key(state: State<'_, AppState>, key: String) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn test_api_key(state: State<'_, AppState>, window: tauri::Window) -> Result<ApiKeyStatus, String> {
+async fn test_api_key(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+) -> Result<ApiKeyStatus, String> {
     let Some(key) = state.ollama_key.read().await.clone() else {
-        return Ok(ApiKeyStatus { valid: false, message: Some("No API key configured".into()) });
+        return Ok(ApiKeyStatus {
+            valid: false,
+            message: Some("No API key configured".into()),
+        });
     };
     let client = state.http.clone();
     let base = get_ollama_base_url(&state).await?;
@@ -130,10 +139,7 @@ async fn test_api_key(state: State<'_, AppState>, window: tauri::Window) -> Resu
     if use_cloud {
         req = req.header("Authorization", format!("Bearer {}", key));
     }
-    let result = req
-        .send()
-        .await
-        .map_err(|e| format!("HTTP error: {e}"))?;
+    let result = req.send().await.map_err(|e| format!("HTTP error: {e}"))?;
 
     if result.status().is_success() {
         window
@@ -160,7 +166,10 @@ async fn test_api_key(state: State<'_, AppState>, window: tauri::Window) -> Resu
                 },
             )
             .map_err(|e| format!("Failed to emit api-key-status: {e}"))?;
-        Ok(ApiKeyStatus { valid: false, message: Some(msg) })
+        Ok(ApiKeyStatus {
+            valid: false,
+            message: Some(msg),
+        })
     }
 }
 
@@ -207,7 +216,9 @@ async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePay
                 width: 720.0,
                 height: 420.0,
                 z_index: 0,
-                content: Some("<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>".into()),
+                content: Some(
+                    "<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>".into(),
+                ),
             }]
         } else {
             rows
@@ -279,7 +290,7 @@ async fn save_workspace(
                         timestamp: Utc::now().timestamp(),
                     },
                 )
-                .ok();
+                .map_err(|e| format!("Failed to emit save-indicator: {e}"))?;
             Ok(())
         }
         Err(err) => {
@@ -292,7 +303,7 @@ async fn save_workspace(
                         timestamp: Utc::now().timestamp(),
                     },
                 )
-                .ok();
+                .map_err(|e| format!("Failed to emit save-indicator: {e}"))?;
             Err(format!("DB error: {err:?}"))
         }
     }
@@ -323,17 +334,15 @@ async fn chat_completion(
         return Err("No API key configured".into());
     }
 
-    let model = request
-        .model
-        .unwrap_or_else(|| {
-            // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
-            let base_model = std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into());
-            if use_cloud && !base_model.ends_with("-cloud") {
-                format!("{}-cloud", base_model)
-            } else {
-                base_model
-            }
-        });
+    let model = request.model.unwrap_or_else(|| {
+        // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
+        let base_model = std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into());
+        if use_cloud && !base_model.ends_with("-cloud") {
+            format!("{}-cloud", base_model)
+        } else {
+            base_model
+        }
+    });
 
     let body = serde_json::json!({
         "model": model,
@@ -347,7 +356,7 @@ async fn chat_completion(
     // Simple retry/backoff policy for rate limits and transient network failures
     let max_attempts = 3u8;
 
-    let rid = request_id.unwrap_or_else(|| format!("req-{}", Utc::now().timestamp_millis())) ;
+    let rid = request_id.unwrap_or_else(|| format!("req-{}", Utc::now().timestamp_millis()));
     let app_handle = window.app_handle().clone();
     let client = state.http.clone();
     let base_url = base.clone();
@@ -383,24 +392,37 @@ async fn chat_completion(
                         tokio::time::sleep(Duration::from_millis(backoff_ms.min(3_000))).await;
                         continue 'outer;
                     }
-                    emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                    emit_or_log(
+                        &app_handle,
+                        "ollama-completion",
+                        serde_json::json!({ "done": true }),
+                    );
                     break;
                 }
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        if (status.as_u16() == 429 || status.as_u16() == 503) && attempt_local < max_attempts {
+                        if (status.as_u16() == 429 || status.as_u16() == 503)
+                            && attempt_local < max_attempts
+                        {
                             let retry_after_ms = resp
                                 .headers()
                                 .get("retry-after")
                                 .and_then(|h| h.to_str().ok())
                                 .and_then(|s| s.parse::<u64>().ok())
                                 .map(|secs| secs.saturating_mul(1000))
-                                .unwrap_or_else(|| 200u64.saturating_mul(1u64 << (attempt_local as u32)));
-                            tokio::time::sleep(Duration::from_millis(retry_after_ms.min(5_000))).await;
+                                .unwrap_or_else(|| {
+                                    200u64.saturating_mul(1u64 << (attempt_local as u32))
+                                });
+                            tokio::time::sleep(Duration::from_millis(retry_after_ms.min(5_000)))
+                                .await;
                             continue 'outer;
                         }
-                        emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                        emit_or_log(
+                            &app_handle,
+                            "ollama-completion",
+                            serde_json::json!({ "done": true }),
+                        );
                         break;
                     }
 
@@ -414,7 +436,9 @@ async fn chat_completion(
                                 let text = String::from_utf8_lossy(&bytes);
                                 for raw_line in text.split('\n') {
                                     let trimmed = raw_line.trim();
-                                    if trimmed.is_empty() { continue; }
+                                    if trimmed.is_empty() {
+                                        continue;
+                                    }
 
                                     // Support SSE (data: ...) and JSON Lines
                                     let payload_str = if trimmed.starts_with("data:") {
@@ -424,7 +448,11 @@ async fn chat_completion(
                                     };
 
                                     if payload_str == "[DONE]" {
-                                        emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                                        emit_or_log(
+                                            &app_handle,
+                                            "ollama-completion",
+                                            serde_json::json!({ "done": true }),
+                                        );
                                         continue;
                                     }
 
@@ -432,19 +460,35 @@ async fn chat_completion(
                                     match serde_json::from_str::<serde_json::Value>(&payload_str) {
                                         Ok(val) => {
                                             // { done: true }
-                                            if val.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                                emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                                            if val
+                                                .get("done")
+                                                .and_then(|v| v.as_bool())
+                                                .unwrap_or(false)
+                                            {
+                                                emit_or_log(
+                                                    &app_handle,
+                                                    "ollama-completion",
+                                                    serde_json::json!({ "done": true }),
+                                                );
                                                 continue;
                                             }
                                             // Cloud native: { message: { content, channel? } }
-                                            if let Some(msg) = val.get("message").and_then(|m| m.as_object()) {
-                                                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                                                    let channel = msg.get("channel").and_then(|c| c.as_str()).unwrap_or("commentary");
+                                            if let Some(msg) =
+                                                val.get("message").and_then(|m| m.as_object())
+                                            {
+                                                if let Some(content) =
+                                                    msg.get("content").and_then(|c| c.as_str())
+                                                {
+                                                    let channel = msg
+                                                        .get("channel")
+                                                        .and_then(|c| c.as_str())
+                                                        .unwrap_or("commentary");
                                                     let wrapped = serde_json::json!({
                                                         "choices": [{ "delta": { "channel": channel, "content": content } }]
                                                     });
                                                     let wrapped_str = wrapped.to_string();
-                                                    emit_or_log(&app_handle, 
+                                                    emit_or_log(
+                                                        &app_handle,
                                                         "ollama-completion",
                                                         serde_json::json!({ "done": false, "delta": wrapped_str }),
                                                     );
@@ -452,14 +496,16 @@ async fn chat_completion(
                                                 }
                                             }
                                             // Pass through original JSON string
-                                            emit_or_log(&app_handle, 
+                                            emit_or_log(
+                                                &app_handle,
                                                 "ollama-completion",
                                                 serde_json::json!({ "done": false, "delta": payload_str }),
                                             );
                                         }
                                         Err(_) => {
                                             // Pass through plain text
-                                            emit_or_log(&app_handle, 
+                                            emit_or_log(
+                                                &app_handle,
                                                 "ollama-completion",
                                                 serde_json::json!({ "done": false, "delta": payload_str }),
                                             );
@@ -470,7 +516,11 @@ async fn chat_completion(
                         }
                     }
 
-                    emit_or_log(&app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                    emit_or_log(
+                        &app_handle,
+                        "ollama-completion",
+                        serde_json::json!({ "done": true }),
+                    );
                     break;
                 }
             }
@@ -529,11 +579,17 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     )
     .context("apply migrations")?;
 
-    if let Err(err) = conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
-        eprintln!("Failed to add width column migration: {err:?}");
+    match conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
+        Ok(_) => {}
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") => {}
+        Err(err) => return Err(err.into()),
     }
-    if let Err(err) = conn.execute("ALTER TABLE window ADD COLUMN height REAL DEFAULT 480", []) {
-        eprintln!("Failed to add height column migration: {err:?}");
+    match conn.execute("ALTER TABLE window ADD COLUMN height REAL DEFAULT 480", []) {
+        Ok(_) => {}
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") => {}
+        Err(err) => return Err(err.into()),
     }
 
     Ok(())
@@ -555,10 +611,7 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
         for item in dotenvy::from_path_iter(&*ENV_PATH)? {
             let (key, value) = item?;
             if key == "OLLAMA_API_KEY" {
-                state
-                    .ollama_key
-                    .blocking_write()
-                    .replace(value);
+                state.ollama_key.blocking_write().replace(value);
             } else if key == "USE_DIRECT_CLOUD" {
                 let use_cloud = value == "1" || value.to_lowercase() == "true";
                 *state.use_direct_cloud.blocking_write() = use_cloud;
@@ -585,16 +638,16 @@ async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
     let use_cloud = *state.use_direct_cloud.read().await;
 
     let base = if use_cloud {
-        std::env::var("OLLAMA_CLOUD_HOST")
-            .unwrap_or_else(|_| OLLAMA_CLOUD_HOST_DEFAULT.to_string())
+        std::env::var("OLLAMA_CLOUD_HOST").unwrap_or_else(|_| OLLAMA_CLOUD_HOST_DEFAULT.to_string())
     } else {
-        std::env::var("OLLAMA_LOCAL_BASE")
-            .unwrap_or_else(|_| OLLAMA_LOCAL_BASE_DEFAULT.to_string())
+        std::env::var("OLLAMA_LOCAL_BASE").unwrap_or_else(|_| OLLAMA_LOCAL_BASE_DEFAULT.to_string())
     };
 
     // Runtime assertion: reject Cloud host containing /v1
     if use_cloud && base.contains("/v1") {
-        return Err("Invalid configuration: Do not use /v1 for Cloud. Use https://ollama.com".to_string());
+        return Err(
+            "Invalid configuration: Do not use /v1 for Cloud. Use https://ollama.com".to_string(),
+        );
     }
 
     Ok(base)
@@ -615,6 +668,15 @@ fn derive_size_token(width: f64, height: f64) -> String {
     }
 }
 
+fn emit_or_log<T>(app_handle: &tauri::AppHandle, event: &str, payload: T)
+where
+    T: serde::Serialize + Clone,
+{
+    if let Err(err) = app_handle.emit(event, payload) {
+        eprintln!("Failed to emit {event}: {err}");
+    }
+}
+
 fn spawn_autosave(app_handle: tauri::AppHandle) {
     spawn(async move {
         let mut ticker = interval(Duration::from_secs(5));
@@ -623,7 +685,8 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
         let mut last_emitted = {
             let state: State<'_, AppState> = app_handle.state();
             let current = *state.last_save_ok.read().await;
-            emit_or_log(&app_handle, 
+            emit_or_log(
+                &app_handle,
                 "save-indicator",
                 SaveIndicatorPayload {
                     ok: current,
@@ -640,7 +703,8 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
                 continue;
             }
             last_emitted = Some(current);
-            emit_or_log(&app_handle, 
+            emit_or_log(
+                &app_handle,
                 "save-indicator",
                 SaveIndicatorPayload {
                     ok: current,
@@ -664,7 +728,8 @@ fn main() {
         ollama_key: RwLock::new(None),
         use_direct_cloud: RwLock::new(true), // default to cloud mode
         http: Client::builder()
-            .timeout(Duration::from_secs(30))
+            // Allow long-lived streaming responses; UI can cancel via cancel_chat.
+            .timeout(None)
             .build()
             .expect("Failed to build HTTP client"),
         ongoing: RwLock::new(HashMap::new()),
@@ -703,4 +768,3 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
