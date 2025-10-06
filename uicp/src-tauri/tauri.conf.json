@@ -19,7 +19,13 @@
         "resizable": true,
         "decorations": false
       }
-    ]
+    ],
+    "security": {
+      "capabilities": [
+        "events",
+        "fs-desktop-write"
+      ]
+    }
   },
   "bundle": {
     "icon": [

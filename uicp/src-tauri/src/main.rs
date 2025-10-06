@@ -750,6 +750,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(state)
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             spawn_autosave(app.handle().clone());
             Ok(())

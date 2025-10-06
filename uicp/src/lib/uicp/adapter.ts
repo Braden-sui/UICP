@@ -1,7 +1,7 @@
-﻿import type { Batch, Envelope, OperationParamMap } from "./schemas";
+import type { Batch, Envelope, OperationParamMap } from "./schemas";
 import { createFrameCoalescer, createId, sanitizeHtml } from "../utils";
 import { enqueueBatch } from "./queue";
-import { writeTextFile, BaseDirectory } from '@tauri-apps/api/fs';
+import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 
 const coalescer = createFrameCoalescer();
 
@@ -520,7 +520,9 @@ const applyCommand = (command: Envelope): CommandResult => {
           const contents = String(body.contents ?? '');
           const dirToken = String(body.directory ?? 'Desktop');
           const dir = (BaseDirectory as unknown as Record<string, BaseDirectory>)[dirToken] ?? BaseDirectory.Desktop;
-          void writeTextFile({ path, contents }, { dir }).catch((err) => console.error('tauri fs write failed', err));
+          void writeTextFile(path, contents, { baseDir: dir }).catch((err: unknown) => {
+            console.error('tauri fs write failed', err);
+          });
           return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
         }
         // UICP intent dispatch: hand off to app chat pipeline
