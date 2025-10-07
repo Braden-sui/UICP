@@ -31,7 +31,7 @@ export type ActorClient = {
 
 export function getPlannerClient(): PlannerClient {
   return {
-    streamIntent: (intent, options) => {
+    streamIntent: (intent: string, options?: PlannerStreamOptions) => {
       const profile = getPlannerProfile(options?.profileKey);
       const messages = profile.formatMessages(intent, { tools: options?.tools });
       const model = options?.model ?? profile.defaultModel;
@@ -42,7 +42,7 @@ export function getPlannerClient(): PlannerClient {
 
 export function getActorClient(): ActorClient {
   return {
-    streamPlan: (planJson, options) => {
+    streamPlan: (planJson: string, options?: ActorStreamOptions) => {
       const profile = getActorProfile(options?.profileKey);
       const messages = profile.formatMessages(planJson, { tools: options?.tools });
       const model = options?.model ?? profile.defaultModel;
