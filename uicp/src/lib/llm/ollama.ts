@@ -12,6 +12,9 @@ export type ToolSpec = unknown; // pass-through JSON (e.g., OpenAI-compatible to
 
 // Extracts content/tool-call deltas from a single OpenAI/Ollama-compatible chunk object
 export function extractEventsFromChunk(input: unknown): StreamEvent[] {
+  if (typeof input === 'string') {
+    return input.length > 0 ? [{ type: 'content', text: input }] : [];
+  }
   const asRecord = (value: unknown): Record<string, unknown> | null => {
     if (!value || typeof value !== 'object') return null;
     return value as Record<string, unknown>;

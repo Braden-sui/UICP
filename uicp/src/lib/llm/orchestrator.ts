@@ -1,5 +1,6 @@
 import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
+import { decodeHarmonyPlan, decodeHarmonyBatch, harmonyHasMissingEnd } from './harmony';
 import type { StreamEvent } from './ollama';
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope } from '../uicp/schemas';
 import { createId } from '../utils';
@@ -148,6 +149,59 @@ async function collectJsonFromChannels<T = unknown>(
   }
 }
 
+async function collectHarmonyTurn(
+  stream: AsyncIterable<StreamEvent>,
+  timeoutMs = 35_000,
+): Promise<string> {
+  const iterator = stream[Symbol.asyncIterator]();
+  let buffer = '';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
+
+  const consume = (async () => {
+    try {
+      while (true) {
+        const { value, done } = await iterator.next();
+        if (done) break;
+        const event = value as StreamEvent;
+        if (event.type === 'done') break;
+        if (event.type === 'content') {
+          buffer += event.text;
+        }
+      }
+      return buffer;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    }
+  })();
+
+  const timeoutPromise = new Promise<string>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([consume, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (timedOut && typeof iterator.return === 'function') {
+      try {
+        await iterator.return();
+      } catch {
+        // ignore iterator return errors
+      }
+    }
+  }
+}
+
 export async function planWithProfile(
   intent: string,
   options?: { timeoutMs?: number; profileKey?: PlannerProfileKey },
@@ -158,10 +212,23 @@ export async function planWithProfile(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamIntent(intent, { profileKey: profile.key });
+      if (profile.responseMode === 'harmony') {
+        const raw = await collectHarmonyTurn(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
+        const decoded = decodeHarmonyPlan(raw);
+        if (harmonyHasMissingEnd(decoded)) {
+          throw new Error(decoded.error.message);
+        }
+        let json: unknown;
+        try {
+          json = JSON.parse(decoded.planText);
+        } catch {
+          throw new Error('Harmony planner final output is not valid JSON');
+        }
+        const plan = validatePlan(json);
+        return { plan, channelUsed: decoded.channel };
+      }
       const { data, channelUsed } = await collectJsonFromChannels(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS,
-        primaryChannels: profile.responseMode === 'harmony' ? ['commentary'] : undefined,
-        fallbackChannels: profile.responseMode === 'harmony' ? ['final'] : undefined,
       });
       return { plan: validatePlan(data), channelUsed };
     } catch (err) {
@@ -199,10 +266,23 @@ export async function actWithProfile(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamPlan(planJson, { profileKey: profile.key });
+      if (profile.responseMode === 'harmony') {
+        const raw = await collectHarmonyTurn(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
+        const decoded = decodeHarmonyBatch(raw);
+        if (harmonyHasMissingEnd(decoded)) {
+          throw new Error(decoded.error.message);
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(decoded.batchText);
+        } catch {
+          throw new Error('Harmony actor final output is not valid JSON');
+        }
+        const batchData = Array.isArray(parsed) ? parsed : (parsed as { batch?: unknown })?.batch;
+        return { batch: validateBatch(batchData), channelUsed: decoded.channel };
+      }
       const { data, channelUsed } = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS,
-        primaryChannels: profile.responseMode === 'harmony' ? ['commentary'] : undefined,
-        fallbackChannels: profile.responseMode === 'harmony' ? ['final'] : undefined,
       });
       return { batch: validateBatch(data?.batch as unknown), channelUsed };
     } catch (err) {

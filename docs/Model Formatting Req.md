@@ -16,48 +16,32 @@ UICP output constraints (planner/actor)
 1. GPT‑OSS models (gpt‑oss-20b-cloud & gpt‑oss-120b-cloud)
 1.1 Harmony response format — canonical reference: <https://cookbook.openai.com/articles/openai-harmony>
 
-OpenAI’s GPT‑OSS models use a structured format called Harmony. Harmony extends ChatML by introducing explicit roles and “channels.” The Hugging Face trl documentation notes that Harmony was introduced to provide a richer structure for reasoning and tool calls
-. Key elements are:
+Harmony extends ChatML with explicit channels, sentinel tokens, and a strict role hierarchy:
 
-Developer role – similar to a system prompt; used by the developer to provide high‑level instructions and to list available tools
-. It is always the first message in the conversation.
+- **Roles:** `system > developer > user > assistant > tool`. Higher roles override lower roles when instructions conflict.
+- **Message envelope:** every turn is framed as `<|start|>{header}<|message|>{content}<|end|>`. Assistant messages end with `<|return|>` (final answer) or `<|call|>` (tool invocation). Persist history using `<|end|>`.
+- **Channels:** assistant outputs must specify one of three channels—`analysis` (private chain-of-thought), `commentary` (tool plans + function calls), `final` (user-facing answer). Valid channel reminder should appear in the prompt so the model tags each message.
+- **Tool calls:** commentary messages can include `to=functions.foo` plus `<|constrain|>json`. The content block contains JSON args and terminates with `<|call|>`. After executing the tool, inject a tool-role message `<|start|>functions.foo to=assistant<|channel|>commentary<|message|>{...}<|end|>` before resuming sampling.
+- **Reasoning effort:** set in the developer/system message (`Reasoning: low|medium|high`); higher effort yields longer analysis.
+- **Structured outputs:** define optional response formats at the end of the developer message via JSON Schema to nudge structured replies.
 
-Channels – every assistant message must specify a channel. The analysis channel contains the model’s internal reasoning (chain‑of‑thought) which should not be shown to the user; the final channel contains the answer intended for the user; the commentary channel is used for tool‑calling or explanations around actions
-. Search results summarising the official Harmony specification emphasise that valid channels are analysis, commentary and final and that a channel must be included for every message
-cookbook.openai.com
-.
-
-Reasoning effort – the developer can set a reasoning‑effort level (low, medium or high) to control how much internal reasoning the model performs
-. Higher effort yields more detailed analysis but costs additional tokens.
-
-Model identity – optional metadata used to define the assistant’s persona or tone
-.
-
-Because Harmony messages carry multiple streams, code consuming the model’s response must parse the returned JSON to separate analysis, final and commentary content. Tool calls (function names and arguments) will appear in the commentary channel.
+Because Harmony turns stream across channels, the frontend must buffer analysis privately, render commentary transparently, and only surface `final` to end-users. Tool call state should pause decoding until the tool result is appended.
 
 1.2 Constructing prompts
 
-A Harmony conversation typically has the following structure:
+The GPT‑OSS planner/actor profiles we ship now build developer messages that include:
 
-Developer message (role developer). Contains high‑level rules, allowed tools and optionally the reasoning effort. Example:
+```
+# Harmony Output Requirements
+- Valid assistant channels: analysis, commentary, final ...
+- Tool call contract ...
 
-{
-  "role": "developer",
-  "content": {
-    "instructions": "You are an expert travel agent. Use the weather API to plan trips.",
-    "tools": [
-      {
-        "name": "get_weather",
-        "description": "Returns current weather for a city",
-        "parameters": {"type":"object", "properties": {"city": {"type":"string"}}}
-      }
-    ],
-    "reasoning_level": "medium"
-  }
-}
+# Response Formats
+## uicp_plan
+{ ... }
+```
 
-
-User messages – use the user role. Provide the conversation history just like ChatML; no channels are specified for users.
+Our GPT‑OSS profiles set `reasoning_level` in the developer content, keep built-in tool docs in the system prompt, and list any UICP functions under `# Tools` using TypeScript-style signatures as expected by Harmony.
 
 1.3 Example request to the Ollama Cloud API
 

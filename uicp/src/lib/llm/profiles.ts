@@ -50,17 +50,21 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     responseMode: 'harmony',
     capabilities: { channels: ['analysis', 'commentary', 'final'], supportsTools: true },
     defaultModel: 'gpt-oss-120b-cloud',
-    formatMessages: (intent, opts) => [
-      {
-        role: 'developer',
-        content: {
-          instructions: plannerPrompt.trim(),
-          reasoning_level: 'high',
-          tools: opts?.tools ?? [],
+    formatMessages: (intent, opts) => {
+      const harmonyRequirements = `# Harmony Output Requirements\n- Valid assistant channels: analysis, commentary, final. Every assistant message must declare exactly one channel.\n- Emit chain-of-thought in analysis (keep private), tool reasoning + function calls in commentary, and the user-facing summary in final ending with <|return|>.\n- When invoking a tool, end the commentary message with <|call|> and wait for a tool reply before continuing.`;
+      const responseFormat = `# Response Formats\n## uicp_plan\n{"type":"object","properties":{"summary":{"type":"string"},"risks":{"type":"array","items":{"type":"string"}},"batch":{"type":"array"}}}`;
+      return [
+        {
+          role: 'developer',
+          content: {
+            instructions: `${plannerPrompt.trim()}\n\n${harmonyRequirements}\n\n${responseFormat}`,
+            reasoning_level: 'high',
+            tools: opts?.tools ?? [],
+          },
         },
-      },
-      { role: 'user', content: intent },
-    ],
+        { role: 'user', content: intent },
+      ];
+    },
   },
 };
 
@@ -84,17 +88,21 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     responseMode: 'harmony',
     capabilities: { channels: ['analysis', 'commentary', 'final'], supportsTools: true },
     defaultModel: 'gpt-oss-120b-cloud',
-    formatMessages: (planJson, opts) => [
-      {
-        role: 'developer',
-        content: {
-          instructions: actorPrompt.trim(),
-          reasoning_level: 'medium',
-          tools: opts?.tools ?? [],
+    formatMessages: (planJson, opts) => {
+      const harmonyRequirements = `# Harmony Output Requirements\n- Preview reasoning in analysis, but keep it private.\n- Emit function/tool calls on the commentary channel with <|call|> terminators.\n- Return the final UICP batch JSON on the final channel followed by <|return|>.`;
+      const responseFormat = `# Response Formats\n## uicp_batch\n{"type":"object","properties":{"batch":{"type":"array"}}}`;
+      return [
+        {
+          role: 'developer',
+          content: {
+            instructions: `${actorPrompt.trim()}\n\n${harmonyRequirements}\n\n${responseFormat}`,
+            reasoning_level: 'medium',
+            tools: opts?.tools ?? [],
+          },
         },
-      },
-      { role: 'user', content: planJson },
-    ],
+        { role: 'user', content: planJson },
+      ];
+    },
   },
 };
 
