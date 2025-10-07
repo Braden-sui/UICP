@@ -5,7 +5,7 @@ This document explains how our stack talks to Ollama in both local and cloud mod
 ## Local daemon vs. Ollama Cloud
 
 - **Local Ollama** exposes `http://localhost:11434/api/*` (Ollama-native) and `http://localhost:11434/v1/*` (OpenAI-compatible). No credential is required because the daemon binds to localhost.
-- **Ollama Cloud** hosts the same surfaces behind `https://ollama.com`, but you must include `Authorization: Bearer <api-key>` on every request. Cloud-only models carry a `-cloud` suffix, for example `gpt-oss-120b-cloud`.
+- **Ollama Cloud** hosts the same surfaces behind `https://ollama.com`, but you must include `Authorization: Bearer <api-key>` on every request. Canonical model IDs use colon tags (e.g., `gpt-oss:120b`). The UI may accept a `-cloud` suffix (e.g., `gpt-oss:120b-cloud`), which the app normalizes before sending.
 
 ### Side-by-side summary
 
@@ -19,11 +19,13 @@ This document explains how our stack talks to Ollama in both local and cloud mod
 
 ## Cloud model catalog (Sept 2025)
 
-- `qwen3-coder:480b-cloud`
-- `gpt-oss-120b-cloud`
-- `gpt-oss-20b-cloud`
-- `deepseek-v3.1:671b-cloud` (preview)
-- `kimi-k2:1t-cloud` (preview)
+- `qwen3-coder:480b`
+- `gpt-oss:120b`
+- `gpt-oss:20b`
+- `deepseek-v3.1:671b` (preview)
+- `kimi-k2:1t` (preview)
+
+Note: The app accepts optional `-cloud` suffixes in settings. Requests are normalized to colon-tag IDs on the wire.
 
 Use `/api/tags` to fetch the latest list programmatically.
 
@@ -43,7 +45,7 @@ curl https://ollama.com/api/chat \
   -H "Authorization: Bearer <API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-oss-120b-cloud",
+    "model": "gpt-oss:120b",
     "messages": [
       {"role": "user", "content": "Why is the sky blue?"}
     ],
@@ -99,7 +101,7 @@ Cloud also exposes `/v1`, but this app standardizes on the native path `POST htt
 
 - **Auth**: Always send `Authorization: Bearer <api-key>` when `USE_DIRECT_CLOUD=1`.
 - **Endpoints**: Use `GET https://ollama.com/api/tags` to test keys and `POST https://ollama.com/api/chat` for streaming; the local fallback uses `/v1` endpoints.
-- **Model names**: Append `-cloud` in cloud mode to keep configuration uniform.
-- **Streaming**: Cloud responses arrive as newline-delimited JSON; our backend normalises each chunk to OpenAI-style deltas before emitting `ollama-completion` events.
+- **Model names**: Use colon-tag IDs (e.g., `gpt-oss:120b`). The UI may include `-cloud`; the backend normalizes.
+- **Streaming**: Cloud responses use SSE. The backend forwards each SSE data line (JSON or text), and the frontend parser handles Harmony channels (prefers `final`) and legacy shapes.
 
 Following these rules lets the product swap between local and cloud inference with minimal friction while fully complying with Ollama Cloud requirements.

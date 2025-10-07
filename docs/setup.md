@@ -2,13 +2,13 @@
 
 ## Prerequisites
 - **Rust**: Stable toolchain via `rustup` (https://rustup.rs/)
-- **Node.js**: v22.x (bundled npm)
+- **Node.js**: v20.x (see `uicp/package.json` engines)
 - **Tauri CLI**: `npm install -g @tauri-apps/cli`
 - **Visual C++ Build Tools** (MSVC)
 - **Ollama Cloud API key** from https://ollama.com
 
 ## Project Layout
-```
+{{ ... }}
 AI web-interface/
 ├─ uicp/             # React + Tailwind webview
 │  └─ src-tauri/     # Async Rust backend
@@ -55,7 +55,7 @@ Artifacts land under `uicp/src-tauri/target/release/bundle/`.
 ## Data & Logs
 - SQLite DB: `~/Documents/UICP/data.db`
 - `.env`: `~/Documents/UICP/.env`
-- Logs: `~/Documents/UICP/logs/` (planned)
+- Logs: `~/Documents/UICP/logs/`
 
 ## Models (default)
 - Primary: `qwen3-coder:480b-cloud`
@@ -79,3 +79,4 @@ Notes:
 ## Notes
 - Workspace state persists once you click **Save** (writes to `~/Documents/UICP/data.db`).
 - Tauri config lives at `uicp/src-tauri/tauri.conf.json` (v2 schema).
+- Pressing `Ctrl+Shift+I` (Windows/Linux) or `Cmd+Opt+I` (macOS) now logs a devtools analytics event; open the **Metrics** window to inspect shortcut direction, agent phase, and streaming context.
