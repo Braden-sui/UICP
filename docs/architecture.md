@@ -62,6 +62,10 @@
 - Event listeners (`listen`) keep React state in sync with backend events.
 - LLM provider/orchestrator stream commentary JSON and validate via Zod before enqueueing batches.
 
+#### LLM profiles
+- `uicp/src/lib/llm/profiles.ts` registers planner/actor profiles (DeepSeek/Tuned Qwen today, Harmony-capable GPT-OSS soon). Each profile owns its prompt formatter, default model name, and response mode (`legacy` vs `harmony`).
+- `uicp/src/lib/llm/provider.ts` resolves the active profile (via env/UI) and delegates stream construction to `streamOllamaCompletion`.
+
 ## Ollama Cloud Integration
 - Base URL (cloud): `https://ollama.com` (no `/v1` by policy; runtime assertion enforces this)
 - Base URL (local): `http://127.0.0.1:11434/v1`

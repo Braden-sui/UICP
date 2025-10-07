@@ -1,41 +1,52 @@
-import type { ChatMessage, ToolSpec } from './ollama';
+import type { ToolSpec } from './ollama';
 import { streamOllamaCompletion } from './ollama';
-import plannerPrompt from '../../prompts/planner.txt?raw';
-import actorPrompt from '../../prompts/actor.txt?raw';
+import {
+  getActorProfile,
+  getPlannerProfile,
+  type ActorProfileKey,
+  type PlannerProfileKey,
+} from './profiles';
 
 export type LLMStream = ReturnType<typeof streamOllamaCompletion>;
 
+export type PlannerStreamOptions = {
+  model?: string;
+  tools?: ToolSpec[];
+  profileKey?: PlannerProfileKey;
+};
+
+export type ActorStreamOptions = {
+  model?: string;
+  tools?: ToolSpec[];
+  profileKey?: ActorProfileKey;
+};
+
 export type PlannerClient = {
-  streamIntent: (intent: string, options?: { model?: string; tools?: ToolSpec[] }) => LLMStream;
+  streamIntent: (intent: string, options?: PlannerStreamOptions) => LLMStream;
 };
 
 export type ActorClient = {
-  streamPlan: (planJson: string, options?: { model?: string; tools?: ToolSpec[] }) => LLMStream;
+  streamPlan: (planJson: string, options?: ActorStreamOptions) => LLMStream;
 };
 
-// Planner uses the DeepSeek system prompt. The backend selects cloud/local and models by default when model is undefined.
 export function getPlannerClient(): PlannerClient {
   return {
     streamIntent: (intent, options) => {
-      const messages: ChatMessage[] = [
-        { role: 'system', content: plannerPrompt.trim() },
-        { role: 'user', content: intent },
-      ];
-      return streamOllamaCompletion(messages, options?.model, options?.tools);
+      const profile = getPlannerProfile(options?.profileKey);
+      const messages = profile.formatMessages(intent, { tools: options?.tools });
+      const model = options?.model ?? profile.defaultModel;
+      return streamOllamaCompletion(messages, model, options?.tools);
     },
   };
 }
 
-// Actor uses the Kimi system prompt. The backend selects cloud/local and models by default when model is undefined.
 export function getActorClient(): ActorClient {
   return {
     streamPlan: (planJson, options) => {
-      const messages: ChatMessage[] = [
-        { role: 'system', content: actorPrompt.trim() },
-        { role: 'user', content: planJson },
-      ];
-      return streamOllamaCompletion(messages, options?.model, options?.tools);
+      const profile = getActorProfile(options?.profileKey);
+      const messages = profile.formatMessages(planJson, { tools: options?.tools });
+      const model = options?.model ?? profile.defaultModel;
+      return streamOllamaCompletion(messages, model, options?.tools);
     },
   };
 }
-

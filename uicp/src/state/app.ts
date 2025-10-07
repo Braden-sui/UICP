@@ -1,5 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import {
+  getDefaultPlannerProfileKey,
+  getDefaultActorProfileKey,
+  type PlannerProfileKey,
+  type ActorProfileKey,
+} from '../lib/llm/profiles';
 
 // AppState keeps cross-cutting UI control flags so DockChat, modal flows, and transport logic stay in sync.
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -85,6 +91,9 @@ export type AppState = {
   metricsOpen: boolean;
   // Keep a dedicated flag for the built-in Notepad utility window so local UI can toggle it.
   notepadOpen: boolean;
+  agentSettingsOpen: boolean;
+  plannerProfileKey: PlannerProfileKey;
+  actorProfileKey: ActorProfileKey;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
@@ -105,6 +114,9 @@ export type AppState = {
   setLogsOpen: (value: boolean) => void;
   setMetricsOpen: (value: boolean) => void;
   setNotepadOpen: (value: boolean) => void;
+  setAgentSettingsOpen: (value: boolean) => void;
+  setPlannerProfileKey: (key: PlannerProfileKey) => void;
+  setActorProfileKey: (key: ActorProfileKey) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
   upsertWorkspaceWindow: (meta: WorkspaceWindowMeta) => void;
@@ -147,6 +159,9 @@ export const useAppStore = create<AppState>()(
       logsOpen: false,
       metricsOpen: false,
       notepadOpen: false,
+      agentSettingsOpen: false,
+      plannerProfileKey: getDefaultPlannerProfileKey(),
+      actorProfileKey: getDefaultActorProfileKey(),
       desktopShortcuts: {},
       workspaceWindows: {},
       telemetry: [],
@@ -165,6 +180,9 @@ export const useAppStore = create<AppState>()(
       setLogsOpen: (value) => set({ logsOpen: value }),
       setMetricsOpen: (value) => set({ metricsOpen: value }),
       setNotepadOpen: (value) => set({ notepadOpen: value }),
+      setAgentSettingsOpen: (value) => set({ agentSettingsOpen: value }),
+      setPlannerProfileKey: (key) => set({ plannerProfileKey: key }),
+      setActorProfileKey: (key) => set({ actorProfileKey: key }),
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
           if (state.desktopShortcuts[id]) {
@@ -309,6 +327,9 @@ export const useAppStore = create<AppState>()(
         workspaceWindows: state.workspaceWindows,
         notepadOpen: state.notepadOpen,
         agentMode: state.agentMode,
+        plannerProfileKey: state.plannerProfileKey,
+        actorProfileKey: state.actorProfileKey,
+        agentSettingsOpen: state.agentSettingsOpen,
       }),
     },
   ),

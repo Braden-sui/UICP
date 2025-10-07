@@ -5,8 +5,9 @@ import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
 import NotepadWindow from './NotepadWindow';
 import MetricsPanel from './MetricsPanel';
-import { LogsIcon, NotepadIcon, GaugeIcon } from '../icons';
+import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon } from '../icons';
 import { useAppStore, type DesktopShortcutPosition } from '../state/app';
+import AgentSettingsWindow from './AgentSettingsWindow';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
@@ -14,6 +15,8 @@ const NOTEPAD_SHORTCUT_ID = 'notepad';
 const NOTEPAD_SHORTCUT_DEFAULT = { x: 32, y: 128 } as const;
 const METRICS_SHORTCUT_ID = 'metrics';
 const METRICS_SHORTCUT_DEFAULT = { x: 32, y: 224 } as const;
+const AGENT_SETTINGS_SHORTCUT_ID = 'agent-settings';
+const AGENT_SETTINGS_SHORTCUT_DEFAULT = { x: 32, y: 320 } as const;
 
 // Desktop hosts the empty canvas the agent mutates via the adapter and surfaces shortcuts for manual control.
 export const Desktop = () => {
@@ -26,6 +29,8 @@ export const Desktop = () => {
   const setMetricsOpen = useAppStore((s) => s.setMetricsOpen);
   const notepadOpen = useAppStore((s) => s.notepadOpen);
   const setNotepadOpen = useAppStore((s) => s.setNotepadOpen);
+  const agentSettingsOpen = useAppStore((s) => s.agentSettingsOpen);
+  const setAgentSettingsOpen = useAppStore((s) => s.setAgentSettingsOpen);
   const openLogs = useCallback(() => setLogsOpen(true), [setLogsOpen]);
   const hideLogs = useCallback(() => setLogsOpen(false), [setLogsOpen]);
   const openMetrics = useCallback(() => setMetricsOpen(true), [setMetricsOpen]);
@@ -59,13 +64,16 @@ export const Desktop = () => {
     ensureShortcut(LOGS_SHORTCUT_ID, { ...LOGS_SHORTCUT_DEFAULT });
     ensureShortcut(NOTEPAD_SHORTCUT_ID, { ...NOTEPAD_SHORTCUT_DEFAULT });
     ensureShortcut(METRICS_SHORTCUT_ID, { ...METRICS_SHORTCUT_DEFAULT });
+    ensureShortcut(AGENT_SETTINGS_SHORTCUT_ID, { ...AGENT_SETTINGS_SHORTCUT_DEFAULT });
     upsertWorkspaceWindow({ id: 'logs', title: 'Logs', kind: 'local' });
     upsertWorkspaceWindow({ id: 'notepad', title: 'Notepad', kind: 'local' });
     upsertWorkspaceWindow({ id: 'metrics', title: 'Metrics', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'agent-settings', title: 'Agent Settings', kind: 'local' });
     return () => {
       removeWorkspaceWindow('logs');
       removeWorkspaceWindow('notepad');
       removeWorkspaceWindow('metrics');
+      removeWorkspaceWindow('agent-settings');
     };
   }, [ensureShortcut, removeWorkspaceWindow, upsertWorkspaceWindow]);
 
@@ -93,6 +101,7 @@ export const Desktop = () => {
   const logsPosition = shortcutPositions[LOGS_SHORTCUT_ID] ?? LOGS_SHORTCUT_DEFAULT;
   const notepadPosition = shortcutPositions[NOTEPAD_SHORTCUT_ID] ?? NOTEPAD_SHORTCUT_DEFAULT;
   const metricsPosition = shortcutPositions[METRICS_SHORTCUT_ID] ?? METRICS_SHORTCUT_DEFAULT;
+  const agentSettingsPosition = shortcutPositions[AGENT_SETTINGS_SHORTCUT_ID] ?? AGENT_SETTINGS_SHORTCUT_DEFAULT;
 
   const handleOpenLogs = useCallback(() => {
     openLogs();
@@ -119,6 +128,13 @@ export const Desktop = () => {
   const handleMetricsPosition = useCallback(
     (position: DesktopShortcutPosition) => {
       setShortcutPosition(METRICS_SHORTCUT_ID, position);
+    },
+    [setShortcutPosition],
+  );
+
+  const handleAgentSettingsPosition = useCallback(
+    (position: DesktopShortcutPosition) => {
+      setShortcutPosition(AGENT_SETTINGS_SHORTCUT_ID, position);
     },
     [setShortcutPosition],
   );
@@ -181,6 +197,16 @@ export const Desktop = () => {
             ],
           } satisfies DesktopMenu;
         }
+        if (meta.id === AGENT_SETTINGS_SHORTCUT_ID) {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Agent Settings', onSelect: () => setAgentSettingsOpen(true), disabled: agentSettingsOpen },
+              { id: 'hide', label: 'Hide Agent Settings', onSelect: () => setAgentSettingsOpen(false), disabled: !agentSettingsOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
         return {
           id: meta.id,
           label: meta.title,
@@ -221,6 +247,16 @@ export const Desktop = () => {
           icon={<GaugeIcon className="h-8 w-8" />}
           active={metricsOpen}
         />
+        <DesktopIcon
+          id="agent-settings-shortcut"
+          label="Agent Settings"
+          position={agentSettingsPosition}
+          containerRef={overlayRef}
+          onOpen={() => setAgentSettingsOpen(true)}
+          onPositionChange={handleAgentSettingsPosition}
+          icon={<GearIcon className="h-8 w-8" />}
+          active={agentSettingsOpen}
+        />
         {/* Notepad shortcut surfaces the manual scratchpad utility. */}
         <DesktopIcon
           id="notepad-shortcut"
@@ -236,6 +272,7 @@ export const Desktop = () => {
       <NotepadWindow />
       <MetricsPanel />
       <LogsPanel />
+      <AgentSettingsWindow />
     </div>
   );
 };

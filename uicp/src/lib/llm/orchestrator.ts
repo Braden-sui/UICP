@@ -1,4 +1,5 @@
 import { getPlannerClient, getActorClient } from './provider';
+import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
 import type { StreamEvent } from './ollama';
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope } from '../uicp/schemas';
 import { createId } from '../utils';
@@ -34,18 +35,27 @@ export type RunIntentResult = {
   timings: { planMs: number; actMs: number };
 };
 
-async function collectCommentaryJson<T = unknown>(
+type ChannelCollectors = {
+  primaryChannels?: string[];
+  fallbackChannels?: string[];
+};
+
+async function collectJsonFromChannels<T = unknown>(
   stream: AsyncIterable<StreamEvent>,
-  timeoutMs = 35_000,
+  options?: { timeoutMs?: number } & ChannelCollectors,
 ): Promise<T> {
   const iterator = stream[Symbol.asyncIterator]();
-  let buf = '';
+  const primarySet = new Set((options?.primaryChannels ?? ['commentary']).map((c) => c.toLowerCase()));
+  const fallbackSet = new Set((options?.fallbackChannels ?? []).map((c) => c.toLowerCase()));
+  let primaryBuf = '';
+  let fallbackBuf = '';
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  const timeoutMs = options?.timeoutMs ?? 35_000;
   const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
 
-  const parseBuffer = () => {
-    const raw = toJsonSafe(buf);
+  const parseBuffer = (input: string) => {
+    const raw = toJsonSafe(input);
     try {
       return JSON.parse(raw) as T;
     } catch (e) {
@@ -64,17 +74,22 @@ async function collectCommentaryJson<T = unknown>(
   };
 
   const consume = (async () => {
+    let parsed: T | undefined;
     try {
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;
         const event = value as StreamEvent;
         if (event.type === 'done') break;
-        if (event.type === 'content' && (!event.channel || event.channel === 'commentary')) {
-          buf += event.text;
+        if (event.type === 'content') {
+          const channel = event.channel?.toLowerCase();
+          const isPrimary = !channel || primarySet.has(channel);
+          const isFallback = channel ? fallbackSet.has(channel) : false;
+          if (isPrimary) {
+            primaryBuf += event.text;
           // Attempt fast-path parse on each chunk: if a full JSON object/array is present, parse and stop streaming.
           try {
-            const parsed = parseBuffer();
+            parsed = parseBuffer(primaryBuf);
             // If parse succeeds, stop upstream stream early to cut latency and token usage.
             if (typeof iterator.return === 'function') {
               try {
@@ -87,9 +102,18 @@ async function collectCommentaryJson<T = unknown>(
           } catch {
             // keep accumulating until valid JSON is detected or stream ends
           }
+          } else if (isFallback) {
+            fallbackBuf += event.text;
+          }
         }
       }
-      return parseBuffer();
+      if (primaryBuf.trim().length) {
+        return parseBuffer(primaryBuf);
+      }
+      if (fallbackBuf.trim().length) {
+        return parseBuffer(fallbackBuf);
+      }
+      throw new Error('Model did not emit parsable JSON on expected channels');
     } finally {
       if (timer) {
         clearTimeout(timer);
@@ -121,13 +145,21 @@ async function collectCommentaryJson<T = unknown>(
   }
 }
 
-export async function planWithDeepSeek(intent: string, options?: { timeoutMs?: number }): Promise<Plan> {
+export async function planWithProfile(
+  intent: string,
+  options?: { timeoutMs?: number; profileKey?: PlannerProfileKey },
+): Promise<Plan> {
   const client = getPlannerClient();
+  const profile = getPlannerProfile(options?.profileKey);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const stream = client.streamIntent(intent);
-      const payload = await collectCommentaryJson(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
+      const stream = client.streamIntent(intent, { profileKey: profile.key });
+      const payload = await collectJsonFromChannels(stream, {
+        timeoutMs: options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS,
+        primaryChannels: profile.responseMode === 'harmony' ? ['commentary'] : undefined,
+        fallbackChannels: profile.responseMode === 'harmony' ? ['final'] : undefined,
+      });
       return validatePlan(payload);
     } catch (err) {
       lastErr = err;
@@ -153,14 +185,22 @@ function augmentPlan(input: Plan): Plan {
   return { summary: input.summary, risks, batch: input.batch };
 }
 
-export async function actWithGui(plan: Plan, options?: { timeoutMs?: number }): Promise<Batch> {
+export async function actWithProfile(
+  plan: Plan,
+  options?: { timeoutMs?: number; profileKey?: ActorProfileKey },
+): Promise<Batch> {
   const client = getActorClient();
+  const profile = getActorProfile(options?.profileKey);
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const stream = client.streamPlan(planJson);
-      const payload = await collectCommentaryJson<{ batch?: unknown }>(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
+      const stream = client.streamPlan(planJson, { profileKey: profile.key });
+      const payload = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
+        timeoutMs: options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS,
+        primaryChannels: profile.responseMode === 'harmony' ? ['commentary'] : undefined,
+        fallbackChannels: profile.responseMode === 'harmony' ? ['final'] : undefined,
+      });
       return validateBatch(payload?.batch as unknown);
     } catch (err) {
       lastErr = err;
@@ -169,10 +209,18 @@ export async function actWithGui(plan: Plan, options?: { timeoutMs?: number }): 
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+// Legacy aliases (default to configured profiles).
+export const planWithDeepSeek = (intent: string, options?: { timeoutMs?: number }) =>
+  planWithProfile(intent, options);
+
+export const actWithGui = (plan: Plan, options?: { timeoutMs?: number }) =>
+  actWithProfile(plan, options);
+
 export async function runIntent(
   text: string,
   applyNow: boolean,
   hooks?: RunIntentHooks,
+  options?: { plannerProfileKey?: PlannerProfileKey; actorProfileKey?: ActorProfileKey },
 ): Promise<RunIntentResult> {
   // applyNow will be handled by the UI layer; reference here to satisfy strict noUnusedParameters
   void applyNow;
@@ -188,7 +236,7 @@ export async function runIntent(
   // Step 1: Plan
   let plan: Plan;
   try {
-    plan = await planWithDeepSeek(text);
+    plan = await planWithProfile(text, { profileKey: options?.plannerProfileKey });
   } catch {
     // Planner degraded: proceed with actor-only fallback using the raw intent as summary
     notice = 'planner_fallback';
@@ -206,7 +254,7 @@ export async function runIntent(
   // Step 2: Act
   let batch: Batch;
   try {
-    batch = await actWithGui(plan);
+    batch = await actWithProfile(plan, { profileKey: options?.actorProfileKey });
   } catch {
     // Actor failed: return a safe error window batch to surface failure without partial apply
     notice = 'actor_fallback';

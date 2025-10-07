@@ -7,7 +7,7 @@ export type StreamEvent =
   | { type: 'tool_call'; index: number; id?: string; name?: string; arguments: string; isDelta: boolean }
   | { type: 'done' };
 
-export type ChatMessage = { role: string; content: string };
+export type ChatMessage = { role: string; content: string | Record<string, unknown> };
 export type ToolSpec = unknown; // pass-through JSON (e.g., OpenAI-compatible tool schema)
 
 // Extracts content/tool-call deltas from a single OpenAI/Ollama-compatible chunk object
@@ -16,6 +16,79 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const obj: any = input;
   const out: StreamEvent[] = [];
+
+  const pushContent = (channel: string | undefined, text: unknown) => {
+    if (typeof text !== 'string' || text.trim().length === 0) return;
+    out.push({ type: 'content', channel, text });
+  };
+
+  const pushToolCall = (call: any, indexFallback = 0) => {
+    if (!call || typeof call !== 'object') return;
+    const name = typeof call.name === 'string' ? call.name : typeof call.function?.name === 'string' ? call.function.name : undefined;
+    const args = typeof call.arguments === 'string'
+      ? call.arguments
+      : typeof call.function?.arguments === 'string'
+        ? call.function.arguments
+        : typeof call.arguments === 'object'
+          ? JSON.stringify(call.arguments)
+          : '';
+    const id = typeof call.id === 'string' ? call.id : undefined;
+    const index = typeof call.index === 'number' ? call.index : indexFallback;
+    if (!name && !args && !id) return;
+    out.push({ type: 'tool_call', index, id, name, arguments: args, isDelta: true });
+  };
+
+  const stringifyBlock = (block: unknown): string | undefined => {
+    if (typeof block === 'string') return block;
+    if (!block || typeof block !== 'object') return undefined;
+    if (typeof (block as { text?: unknown }).text === 'string') return (block as { text: string }).text;
+    if (typeof (block as { output_text?: unknown }).output_text === 'string') {
+      return (block as { output_text: string }).output_text;
+    }
+    if (typeof (block as { content?: unknown }).content === 'string') return (block as { content: string }).content;
+    return undefined;
+  };
+
+  const extractChannel = (message: any): string | undefined => {
+    if (!message || typeof message !== 'object') return undefined;
+    if (typeof message.channel === 'string') return message.channel;
+    if (typeof message.metadata?.channel === 'string') return message.metadata.channel;
+    if (typeof message.role === 'string' && ['analysis', 'commentary', 'final'].includes(message.role)) {
+      return message.role;
+    }
+    return undefined;
+  };
+
+  const handleMessage = (message: any) => {
+    if (!message || typeof message !== 'object') return;
+    const channel = extractChannel(message);
+
+    const content = message.content ?? message.output_text ?? message.thinking;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block && typeof block === 'object' && 'tool_call' in block) {
+          pushToolCall((block as { tool_call?: unknown }).tool_call);
+          continue;
+        }
+        if (block && typeof block === 'object' && 'toolCall' in block) {
+          pushToolCall((block as { toolCall?: unknown }).toolCall);
+          continue;
+        }
+        const text = stringifyBlock(block);
+        if (text) pushContent(channel, text);
+      }
+    } else {
+      const text = stringifyBlock(content) ?? (typeof content === 'string' ? content : undefined);
+      if (text) pushContent(channel, text);
+    }
+
+    const toolCalls = message.tool_calls ?? message.toolCalls ?? message.tool_call;
+    if (Array.isArray(toolCalls)) {
+      toolCalls.forEach((tc: unknown, index: number) => pushToolCall(tc, index));
+    } else if (toolCalls) {
+      pushToolCall(toolCalls);
+    }
+  };
 
   const choices = Array.isArray(obj.choices) ? obj.choices : [];
   for (const ch of choices) {
@@ -28,7 +101,7 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
       typeof delta.content === 'string' ? delta.content : typeof delta.thinking === 'string' ? delta.thinking : undefined;
 
     if (typeof content === 'string' && content.length > 0) {
-      out.push({ type: 'content', channel, text: content });
+      pushContent(channel, content);
     }
 
     // OpenAI-style tool calls (can arrive incrementally)
@@ -41,9 +114,34 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
       const name = typeof tc?.function?.name === 'string' ? tc.function.name : undefined;
       const args = typeof tc?.function?.arguments === 'string' ? tc.function.arguments : '';
       if (name || args || id) {
-        out.push({ type: 'tool_call', index: idx, id, name, arguments: args, isDelta: true });
+        pushToolCall({ name, arguments: args, id, index: idx }, idx);
       }
     }
+  }
+
+  // Harmony Responses: delta.messages / messages arrays
+  const harmonyMessages = (() => {
+    if (Array.isArray(obj?.delta?.messages)) return obj.delta.messages;
+    if (Array.isArray(obj?.messages)) return obj.messages;
+    if (Array.isArray(obj?.response?.messages)) return obj.response.messages;
+    if (Array.isArray(obj?.message?.content)) return obj.message.content;
+    return [];
+  })();
+  for (const msg of harmonyMessages) {
+    handleMessage(msg);
+  }
+
+  // Harmony-specific direct text fields
+  if (typeof obj?.response?.channel === 'string' && typeof obj?.response?.output_text === 'string') {
+    pushContent(obj.response.channel, obj.response.output_text);
+  }
+
+  if (Array.isArray(obj?.delta?.tool_calls)) {
+    obj.delta.tool_calls.forEach((tc: unknown, index: number) => pushToolCall(tc, index));
+  }
+
+  if (Array.isArray(obj?.tool_calls)) {
+    obj.tool_calls.forEach((tc: unknown, index: number) => pushToolCall(tc, index));
   }
 
   return out;

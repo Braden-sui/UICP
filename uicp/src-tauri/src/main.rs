@@ -545,7 +545,7 @@ async fn chat_completion(
                                         continue;
                                     }
 
-                                    // Try parsing JSON to normalize Cloud-native shape
+                                    // Try parsing JSON to inspect metadata; we now forward raw chunks so the frontend parser can decide how to interpret harmony / legacy formats.
                                     match serde_json::from_str::<serde_json::Value>(&payload_str) {
                                         Ok(val) => {
                                             // { done: true }
@@ -561,30 +561,6 @@ async fn chat_completion(
                                                 );
                                                 continue;
                                             }
-                                            // Cloud native: { message: { content, channel? } }
-                                            if let Some(msg) =
-                                                val.get("message").and_then(|m| m.as_object())
-                                            {
-                                                if let Some(content) =
-                                                    msg.get("content").and_then(|c| c.as_str())
-                                                {
-                                                    let channel = msg
-                                                        .get("channel")
-                                                        .and_then(|c| c.as_str())
-                                                        .unwrap_or("commentary");
-                                                    let wrapped = serde_json::json!({
-                                                        "choices": [{ "delta": { "channel": channel, "content": content } }]
-                                                    });
-                                                    let wrapped_str = wrapped.to_string();
-                                                    emit_or_log(
-                                                        &app_handle,
-                                                        "ollama-completion",
-                                                        serde_json::json!({ "done": false, "delta": wrapped_str }),
-                                                    );
-                                                    continue;
-                                                }
-                                            }
-                                            // Pass through original JSON string
                                             emit_or_log(
                                                 &app_handle,
                                                 "ollama-completion",

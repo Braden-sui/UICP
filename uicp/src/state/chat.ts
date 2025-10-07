@@ -145,29 +145,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Orchestrator path: DeepSeek (planner) → Qwen (actor) via streaming transport.
         app.setSuppressAutoApply(true);
         try {
-          const result = await runIntent(prompt, /* applyNow */ false, {
-            onPhaseChange: (detail) => {
-              if (detail.phase === 'planning') {
-                traceId = detail.traceId;
-                app.transitionAgentPhase('planning', {
-                  startedAt,
-                  traceId,
-                  planMs: null,
-                  actMs: null,
-                  applyMs: null,
-                  error: undefined,
-                });
-              } else {
-                traceId = detail.traceId;
-                planDuration = detail.planMs;
-                app.transitionAgentPhase('acting', {
-                  traceId,
-                  planMs: planDuration,
-                  actMs: null,
-                });
-              }
+          const result = await runIntent(
+            prompt,
+            /* applyNow */ false,
+            {
+              onPhaseChange: (detail) => {
+                if (detail.phase === 'planning') {
+                  traceId = detail.traceId;
+                  app.transitionAgentPhase('planning', {
+                    startedAt,
+                    traceId,
+                    planMs: null,
+                    actMs: null,
+                    applyMs: null,
+                    error: undefined,
+                  });
+                } else {
+                  traceId = detail.traceId;
+                  planDuration = detail.planMs;
+                  app.transitionAgentPhase('acting', {
+                    traceId,
+                    planMs: planDuration,
+                    actMs: null,
+                  });
+                }
+              },
             },
-          });
+            {
+              plannerProfileKey: app.plannerProfileKey,
+              actorProfileKey: app.actorProfileKey,
+            },
+          );
           notice = result.notice;
           const safePlan = validatePlan({ summary: result.plan.summary, risks: result.plan.risks, batch: result.plan.batch });
           const safeBatch = validateBatch(result.batch);

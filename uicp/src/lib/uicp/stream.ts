@@ -60,7 +60,8 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<void>
     if (parsed && typeof parsed === 'object') {
       const info = extractChannelContent(parsed);
       if (!info) return;
-      if (info.channel === 'commentary' && info.content) {
+      const channel = info.channel ? info.channel.toLowerCase() : undefined;
+      if ((!channel || channel === 'commentary') && info.content) {
         commentaryBuffer += info.content;
       }
       return;

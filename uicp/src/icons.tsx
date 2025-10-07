@@ -48,3 +48,12 @@ export const GaugeIcon = (props: SVGProps<SVGSVGElement>) => (
     <circle cx="12" cy="16" r="1.5" />
   </svg>
 );
+
+export const GearIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
+    <path
+      d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zm0-5.5 1.2 2.6a6.5 6.5 0 0 1 2.7 1.1L18.7 5l1.8 3.1-2.5 1.7a6.6 6.6 0 0 1 0 2.4l2.5 1.7-1.8 3.1-2.8-1.7a6.5 6.5 0 0 1-2.7 1.1L12 21l-1.2-2.6a6.5 6.5 0 0 1-2.7-1.1L5.3 19 3.5 15.9l2.5-1.7a6.6 6.6 0 0 1 0-2.4L3.5 10.1 5.3 7l2.8 1.7a6.5 6.5 0 0 1 2.7-1.1z"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
