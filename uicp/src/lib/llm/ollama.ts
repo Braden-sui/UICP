@@ -73,9 +73,20 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
   const handleMessage = (message: unknown) => {
     const record = asRecord(message);
     if (!record) return;
-    const channel = extractChannel(record);
+    let channel = extractChannel(record);
 
-    const content = record.content ?? record.output_text ?? record.thinking;
+    const rawContent = record.content;
+    const rawOutput = (record as { output_text?: unknown }).output_text;
+    const rawThinking = (record as { thinking?: unknown }).thinking;
+    const hasContentText = typeof rawContent === 'string' && rawContent.trim().length > 0;
+    const hasOutputText = typeof rawOutput === 'string' && (rawOutput as string).trim().length > 0;
+    const hasThinkingText = typeof rawThinking === 'string' && (rawThinking as string).trim().length > 0;
+
+    if (!channel && hasThinkingText && !hasContentText && !hasOutputText) {
+      channel = 'analysis';
+    }
+
+    const content = rawContent ?? rawOutput ?? rawThinking;
     if (Array.isArray(content)) {
       for (const block of content) {
         if (block && typeof block === 'object' && 'tool_call' in block) {
@@ -137,6 +148,9 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     if (Array.isArray(root['messages'])) return root['messages'] as unknown[];
     if (Array.isArray(response?.messages)) return response.messages;
     if (Array.isArray(message?.content)) return message?.content as unknown[];
+    if (message && (typeof message.content === 'string' || typeof message.thinking === 'string')) {
+      return [message];
+    }
     return [];
   })();
   for (const msg of harmonyMessages) {
