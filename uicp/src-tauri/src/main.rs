@@ -421,15 +421,15 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     let trimmed = raw.trim();
     if use_cloud {
         let core = trimmed.trim_end_matches("-cloud");
-        let mut normalized = if let Some((prefix, suffix)) = core.split_once(':') {
-            format!("{}-{}", prefix, suffix)
+        if core.contains(':') {
+            core.to_string()
+        } else if let Some(idx) = core.rfind('-') {
+            let (prefix, suffix) = core.split_at(idx);
+            let suffix = suffix.trim_start_matches('-');
+            format!("{}:{}", prefix, suffix)
         } else {
-            core.replace(':', "-")
-        };
-        if !normalized.ends_with("-cloud") {
-            normalized.push_str("-cloud");
+            core.to_string()
         }
-        normalized
     } else {
         let core = trimmed.trim_end_matches("-cloud");
         if core.contains(':') {
@@ -466,7 +466,7 @@ async fn chat_completion(
         // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
         std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
     });
-    // Normalize to colon (local) vs hyphen-cloud naming per Ollama host.
+    // Normalize to colon-delimited tags for Cloud and OpenAI-compatible hyphen tags for local daemon.
     let resolved_model = normalize_model_name(&requested_model, use_cloud);
 
     let body = serde_json::json!({
@@ -885,6 +885,36 @@ async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
     }
 
     Ok(base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_model_name;
+
+    #[test]
+    fn cloud_keeps_colon_tags() {
+        assert_eq!(normalize_model_name("gpt-oss:120b", true), "gpt-oss:120b");
+    }
+
+    #[test]
+    fn cloud_strips_trailing_cloud_suffix() {
+        assert_eq!(normalize_model_name("gpt-oss:120b-cloud", true), "gpt-oss:120b");
+    }
+
+    #[test]
+    fn cloud_converts_hyphenated_form() {
+        assert_eq!(normalize_model_name("gpt-oss-20b", true), "gpt-oss:20b");
+    }
+
+    #[test]
+    fn local_converts_hyphenated_form_to_colon() {
+        assert_eq!(normalize_model_name("gpt-oss-20b", false), "gpt-oss:20b");
+    }
+
+    #[test]
+    fn local_preserves_colon_for_daemon() {
+        assert_eq!(normalize_model_name("gpt-oss:20b", false), "gpt-oss:20b");
+    }
 }
 
 fn derive_size_token(width: f64, height: f64) -> String {

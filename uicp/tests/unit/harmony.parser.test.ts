@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { parseHarmonyTurn } from '../../src/lib/llm/harmony';
+import { decodeHarmonyPlan, decodeHarmonyBatch } from '../../src/lib/llm/harmony';
 
 type ExpectedEntry = {
   role: 'assistant' | 'tool';
@@ -88,4 +89,22 @@ describe('Harmony parser synthetic samples', () => {
       }
     });
   }
+});
+
+describe('decodeHarmony* fallbacks', () => {
+  it('accepts plain JSON plan when no Harmony markers present', () => {
+    const raw = '{"summary":"demo","batch":[]}';
+    const decoded = decodeHarmonyPlan(raw);
+    if ('error' in decoded) throw decoded.error;
+    expect(decoded.planText).toBe(raw);
+    expect(decoded.channel).toBe('final');
+  });
+
+  it('accepts plain JSON batch when no Harmony markers present', () => {
+    const raw = '{"batch":[]}';
+    const decoded = decodeHarmonyBatch(raw);
+    if ('error' in decoded) throw decoded.error;
+    expect(decoded.batchText).toBe(raw);
+    expect(decoded.channel).toBe('final');
+  });
 });

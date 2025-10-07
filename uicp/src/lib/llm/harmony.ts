@@ -191,6 +191,23 @@ export function harmonyHasMissingEnd(result: HarmonyParseResult): result is { er
 export function decodeHarmonyPlan(raw: string):
   | { messages: HarmonyMessage[]; planText: string; channel: string }
   | { error: HarmonyParseError } {
+  const trimmed = raw.trim();
+  if (!trimmed.includes('<|start|>')) {
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return {
+        messages: [
+          {
+            role: 'assistant',
+            channel: 'final',
+            content: trimmed,
+            stop: 'return',
+          },
+        ],
+        planText: trimmed,
+        channel: 'final',
+      };
+    }
+  }
   const parsed = parseHarmonyTurn(raw);
   if ('error' in parsed) return parsed;
   const final = extractFinalJson(parsed.messages);
@@ -206,6 +223,23 @@ export function decodeHarmonyPlan(raw: string):
 export function decodeHarmonyBatch(raw: string):
   | { messages: HarmonyMessage[]; batchText: string; channel: string }
   | { error: HarmonyParseError } {
+  const trimmed = raw.trim();
+  if (!trimmed.includes('<|start|>')) {
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return {
+        messages: [
+          {
+            role: 'assistant',
+            channel: 'final',
+            content: trimmed,
+            stop: 'return',
+          },
+        ],
+        batchText: trimmed,
+        channel: 'final',
+      };
+    }
+  }
   const parsed = parseHarmonyTurn(raw);
   if ('error' in parsed) return parsed;
   const final = extractFinalJson(parsed.messages);
