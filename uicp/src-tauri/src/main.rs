@@ -14,7 +14,7 @@ use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State,
 };
-use tokio::{fs, sync::RwLock, time::interval};
+use tokio::{fs, io::AsyncWriteExt, sync::RwLock, time::interval};
 use tokio_stream::StreamExt;
 
 static APP_NAME: &str = "UICP";
@@ -26,12 +26,14 @@ static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
 });
 static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
 static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
+static LOGS_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("logs"));
 
 struct AppState {
     db_path: PathBuf,
     last_save_ok: RwLock<bool>,
     ollama_key: RwLock<Option<String>>,
     use_direct_cloud: RwLock<bool>,
+    debug_enabled: RwLock<bool>,
     http: Client,
     ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
 }
@@ -99,6 +101,12 @@ async fn get_paths() -> Result<serde_json::Value, String> {
 async fn load_api_key(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let key = state.ollama_key.read().await.clone();
     Ok(key)
+}
+
+#[tauri::command]
+async fn set_debug(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    *state.debug_enabled.write().await = enabled;
+    Ok(())
 }
 
 #[tauri::command]
@@ -448,6 +456,7 @@ async fn chat_completion(
     }
 
     let use_cloud = *state.use_direct_cloud.read().await;
+    let debug_on = *state.debug_enabled.read().await;
     let api_key_opt = state.ollama_key.read().await.clone();
     if use_cloud && api_key_opt.is_none() {
         return Err("No API key configured".into());
@@ -478,8 +487,52 @@ async fn chat_completion(
     let base_url = base.clone();
     let body_payload = body.clone();
     let api_key_for_task = api_key_opt.clone();
+    let logs_dir = LOGS_DIR.clone();
+    let rid_for_task = rid.clone();
 
     let join: JoinHandle<()> = spawn(async move {
+        // best-effort logs dir
+        if debug_on {
+            let _ = tokio::fs::create_dir_all(&logs_dir).await;
+        }
+        let trace_path = logs_dir.join(format!("trace-{}.ndjson", rid_for_task));
+
+        let append_trace = |event: serde_json::Value| {
+            let path = trace_path.clone();
+            async move {
+                let line = format!("{}\n", event.to_string());
+                if let Ok(mut f) = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .await
+                {
+                    let _ = f.write_all(line.as_bytes()).await;
+                }
+            }
+        };
+
+        let emit_debug = |payload: serde_json::Value| {
+            let handle = app_handle.clone();
+            async move {
+                let _ = handle.emit("debug-log", payload);
+            }
+        };
+
+        if debug_on {
+            let url = if use_cloud { format!("{}/api/chat", base_url) } else { format!("{}/chat/completions", base_url) };
+            let ev = serde_json::json!({
+                "ts": Utc::now().timestamp_millis(),
+                "event": "request_started",
+                "requestId": rid_for_task,
+                "useCloud": use_cloud,
+                "url": url,
+                "model": body_payload.get("model").cloned().unwrap_or(serde_json::json!(null)),
+                "stream": body_payload.get("stream").cloned().unwrap_or(serde_json::json!(true)),
+            });
+            tokio::spawn(append_trace(ev.clone()));
+            tokio::spawn(emit_debug(ev));
+        }
         let mut attempt_local: u8 = 0;
         'outer: loop {
             attempt_local += 1;
@@ -502,6 +555,17 @@ async fn chat_completion(
 
             match resp_res {
                 Err(err) => {
+                    if debug_on {
+                        let ev = serde_json::json!({
+                            "ts": Utc::now().timestamp_millis(),
+                            "event": "request_error",
+                            "requestId": rid_for_task,
+                            "kind": "transport",
+                            "error": err.to_string(),
+                        });
+                        tokio::spawn(append_trace(ev.clone()));
+                        tokio::spawn(emit_debug(ev));
+                    }
                     let transient = err.is_timeout() || err.is_connect();
                     if transient && attempt_local < max_attempts {
                         let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
@@ -517,6 +581,16 @@ async fn chat_completion(
                 }
                 Ok(resp) => {
                     let status = resp.status();
+                    if debug_on {
+                        let ev = serde_json::json!({
+                            "ts": Utc::now().timestamp_millis(),
+                            "event": "response_status",
+                            "requestId": rid_for_task,
+                            "status": status.as_u16(),
+                        });
+                        tokio::spawn(append_trace(ev.clone()));
+                        tokio::spawn(emit_debug(ev));
+                    }
                     if !status.is_success() {
                         if (status.as_u16() == 429 || status.as_u16() == 503)
                             && attempt_local < max_attempts
@@ -539,6 +613,18 @@ async fn chat_completion(
                             "ollama-completion",
                             serde_json::json!({ "done": true }),
                         );
+                        if debug_on {
+                            if let Ok(text) = resp.text().await {
+                                let ev = serde_json::json!({
+                                    "ts": Utc::now().timestamp_millis(),
+                                    "event": "response_error_body",
+                                    "requestId": rid_for_task,
+                                    "body": text,
+                                });
+                                tokio::spawn(append_trace(ev.clone()));
+                                tokio::spawn(emit_debug(ev));
+                            }
+                        }
                         break;
                     }
 
@@ -546,6 +632,15 @@ async fn chat_completion(
                     while let Some(chunk) = stream.next().await {
                         match chunk {
                             Err(_) => {
+                                if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "stream_error",
+                                        "requestId": rid_for_task,
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
                                 break 'outer;
                             }
                             Ok(bytes) => {
@@ -564,6 +659,15 @@ async fn chat_completion(
                                     };
 
                                     if payload_str == "[DONE]" {
+                                        if debug_on {
+                                            let ev = serde_json::json!({
+                                                "ts": Utc::now().timestamp_millis(),
+                                                "event": "stream_done",
+                                                "requestId": rid_for_task,
+                                            });
+                                            tokio::spawn(append_trace(ev.clone()));
+                                            tokio::spawn(emit_debug(ev));
+                                        }
                                         emit_or_log(
                                             &app_handle,
                                             "ollama-completion",
@@ -581,12 +685,31 @@ async fn chat_completion(
                                                 .and_then(|v| v.as_bool())
                                                 .unwrap_or(false)
                                             {
+                                                if debug_on {
+                                                    let ev = serde_json::json!({
+                                                        "ts": Utc::now().timestamp_millis(),
+                                                        "event": "delta_done",
+                                                        "requestId": rid_for_task,
+                                                    });
+                                                    tokio::spawn(append_trace(ev.clone()));
+                                                    tokio::spawn(emit_debug(ev));
+                                                }
                                                 emit_or_log(
                                                     &app_handle,
                                                     "ollama-completion",
                                                     serde_json::json!({ "done": true }),
                                                 );
                                                 continue;
+                                            }
+                                            if debug_on {
+                                                let ev = serde_json::json!({
+                                                    "ts": Utc::now().timestamp_millis(),
+                                                    "event": "delta_json",
+                                                    "requestId": rid_for_task,
+                                                    "len": payload_str.len(),
+                                                });
+                                                tokio::spawn(append_trace(ev.clone()));
+                                                tokio::spawn(emit_debug(ev));
                                             }
                                             emit_or_log(
                                                 &app_handle,
@@ -595,6 +718,16 @@ async fn chat_completion(
                                             );
                                         }
                                         Err(_) => {
+                                            if debug_on {
+                                                let ev = serde_json::json!({
+                                                    "ts": Utc::now().timestamp_millis(),
+                                                    "event": "delta_text",
+                                                    "requestId": rid_for_task,
+                                                    "len": payload_str.len(),
+                                                });
+                                                tokio::spawn(append_trace(ev.clone()));
+                                                tokio::spawn(emit_debug(ev));
+                                            }
                                             // Pass through plain text
                                             emit_or_log(
                                                 &app_handle,
@@ -608,6 +741,15 @@ async fn chat_completion(
                         }
                     }
 
+                    if debug_on {
+                        let ev = serde_json::json!({
+                            "ts": Utc::now().timestamp_millis(),
+                            "event": "completed",
+                            "requestId": rid_for_task,
+                        });
+                        tokio::spawn(append_trace(ev.clone()));
+                        tokio::spawn(emit_debug(ev));
+                    }
                     emit_or_log(
                         &app_handle,
                         "ollama-completion",
@@ -819,6 +961,10 @@ fn main() {
         last_save_ok: RwLock::new(true),
         ollama_key: RwLock::new(None),
         use_direct_cloud: RwLock::new(true), // default to cloud mode
+        debug_enabled: RwLock::new({
+            let raw = std::env::var("UICP_DEBUG").unwrap_or_default();
+            matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
+        }),
         http: Client::builder()
             // Allow long-lived streaming responses; UI can cancel via cancel_chat.
             .build()
@@ -850,6 +996,7 @@ fn main() {
             get_paths,
             load_api_key,
             save_api_key,
+            set_debug,
             test_api_key,
             persist_command,
             get_workspace_commands,

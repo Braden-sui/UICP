@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { useChatStore } from '../state/chat';
 import { useAppStore } from '../state/app';
 import DesktopWindow from './DesktopWindow';
@@ -22,6 +24,35 @@ export const LogsPanel = () => {
   const setMetricsOpen = useAppStore((s) => s.setMetricsOpen);
   const telemetry = useAppStore((s) => s.telemetry);
   const metrics = telemetry.slice(0, 3);
+  const [debugEntries, setDebugEntries] = useState<Array<{ ts: number; event: string; requestId?: string; status?: number; len?: number }>>([]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    const sub = async () => {
+      try {
+        const off = await listen('debug-log', (e) => {
+          const payload = e.payload as Record<string, unknown>;
+          const ts = Number(payload.ts ?? Date.now());
+          const event = String(payload.event ?? 'unknown');
+          const entry = {
+            ts,
+            event,
+            requestId: typeof payload.requestId === 'string' ? (payload.requestId as string) : undefined,
+            status: typeof payload.status === 'number' ? (payload.status as number) : undefined,
+            len: typeof payload.len === 'number' ? (payload.len as number) : undefined,
+          };
+          setDebugEntries((prev) => [entry, ...prev].slice(0, 200));
+        });
+        unlisten = off;
+      } catch {
+        // ignore
+      }
+    };
+    void sub();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   return (
     <>
@@ -81,6 +112,23 @@ export const LogsPanel = () => {
                     {entry.error && (
                       <div className="text-[10px] font-mono uppercase text-red-500">{entry.error}</div>
                     )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {debugEntries.length > 0 && (
+            <section className="rounded border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-700">
+              <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide">
+                <span>Debug events</span>
+                <span className="text-[10px] font-mono lowercase text-amber-600">{debugEntries.length} entries</span>
+              </div>
+              <ul className="max-h-40 space-y-1 overflow-auto">
+                {debugEntries.slice(0, 40).map((d, i) => (
+                  <li key={`dbg-${d.ts}-${i}`} className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px] text-amber-600">{new Date(d.ts).toLocaleTimeString()}</span>
+                    <span className="flex-1 truncate px-2">{d.event}{d.status != null ? ` ${d.status}` : ''}{d.len != null ? ` len=${d.len}` : ''}</span>
+                    {d.requestId && <span className="font-mono text-[10px] text-amber-600">{d.requestId}</span>}
                   </li>
                 ))}
               </ul>

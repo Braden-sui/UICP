@@ -81,11 +81,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
       return [
         {
           role: 'developer',
-          content: {
-            instructions: instructionsSections.join('\n\n'),
-            reasoning_level: 'high',
-            tools: opts?.tools ?? [],
-          },
+          content: instructionsSections.join('\n\n'),
         },
         { role: 'user', content: intent },
       ];
@@ -122,11 +118,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
       return [
         {
           role: 'developer',
-          content: {
-            instructions: instructionsSections.join('\n\n'),
-            reasoning_level: 'medium',
-            tools: opts?.tools ?? [],
-          },
+          content: instructionsSections.join('\n\n'),
         },
         { role: 'user', content: planJson },
       ];
