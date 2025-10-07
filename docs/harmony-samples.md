@@ -42,7 +42,7 @@ Rules your parser must satisfy:
 
 ```expected name:tool-call-roundtrip
 [
-  {"role":"assistant","channel":"commentary","to":"functions.get_weather","args":{"location":"Denver","format":"celsius"}},
+  {"role":"assistant","channel":"commentary","to":"functions.get_weather","constraint":"json","args":{"location":"Denver","format":"celsius"}},
   {"role":"tool","name":"functions.get_weather","channel":"commentary","content":{"sunny":true,"temperature":20}},
   {"role":"assistant","channel":"final","content":"20 C and sunny."}
 ]
@@ -67,7 +67,7 @@ Rules your parser must satisfy:
 [
   {"role":"assistant","channel":"analysis","content":"internal"},
   {"role":"assistant","channel":"commentary","content":"Planning to call get_weather..."},
-  {"role":"assistant","channel":"commentary","to":"functions.get_weather","args":{"location":"SF"}},
+  {"role":"assistant","channel":"commentary","to":"functions.get_weather","constraint":"json","args":{"location":"SF"}},
   {"role":"tool","name":"functions.get_weather","channel":"commentary","content":{"sunny":true,"temperature":18}},
   {"role":"assistant","channel":"final","content":"18 C and sunny."}
 ]
@@ -105,9 +105,9 @@ urn|>
 
 ```expected name:two-tool-calls
 [
-  {"role":"assistant","channel":"commentary","to":"functions.lookup_user","args":{"email":"a@example.com"}},
+  {"role":"assistant","channel":"commentary","to":"functions.lookup_user","constraint":"json","args":{"email":"a@example.com"}},
   {"role":"tool","name":"functions.lookup_user","channel":"commentary","content":{"id":"u_123","plan":"pro"}},
-  {"role":"assistant","channel":"commentary","to":"functions.fetch_usage","args":{"user_id":"u_123","range":"2025-10"}},
+  {"role":"assistant","channel":"commentary","to":"functions.fetch_usage","constraint":"json","args":{"user_id":"u_123","range":"2025-10"}},
   {"role":"tool","name":"functions.fetch_usage","channel":"commentary","content":{"tokens":123456,"requests":789}},
   {"role":"assistant","channel":"final","content":"You used 123456 tokens across 789 requests in 2025-10."}
 ]
@@ -125,7 +125,7 @@ urn|>
 ```
 
 ```expected name:malformed-missing-end
-{"error":"MissingEnd","case":"malformed-missing-end"}
+{"error":"MissingSentinel","case":"malformed-missing-end"}
 ```
 
 ---
@@ -149,7 +149,7 @@ urn|>
 
 ```expected name:tool-args-pretty-json
 [
-  {"role":"assistant","channel":"commentary","to":"functions.create_invoice","args":{
+  {"role":"assistant","channel":"commentary","to":"functions.create_invoice","constraint":"json","args":{
     "customer_id":"u_123",
     "lines":[{"sku":"pro-plan","qty":1,"price":20},{"sku":"overage","qty":789,"price":0.0001}],
     "currency":"USD"

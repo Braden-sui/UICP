@@ -11,6 +11,7 @@ type ExpectedEntry = {
   to?: string;
   name?: string;
   args?: unknown;
+  constraint?: string;
 };
 
 const DOC_PATH = resolve(process.cwd(), '..', 'docs/harmony-samples.md');
@@ -43,6 +44,7 @@ function normalizeMessages(result: ReturnType<typeof parseHarmonyTurn>): unknown
       if (msg.args === undefined && msg.content !== undefined) {
         base.content = msg.content.trim();
       }
+      if (msg.constraint) base.constraint = msg.constraint;
     } else {
       if (msg.name) base.name = msg.name;
       if (msg.content !== undefined) {

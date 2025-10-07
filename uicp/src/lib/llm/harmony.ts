@@ -7,10 +7,19 @@ export type HarmonyMessage = {
   args?: unknown;
   rawArgs?: string;
   stop?: 'end' | 'call' | 'return';
+  constraint?: string;
 };
 
 export type HarmonyParseError = {
-  code: 'MissingStart' | 'MissingMessageSentinel' | 'MissingEnd' | 'FinalMissing' | 'JsonParseError';
+  code:
+    | 'MissingStart'
+    | 'MissingMessageToken'
+    | 'MissingChannelToken'
+    | 'MissingSentinel'
+    | 'InvalidHeader'
+    | 'FinalMissing'
+    | 'FinalNotReturn'
+    | 'JsonParseError';
   message: string;
 };
 
@@ -25,44 +34,56 @@ function normalizeChunkMarkers(input: string): string {
   return input.replace(/<<<CHUNK>>>/g, '');
 }
 
-function parseHeader(raw: string): {
+type ParsedHeader = {
   role: 'assistant' | 'tool';
   name?: string;
   channel: string;
   to?: string;
-} {
+  constraint?: string;
+};
+
+function parseHeader(raw: string): ParsedHeader | HarmonyParseError {
   const trimmed = raw.trim();
   const channelIndex = trimmed.indexOf(CHANNEL_TOKEN);
   if (channelIndex === -1) {
-    throw new Error('Missing channel token');
+    return { code: 'MissingChannelToken', message: 'Missing <|channel|> token' };
   }
   const rolePart = trimmed.slice(0, channelIndex).trim();
   const channelPart = trimmed.slice(channelIndex + CHANNEL_TOKEN.length).trim();
 
   const channelTokens = channelPart.split(/\s+/).filter(Boolean);
-  const channel = channelTokens.shift() ?? '';
+  const channel = channelTokens.shift();
   let to: string | undefined;
-  for (const token of [...channelTokens]) {
+  let constraint: string | undefined;
+  for (const token of channelTokens) {
     if (token.startsWith('to=')) {
       to = token.slice(3);
+      continue;
+    }
+    if (token.startsWith('<|constrain|>')) {
+      constraint = token.slice('<|constrain|>'.length);
     }
   }
 
-  if (channel.length === 0) {
-    throw new Error('Empty channel');
+  if (!channel) {
+    return { code: 'MissingChannelToken', message: 'Channel name missing in header' };
   }
 
   const roleTokens = rolePart.split(/\s+/).filter(Boolean);
+  if (!roleTokens.length) {
+    return { code: 'InvalidHeader', message: 'Header missing role information' };
+  }
+
   let role: 'assistant' | 'tool';
   let name: string | undefined;
   if (roleTokens[0] === 'assistant') {
     role = 'assistant';
   } else {
     role = 'tool';
-    name = roleTokens[0];
+    [name] = roleTokens;
   }
 
-  return { role, name, channel, to };
+  return { role, name, channel, to, constraint };
 }
 
 export function parseHarmonyTurn(input: string): HarmonyParseResult {
@@ -82,28 +103,26 @@ export function parseHarmonyTurn(input: string): HarmonyParseResult {
     const headerStart = startIndex + START_TOKEN.length;
     const messageIndex = source.indexOf(MESSAGE_TOKEN, headerStart);
     if (messageIndex === -1) {
-      return { error: { code: 'MissingMessageSentinel', message: 'Missing <|message|> token' } };
+      return { error: { code: 'MissingMessageToken', message: 'Missing <|message|> token' } };
     }
     const headerRaw = source.slice(headerStart, messageIndex);
-    let header;
-    try {
-      header = parseHeader(headerRaw);
-    } catch (err) {
-      return { error: { code: 'MissingMessageSentinel', message: (err as Error).message } };
+    const header = parseHeader(headerRaw);
+    if ('code' in header) {
+      return { error: header };
     }
 
     const contentStart = messageIndex + MESSAGE_TOKEN.length;
     SENTINEL_REGEX.lastIndex = contentStart;
     const sentinelMatch = SENTINEL_REGEX.exec(source);
     if (!sentinelMatch) {
-      return { error: { code: 'MissingEnd', message: 'Missing <|end|>/<|call|>/<|return|>' } };
+      return { error: { code: 'MissingSentinel', message: 'Missing <|end|>/<|call|>/<|return|>' } };
     }
     const sentinelToken = sentinelMatch[0];
     const stopType = sentinelMatch[1] as 'end' | 'call' | 'return';
     const nextStart = source.indexOf(START_TOKEN, contentStart);
     if (nextStart !== -1 && sentinelMatch.index > nextStart) {
       return {
-        error: { code: 'MissingEnd', message: 'Encountered next <|start|> before closing sentinel' },
+        error: { code: 'MissingSentinel', message: 'Encountered next <|start|> before closing sentinel' },
       };
     }
     const content = source.slice(contentStart, sentinelMatch.index);
@@ -120,6 +139,9 @@ export function parseHarmonyTurn(input: string): HarmonyParseResult {
     }
     if (header.role === 'assistant' && header.to) {
       msg.to = header.to;
+    }
+    if (header.constraint) {
+      msg.constraint = header.constraint;
     }
 
     const trimmedContent = content.trim();
@@ -154,10 +176,12 @@ export function parseHarmonyTurn(input: string): HarmonyParseResult {
   return { messages };
 }
 
-export function extractFinalJson(messages: HarmonyMessage[]): { final: string; channel: string } | null {
+export function extractFinalJson(
+  messages: HarmonyMessage[],
+): { final: string; channel: string; stop?: HarmonyMessage['stop'] } | null {
   const finalMsg = [...messages].reverse().find((msg) => msg.role === 'assistant' && msg.channel === 'final');
   if (!finalMsg || finalMsg.content == null) return null;
-  return { final: finalMsg.content.trim(), channel: finalMsg.channel };
+  return { final: finalMsg.content.trim(), channel: finalMsg.channel, stop: finalMsg.stop };
 }
 
 export function harmonyHasMissingEnd(result: HarmonyParseResult): result is { error: HarmonyParseError } {
@@ -173,6 +197,9 @@ export function decodeHarmonyPlan(raw: string):
   if (!final) {
     return { error: { code: 'FinalMissing', message: 'Harmony plan missing final channel output' } };
   }
+  if (final.stop && final.stop !== 'return') {
+    return { error: { code: 'FinalNotReturn', message: 'Harmony plan final message must end with <|return|>' } };
+  }
   return { messages: parsed.messages, planText: final.final, channel: final.channel };
 }
 
@@ -184,6 +211,9 @@ export function decodeHarmonyBatch(raw: string):
   const final = extractFinalJson(parsed.messages);
   if (!final) {
     return { error: { code: 'FinalMissing', message: 'Harmony batch missing final channel output' } };
+  }
+  if (final.stop && final.stop !== 'return') {
+    return { error: { code: 'FinalNotReturn', message: 'Harmony batch final message must end with <|return|>' } };
   }
   return { messages: parsed.messages, batchText: final.final, channel: final.channel };
 }

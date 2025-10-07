@@ -1,13 +1,20 @@
-﻿import { defineConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
 import { resolve } from "node:path";
 
-// Vitest runs against the unit test suite under tests/unit to mirror CI.
+const includePatterns = ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"];
+
+if (process.env.OLLAMA_LIVE_TEST === "1") {
+  includePatterns.push("tests/live/**/*.test.ts");
+}
+
+// Vitest runs against the unit test suite under tests/unit to mirror CI. Optional live
+// smoke tests are conditionally included when OLLAMA_LIVE_TEST=1 is present.
 export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
     setupFiles: ["./tests/vitest.setup.ts"],
-    include: ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"],
+    include: includePatterns,
   },
   resolve: {
     alias: {

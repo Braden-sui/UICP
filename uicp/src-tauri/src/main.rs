@@ -457,10 +457,11 @@ async fn chat_completion(
         // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
         std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
     });
-    // Normalize to colon (local) vs hyphen-cloud naming per Ollama host.\r\n    let model = normalize_model_name(&requested_model, use_cloud);
+    // Normalize to colon (local) vs hyphen-cloud naming per Ollama host.
+    let resolved_model = normalize_model_name(&requested_model, use_cloud);
 
     let body = serde_json::json!({
-        "model": model,
+        "model": resolved_model,
         "messages": request.messages,
         "stream": request.stream.unwrap_or(true),
         "tools": request.tools,
