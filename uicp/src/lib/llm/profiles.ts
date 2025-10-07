@@ -13,6 +13,7 @@ export interface PlannerProfile {
   description: string;
   defaultModel?: string;
   responseMode: ResponseMode;
+  capabilities?: { channels: string[]; supportsTools: boolean };
   formatMessages: (intent: string, opts?: { tools?: ToolSpec[] }) => ChatMessage[];
 }
 
@@ -22,6 +23,7 @@ export interface ActorProfile {
   description: string;
   defaultModel?: string;
   responseMode: ResponseMode;
+  capabilities?: { channels: string[]; supportsTools: boolean };
   formatMessages: (planJson: string, opts?: { tools?: ToolSpec[] }) => ChatMessage[];
 }
 
@@ -34,6 +36,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'DeepSeek V3.1',
     description: 'Legacy planner prompt tuned for DeepSeek reasoning mode.',
     responseMode: 'legacy',
+    capabilities: { channels: ['commentary'], supportsTools: true },
     defaultModel: undefined,
     formatMessages: (intent) => [
       { role: 'system', content: plannerPrompt.trim() },
@@ -45,6 +48,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'GPT-OSS (Harmony)',
     description: 'Planner using Harmony response format. Pending full parser integration.',
     responseMode: 'harmony',
+    capabilities: { channels: ['analysis', 'commentary', 'final'], supportsTools: true },
     defaultModel: 'gpt-oss-120b-cloud',
     formatMessages: (intent, opts) => [
       {
@@ -66,6 +70,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     label: 'Qwen3-Coder 480B',
     description: 'Legacy actor prompt tuned for Qwen tool calling.',
     responseMode: 'legacy',
+    capabilities: { channels: ['commentary'], supportsTools: true },
     defaultModel: undefined,
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
@@ -77,6 +82,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     label: 'GPT-OSS (Harmony)',
     description: 'Actor using Harmony response format. Pending full parser integration.',
     responseMode: 'harmony',
+    capabilities: { channels: ['analysis', 'commentary', 'final'], supportsTools: true },
     defaultModel: 'gpt-oss-120b-cloud',
     formatMessages: (planJson, opts) => [
       {

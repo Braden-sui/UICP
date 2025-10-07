@@ -5,6 +5,7 @@ import { useChatStore } from '../state/chat';
 import { useAppStore, type AgentMode, type AgentPhase } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
 import { streamOllamaCompletion } from '../lib/llm/ollama';
+import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 
 const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'applying'];
 const STATUS_PHASE_LABEL: Record<AgentPhase, string> = {
@@ -24,6 +25,8 @@ export const DockChat = () => {
   const fullControl = useAppStore((state) => state.fullControl);
   const fullControlLocked = useAppStore((state) => state.fullControlLocked);
   const agentMode = useAppStore((state) => state.agentMode);
+  const plannerProfileKey = useAppStore((state) => state.plannerProfileKey);
+  const actorProfileKey = useAppStore((state) => state.actorProfileKey);
   const setAgentMode = useAppStore((state) => state.setAgentMode);
   const pushToast = useAppStore((state) => state.pushToast);
   const [value, setValue] = useState('');
@@ -48,6 +51,8 @@ export const DockChat = () => {
   }, [agentStatus]);
 
   const phaseBadgeLabel = useMemo(() => STATUS_PHASE_LABEL[agentStatus.phase], [agentStatus.phase]);
+  const plannerLabel = useMemo(() => getPlannerProfile(plannerProfileKey).label, [plannerProfileKey]);
+  const actorLabel = useMemo(() => getActorProfile(actorProfileKey).label, [actorProfileKey]);
 
   useEffect(() => {
     if (!chatOpen) return;
@@ -145,7 +150,7 @@ export const DockChat = () => {
               {fullControlLocked && ' (locked)'}
             </span>
             <span className="text-[11px] uppercase tracking-wide text-slate-400">
-              Agent mode: {agentMode === 'mock' ? 'Mock (testing)' : 'Live (DeepSeek -> Qwen)'}
+              Agent mode: {agentMode === 'mock' ? 'Mock (testing)' : `Live (${plannerLabel} -> ${actorLabel})`}
             </span>
           </div>
           <div className="flex items-center gap-2">

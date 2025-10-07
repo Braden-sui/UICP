@@ -11,9 +11,10 @@ UICP output constraints (planner/actor)
 - No JavaScript, `<script>`/`<style>` tags, or inline event handlers. Interactivity is declared via HTML `data-*` attributes that the runtime executes (`data-command`, `data-state-scope`, `data-state-key`).
 - Prefer compact HTML; avoid excessive whitespace.
 - For follow-ups, render a "Clarify" window and wire Submit to `api.call` with `url: "uicp://intent"` and body `{ text: "{{form.answer}}" }` — the app converts this to a new user message automatically.
+- The active planner/actor format is controlled via **Agent Settings** (desktop shortcut) or environment (`VITE_PLANNER_PROFILE`, `VITE_ACTOR_PROFILE`). GPT‑OSS profiles enable Harmony formatting; DeepSeek/Qwen remain legacy defaults.
 
-1. GPT‑OSS models (gpt‑oss‑20b‑cloud & gpt‑oss‑120b‑cloud)
-1.1 Harmony response format
+1. GPT‑OSS models (gpt‑oss-20b-cloud & gpt‑oss-120b-cloud)
+1.1 Harmony response format — canonical reference: <https://cookbook.openai.com/articles/openai-harmony>
 
 OpenAI’s GPT‑OSS models use a structured format called Harmony. Harmony extends ChatML by introducing explicit roles and “channels.” The Hugging Face trl documentation notes that Harmony was introduced to provide a richer structure for reasoning and tool calls
 . Key elements are:

@@ -215,7 +215,21 @@ export const Desktop = () => {
           ],
         } satisfies DesktopMenu;
       });
-  }, [closeWindow, hideLogs, hideMetrics, hideNotepad, logsOpen, metricsOpen, notepadOpen, openLogs, openMetrics, openNotepad, workspaceWindows]);
+  }, [
+    agentSettingsOpen,
+    closeWindow,
+    hideLogs,
+    hideMetrics,
+    hideNotepad,
+    logsOpen,
+    metricsOpen,
+    notepadOpen,
+    openLogs,
+    openMetrics,
+    openNotepad,
+    setAgentSettingsOpen,
+    workspaceWindows,
+  ]);
 
   return (
     <div className="relative flex min-h-screen w-full flex-col items-center justify-center">

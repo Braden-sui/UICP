@@ -1,4 +1,5 @@
-import { ChangeEvent, useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
+import type { ChangeEvent } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppStore } from '../state/app';
 import {
@@ -7,6 +8,7 @@ import {
   getPlannerProfile,
   getActorProfile,
 } from '../lib/llm/profiles';
+import type { PlannerProfileKey, ActorProfileKey } from '../lib/llm/profiles';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -24,14 +26,14 @@ const AgentSettingsWindow = () => {
 
   const handlePlannerChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
-      setPlannerProfileKey(event.target.value as typeof plannerProfileKey);
+      setPlannerProfileKey(event.target.value as PlannerProfileKey);
     },
     [setPlannerProfileKey],
   );
 
   const handleActorChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
-      setActorProfileKey(event.target.value as typeof actorProfileKey);
+      setActorProfileKey(event.target.value as ActorProfileKey);
     },
     [setActorProfileKey],
   );
@@ -68,7 +70,7 @@ const AgentSettingsWindow = () => {
               ))}
             </select>
             <span className="text-xs text-slate-500">{plannerProfile.description}</span>
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">Mode: {plannerProfile.responseMode}</span>
+            <span className="text-[11px] uppercase tracking-wide text-slate-400">Mode: {plannerProfile.responseMode} • Channels: {plannerProfile.capabilities?.channels.join(', ')}</span>
           </label>
           <label className="flex flex-col gap-2 text-sm text-slate-600">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor profile</span>
@@ -84,9 +86,14 @@ const AgentSettingsWindow = () => {
               ))}
             </select>
             <span className="text-xs text-slate-500">{actorProfile.description}</span>
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">Mode: {actorProfile.responseMode}</span>
+            <span className="text-[11px] uppercase tracking-wide text-slate-400">Mode: {actorProfile.responseMode} • Channels: {actorProfile.capabilities?.channels.join(', ')}</span>
           </label>
         </div>
+        {plannerProfile.responseMode !== actorProfile.responseMode && (
+          <div className="rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
+            Mixed profiles selected (planner: {plannerProfile.responseMode}, actor: {actorProfile.responseMode}). This is supported, but for best results use matching modes (both legacy or both Harmony).
+          </div>
+        )}
         <div className="flex justify-end">
           <button
             type="button"

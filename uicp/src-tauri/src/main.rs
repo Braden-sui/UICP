@@ -564,7 +564,7 @@ async fn chat_completion(
                                             emit_or_log(
                                                 &app_handle,
                                                 "ollama-completion",
-                                                serde_json::json!({ "done": false, "delta": payload_str }),
+                                                serde_json::json!({ "done": false, "delta": payload_str, "kind": "json" }),
                                             );
                                         }
                                         Err(_) => {
@@ -572,7 +572,7 @@ async fn chat_completion(
                                             emit_or_log(
                                                 &app_handle,
                                                 "ollama-completion",
-                                                serde_json::json!({ "done": false, "delta": payload_str }),
+                                                serde_json::json!({ "done": false, "delta": payload_str, "kind": "text" }),
                                             );
                                         }
                                     }

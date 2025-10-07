@@ -28,6 +28,14 @@ The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When
 | `VITE_DEV_MODE` | `true` | enables developer UX touches |
 | `VITE_MOCK_MODE` | `true` | when true the deterministic planner + mock api are used |
 | `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend)
+| `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `gpt-oss`, ...). Overridable via Agent Settings window. |
+| `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `gpt-oss`, ...). Overridable via Agent Settings window. |
+
+## Agent profiles & settings
+
+- **Planner / actor selection** – The desktop now ships an *Agent Settings* utility (gear shortcut on the left rail). Switch the planner (reasoning) and actor (batch builder) between legacy DeepSeek/Qwen flows and the new GPT‑OSS Harmony formatter without rebuilding.
+- **Persistence** – Selections persist via Zustand storage (`uicp-app` key) and apply to the next intent immediately.
+- **Harmony support** – GPT‑OSS profiles emit Harmony developer messages and multi-channel responses. Ensure the backend key has access to the corresponding Ollama Cloud models.
 
 ## Architecture
 

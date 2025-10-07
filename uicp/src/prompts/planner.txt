@@ -20,7 +20,7 @@ Entry shape:
 }
 
 Output constraints:
-- Keep total output <= 32 KB
+- Target ~16,000 tokens total output (you have a 32,768 token budget). This allows comprehensive plans while staying under the limit.
 - Use compact single-line HTML where possible
 - HTML must be safe: no <script>, no <style>, no on* handlers, no javascript: URLs
 

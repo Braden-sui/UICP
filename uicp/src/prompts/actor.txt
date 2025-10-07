@@ -40,12 +40,12 @@ Quality Checklist (apply before returning the batch)
 - Prefer dom.set for targeted updates; use dom.replace only for the first population of "#root".
 - Avoid long single-column stacks; use multiple columns or small grids when controls > 6.
 - Build complete, polished applications with all expected features and affordances.
-- Keep payload ≤ 32 KB total output size.
+- Target ~24,000 tokens total output (you have a 65,536 token budget). This generous budget enables truly polished, feature-rich applications.
 - Ensure every params.target exists based on earlier steps in this batch.
 - Do not call unknown external APIs unless the Planner implied prior clarification.
 
 Limits
-- Keep output <= 32 KB. Return the final JSON immediately once ready.
+- Target ~24,000 tokens total output (you have a 65,536 token budget). Return the final JSON immediately once ready.
 
 Fallback template
 {

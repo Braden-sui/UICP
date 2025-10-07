@@ -33,6 +33,7 @@ export type RunIntentResult = {
   notice?: 'planner_fallback' | 'actor_fallback';
   traceId: string;
   timings: { planMs: number; actMs: number };
+  channels?: { planner?: string; actor?: string };
 };
 
 type ChannelCollectors = {
@@ -43,7 +44,7 @@ type ChannelCollectors = {
 async function collectJsonFromChannels<T = unknown>(
   stream: AsyncIterable<StreamEvent>,
   options?: { timeoutMs?: number } & ChannelCollectors,
-): Promise<T> {
+): Promise<{ data: T; channelUsed?: string }> {
   const iterator = stream[Symbol.asyncIterator]();
   const primarySet = new Set((options?.primaryChannels ?? ['commentary']).map((c) => c.toLowerCase()));
   const fallbackSet = new Set((options?.fallbackChannels ?? []).map((c) => c.toLowerCase()));
@@ -75,6 +76,7 @@ async function collectJsonFromChannels<T = unknown>(
 
   const consume = (async () => {
     let parsed: T | undefined;
+    let used: string | undefined;
     try {
       while (true) {
         const { value, done } = await iterator.next();
@@ -90,6 +92,7 @@ async function collectJsonFromChannels<T = unknown>(
           // Attempt fast-path parse on each chunk: if a full JSON object/array is present, parse and stop streaming.
           try {
             parsed = parseBuffer(primaryBuf);
+            used = Array.from(primarySet)[0] ?? 'commentary';
             // If parse succeeds, stop upstream stream early to cut latency and token usage.
             if (typeof iterator.return === 'function') {
               try {
@@ -98,7 +101,7 @@ async function collectJsonFromChannels<T = unknown>(
                 // ignore iterator return errors
               }
             }
-            return parsed as T;
+            return { data: parsed as T, channelUsed: used };
           } catch {
             // keep accumulating until valid JSON is detected or stream ends
           }
@@ -108,10 +111,10 @@ async function collectJsonFromChannels<T = unknown>(
         }
       }
       if (primaryBuf.trim().length) {
-        return parseBuffer(primaryBuf);
+        return { data: parseBuffer(primaryBuf), channelUsed: Array.from(primarySet)[0] };
       }
       if (fallbackBuf.trim().length) {
-        return parseBuffer(fallbackBuf);
+        return { data: parseBuffer(fallbackBuf), channelUsed: Array.from(fallbackSet)[0] };
       }
       throw new Error('Model did not emit parsable JSON on expected channels');
     } finally {
@@ -148,19 +151,19 @@ async function collectJsonFromChannels<T = unknown>(
 export async function planWithProfile(
   intent: string,
   options?: { timeoutMs?: number; profileKey?: PlannerProfileKey },
-): Promise<Plan> {
+): Promise<{ plan: Plan; channelUsed?: string }> {
   const client = getPlannerClient();
   const profile = getPlannerProfile(options?.profileKey);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamIntent(intent, { profileKey: profile.key });
-      const payload = await collectJsonFromChannels(stream, {
+      const { data, channelUsed } = await collectJsonFromChannels(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS,
         primaryChannels: profile.responseMode === 'harmony' ? ['commentary'] : undefined,
         fallbackChannels: profile.responseMode === 'harmony' ? ['final'] : undefined,
       });
-      return validatePlan(payload);
+      return { plan: validatePlan(data), channelUsed };
     } catch (err) {
       lastErr = err;
     }
@@ -188,7 +191,7 @@ function augmentPlan(input: Plan): Plan {
 export async function actWithProfile(
   plan: Plan,
   options?: { timeoutMs?: number; profileKey?: ActorProfileKey },
-): Promise<Batch> {
+): Promise<{ batch: Batch; channelUsed?: string }> {
   const client = getActorClient();
   const profile = getActorProfile(options?.profileKey);
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
@@ -196,12 +199,12 @@ export async function actWithProfile(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamPlan(planJson, { profileKey: profile.key });
-      const payload = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
+      const { data, channelUsed } = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS,
         primaryChannels: profile.responseMode === 'harmony' ? ['commentary'] : undefined,
         fallbackChannels: profile.responseMode === 'harmony' ? ['final'] : undefined,
       });
-      return validateBatch(payload?.batch as unknown);
+      return { batch: validateBatch(data?.batch as unknown), channelUsed };
     } catch (err) {
       lastErr = err;
     }
@@ -210,11 +213,11 @@ export async function actWithProfile(
 }
 
 // Legacy aliases (default to configured profiles).
-export const planWithDeepSeek = (intent: string, options?: { timeoutMs?: number }) =>
-  planWithProfile(intent, options);
+export const planWithDeepSeek = async (intent: string, options?: { timeoutMs?: number }) =>
+  (await planWithProfile(intent, options)).plan;
 
-export const actWithGui = (plan: Plan, options?: { timeoutMs?: number }) =>
-  actWithProfile(plan, options);
+export const actWithGui = async (plan: Plan, options?: { timeoutMs?: number }) =>
+  (await actWithProfile(plan, options)).batch;
 
 export async function runIntent(
   text: string,
@@ -235,8 +238,11 @@ export async function runIntent(
 
   // Step 1: Plan
   let plan: Plan;
+  let plannerChannelUsed: string | undefined;
   try {
-    plan = await planWithProfile(text, { profileKey: options?.plannerProfileKey });
+    const out = await planWithProfile(text, { profileKey: options?.plannerProfileKey });
+    plan = out.plan;
+    plannerChannelUsed = out.channelUsed;
   } catch {
     // Planner degraded: proceed with actor-only fallback using the raw intent as summary
     notice = 'planner_fallback';
@@ -253,8 +259,11 @@ export async function runIntent(
 
   // Step 2: Act
   let batch: Batch;
+  let actorChannelUsed: string | undefined;
   try {
-    batch = await actWithProfile(plan, { profileKey: options?.actorProfileKey });
+    const out = await actWithProfile(plan, { profileKey: options?.actorProfileKey });
+    batch = out.batch;
+    actorChannelUsed = out.channelUsed;
   } catch {
     // Actor failed: return a safe error window batch to surface failure without partial apply
     notice = 'actor_fallback';
@@ -295,5 +304,6 @@ export async function runIntent(
     notice,
     traceId,
     timings: { planMs, actMs },
+    channels: { planner: plannerChannelUsed, actor: actorChannelUsed },
   };
 }
