@@ -5,7 +5,7 @@ This document explains how our stack talks to Ollama in both local and cloud mod
 ## Local daemon vs. Ollama Cloud
 
 - **Local Ollama** exposes `http://localhost:11434/api/*` (Ollama-native) and `http://localhost:11434/v1/*` (OpenAI-compatible). No credential is required because the daemon binds to localhost.
-- **Ollama Cloud** hosts the same surfaces behind `https://ollama.com`, but you must include `Authorization: Bearer <api-key>` on every request. Cloud-only models carry a `-cloud` suffix, for example `gpt-oss:120b-cloud`.
+- **Ollama Cloud** hosts the same surfaces behind `https://ollama.com`, but you must include `Authorization: Bearer <api-key>` on every request. Cloud-only models carry a `-cloud` suffix, for example `gpt-oss-120b-cloud`.
 
 ### Side-by-side summary
 
@@ -20,8 +20,8 @@ This document explains how our stack talks to Ollama in both local and cloud mod
 ## Cloud model catalog (Sept 2025)
 
 - `qwen3-coder:480b-cloud`
-- `gpt-oss:120b-cloud`
-- `gpt-oss:20b-cloud`
+- `gpt-oss-120b-cloud`
+- `gpt-oss-20b-cloud`
 - `deepseek-v3.1:671b-cloud` (preview)
 - `kimi-k2:1t-cloud` (preview)
 
@@ -43,7 +43,7 @@ curl https://ollama.com/api/chat \
   -H "Authorization: Bearer <API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-oss:120b-cloud",
+    "model": "gpt-oss-120b-cloud",
     "messages": [
       {"role": "user", "content": "Why is the sky blue?"}
     ],
@@ -64,7 +64,7 @@ client = Client(
 
 messages = [{"role": "user", "content": "Why is the sky blue?"}]
 
-for part in client.chat("gpt-oss:120b-cloud", messages=messages, stream=True):
+for part in client.chat("gpt-oss-120b-cloud", messages=messages, stream=True):
     print(part["message"]["content"], end="", flush=True)
 ```
 
@@ -79,7 +79,7 @@ const ollama = new Ollama({
 });
 
 const response = await ollama.chat({
-  model: "gpt-oss:120b-cloud",
+  model: "gpt-oss-120b-cloud",
   messages: [{ role: "user", content: "Why is the sky blue?" }],
   stream: true,
 });

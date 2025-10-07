@@ -6,6 +6,8 @@ Important: The instructions below refer to the cloud models hosted by Ollama. Mo
 
 Authentication: All Ollama Cloud requests use `Authorization: Bearer <api-key>` as documented at https://docs.ollama.com/cloud.
 
+Model naming: Cloud endpoints expect hyphen-delimited tags (e.g., `gpt-oss-120b-cloud`); the local Ollama CLI retains colon tags (e.g., `gpt-oss:120b`). The bridge normalizes automatically.
+
 UICP output constraints (planner/actor)
 - When targeting the desktop builder, models must emit a single JSON object for the planner, and `{ "batch": [...] }` for the actor, using the UICP operation names (e.g., `window.create`, `dom.set`).
 - No JavaScript, `<script>`/`<style>` tags, or inline event handlers. Interactivity is declared via HTML `data-*` attributes that the runtime executes (`data-command`, `data-state-scope`, `data-state-key`).

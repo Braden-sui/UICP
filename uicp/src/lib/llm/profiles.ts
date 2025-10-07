@@ -27,6 +27,28 @@ export interface ActorProfile {
   formatMessages: (planJson: string, opts?: { tools?: ToolSpec[] }) => ChatMessage[];
 }
 
+const formatToolDocs = (tools?: ToolSpec[]): string => {
+  if (!tools?.length) return '';
+  const lines: string[] = ['# Tools'];
+  tools.forEach((tool, index) => {
+    if (tool && typeof tool === 'object') {
+      const record = tool as Record<string, unknown>;
+      if (record.type === 'function' && record.function && typeof record.function === 'object') {
+        const fnRecord = record.function as Record<string, unknown>;
+        const name = typeof fnRecord.name === 'string' ? fnRecord.name : ;
+        const description = typeof fnRecord.description === 'string' ? fnRecord.description : '';
+        lines.push(description ?  : );
+        if ('parameters' in fnRecord) {
+          lines.push();
+        }
+        return;
+      }
+    }
+    lines.push();
+  });
+  return lines.join('\n');
+};
+
 const DEFAULT_PLANNER_KEY: PlannerProfileKey = (import.meta.env.VITE_PLANNER_PROFILE as PlannerProfileKey) ?? 'deepseek';
 const DEFAULT_ACTOR_KEY: ActorProfileKey = (import.meta.env.VITE_ACTOR_PROFILE as ActorProfileKey) ?? 'qwen';
 
@@ -49,15 +71,18 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     description: 'Planner using Harmony response format. Pending full parser integration.',
     responseMode: 'harmony',
     capabilities: { channels: ['analysis', 'commentary', 'final'], supportsTools: true },
-    defaultModel: 'gpt-oss-120b-cloud',
+    // Base model tag normalized to -cloud by the backend when targeting Ollama Cloud.
+    defaultModel: 'gpt-oss:120b',
     formatMessages: (intent, opts) => {
-      const harmonyRequirements = `# Harmony Output Requirements\n- Valid assistant channels: analysis, commentary, final. Every assistant message must declare exactly one channel.\n- Emit chain-of-thought in analysis (keep private), tool reasoning + function calls in commentary, and the user-facing summary in final ending with <|return|>.\n- When invoking a tool, end the commentary message with <|call|> and wait for a tool reply before continuing.`;
-      const responseFormat = `# Response Formats\n## uicp_plan\n{"type":"object","properties":{"summary":{"type":"string"},"risks":{"type":"array","items":{"type":"string"}},"batch":{"type":"array"}}}`;
+      const harmonyRequirements = ;
+      const responseFormat = ;
+      const toolsDoc = formatToolDocs(opts?.tools);
+      const instructionsSections = [plannerPrompt.trim(), harmonyRequirements, toolsDoc, responseFormat].filter(Boolean);
       return [
         {
           role: 'developer',
           content: {
-            instructions: `${plannerPrompt.trim()}\n\n${harmonyRequirements}\n\n${responseFormat}`,
+            instructions: instructionsSections.join('\n\n'),
             reasoning_level: 'high',
             tools: opts?.tools ?? [],
           },
@@ -87,15 +112,18 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     description: 'Actor using Harmony response format. Pending full parser integration.',
     responseMode: 'harmony',
     capabilities: { channels: ['analysis', 'commentary', 'final'], supportsTools: true },
-    defaultModel: 'gpt-oss-120b-cloud',
+    // Base model tag normalized to -cloud by the backend when targeting Ollama Cloud.
+    defaultModel: 'gpt-oss:120b',
     formatMessages: (planJson, opts) => {
-      const harmonyRequirements = `# Harmony Output Requirements\n- Preview reasoning in analysis, but keep it private.\n- Emit function/tool calls on the commentary channel with <|call|> terminators.\n- Return the final UICP batch JSON on the final channel followed by <|return|>.`;
-      const responseFormat = `# Response Formats\n## uicp_batch\n{"type":"object","properties":{"batch":{"type":"array"}}}`;
+      const harmonyRequirements = ;
+      const responseFormat = ;
+      const toolsDoc = formatToolDocs(opts?.tools);
+      const instructionsSections = [actorPrompt.trim(), harmonyRequirements, toolsDoc, responseFormat].filter(Boolean);
       return [
         {
           role: 'developer',
           content: {
-            instructions: `${actorPrompt.trim()}\n\n${harmonyRequirements}\n\n${responseFormat}`,
+            instructions: instructionsSections.join('\n\n'),
             reasoning_level: 'medium',
             tools: opts?.tools ?? [],
           },

@@ -72,7 +72,8 @@ struct WindowStatePayload {
 #[serde(rename_all = "camelCase")]
 struct ChatMessageInput {
     role: String,
-    content: String,
+    // Accept Harmony developer payloads (objects) and legacy string messages.
+    content: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,8 +180,7 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite persist command")?;
         let now = Utc::now().timestamp();
-        let args_json = serde_json::to_string(&cmd.args)
-            .context("serialize command args")?;
+        let args_json = serde_json::to_string(&cmd.args).context("serialize command args")?;
         conn.execute(
             "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at)
              VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
@@ -244,7 +244,10 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
 }
 
 #[tauri::command]
-async fn delete_window_commands(state: State<'_, AppState>, window_id: String) -> Result<(), String> {
+async fn delete_window_commands(
+    state: State<'_, AppState>,
+    window_id: String,
+) -> Result<(), String> {
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite delete window commands")?;
@@ -406,6 +409,33 @@ async fn cancel_chat(state: State<'_, AppState>, request_id: String) -> Result<(
     Ok(())
 }
 
+fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
+    let trimmed = raw.trim();
+    if use_cloud {
+        let core = trimmed.trim_end_matches("-cloud");
+        let mut normalized = if let Some((prefix, suffix)) = core.split_once(':') {
+            format!("{}-{}", prefix, suffix)
+        } else {
+            core.replace(':', "-")
+        };
+        if !normalized.ends_with("-cloud") {
+            normalized.push_str("-cloud");
+        }
+        normalized
+    } else {
+        let core = trimmed.trim_end_matches("-cloud");
+        if core.contains(':') {
+            core.to_string()
+        } else if let Some(idx) = core.rfind('-') {
+            let (prefix, suffix) = core.split_at(idx);
+            let suffix = suffix.trim_start_matches('-');
+            format!("{}:{}", prefix, suffix)
+        } else {
+            core.to_string()
+        }
+    }
+}
+
 #[tauri::command]
 async fn chat_completion(
     window: tauri::Window,
@@ -423,15 +453,11 @@ async fn chat_completion(
         return Err("No API key configured".into());
     }
 
-    let model = request.model.unwrap_or_else(|| {
+    let requested_model = request.model.unwrap_or_else(|| {
         // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
-        let base_model = std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into());
-        if use_cloud && !base_model.ends_with("-cloud") {
-            format!("{}-cloud", base_model)
-        } else {
-            base_model
-        }
+        std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
     });
+    // Normalize to colon (local) vs hyphen-cloud naming per Ollama host.\r\n    let model = normalize_model_name(&requested_model, use_cloud);
 
     let body = serde_json::json!({
         "model": model,
