@@ -35,16 +35,16 @@ const formatToolDocs = (tools?: ToolSpec[]): string => {
       const record = tool as Record<string, unknown>;
       if (record.type === 'function' && record.function && typeof record.function === 'object') {
         const fnRecord = record.function as Record<string, unknown>;
-        const name = typeof fnRecord.name === 'string' ? fnRecord.name : ;
+        const name = typeof fnRecord.name === 'string' ? fnRecord.name : 	ool_;
         const description = typeof fnRecord.description === 'string' ? fnRecord.description : '';
-        lines.push(description ?  : );
+        lines.push(description ? - :  : - );
         if ('parameters' in fnRecord) {
-          lines.push();
+          lines.push(  - parameters: );
         }
         return;
       }
     }
-    lines.push();
+    lines.push(- tool_: );
   });
   return lines.join('\n');
 };
@@ -74,8 +74,8 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     // Base model tag normalized to -cloud by the backend when targeting Ollama Cloud.
     defaultModel: 'gpt-oss:120b',
     formatMessages: (intent, opts) => {
-      const harmonyRequirements = ;
-      const responseFormat = ;
+      const harmonyRequirements = # Harmony Output Requirements\n- Valid assistant channels: analysis, commentary, final. Every assistant message must declare exactly one channel.\n- Emit chain-of-thought in analysis (keep private), tool reasoning + function calls in commentary, and the user-facing summary in final ending with <|return|>.\n- When invoking a tool, end the commentary message with <|call|> and wait for a tool reply before continuing.;
+      const responseFormat = # Response Formats\n## uicp_plan\n{"type":"object","required":["summary","batch"],"properties":{"summary":{"type":"string","minLength":1},"risks":{"type":"array","items":{"type":"string"}},"batch":{"type":"array","items":{"type":"object"}}}}\n## example_uicp_plan\n{"summary":"Summarize the proposed desktop change","risks":["Potential selector mismatch"],"batch":[{"op":"window.create","params":{"id":"plan_window","title":"Plan Overview","width":520,"height":360}},{"op":"dom.set","params":{"windowId":"plan_window","target":"#root","html":"<div>Plan preview</div>"}}]};
       const toolsDoc = formatToolDocs(opts?.tools);
       const instructionsSections = [plannerPrompt.trim(), harmonyRequirements, toolsDoc, responseFormat].filter(Boolean);
       return [
@@ -115,8 +115,8 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     // Base model tag normalized to -cloud by the backend when targeting Ollama Cloud.
     defaultModel: 'gpt-oss:120b',
     formatMessages: (planJson, opts) => {
-      const harmonyRequirements = ;
-      const responseFormat = ;
+      const harmonyRequirements = # Harmony Output Requirements\n- Preview reasoning in analysis, but keep it private.\n- Emit function/tool calls on the commentary channel with <|call|> terminators.\n- Return the final UICP batch JSON on the final channel followed by <|return|>.;
+      const responseFormat = # Response Formats\n## uicp_batch\n{"type":"object","required":["batch"],"properties":{"batch":{"type":"array","items":{"type":"object"}}}}\n## example_uicp_batch\n{"batch":[{"op":"window.create","params":{"id":"main_window","title":"Assistant Output","width":520,"height":360}},{"op":"dom.set","params":{"windowId":"main_window","target":"#root","html":"<div>Rendered UI</div>"}}]};
       const toolsDoc = formatToolDocs(opts?.tools);
       const instructionsSections = [actorPrompt.trim(), harmonyRequirements, toolsDoc, responseFormat].filter(Boolean);
       return [
