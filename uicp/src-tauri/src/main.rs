@@ -489,6 +489,7 @@ async fn chat_completion(
     let api_key_for_task = api_key_opt.clone();
     let logs_dir = LOGS_DIR.clone();
     let rid_for_task = rid.clone();
+    let stream_flag_for_task = stream_flag;
 
     let join: JoinHandle<()> = spawn(async move {
         // best-effort logs dir

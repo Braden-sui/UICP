@@ -176,26 +176,32 @@ Example with tokens:
 Use grid grid-cols-2 or grid-cols-3 instead of single long column.
 
 ## Clarify Pattern
-When essential details are missing, ASK EXACTLY ONE concise question:
 
-1. Create a "Clarify" window
-2. Show your question with an input field (name="answer")
-3. Wire Submit button to:
-   - api.call with url: "uicp://intent" and body: { text: "{{form.answer}}" }
-   - dom.set to update status: "Thanks — processing..."
-4. Runtime automatically merges the answer with original user intent
+When essential details are missing, emit a structured clarifier:
 
-Example:
-{
-  "summary": "Ask one clarifying question",
-  "batch": [
-    { "op": "window.create", "params": { "id": "win-clarify", "title": "Clarify", "width": 480, "height": 200 } },
-    { "op": "dom.replace", "params": { "windowId": "win-clarify", "target": "#root", "html": "<form class=\"flex flex-col gap-3 p-4\"><p class=\"text-sm text-slate-700\">Which city should I show weather for?</p><input name=\"answer\" class=\"rounded border border-slate-300 px-3 py-2\" placeholder=\"e.g., San Francisco\" aria-label=\"Answer\" autofocus /><div class=\"flex items-center gap-2\"><button type=\"submit\" class=\"rounded bg-slate-900 px-4 py-2 text-sm text-white\" data-command=\"[{\\\"op\\\":\\\"api.call\\\",\\\"params\\\":{\\\"method\\\":\\\"POST\\\",\\\"url\\\":\\\"uicp://intent\\\",\\\"body\\\":{\\\"text\\\":\\\"{{form.answer}}\\\"}}},{\\\"op\\\":\\\"dom.set\\\",\\\"params\\\":{\\\"windowId\\\":\\\"win-clarify\\\",\\\"target\\\":\\\"#status\\\",\\\"html\\\":\\\"<span class=\\\\\\\"text-xs text-slate-600\\\\\\\">Processing...</span>\\\"}}]\">Submit</button></div><div id=\"status\" class=\"text-xs text-slate-500\" aria-live=\"polite\"></div></form>" } }
-  ],
-  "actor_hints": ["Close this window after processing the answer"]
-}
+- Set summary to the natural-language question ending with a question mark.
+- Include the risk token "clarifier:structured" (lowercase) and omit other clarifier:* entries.
+- Provide exactly one batch entry:
+  {
+    "op": "api.call",
+    "params": {
+      "method": "POST",
+      "url": "uicp://intent",
+      "body": {
+        "title": "Clarify: Calculator",
+        "textPrompt": "What features should the calculator support?",
+        "fields": [
+          { "name": "answer", "label": "Answer", "placeholder": "e.g., add, subtract, multiply", "type": "text" }
+        ],
+        "submit": "Continue"
+      }
+    }
+  }
+- Use the fields array to describe each input (name, label, placeholder, type). Supported types: "text", "textarea", "select". Default to a single text field named "answer" when unsure.
+- Do not emit window.*, dom.*, component.*, or state.* commands in the clarifier batch.
+- Do not call external APIs until the missing details are collected.
 
-Don't attempt api.call to unknown external APIs without clarifying first.
+The runtime opens the form, merges the response, re-runs planning, and expects the next plan to omit clarifier:structured.
 
 ## Actor Hints
 Use "actor_hints" array to pass implementation notes to the Actor:

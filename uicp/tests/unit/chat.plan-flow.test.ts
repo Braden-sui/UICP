@@ -6,12 +6,20 @@ vi.mock('../../src/lib/uicp/adapter', () => ({
   applyBatch: (batch: any) => applyBatchMock(batch),
 }));
 
+const runIntentMock = vi.fn();
+
+vi.mock('../../src/lib/llm/orchestrator', () => ({
+  runIntent: (...args: unknown[]) => runIntentMock(...args),
+}));
+
 import { useAppStore } from '../../src/state/app';
 import { useChatStore } from '../../src/state/chat';
+import { validateBatch, validatePlan } from '../../src/lib/uicp/schemas';
 
 describe('chat.plan-flow', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    runIntentMock.mockReset();
     applyBatchMock.mockClear();
     applyBatchMock.mockResolvedValue({ success: true, applied: 2, errors: [] });
 
@@ -135,4 +143,63 @@ describe('chat.plan-flow', () => {
     expect(telemetry[0]?.applyMs).not.toBeNull();
     expect(telemetry[0]?.summary).toMatch(/notepad/i);
   });
+
+  it('auto applies structured clarifier batch without pending plan', async () => {
+    const clarifierBatch = validateBatch([
+      {
+        op: 'api.call',
+        params: {
+          method: 'POST',
+          url: 'uicp://intent',
+          body: {
+            textPrompt: 'Which operations should the calculator support?',
+            submit: 'Continue',
+            fields: [{ name: 'answer', label: 'Answer', placeholder: 'e.g., add and subtract' }],
+          },
+        },
+      },
+    ]);
+
+    const clarifierPlan = validatePlan({
+      summary: 'Which operations should the calculator support?',
+      risks: ['clarifier:structured'],
+      batch: clarifierBatch,
+    });
+
+    runIntentMock.mockResolvedValue({
+      plan: clarifierPlan,
+      batch: clarifierBatch,
+      notice: undefined,
+      traceId: 'trace-clarifier',
+      timings: { planMs: 45, actMs: 0 },
+      channels: { planner: 'commentary' },
+      autoApply: true,
+    });
+
+    applyBatchMock.mockResolvedValueOnce({ success: true, applied: 1, errors: [] });
+
+    useAppStore.setState({ agentMode: 'live', fullControl: false, fullControlLocked: false });
+
+    const { sendMessage } = useChatStore.getState();
+    const promise = sendMessage('build a calculator');
+    await vi.advanceTimersByTimeAsync(200);
+    await promise;
+
+    expect(runIntentMock).toHaveBeenCalledTimes(1);
+    expect(applyBatchMock).toHaveBeenCalledTimes(1);
+
+    const pending = useChatStore.getState().pendingPlan;
+    expect(pending).toBeUndefined();
+
+    const assistantMessages = useChatStore.getState().messages.filter((msg) => msg.role === 'assistant');
+    expect(assistantMessages[assistantMessages.length - 1]?.content).toContain('Which operations should the calculator support?');
+
+    const systemErrors = useChatStore.getState().messages.filter((msg) => msg.role === 'system' && msg.errorCode === 'clarifier_apply_failed');
+    expect(systemErrors.length).toBe(0);
+
+    const status = useAppStore.getState().agentStatus;
+    expect(status.phase).toBe('idle');
+    expect(status.applyMs).not.toBeNull();
+  });
 });
+

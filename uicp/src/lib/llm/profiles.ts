@@ -284,11 +284,22 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
         '- Keep HTML compact (single line) and safe (no <script>, <style>, on* handlers, or javascript: URLs).',
       ].join('\n');
       const toolsDoc = formatToolDocs(opts?.tools);
+      const structuredClarifier = [
+        '# Structured Clarifier Flow',
+        '- When essential details are missing, set summary to the natural-language question and ensure it ends with a question mark.',
+        '- Include the risk token \"clarifier:structured\" and omit other clarifier:* tokens.',
+        '- Emit a single batch entry: {\\\"op\\\":\\\"api.call\\\",\\\"params\\\":{\\\"method\\\":\\\"POST\\\",\\\"url\\\":\\\"uicp://intent\\\",\\\"body\\\":{...}}}.',
+        '- Populate body with title, textPrompt, submit label, and a fields array describing each input (use name, label, placeholder, and type). Default to one text field named \"answer\" when unsure.',
+        '- Do not emit window.*, dom.*, component.*, or state.* commands when producing a structured clarifier.',
+        '- After presenting the clarifier, expect the runtime to re-run planning with the merged answer. Subsequent plans must omit clarifier:structured.',
+      ].join('\
+');
       const developerSections = [
         `# Instructions\n${normalizePrompt(plannerPrompt)}`,
         harmonyRequirements,
         toolsDoc,
         responseFormat,
+        structuredClarifier,
         '# Failure Handling\n- Ask clarifying questions if essential details are missing.\n- If a safe implementation is impossible, explain why and return an empty batch.',
       ];
       return [

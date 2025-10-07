@@ -2,7 +2,7 @@ import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
 import { decodeHarmonyPlan, decodeHarmonyBatch, harmonyHasMissingEnd } from './harmony';
 import type { StreamEvent } from './ollama';
-import { validatePlan, validateBatch, type Plan, type Batch, type Envelope } from '../uicp/schemas';
+import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
 import { createId } from '../utils';
 
 const toJsonSafe = (s: string) => s.replace(/```(json)?/gi, '').trim();
@@ -35,6 +35,7 @@ export type RunIntentResult = {
   traceId: string;
   timings: { planMs: number; actMs: number };
   channels?: { planner?: string; actor?: string };
+  autoApply?: boolean;
 };
 
 type ChannelCollectors = {
@@ -155,6 +156,7 @@ async function collectHarmonyTurn(
 ): Promise<string> {
   const iterator = stream[Symbol.asyncIterator]();
   let buffer = '';
+  let finalBuffer = '';
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
@@ -167,10 +169,15 @@ async function collectHarmonyTurn(
         const event = value as StreamEvent;
         if (event.type === 'done') break;
         if (event.type === 'content') {
-          buffer += event.text;
+          const channel = event.channel?.toLowerCase();
+          if (channel === 'final') {
+            finalBuffer += event.text;
+          } else {
+            buffer += event.text;
+          }
         }
       }
-      return buffer;
+      return finalBuffer.trim().length > 0 ? finalBuffer : buffer;
     } finally {
       if (timer) {
         clearTimeout(timer);
@@ -255,6 +262,30 @@ function augmentPlan(input: Plan): Plan {
   return { summary: input.summary, risks, batch: input.batch };
 }
 
+const CLARIFIER_TOKEN = 'clarifier:structured';
+
+function isStructuredClarifierPlan(plan: Plan): boolean {
+  const summary = (plan.summary ?? '').trim();
+  if (!summary || !summary.endsWith('?')) return false;
+  const risks = Array.isArray(plan.risks) ? plan.risks : [];
+  const hasClarifierRisk = risks.some((risk) => risk.trim().toLowerCase().startsWith(CLARIFIER_TOKEN));
+  if (!hasClarifierRisk) return false;
+  if (!Array.isArray(plan.batch) || plan.batch.length !== 1) return false;
+  const [entry] = plan.batch;
+  if (entry.op !== 'api.call') return false;
+  const params = entry.params as OperationParamMap['api.call'];
+  if (!params || typeof params !== 'object') return false;
+  if (typeof params.url !== 'string' || !params.url.toLowerCase().startsWith('uicp://intent')) return false;
+  const body = params.body as Record<string, unknown> | undefined;
+  if (!body || typeof body !== 'object') return false;
+  if (typeof (body as Record<string, unknown>).text === 'string') return false;
+  const hasPrompt = typeof (body as Record<string, unknown>).textPrompt === 'string';
+  const fields = (body as Record<string, unknown>).fields as unknown;
+  const hasFields = Array.isArray(fields);
+  if (!hasPrompt && !hasFields) return false;
+  return true;
+}
+
 export async function actWithProfile(
   plan: Plan,
   options?: { timeoutMs?: number; profileKey?: ActorProfileKey },
@@ -329,11 +360,27 @@ export async function runIntent(
     const fallback = validatePlan({ summary: `Planner degraded: using actor-only`, batch: [] });
     plan = fallback;
   }
-  // Deterministically augment plan with light hints for the actor
-  plan = augmentPlan(plan);
+  const isClarifier = isStructuredClarifierPlan(plan);
+  if (!isClarifier) {
+    // Deterministically augment plan with light hints for the actor
+    plan = augmentPlan(plan);
+  }
 
   const planMs = Math.max(0, Math.round(now() - planningStarted));
   hooks?.onPhaseChange?.({ phase: 'acting', traceId, planMs });
+
+  if (isClarifier) {
+    const clarifiedBatch = validateBatch(plan.batch);
+    return {
+      plan,
+      batch: clarifiedBatch,
+      notice,
+      traceId,
+      timings: { planMs, actMs: 0 },
+      channels: { planner: plannerChannelUsed },
+      autoApply: true,
+    };
+  }
 
   const actingStarted = now();
 

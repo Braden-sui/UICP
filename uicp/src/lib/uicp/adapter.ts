@@ -74,6 +74,12 @@ const persistCommand = async (command: Envelope): Promise<void> => {
   if (ephemeralOps.includes(command.op)) {
     return;
   }
+  if (command.op === 'api.call') {
+    const params = command.params as OperationParamMap['api.call'];
+    if (typeof params?.url === 'string' && params.url.startsWith('uicp://intent')) {
+      return;
+    }
+  }
 
   try {
     await invoke('persist_command', {
@@ -86,6 +92,307 @@ const persistCommand = async (command: Envelope): Promise<void> => {
   } catch (error) {
     // Log but don't throw - persistence failures shouldn't break command execution
     console.error('Failed to persist command', command.op, error);
+  }
+};
+
+type StructuredClarifierOption = {
+  label?: string;
+  value: string;
+};
+
+type StructuredClarifierFieldSpec = {
+  name?: string;
+  label?: string;
+  placeholder?: string;
+  description?: string;
+  type?: string;
+  options?: StructuredClarifierOption[];
+  multiline?: boolean;
+  required?: boolean;
+  defaultValue?: string;
+};
+
+type StructuredClarifierBody = {
+  title?: string;
+  textPrompt?: string;
+  description?: string;
+  submit?: string;
+  cancel?: string | false;
+  windowId?: string;
+  width?: number;
+  height?: number;
+  fields?: StructuredClarifierFieldSpec[];
+  label?: string;
+  placeholder?: string;
+  multiline?: boolean;
+};
+
+type NormalizedClarifierField = {
+  name: string;
+  label: string;
+  placeholder?: string;
+  description?: string;
+  type: 'text' | 'textarea' | 'select';
+  options?: Array<{ label: string; value: string }>;
+  required: boolean;
+  defaultValue?: string;
+};
+
+const isStructuredClarifierBody = (input: Record<string, unknown>): input is StructuredClarifierBody => {
+  if (typeof input !== 'object' || input === null) return false;
+  if (typeof (input as { text?: unknown }).text === 'string') return false;
+  if (typeof (input as { textPrompt?: unknown }).textPrompt === 'string' && (input as { textPrompt: string }).textPrompt.trim()) {
+    return true;
+  }
+  if (Array.isArray((input as { fields?: unknown }).fields) && (input as { fields: unknown[] }).fields.length > 0) {
+    return true;
+  }
+  if (typeof (input as { placeholder?: unknown }).placeholder === 'string') return true;
+  if (typeof (input as { label?: unknown }).label === 'string') return true;
+  return false;
+};
+
+const normalizeClarifierFields = (body: StructuredClarifierBody): NormalizedClarifierField[] => {
+  const candidates = Array.isArray(body.fields) ? body.fields : undefined;
+  const fallbackField: StructuredClarifierFieldSpec = {
+    name: 'answer',
+    label: typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Answer',
+    placeholder: typeof body.placeholder === 'string' ? body.placeholder : undefined,
+    multiline: Boolean(body.multiline),
+  };
+  const source = candidates && candidates.length > 0 ? candidates : [fallbackField];
+  return source
+    .map((field, index) => {
+      const name = typeof field?.name === 'string' && field.name.trim() ? field.name.trim() : `field_${index + 1}`;
+      const label = typeof field?.label === 'string' && field.label.trim() ? field.label.trim() : name;
+      const placeholder = typeof field?.placeholder === 'string' ? field.placeholder : undefined;
+      const description = typeof field?.description === 'string' ? field.description : undefined;
+      const required = field?.required === undefined ? true : Boolean(field.required);
+      const defaultValue = typeof field?.defaultValue === 'string' ? field.defaultValue : undefined;
+      const options = Array.isArray(field?.options)
+        ? field.options
+            .map((option) => {
+              if (!option) return null;
+              const value = typeof option.value === 'string' ? option.value : undefined;
+              if (!value) return null;
+              const optionLabel = typeof option.label === 'string' && option.label.trim() ? option.label : value;
+              return { label: optionLabel, value };
+            })
+            .filter((option): option is { label: string; value: string } => Boolean(option))
+        : undefined;
+      const inferredType = typeof field?.type === 'string' ? field.type.toLowerCase() : undefined;
+      let type: 'text' | 'textarea' | 'select' = 'text';
+      if (inferredType === 'textarea' || field?.multiline) {
+        type = 'textarea';
+      } else if (inferredType === 'select' && options && options.length) {
+        type = 'select';
+      }
+      return {
+        name,
+        label,
+        placeholder,
+        description,
+        type,
+        options: type === 'select' ? options : undefined,
+        required,
+        defaultValue,
+      };
+    })
+    .filter((field) => field != null);
+};
+
+const renderStructuredClarifierForm = (body: StructuredClarifierBody, command: Envelope): CommandResult<string> => {
+  try {
+    const fields = normalizeClarifierFields(body);
+    if (fields.length === 0) {
+      return { success: false, error: 'Clarifier fields missing' };
+    }
+    const prompt = typeof body.textPrompt === 'string' && body.textPrompt.trim()
+      ? body.textPrompt.trim()
+      : 'Please provide additional detail.';
+    const bodyWindowId =
+      typeof body.windowId === 'string' && body.windowId.trim().length ? body.windowId.trim() : undefined;
+    const commandWindowId =
+      typeof command.windowId === 'string' && command.windowId.trim().length ? command.windowId.trim() : undefined;
+    const windowId = bodyWindowId ?? commandWindowId ?? createId('clarify');
+    const title =
+      (typeof body.title === 'string' && body.title.trim()) || `Clarify`;
+    const width = typeof body.width === 'number' && body.width >= 320 ? body.width : 520;
+    const height = typeof body.height === 'number' && body.height >= 200 ? body.height : 280;
+    const createResult = executeWindowCreate({ id: windowId, title, width, height });
+    if (!createResult.success) {
+      return createResult;
+    }
+    const record = windows.get(windowId);
+    if (!record) {
+      return { success: false, error: `Window ${windowId} not registered` };
+    }
+    const root = record.content.querySelector('#root');
+    if (!root) {
+      return { success: false, error: `Root container missing for ${windowId}` };
+    }
+    root.innerHTML = '';
+    const form = document.createElement('form');
+    form.className = 'flex flex-col gap-3 p-4';
+    form.setAttribute('data-structured-clarifier', 'true');
+
+    const question = document.createElement('p');
+    question.className = 'text-sm text-slate-700';
+    question.textContent = prompt;
+    form.appendChild(question);
+
+    if (typeof body.description === 'string' && body.description.trim()) {
+      const description = document.createElement('p');
+      description.className = 'text-xs text-slate-500';
+      description.textContent = body.description.trim();
+      form.appendChild(description);
+    }
+
+    fields.forEach((field, index) => {
+      const wrapper = document.createElement('label');
+      wrapper.className = 'flex flex-col gap-1 text-sm text-slate-600';
+
+      const fieldLabel = document.createElement('span');
+      fieldLabel.className = 'font-semibold text-slate-700';
+      fieldLabel.textContent = field.label;
+      wrapper.appendChild(fieldLabel);
+
+      let control;
+      if (field.type === 'textarea') {
+        const textarea = document.createElement('textarea');
+        textarea.name = field.name;
+        textarea.rows = 4;
+        textarea.className = 'rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400';
+        if (field.placeholder) textarea.placeholder = field.placeholder;
+        if (field.required) textarea.required = true;
+        if (field.defaultValue) textarea.value = field.defaultValue;
+        control = textarea;
+      } else if (field.type === 'select') {
+        const select = document.createElement('select');
+        select.name = field.name;
+        select.className = 'rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400';
+        if (field.required) select.required = true;
+        if (field.options) {
+          field.options.forEach((option) => {
+            const opt = document.createElement('option');
+            opt.value = option.value;
+            opt.textContent = option.label;
+            if (field.defaultValue && field.defaultValue === option.value) {
+              opt.selected = true;
+            }
+            select.appendChild(opt);
+          });
+        }
+        control = select;
+      } else {
+        const input = document.createElement('input');
+        input.name = field.name;
+        input.type = 'text';
+        input.className = 'rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400';
+        if (field.placeholder) input.placeholder = field.placeholder;
+        if (field.required) input.required = true;
+        if (field.defaultValue) input.value = field.defaultValue;
+        control = input;
+      }
+      control.setAttribute('aria-label', field.label);
+      wrapper.appendChild(control);
+
+      if (field.description) {
+        const help = document.createElement('span');
+        help.className = 'text-xs text-slate-500';
+        help.textContent = field.description;
+        wrapper.appendChild(help);
+      }
+
+      form.appendChild(wrapper);
+
+      if (index === 0) {
+        queueMicrotask(() => {
+          (control as HTMLElement).focus();
+        });
+      }
+    });
+
+    const controls = document.createElement('div');
+    controls.className = 'mt-1 flex items-center gap-2';
+
+    const statusId = `${windowId}-clarifier-status`;
+
+    const textTemplate = fields
+      .map((field) => `${field.label}: {{form.${field.name}}}`)
+      .join('\n')
+      .trim();
+
+    const commandPayload = {
+      question: prompt,
+      windowId,
+      text: textTemplate || `{{form.${fields[0]?.name}}}`,
+      fields: fields.map((field) => ({
+        name: field.name,
+        label: field.label,
+        value: `{{form.${field.name}}}`,
+      })),
+    };
+
+    const submitButton = document.createElement('button');
+    submitButton.type = 'submit';
+    submitButton.className = 'rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700';
+    submitButton.textContent = typeof body.submit === 'string' && body.submit.trim() ? body.submit.trim() : 'Continue';
+
+    const submitCommands: Batch = [
+      {
+        op: 'api.call',
+        params: {
+          method: 'POST',
+          url: 'uicp://intent',
+          body: commandPayload,
+        },
+      },
+      {
+        op: 'dom.set',
+        params: {
+          windowId,
+          target: `#${statusId}`,
+          html: '<span class="text-xs text-slate-500">Processing...</span>',
+        },
+      },
+      {
+        op: 'window.close',
+        params: { id: windowId },
+      },
+    ];
+    submitButton.setAttribute('data-command', JSON.stringify(submitCommands));
+    controls.appendChild(submitButton);
+
+    if (body.cancel !== false) {
+      const cancelButton = document.createElement('button');
+      cancelButton.type = 'button';
+      cancelButton.className = 'rounded border border-slate-300 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100';
+      cancelButton.textContent =
+        typeof body.cancel === 'string' && body.cancel.trim() ? body.cancel.trim() : 'Cancel';
+      const cancelCommands: Batch = [
+        {
+          op: 'window.close',
+          params: { id: windowId },
+        },
+      ];
+      cancelButton.setAttribute('data-command', JSON.stringify(cancelCommands));
+      controls.appendChild(cancelButton);
+    }
+
+    form.appendChild(controls);
+
+    const status = document.createElement('div');
+    status.id = statusId;
+    status.className = 'text-xs text-slate-500';
+    status.setAttribute('aria-live', 'polite');
+    form.appendChild(status);
+
+    root.appendChild(form);
+
+    return { success: true, value: windowId };
+  } catch (error) {
+    return toFailure(error);
   }
 };
 
@@ -705,10 +1012,13 @@ const applyCommand = (command: Envelope): CommandResult => {
         }
         // UICP intent dispatch: hand off to app chat pipeline
         if (url.startsWith('uicp://intent')) {
+          const rawBody = (params.body ?? {}) as Record<string, unknown>;
+          if (isStructuredClarifierBody(rawBody)) {
+            return renderStructuredClarifierForm(rawBody, command);
+          }
           try {
-            const body = (params.body ?? {}) as Record<string, unknown>;
-            const text = typeof body.text === 'string' ? body.text : '';
-            const meta = { windowId: (body.windowId as string | undefined) ?? command.windowId };
+            const text = typeof rawBody.text === 'string' ? rawBody.text : '';
+            const meta = { windowId: (rawBody.windowId as string | undefined) ?? command.windowId };
             if (text.trim()) {
               const evt = new CustomEvent('uicp-intent', { detail: { text, ...meta } });
               window.dispatchEvent(evt);

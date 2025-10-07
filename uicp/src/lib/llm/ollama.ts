@@ -266,9 +266,18 @@ export function streamOllamaCompletion(
       return;
     }
     if (payload.delta !== undefined) {
+      // Harmony may stream raw text segments; attempt JSON parse but gracefully fall back to text.
+      let chunk: unknown = payload.delta;
+      if (typeof payload.delta === 'string') {
+        try {
+          chunk = JSON.parse(payload.delta);
+        } catch {
+          // Fallback to raw text chunk when not JSON
+          chunk = payload.delta;
+        }
+      }
       try {
-        const chunkObj = typeof payload.delta === 'string' ? JSON.parse(payload.delta) : payload.delta;
-        const events = extractEventsFromChunk(chunkObj);
+        const events = extractEventsFromChunk(chunk);
         for (const e of events) queue.push(e);
       } catch (err) {
         queue.fail(err instanceof Error ? err : new Error(String(err)));
@@ -280,9 +289,13 @@ export function streamOllamaCompletion(
     if (!started) {
       started = true;
       // Do not await: the command resolves after the stream finishes
+      // Normalize roles for Ollama Cloud: 'developer' is not a valid chat role, map to 'system'.
+      const normalizedMessages = messages.map((m) =>
+        typeof m?.role === 'string' && m.role.toLowerCase() === 'developer' ? { ...m, role: 'system' } : m,
+      );
       void invoke('chat_completion', {
         requestId,
-        request: { model, messages, stream: true, tools },
+        request: { model, messages: normalizedMessages, stream: true, tools },
       }).catch((err) => {
         queue.fail(err instanceof Error ? err : new Error(String(err)));
         queue.end();

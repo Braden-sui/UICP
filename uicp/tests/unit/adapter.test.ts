@@ -41,6 +41,42 @@ describe('adapter.applyBatch', () => {
     const snapshot = listWorkspaceWindows();
     expect(snapshot.find((entry) => entry.id === 'win-close')?.title).toBe('Closable');
     closeWorkspaceWindow('win-close');
-    expect(document.querySelector('[data-window-id=\"win-close\"]')).toBeNull();
+    expect(document.querySelector('[data-window-id="win-close"]')).toBeNull();
+  });
+
+  it('renders structured clarifier form via intent metadata', async () => {
+    const clarifierBatch = validateBatch([
+      {
+        op: 'api.call',
+        params: {
+          method: 'POST',
+          url: 'uicp://intent',
+          body: {
+            textPrompt: 'Which city should I show weather for?',
+            submit: 'Continue',
+            fields: [{ name: 'city', label: 'City', placeholder: 'e.g., San Francisco' }],
+          },
+        },
+      },
+    ]);
+
+    const outcome = await applyBatch(clarifierBatch);
+    expect(outcome.success).toBe(true);
+
+    const windowEl = document.querySelector('[data-window-id]');
+    expect(windowEl).not.toBeNull();
+    expect(windowEl?.textContent).toContain('Which city should I show weather for?');
+
+    const input = windowEl?.querySelector('input[name="city"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(input?.placeholder).toBe('e.g., San Francisco');
+
+    const submit = windowEl?.querySelector('button[type="submit"]');
+    expect(submit).not.toBeNull();
+    const commands = JSON.parse(submit?.getAttribute('data-command') ?? '[]');
+    expect(Array.isArray(commands)).toBe(true);
+    expect(commands[0]?.op).toBe('api.call');
+    expect(commands.some((cmd: any) => cmd.op === 'window.close')).toBe(true);
   });
 });
+

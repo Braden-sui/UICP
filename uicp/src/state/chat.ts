@@ -27,6 +27,7 @@ export type PlanPreview = {
     planMs: number | null;
     actMs: number | null;
   };
+  autoApply?: boolean;
 };
 
 export type ChatState = {
@@ -118,6 +119,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let batch: Batch;
       let summary: string;
       let notice: 'planner_fallback' | 'actor_fallback' | undefined;
+      let planAutoApply = false;
 
       if (app.agentMode === 'mock') {
         const mock = mockPlanner(prompt);
@@ -195,6 +197,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           summary = safePlan.summary;
           planDuration = result.timings.planMs;
           actDuration = result.timings.actMs;
+          const autoApply = Boolean(result.autoApply);
+          planAutoApply = autoApply;
           const stamped = ensureBatchMetadata(safeBatch, result.traceId);
           batch = stamped.batch;
           traceId = stamped.traceId;
@@ -209,10 +213,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             planMs: planDuration,
             actMs: actDuration,
             batchSize: batch.length,
-            status: app.fullControl && !app.fullControlLocked ? 'applying' : 'acting',
+            status: autoApply || (app.fullControl && !app.fullControlLocked) ? 'applying' : 'acting',
           });
-          if (safePlan.risks && safePlan.risks.length > 0) {
-            const lines = safePlan.risks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
+          const plannerRisks = (safePlan.risks ?? []).filter((risk) => !risk.trim().toLowerCase().startsWith('clarifier:'));
+          if (plannerRisks.length > 0) {
+            const lines = plannerRisks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
             get().pushSystemMessage(`Planner hints${traceId ? ` [${traceId}]` : ''}:\n${lines}`, 'planner_hints');
           }
           if (notice === 'planner_fallback') {
@@ -234,6 +239,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           planMs: planDuration,
           actMs: actDuration,
         },
+        autoApply: planAutoApply,
       };
 
       if (traceId) {
@@ -246,7 +252,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // Surface the planner summary as an assistant message before we consider auto-apply.
       const summaryContent =
-        app.fullControl && !app.fullControlLocked
+        (planAutoApply || (app.fullControl && !app.fullControlLocked))
           ? summary
           : `${summary}\nReview the plan and press Apply when ready.`;
 
@@ -264,7 +270,67 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
 
       const fullControlEnabled = app.fullControl && !app.fullControlLocked;
-      if (fullControlEnabled) {
+      if (plan.autoApply) {
+        const applyStarted = nowMs();
+        app.transitionAgentPhase('applying', {
+          traceId,
+          planMs: planDuration,
+          actMs: actDuration,
+        });
+        if (traceId) {
+          app.upsertTelemetry(traceId, {
+            status: 'applying',
+          });
+        }
+        const outcome = await applyBatch(plan.batch);
+        const applyDuration = Math.max(0, Math.round(nowMs() - applyStarted));
+        if (!outcome.success) {
+          const errorMessage = outcome.errors.join('; ') || 'Clarifier apply failed';
+          set((state) => ({
+            messages: [
+              ...state.messages,
+              {
+                id: createId('msg'),
+                role: 'system',
+                content: `Failed to launch clarifier form: ${errorMessage}`,
+                createdAt: Date.now(),
+                errorCode: 'clarifier_apply_failed',
+              },
+            ],
+          }));
+          app.pushToast({ variant: 'error', message: 'Unable to render clarifier form.' });
+          app.transitionAgentPhase('idle', {
+            traceId,
+            planMs: planDuration,
+            actMs: actDuration,
+            applyMs: applyDuration,
+            error: errorMessage,
+          });
+          if (traceId) {
+            app.upsertTelemetry(traceId, {
+              applyMs: applyDuration,
+              status: 'error',
+              error: errorMessage,
+            });
+          }
+          set({ pendingPlan: plan });
+        } else {
+          app.transitionAgentPhase('idle', {
+            traceId,
+            planMs: planDuration,
+            actMs: actDuration,
+            applyMs: applyDuration,
+          });
+          if (traceId) {
+            app.upsertTelemetry(traceId, {
+              applyMs: applyDuration,
+              status: 'applied',
+              error: undefined,
+            });
+          }
+          set({ pendingPlan: undefined });
+        }
+      } else if (fullControlEnabled) {
         await delay(120);
         const applyStarted = nowMs();
         app.transitionAgentPhase('applying', {

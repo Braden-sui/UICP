@@ -53,8 +53,9 @@ function readApiKey() {
   throw new Error('OLLAMA_API_KEY not found in uicp/.env');
 }
 
-function makeRequest(options) {
+function makeStreamRequest(options) {
   return new Promise((resolve, reject) => {
+    let completed = false;
     const req = https.request({
       method: 'POST',
       hostname: 'ollama.com',
@@ -65,17 +66,61 @@ function makeRequest(options) {
         'Content-Length': Buffer.byteLength(options.payload, 'utf8'),
       },
     }, (res) => {
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => {
-        const body = Buffer.concat(chunks).toString('utf8');
-        if (!res.statusCode || res.statusCode >= 300) {
-          return reject(new Error('HTTP ' + res.statusCode + ': ' + body));
-        }
+      if (!res.statusCode || res.statusCode >= 300) {
+        res.setEncoding('utf8');
+        const errorChunks = [];
+        res.on('data', (chunk) => errorChunks.push(chunk));
+        res.on('end', () => {
+          reject(new Error('HTTP ' + res.statusCode + ': ' + errorChunks.join('')));
+        });
+        return;
+      }
+
+      res.setEncoding('utf8');
+      let buffer = '';
+      const rawEvents = [];
+      let content = '';
+      let thinking = '';
+
+      const flushLine = (line) => {
+        if (completed) return;
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        rawEvents.push(trimmed);
+        let payload;
         try {
-          resolve(JSON.parse(body));
+          payload = JSON.parse(trimmed);
         } catch (err) {
-          reject(err);
+          rawEvents.push('/* parse error */');
+          return;
+        }
+        const message = payload.message ?? payload.delta ?? payload;
+        if (message) {
+          if (typeof message.content === 'string') content += message.content;
+          if (typeof message.thinking === 'string') thinking += message.thinking;
+        }
+        if (payload.done) {
+          completed = true;
+          resolve({ content, thinking, raw: rawEvents });
+        }
+      };
+
+      res.on('data', (chunk) => {
+        buffer += chunk;
+        let idx;
+        while ((idx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 1);
+          flushLine(line);
+        }
+      });
+
+      res.on('end', () => {
+        if (buffer.length) {
+          flushLine(buffer);
+        }
+        if (!completed) {
+          reject(new Error('Stream ended without completion. Raw events: ' + rawEvents.length));
         }
       });
     });
@@ -83,23 +128,6 @@ function makeRequest(options) {
     req.write(options.payload);
     req.end();
   });
-}
-
-function extractContent(response) {
-  const candidates = [];
-  if (response.message && response.message.content) candidates.push(response.message.content);
-  if (Array.isArray(response.messages)) {
-    for (const m of response.messages) {
-      if (m && m.content) candidates.push(m.content);
-    }
-  }
-  if (response.response && response.response.message && response.response.message.content) {
-    candidates.push(response.response.message.content);
-  }
-  if (!candidates.length) {
-    throw new Error('No content found in response payload');
-  }
-  return candidates[candidates.length - 1];
 }
 
 function buildPlannerMessages(intent, plannerPrompt) {
@@ -172,23 +200,41 @@ async function main() {
   console.log('Intent:', intent);
 
   const plannerMessages = buildPlannerMessages(intent, plannerPrompt);
-  const plannerPayload = JSON.stringify({ model: 'gpt-oss:120b', messages: plannerMessages, stream: false });
+  const plannerPayload = JSON.stringify({ model: 'gpt-oss:120b', messages: plannerMessages, stream: true });
 
   console.log('\nRequesting plan from Ollama Cloud...');
-  const planResponse = await makeRequest({ payload: plannerPayload, key: apiKey });
-  const planText = extractContent(planResponse);
-  const plan = JSON.parse(planText);
+  const planResult = await makeStreamRequest({ payload: plannerPayload, key: apiKey });
+  const planText = planResult.content.trim();
+  if (!planText) {
+    throw new Error('Planner returned empty content. Raw events: ' + planResult.raw.length);
+  }
+  let plan;
+  try {
+    plan = JSON.parse(planText);
+  } catch (err) {
+    console.error('Failed to parse planner content:', planText);
+    throw err;
+  }
   console.log('Planner summary:', plan.summary || '(none)');
   console.log('Plan batch length:', Array.isArray(plan.batch) ? plan.batch.length : 0);
 
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
   const actorMessages = buildActorMessages(planJson, actorPrompt);
-  const actorPayload = JSON.stringify({ model: 'gpt-oss:120b', messages: actorMessages, stream: false });
+  const actorPayload = JSON.stringify({ model: 'gpt-oss:120b', messages: actorMessages, stream: true });
 
   console.log('\nRequesting batch from Ollama Cloud...');
-  const actorResponse = await makeRequest({ payload: actorPayload, key: apiKey });
-  const batchText = extractContent(actorResponse);
-  const batchEnvelope = JSON.parse(batchText);
+  const actorResult = await makeStreamRequest({ payload: actorPayload, key: apiKey });
+  const batchText = actorResult.content.trim();
+  if (!batchText) {
+    throw new Error('Actor returned empty content. Raw events: ' + actorResult.raw.length);
+  }
+  let batchEnvelope;
+  try {
+    batchEnvelope = JSON.parse(batchText);
+  } catch (err) {
+    console.error('Failed to parse actor content:', batchText);
+    throw err;
+  }
   const batch = Array.isArray(batchEnvelope.batch) ? batchEnvelope.batch : batchEnvelope;
 
   console.log('Batch operation count:', Array.isArray(batch) ? batch.length : 0);

@@ -6,5 +6,8 @@
         "install": "cd uicp && npm install",
         "dev": "cd uicp && npm run tauri:dev",
         "build": "cd uicp && npm run tauri:build"
+    },
+    "dependencies": {
+        "ollama": "^0.6.0"
     }
 }

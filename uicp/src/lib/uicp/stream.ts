@@ -53,6 +53,7 @@ const extractChannelContent = (payload: OllamaChunk): { channel?: string; conten
 // Optional onBatch allows the caller to gate application (e.g., Full Control)
 export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<void> | void) => {
   let commentaryBuffer = '';
+  let finalBuffer = '';
 
   const processDelta = async (raw: string) => {
     // Each delta should be a JSON object string, but chunks may be partial. Try to parse; if not, treat as plain text.
@@ -61,8 +62,12 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<void>
       const info = extractChannelContent(parsed);
       if (!info) return;
       const channel = info.channel ? info.channel.toLowerCase() : undefined;
-      if ((!channel || channel === 'commentary') && info.content) {
-        commentaryBuffer += info.content;
+      if (info.content) {
+        if (!channel || channel === 'commentary') {
+          commentaryBuffer += info.content;
+        } else if (channel === 'final') {
+          finalBuffer += info.content;
+        }
       }
       return;
     }
@@ -72,19 +77,22 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<void>
   };
 
   const flush = async () => {
-    const buf = commentaryBuffer.trim();
+    const primary = finalBuffer.trim();
+    const secondary = commentaryBuffer.trim();
+    finalBuffer = '';
     commentaryBuffer = '';
-    if (!buf) return;
+    if (!primary && !secondary) return;
 
     // Try full parse first
-    let candidate = tryParseJson(buf);
+    let candidate = primary ? tryParseJson(primary) : undefined;
 
     // If that fails, try to locate the first JSON array in the buffer
     if (candidate === undefined) {
-      const start = buf.indexOf('[');
-      const end = buf.lastIndexOf(']');
+      const target = primary || secondary;
+      const start = target.indexOf('[');
+      const end = target.lastIndexOf(']');
       if (start >= 0 && end > start) {
-        const slice = buf.slice(start, end + 1);
+        const slice = target.slice(start, end + 1);
         candidate = tryParseJson(slice);
       }
     }
