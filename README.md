@@ -1,4 +1,4 @@
-﻿# Generative Desktop
+# Generative Desktop
 
 Local-first Tauri UI that exposes a clean desktop canvas and a DockChat surface. DockChat is the only control that users touch while the agent drives the UI through UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
 
@@ -11,6 +11,8 @@ npm run dev
 ```
 
 The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When running standalone, open the Vite dev URL (`http://localhost:5173`).
+When running standalone (without Tauri), this project still uses port `1420` as configured in `uicp/vite.config.ts`.
+Open `http://127.0.0.1:1420`.
 
 ## Commands
 
@@ -36,6 +38,8 @@ The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When
 - **Planner / actor selection** – The desktop now ships an *Agent Settings* utility (gear shortcut on the left rail). Switch the planner (reasoning) and actor (batch builder) between legacy DeepSeek/Qwen flows and the new GPT‑OSS Harmony formatter without rebuilding.
 - **Persistence** – Selections persist via Zustand storage (`uicp-app` key) and apply to the next intent immediately.
 - **Harmony support** – GPT‑OSS profiles emit Harmony developer messages and multi-channel responses. Ensure the backend key has access to the corresponding Ollama Cloud models.
+  - Cloud endpoint: `POST https://ollama.com/api/chat` (SSE streaming).
+  - Model IDs: prefer colon tags (e.g., `gpt-oss:120b`). `-cloud` suffix in settings is accepted but normalized by the app.
 
 ## Architecture
 

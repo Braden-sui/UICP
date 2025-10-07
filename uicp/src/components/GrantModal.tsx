@@ -38,14 +38,14 @@ export const GrantModal = () => {
         <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
-            className="rounded border border-slate-300 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100"
+            className="rounded border border-slate-300 px-4 py-2 text-sm text-slate-600 transition-all duration-200 hover:bg-slate-100 active:scale-95"
             onClick={close}
           >
             Cancel
           </button>
           <button
             type="button"
-            className="rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+            className="rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-all duration-200 hover:bg-slate-700 hover:scale-105 active:scale-95"
             onClick={grant}
           >
             Grant full control

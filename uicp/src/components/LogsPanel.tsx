@@ -24,7 +24,7 @@ export const LogsPanel = () => {
   const setMetricsOpen = useAppStore((s) => s.setMetricsOpen);
   const telemetry = useAppStore((s) => s.telemetry);
   const metrics = telemetry.slice(0, 3);
-  const [debugEntries, setDebugEntries] = useState<Array<{ ts: number; event: string; requestId?: string; status?: number; len?: number }>>([]);
+  const [debugEntries, setDebugEntries] = useState<Array<{ ts: number; event: string; requestId?: string; status?: number; len?: number; count?: number }>>([]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -41,7 +41,27 @@ export const LogsPanel = () => {
             status: typeof payload.status === 'number' ? (payload.status as number) : undefined,
             len: typeof payload.len === 'number' ? (payload.len as number) : undefined,
           };
-          setDebugEntries((prev) => [entry, ...prev].slice(0, 200));
+          setDebugEntries((prev) => {
+            // Streaming deltas can fire hundreds of times; collapse them per request to avoid flooding the log.
+            if (event === 'delta_json') {
+              const matchIdx = prev.findIndex((item) => item.event === event && item.requestId === entry.requestId);
+              const chunkLen = entry.len ?? 0;
+              if (matchIdx !== -1) {
+                const existing = prev[matchIdx];
+                const updated = {
+                  ...existing,
+                  ts,
+                  len: (existing.len ?? 0) + chunkLen,
+                  count: (existing.count ?? 1) + 1,
+                };
+                const reordered = [updated, ...prev.slice(0, matchIdx), ...prev.slice(matchIdx + 1)];
+                return reordered.slice(0, 200);
+              }
+              return [{ ...entry, count: 1, len: chunkLen }, ...prev].slice(0, 200);
+            }
+
+            return [entry, ...prev].slice(0, 200);
+          });
         });
         unlisten = off;
       } catch {
@@ -127,7 +147,12 @@ export const LogsPanel = () => {
                 {debugEntries.slice(0, 40).map((d, i) => (
                   <li key={`dbg-${d.ts}-${i}`} className="flex items-center justify-between gap-2">
                     <span className="font-mono text-[10px] text-amber-600">{new Date(d.ts).toLocaleTimeString()}</span>
-                    <span className="flex-1 truncate px-2">{d.event}{d.status != null ? ` ${d.status}` : ''}{d.len != null ? ` len=${d.len}` : ''}</span>
+                    <span className="flex-1 truncate px-2">
+                      {d.event}
+                      {d.count && d.count > 1 ? ` x${d.count}` : ''}
+                      {d.status != null ? ` ${d.status}` : ''}
+                      {d.len != null ? ` len=${d.len}` : ''}
+                    </span>
                     {d.requestId && <span className="font-mono text-[10px] text-amber-600">{d.requestId}</span>}
                   </li>
                 ))}

@@ -68,7 +68,7 @@ const DesktopMenuBar = ({ menus }: DesktopMenuBarProps) => {
             <button
               type="button"
               className={clsx(
-                'rounded px-2 py-1 transition-colors hover:bg-white/80 focus:outline-none focus:ring-2 focus:ring-slate-300',
+                'rounded px-2 py-1 transition-all duration-200 hover:bg-white/80 active:scale-95 focus:outline-none focus:ring-2 focus:ring-slate-300',
                 expanded && 'bg-white/80',
               )}
               aria-haspopup="true"
@@ -90,10 +90,10 @@ const DesktopMenuBar = ({ menus }: DesktopMenuBarProps) => {
                     disabled={action.disabled}
                     onClick={() => handleAction(menu.id, action.id)}
                     className={clsx(
-                      'flex w-full items-center justify-between rounded px-3 py-1 text-left text-xs transition-colors',
+                      'flex w-full items-center justify-between rounded px-3 py-1 text-left text-xs transition-all duration-200',
                       action.disabled
                         ? 'cursor-not-allowed text-slate-300'
-                        : 'hover:bg-slate-100 hover:text-slate-900',
+                        : 'hover:bg-slate-100 hover:text-slate-900 active:scale-95',
                     )}
                   >
                     <span>{action.label}</span>

@@ -8,6 +8,7 @@ import MetricsPanel from './MetricsPanel';
 import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon } from '../icons';
 import { useAppStore, type DesktopShortcutPosition } from '../state/app';
 import AgentSettingsWindow from './AgentSettingsWindow';
+import DevtoolsAnalyticsListener from './DevtoolsAnalyticsListener';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
@@ -233,6 +234,7 @@ export const Desktop = () => {
 
   return (
     <div className="relative flex min-h-screen w-full flex-col items-center justify-center">
+      <DevtoolsAnalyticsListener />
       <DesktopMenuBar menus={menus} />
       <div
         id="workspace-root"

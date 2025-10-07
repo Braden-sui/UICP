@@ -1,4 +1,4 @@
-﻿# UICP Core Schemas
+# UICP Core Schemas
 
 This package hosts the runtime schemas and adapter used by the desktop client to apply UICP Core commands. All payloads are validated with Zod before they reach the DOM so that planner mistakes remain contained.
 
@@ -96,7 +96,7 @@ Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider
 
 ### Aggregator
 
-`createOllamaAggregator(onBatch?)` collects commentary-channel text and attempts a fast parse on each delta. When a valid JSON object/array is detected, it can short-circuit and emit immediately. On stream end it tries a final parse of the buffer. When a valid batch is found:
+`createOllamaAggregator(onBatch?)` collects Harmony deltas. It accumulates both `commentary` and `final` channel text and, on flush, prefers the `final` channel when present. It attempts a fast parse on each delta; when a valid JSON object/array is detected, it may short-circuit. On stream end it performs a final parse. When a valid batch is found:
 
 - If `onBatch` is provided, it is called and may decide whether to auto-apply (`enqueueBatch`) or surface a preview (e.g., based on Full Control).
 - If `onBatch` is not provided, the aggregator calls `enqueueBatch(batch)` by default.

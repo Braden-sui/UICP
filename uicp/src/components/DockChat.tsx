@@ -142,7 +142,7 @@ export const DockChat = () => {
         chatOpen ? 'translate-y-0' : 'translate-y-[calc(100%_-_32px)]'
       }`}
     >
-      <div className="pointer-events-auto mb-4 flex w-[min(640px,90vw)] flex-col gap-3 rounded-t-3xl border border-slate-200 bg-white/85 p-4 shadow-2xl backdrop-blur">
+      <div className="pointer-events-auto mb-4 flex w-[min(640px,90vw)] flex-col gap-3 rounded-t-3xl border border-slate-200 bg-white/85 p-4 shadow-[0_-20px_60px_rgba(0,0,0,0.15),0_-8px_25px_rgba(0,0,0,0.1)] backdrop-blur">
         <header className="flex items-center justify-between text-xs font-medium text-slate-600">
           <div className="flex flex-col gap-1 text-left">
             <span>
@@ -169,7 +169,7 @@ export const DockChat = () => {
               <button
                 type="button"
                 onClick={openGrantModal}
-                className="rounded bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700"
+                className="rounded bg-slate-900 px-3 py-1 text-xs font-semibold text-white transition-all duration-200 hover:bg-slate-700 hover:scale-105 active:scale-95"
               >
                 Grant full control
               </button>
@@ -177,7 +177,7 @@ export const DockChat = () => {
             <button
               type="button"
               onClick={() => setChatOpen(false)}
-              className="rounded px-2 py-1 text-xs text-slate-500 hover:text-slate-800"
+              className="rounded px-2 py-1 text-xs text-slate-500 transition-all duration-200 hover:text-slate-800 hover:bg-slate-100 active:scale-95"
             >
               Hide
             </button>
@@ -255,14 +255,14 @@ export const DockChat = () => {
                 <button
                   type="button"
                   onClick={applyPendingPlan}
-                  className="rounded bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                  className="rounded bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition-all duration-200 hover:bg-slate-700 hover:scale-105 active:scale-95"
                 >
                   Apply plan
                 </button>
                 <button
                   type="button"
                   onClick={() => useChatStore.setState({ pendingPlan: undefined })}
-                  className="rounded border border-slate-300 px-3 py-2 text-xs text-slate-600 hover:bg-slate-100"
+                  className="rounded border border-slate-300 px-3 py-2 text-xs text-slate-600 transition-all duration-200 hover:bg-slate-100 active:scale-95"
                 >
                   Dismiss
                 </button>
@@ -275,7 +275,7 @@ export const DockChat = () => {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:text-slate-800"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-all duration-200 hover:text-slate-800 hover:bg-slate-50 active:scale-95"
               aria-label="Attach"
             >
               <PaperclipIcon className="h-4 w-4" />
@@ -290,13 +290,13 @@ export const DockChat = () => {
                 onBlur={onBlur}
                 onKeyDown={handleKeyDown}
                 placeholder="Describe what you want to build..."
-                className="h-20 w-full resize-none rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 text-sm text-slate-800 shadow-inner focus:border-slate-400"
+                className="h-20 w-full resize-none rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 text-sm text-slate-800 shadow-inner transition-all duration-200 focus:border-slate-400"
               />
             </div>
             <button
               type="submit"
               disabled={sending || streaming}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-all duration-200 hover:bg-slate-700 hover:scale-110 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-300"
               aria-label="Send"
             >
               <SendIcon className="h-4 w-4" />
@@ -305,7 +305,7 @@ export const DockChat = () => {
               <button
                 type="button"
                 onClick={cancelStreaming}
-                className="flex h-9 items-center gap-1 rounded-full border border-red-400 bg-red-50 px-3 text-xs font-semibold text-red-700 hover:bg-red-100"
+                className="flex h-9 items-center gap-1 rounded-full border border-red-400 bg-red-50 px-3 text-xs font-semibold text-red-700 transition-all duration-200 hover:bg-red-100 hover:scale-105 active:scale-95"
               >
                 <StopIcon className="h-4 w-4" />
                 Stop

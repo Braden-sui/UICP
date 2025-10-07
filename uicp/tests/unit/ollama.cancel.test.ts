@@ -8,6 +8,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (_name: string, _handler: (ev: { payload: unknown }) => void) => Promise.resolve(() => {}),
+  emit: vi.fn(),
 }));
 
 import { streamOllamaCompletion } from '../../src/lib/llm/ollama';

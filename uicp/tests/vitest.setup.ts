@@ -19,3 +19,17 @@ if (typeof window !== "undefined" && typeof window.PointerEvent === "undefined")
   });
 }
 
+// Provide a minimal Tauri bridge so modules importing @tauri-apps/api don't throw during tests.
+if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__TAURI__ === undefined) {
+  (globalThis as Record<string, unknown>).__TAURI__ = {
+    core: {
+      invoke: async () => undefined,
+    },
+    event: {
+      emit: async () => undefined,
+      listen: async () => ({
+        unlisten: () => undefined,
+      }),
+    },
+  };
+}

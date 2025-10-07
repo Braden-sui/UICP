@@ -143,8 +143,8 @@ const DesktopWindow = ({
       >
         <div
           className={clsx(
-            'flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-2xl backdrop-blur transition-transform',
-            dragging && 'scale-[1.01]',
+            'flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/90 backdrop-blur transition-all duration-200',
+            dragging ? 'scale-[1.01] shadow-[0_25px_60px_rgba(0,0,0,0.18)]' : 'shadow-[0_20px_50px_rgba(0,0,0,0.12),0_8px_20px_rgba(0,0,0,0.08)]',
           )}
         >
           <div

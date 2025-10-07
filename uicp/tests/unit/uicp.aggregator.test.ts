@@ -27,6 +27,33 @@ describe('uicp stream aggregator', () => {
     expect(passed[0].op).toBe('window.create');
   });
 
+  it('prefers final channel content over commentary on flush', async () => {
+    const onBatch = vi.fn(async (_b: Batch) => {});
+    const agg = createOllamaAggregator(onBatch);
+
+    // Commentary carries some distracting text
+    await agg.processDelta(
+      JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: 'noise ' } }] }),
+    );
+
+    // Final includes the authoritative JSON batch
+    const payload = [
+      { op: 'window.create', params: { title: 'Final Wins' } },
+      { op: 'window.focus', params: { id: 'w1' } },
+    ];
+    await agg.processDelta(
+      JSON.stringify({ choices: [{ delta: { channel: 'final', content: JSON.stringify(payload) } }] }),
+    );
+
+    await agg.flush();
+
+    expect(onBatch).toHaveBeenCalledTimes(1);
+    const batch = onBatch.mock.calls[0][0] as Batch;
+    expect(Array.isArray(batch)).toBe(true);
+    expect(batch.length).toBe(2);
+    expect(batch[0].op).toBe('window.create');
+  });
+
   it('extracts first JSON array from noisy buffer', async () => {
     const onBatch = vi.fn(async (_b: Batch) => {});
     const agg = createOllamaAggregator(onBatch);

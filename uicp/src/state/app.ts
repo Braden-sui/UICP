@@ -6,6 +6,7 @@ import {
   type PlannerProfileKey,
   type ActorProfileKey,
 } from '../lib/llm/profiles';
+import { createId } from '../lib/utils';
 
 // AppState keeps cross-cutting UI control flags so DockChat, modal flows, and transport logic stay in sync.
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -60,6 +61,39 @@ export type IntentTelemetry = {
   updatedAt: number;
 };
 
+export type DevtoolsAnalyticsContext = {
+  agentPhase: AgentPhase;
+  traceId?: string;
+  streaming: boolean;
+  logsOpen: boolean;
+  metricsOpen: boolean;
+  notepadOpen: boolean;
+  agentSettingsOpen: boolean;
+  workspaceWindows: number;
+  devMode: boolean;
+  agentMode: AgentMode;
+  fullControl: boolean;
+  fullControlLocked: boolean;
+  platform: string;
+};
+
+export type DevtoolsAnalyticsEvent = {
+  id: string;
+  timestamp: number;
+  trigger: 'keyboard' | 'menu' | 'api';
+  combo: string;
+  direction: 'open' | 'close' | 'unknown';
+  context: DevtoolsAnalyticsContext;
+};
+
+export type DevtoolsAnalyticsPayload = {
+  trigger: DevtoolsAnalyticsEvent['trigger'];
+  combo: string;
+  direction?: DevtoolsAnalyticsEvent['direction'];
+  context: DevtoolsAnalyticsContext;
+  timestamp?: number;
+};
+
 const resolveDefaultAgentMode = (): AgentMode => {
   const env = import.meta.env;
   // Keep unit tests deterministic by forcing mock mode during vitest runs.
@@ -99,6 +133,8 @@ export type AppState = {
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
   workspaceWindows: Record<string, WorkspaceWindowMeta>;
   telemetry: IntentTelemetry[];
+  devtoolsAnalytics: DevtoolsAnalyticsEvent[];
+  devtoolsAssumedOpen: boolean;
   toasts: Toast[];
   setConnectionStatus: (status: ConnectionStatus) => void;
   setDevMode: (devmode: boolean) => void;
@@ -126,6 +162,9 @@ export type AppState = {
   transitionAgentPhase: (phase: AgentPhase, patch?: Partial<Omit<AgentStatus, 'phase'>>) => void;
   upsertTelemetry: (traceId: string, patch: Partial<Omit<IntentTelemetry, 'traceId'>>) => void;
   clearTelemetry: () => void;
+  recordDevtoolsAnalytics: (payload: DevtoolsAnalyticsPayload) => void;
+  clearDevtoolsAnalytics: () => void;
+  setDevtoolsAssumedOpen: (value: boolean) => void;
 };
 
 const getEnvFlag = (value: string | boolean | undefined, fallback: boolean) => {
@@ -165,6 +204,8 @@ export const useAppStore = create<AppState>()(
       desktopShortcuts: {},
       workspaceWindows: {},
       telemetry: [],
+      devtoolsAnalytics: [],
+      devtoolsAssumedOpen: false,
       toasts: [],
       setConnectionStatus: (status) => set({ connectionStatus: status }),
       setDevMode: (devMode) => set({ devMode }),
@@ -317,6 +358,34 @@ export const useAppStore = create<AppState>()(
           return { telemetry: next };
         }),
       clearTelemetry: () => set({ telemetry: [] }),
+      recordDevtoolsAnalytics: (payload) =>
+        set((state) => {
+          if (!payload) return {};
+          const now = payload.timestamp ?? Date.now();
+          const direction =
+            payload.direction && payload.direction !== 'unknown'
+              ? payload.direction
+              : state.devtoolsAssumedOpen
+                ? 'close'
+                : 'open';
+          const entry: DevtoolsAnalyticsEvent = {
+            id: createId('devtools'),
+            timestamp: now,
+            trigger: payload.trigger,
+            combo: payload.combo,
+            direction,
+            context: payload.context,
+          };
+          const next = [entry, ...state.devtoolsAnalytics];
+          const MAX_ENTRIES = 100;
+          if (next.length > MAX_ENTRIES) {
+            next.length = MAX_ENTRIES;
+          }
+          const assumedOpen = direction === 'open' ? true : direction === 'close' ? false : state.devtoolsAssumedOpen;
+          return { devtoolsAnalytics: next, devtoolsAssumedOpen: assumedOpen };
+        }),
+      clearDevtoolsAnalytics: () => set({ devtoolsAnalytics: [] }),
+      setDevtoolsAssumedOpen: (value) => set({ devtoolsAssumedOpen: value }),
     }),
     {
       name: 'uicp-app',
