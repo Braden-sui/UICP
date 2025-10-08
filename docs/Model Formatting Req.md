@@ -7,20 +7,17 @@ Scope and endpoints
 - Local daemon (OpenAI-compatible): http://127.0.0.1:11434/v1
 - Cloud auth: Authorization: Bearer <api-key>
 - Model IDs: use colon-tag IDs (e.g., deepseek-v3.1:671b, qwen3-coder:480b, kimi-k2:1t). Do not use -cloud suffixes.
-Authentication: All Ollama Cloud requests use `Authorization: Bearer <api-key>` as documented at https://docs.ollama.com/cloud.
-
-Model naming: Cloud endpoints expect hyphen-delimited tags (e.g., `gpt-oss-120b-cloud`); the local Ollama CLI retains colon tags (e.g., `gpt-oss:120b`). The bridge normalizes automatically.
+See `docs/model-usage.md` for current request/response examples.
 
 UICP output constraints (planner/actor)
-- When targeting the desktop builder, models must emit a single JSON object for the planner, and `{ "batch": [...] }` for the actor, using the UICP operation names (e.g., `window.create`, `dom.set`).
 - No JavaScript, `<script>`/`<style>` tags, or inline event handlers. Interactivity is declared via HTML `data-*` attributes that the runtime executes (`data-command`, `data-state-scope`, `data-state-key`).
  - Do not emit any event APIs or custom ops (`event.addListener`, `addEventListener`, or `event.*`). The runtime wires events declaratively via attributes only.
  - The provider prepends a compact Environment Snapshot (agent state, open windows, and a trimmed DOM summary) to planner/actor prompts to improve context-awareness.
 - Prefer compact HTML; avoid excessive whitespace.
 - For follow-ups, render a "Clarify" window and wire Submit to `api.call` with `url: "uicp://intent"` and body `{ text: "{{form.answer}}" }` — the app converts this to a new user message automatically.
-- The active planner/actor format is controlled via **Agent Settings** (desktop shortcut) or environment (`VITE_PLANNER_PROFILE`, `VITE_ACTOR_PROFILE`). GPT‑OSS profiles enable Harmony formatting; DeepSeek/Qwen remain legacy defaults.
+ - The active planner/actor format is controlled via **Agent Settings** (desktop shortcut) or environment (`VITE_PLANNER_PROFILE`, `VITE_ACTOR_PROFILE`). Supported profiles: planner `deepseek`/`kimi`; actor `qwen`/`kimi`.
 
-1. GPT‑OSS models (gpt‑oss-20b-cloud & gpt‑oss-120b-cloud)
+Legacy (Deprecated) — moved to `docs/legacy/Model Formatting (Harmony).md`. Do not use the content below for active development.
 1.1 Harmony response format — canonical reference: <https://cookbook.openai.com/articles/openai-harmony>
 
 Harmony extends ChatML with explicit channels, sentinel tokens, and a strict role hierarchy:

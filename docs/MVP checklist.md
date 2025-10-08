@@ -1,4 +1,4 @@
-# UICP MVP - Local-First Desktop App
+﻿# UICP MVP - Local-First Desktop App
 
 Update log - 2025-10-05
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
@@ -219,7 +219,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 ---
 
 
-## !!! things to address !!!
+### things to address
  1. [x] Wire command persistence + replay (Section 4 Item 1) - COMPLETED 2025-10-06
     - [x] Persist every applied command to tool_call table
     - [x] On startup, replay commands for current workspace

@@ -302,8 +302,17 @@ async fn compute_cancel(state: State<'_, AppState>, job_id: String, window: taur
     spawn(async move {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let state: State<'_, AppState> = app_handle.state();
-        if let Some(handle) = state.compute_ongoing.read().await.get(&jid) {
-            handle.abort();
+        let aborted = {
+            let ongoing = state.compute_ongoing.read().await;
+            if let Some(handle) = ongoing.get(&jid) {
+                handle.abort();
+                true
+            } else {
+                false
+            }
+        };
+
+        if aborted {
             let _ = app_handle.emit(
                 "compute.debug",
                 serde_json::json!({ "jobId": jid, "event": "cancel_aborted_after_grace" }),

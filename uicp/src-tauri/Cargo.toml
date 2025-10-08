@@ -52,6 +52,6 @@ lto = true
 strip = true
 
 [features]
-default = []
+default = ["wasm_compute"]
 # Enable Wasm-only compute host runtime (Wasmtime + WASI Preview 2)
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]

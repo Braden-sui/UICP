@@ -19,34 +19,125 @@ function isBracketArtifact(text: string): boolean {
   return false;
 }
 
-function tryRecoverJsonFromAttribute(val: string | null): string | null {
-  if (!val) return null;
-  // Already looks valid
-  try {
-    JSON.parse(val);
-    return val;
-  } catch {
-    // Attempt to extract the first balanced-like slice from first [ or { to last ] or }
-    const startArr = val.indexOf('[');
-    const startObj = val.indexOf('{');
-    let start = -1;
-    if (startArr >= 0 && startObj >= 0) start = Math.min(startArr, startObj);
-    else start = Math.max(startArr, startObj);
-    const endArr = val.lastIndexOf(']');
-    const endObj = val.lastIndexOf('}');
-    const end = Math.max(endArr, endObj);
-    if (start >= 0 && end > start) {
-      const slice = val.slice(start, end + 1);
-      try {
-        const parsed = JSON.parse(slice);
-        // Re-stringify to ensure a clean, double-quoted JSON attribute value
-        return JSON.stringify(parsed);
-      } catch {
-        return null;
-      }
+type Transform = (input: string) => string;
+
+const MAX_RECOVERY_ITERATIONS = 24;
+
+const RECOVERY_TRANSFORMS: Transform[] = [
+  stripDanglingTerminalQuote,
+  convertSingleQuotedKeys,
+  convertSingleQuotedValues,
+  ensureQuotedKeys,
+  quoteBareWordValues,
+  removeTrailingCommas,
+];
+
+// Attempt to parse the JSON after applying a series of lenient, bounded transforms.
+function attemptJsonRecovery(raw: string): string | null {
+  const visited = new Set<string>();
+  const queue: string[] = [];
+
+  const push = (candidate: string | null) => {
+    if (!candidate) return;
+    const trimmed = candidate.trim();
+    if (!trimmed || visited.has(trimmed)) return;
+    visited.add(trimmed);
+    queue.push(trimmed);
+  };
+
+  push(raw);
+
+  let iterations = 0;
+  while (queue.length && iterations < MAX_RECOVERY_ITERATIONS) {
+    iterations += 1;
+    const candidate = queue.shift()!;
+    try {
+      const parsed = JSON.parse(candidate);
+      return JSON.stringify(parsed);
+    } catch {
+      // fallthrough – try relaxed transforms below
     }
-    return null;
+
+    for (const transform of RECOVERY_TRANSFORMS) {
+      const next = transform(candidate);
+      if (next !== candidate) push(next);
+    }
   }
+
+  return null;
+}
+
+// Drop a trailing quote when the total count of the quote character is odd, indicating
+// a likely truncated attribute value such as {"batch":[...]}".
+function stripDanglingTerminalQuote(input: string): string {
+  const trimmed = input.trimEnd();
+  if (!trimmed) return input;
+  const last = trimmed.charAt(trimmed.length - 1);
+  if (last !== '"' && last !== "'") return input;
+  const occurrences = trimmed.split(last).length - 1;
+  if (occurrences % 2 === 0) return input;
+  return trimmed.slice(0, -1);
+}
+
+// Replace single-quoted object keys with standard double-quoted keys.
+function convertSingleQuotedKeys(input: string): string {
+  return input.replace(/([{,]\s*)'([^']+?)'(\s*:)/g, (_, prefix: string, key: string, suffix: string) => {
+    return `${prefix}"${key.replace(/"/g, '\\"')}"${suffix}`;
+  });
+}
+
+// Replace single-quoted string values with double-quoted JSON strings.
+function convertSingleQuotedValues(input: string): string {
+  return input.replace(/:(\s*)'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_, space: string, content: string) => {
+    const normalized = content.replace(/\\'/g, "'"); // preserve apostrophes
+    const json = JSON.stringify(normalized);
+    return `:${space}${json}`;
+  });
+}
+
+// Quote unquoted object keys (e.g., {action: "state.set"}).
+function ensureQuotedKeys(input: string): string {
+  return input.replace(/([{,]\s*)([A-Za-z_][\w-]*)(\s*:)/g, (_, prefix: string, key: string, suffix: string) => {
+    return `${prefix}"${key}"${suffix}`;
+  });
+}
+
+// Quote bare word values (e.g., "value":playing -> "value":"playing").
+function quoteBareWordValues(input: string): string {
+  return input.replace(/:(\s*)([A-Za-z_][\w.-]*)(\s*)(["'])?(?=\s*[,}\]"'])/g, (_, space: string, word: string, trailingSpace: string) => {
+    const lowered = word.toLowerCase();
+    if (lowered === 'true' || lowered === 'false' || lowered === 'null') {
+      return `:${space}${word}${trailingSpace}`;
+    }
+    return `:${space}"${word}"${trailingSpace}`;
+  });
+}
+
+// Remove trailing commas that often leak from model output (e.g., {"a":1,}).
+function removeTrailingCommas(input: string): string {
+  return input.replace(/,\s*([}\]])/g, '$1');
+}
+
+export function tryRecoverJsonFromAttribute(val: string | null): string | null {
+  if (!val) return null;
+  const direct = attemptJsonRecovery(val);
+  if (direct) return direct;
+
+  // Attempt to extract the first balanced-like slice from first [ or { to last ] or }
+  const startArr = val.indexOf('[');
+  const startObj = val.indexOf('{');
+  let start = -1;
+  if (startArr >= 0 && startObj >= 0) start = Math.min(startArr, startObj);
+  else start = Math.max(startArr, startObj);
+  const endArr = val.lastIndexOf(']');
+  const endObj = val.lastIndexOf('}');
+  const end = Math.max(endArr, endObj);
+  if (start >= 0 && end > start) {
+    const slice = val.slice(start, end + 1);
+    return attemptJsonRecovery(slice);
+  }
+
+  return null;
 }
 
 function sanitizeCommandLabelText(node: Node) {

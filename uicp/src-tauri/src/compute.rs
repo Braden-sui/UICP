@@ -4,7 +4,7 @@
 //! - when enabled, it embeds Wasmtime with typed hostcalls and module registry.
 //! - when disabled, it emits deterministic placeholder events for adapter wiring.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;
