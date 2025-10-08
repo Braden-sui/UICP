@@ -32,7 +32,11 @@ export function getPlannerClient(): PlannerClient {
       const messages = profile.formatMessages(intent, { tools: options?.tools });
       const model = options?.model ?? profile.defaultModel;
       // Force JSON-mode responses so downstream schema validation never sees prose.
-      return streamOllamaCompletion(messages, model, options?.tools, { format: 'json' });
+      // Provide OpenAI-compatible response_format as a hint for local daemons.
+      return streamOllamaCompletion(messages, model, options?.tools, {
+        format: 'json',
+        responseFormat: { type: 'json_object' },
+      });
     },
   };
 }
@@ -44,8 +48,11 @@ export function getActorClient(): ActorClient {
       // Actor profiles encapsulate templating so downstream consumers get consistent outputs.
       const messages = profile.formatMessages(planJson, { tools: options?.tools });
       const model = options?.model ?? profile.defaultModel;
-      // Actor output must be valid JSON; request strict JSON formatting from the provider.
-      return streamOllamaCompletion(messages, model, options?.tools, { format: 'json' });
+      // Actor output must be valid JSON; request strict JSON formatting and provide OpenAI-compatible hint.
+      return streamOllamaCompletion(messages, model, options?.tools, {
+        format: 'json',
+        responseFormat: { type: 'json_object' },
+      });
     },
   };
 }

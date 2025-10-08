@@ -209,7 +209,7 @@ export function streamOllamaCompletion(
 
   // Attach the event listener first to avoid missing early chunks
   void listen('ollama-completion', (event) => {
-    const payload = event.payload as { done?: boolean; delta?: unknown } | undefined;
+    const payload = event.payload as { done?: boolean; delta?: unknown; kind?: string } | undefined;
     if (!payload) return;
     if (payload.done) {
       queue.push({ type: 'done' });
@@ -237,7 +237,15 @@ export function streamOllamaCompletion(
         }
       }
       try {
-        const events = extractEventsFromChunk(chunk);
+        let events = extractEventsFromChunk(chunk);
+        const kind = payload.kind ? String(payload.kind).toLowerCase() : undefined;
+        if (kind === 'json') {
+          // Structured JSON lines tagged by backend
+          events = events.map((e) => (e.type === 'content' ? { ...e, channel: 'json' } : e));
+        } else if (kind === 'text') {
+          // Non-JSON lines (status, prose) — keep them off primary JSON channels
+          events = events.map((e) => (e.type === 'content' ? { ...e, channel: 'text' } : e));
+        }
         for (const e of events) queue.push(e);
       } catch (err) {
         queue.fail(err instanceof Error ? err : new Error(String(err)));

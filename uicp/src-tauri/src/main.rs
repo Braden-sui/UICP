@@ -556,8 +556,24 @@ async fn chat_completion(
             });
             tokio::spawn(append_trace(ev.clone()));
             tokio::spawn(emit_debug(ev));
+
+            // request metadata snapshot (no secrets)
+            let messages_len = body_payload.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+            let format_present = body_payload.get("format").is_some();
+            let tools_count = body_payload.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+            let meta = serde_json::json!({
+                "ts": Utc::now().timestamp_millis(),
+                "event": "request_body_meta",
+                "requestId": rid_for_task,
+                "messages": messages_len,
+                "format": format_present,
+                "tools": tools_count,
+            });
+            tokio::spawn(append_trace(meta.clone()));
+            tokio::spawn(emit_debug(meta));
         }
         let mut attempt_local: u8 = 0;
+        let mut fallback_tried: bool = false;
         'outer: loop {
             attempt_local += 1;
             // Endpoint differs between Cloud and Local
@@ -616,10 +632,10 @@ async fn chat_completion(
                         tokio::spawn(append_trace(ev.clone()));
                         tokio::spawn(emit_debug(ev));
                     }
-                    if !status.is_success() {
-                        if (status.as_u16() == 429 || status.as_u16() == 503)
-                            && attempt_local < max_attempts
-                        {
+            if !status.is_success() {
+                if (status.as_u16() == 429 || status.as_u16() == 503)
+                    && attempt_local < max_attempts
+                {
                             let retry_after_ms = resp
                                 .headers()
                                 .get("retry-after")
@@ -648,6 +664,38 @@ async fn chat_completion(
                                 });
                                 tokio::spawn(append_trace(ev.clone()));
                                 tokio::spawn(emit_debug(ev));
+                            }
+                        }
+                        // Optional Cloud fallback only when explicitly configured via env FALLBACK_CLOUD_MODEL
+                        if use_cloud && !fallback_tried {
+                            if let Some(orig_model) = body_payload.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+                                if let Ok(fallback_model) = std::env::var("FALLBACK_CLOUD_MODEL") {
+                                    if !fallback_model.is_empty() && fallback_model != orig_model {
+                                        if debug_on {
+                                            let ev = serde_json::json!({
+                                                "ts": Utc::now().timestamp_millis(),
+                                                "event": "retry_with_fallback_model",
+                                                "requestId": rid_for_task,
+                                                "from": orig_model,
+                                                "to": fallback_model,
+                                            });
+                                            tokio::spawn(append_trace(ev.clone()));
+                                            tokio::spawn(emit_debug(ev));
+                                        }
+                                        body["model"] = serde_json::json!(fallback_model);
+                                        fallback_tried = true;
+                                        continue 'outer;
+                                    }
+                                } else if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "no_fallback_configured",
+                                        "requestId": rid_for_task,
+                                        "from": orig_model,
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
                             }
                         }
                         break;

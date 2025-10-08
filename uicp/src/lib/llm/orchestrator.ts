@@ -4,7 +4,15 @@ import type { StreamEvent } from './ollama';
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
 import { createId } from '../utils';
 
-const toJsonSafe = (s: string) => s.replace(/```(json)?/gi, '').trim();
+const toJsonSafe = (s: string) =>
+  s
+    // Strip UTF-8 BOM if present
+    .replace(/\uFEFF/g, '')
+    // Remove common prefaces some models prepend in JSON mode
+    .replace(/^\s*(?:json|assistant|commentary)\s*:?[\t\s-]*\n?/i, '')
+    // Remove code fences
+    .replace(/```(?:json)?/gi, '')
+    .trim();
 
 const readEnvMs = (key: string, fallback: number): number => {
   // Vite exposes env via import.meta.env; coerce string → number if valid
@@ -52,7 +60,7 @@ async function collectJsonFromChannels<T = unknown>(
 ): Promise<{ data: T; channelUsed?: string }> {
   const iterator = stream[Symbol.asyncIterator]();
   const primaryChannels =
-    options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['commentary', 'json', 'assistant'];
+    options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['json', 'assistant', 'commentary'];
   const fallbackChannels = options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? [];
   const primarySet = new Set(primaryChannels);
   const fallbackSet = new Set(fallbackChannels);
@@ -67,21 +75,55 @@ async function collectJsonFromChannels<T = unknown>(
 
   const parseBuffer = (input: string) => {
     const raw = toJsonSafe(input);
+    // First attempt: direct parse
     try {
-      return JSON.parse(raw) as T;
-    } catch (e) {
-      const firstBrace = raw.indexOf('{');
-      const firstBracket = raw.indexOf('[');
-      const startIndex = [firstBrace, firstBracket].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? -1;
-      const lastBrace = raw.lastIndexOf('}');
-      const lastBracket = raw.lastIndexOf(']');
-      const endIndex = Math.max(lastBrace, lastBracket);
-      if (startIndex >= 0 && endIndex > startIndex) {
-        const slice = raw.slice(startIndex, endIndex + 1);
-        return JSON.parse(slice) as T;
+      const first = JSON.parse(raw) as unknown;
+      if (typeof first === 'string') {
+        // Some providers wrap JSON as a string; attempt to parse again
+        try {
+          return JSON.parse(first) as T;
+        } catch {
+          // fall through to slicing salvage below
+        }
+      } else {
+        return first as T;
       }
-      throw e;
+    } catch {
+      // continue to salvage
     }
+
+    // Salvage: take the first balanced JSON object/array from the buffer
+    const firstBrace = raw.indexOf('{');
+    const firstBracket = raw.indexOf('[');
+    const startIndex = [firstBrace, firstBracket].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? -1;
+    const lastBrace = raw.lastIndexOf('}');
+    const lastBracket = raw.lastIndexOf(']');
+    const endIndex = Math.max(lastBrace, lastBracket);
+    if (startIndex >= 0 && endIndex > startIndex) {
+      const slice = raw.slice(startIndex, endIndex + 1).trim();
+      try {
+        const second = JSON.parse(slice) as unknown;
+        if (typeof second === 'string') {
+          // Double-encoded JSON: parse inner string
+          return JSON.parse(second) as T;
+        }
+        return second as T;
+      } catch (e2) {
+        // Last-ditch: if slice is a quoted JSON string, parse as string then parse inner
+        if ((slice.startsWith('"') && slice.endsWith('"')) || (slice.startsWith("'") && slice.endsWith("'"))) {
+          try {
+            const unquoted = JSON.parse(slice) as unknown;
+            if (typeof unquoted === 'string') {
+              return JSON.parse(unquoted) as T;
+            }
+          } catch {
+            // give up
+          }
+        }
+        throw e2;
+      }
+    }
+    throw new Error('No JSON payload found in stream');
   };
 
   const consume = (async () => {

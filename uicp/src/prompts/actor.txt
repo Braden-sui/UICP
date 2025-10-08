@@ -12,6 +12,7 @@ Contract
 Rules
 - Optimize DOM operations: prefer component.update and dom.set over full re-renders. Use dom.replace primarily to populate "#root" after "window.create".
 - Ensure existence: create windows/containers before targeting selectors. Validate that each params.target exists based on earlier steps in this batch.
+- Every `dom.set`, `dom.replace`, and `dom.append` **must** include a non-empty `html` string that renders the intended UI. Never leave `html` undefined or placeholder text.
 - Stamp stable ids when beneficial. Use predictable slugs: windows like "win-<slug>", components like "cmp-<slug>".
 - Stamp missing idempotency_key/txn_id if absent (runtime may also stamp; double-stamping is safe).
 - Never emit JavaScript, <script>, <style>, on* attributes, or javascript: URLs. HTML must be safe and well-structured.

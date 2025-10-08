@@ -556,7 +556,16 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
     const errors: string[] = [];
     let applied = 0;
 
-    for (const cmd of commands) {
+    // Reorder so window.create comes first, then others. This avoids orphan DOM ops.
+    const creates: typeof commands = [];
+    const others: typeof commands = [];
+    for (const c of commands) {
+      if (c.tool === 'window.create') creates.push(c); else others.push(c);
+    }
+    const knownWindows = new Set<string>();
+
+    // Apply window.create first
+    for (const cmd of creates) {
       try {
         // Reconstruct envelope from persisted command
         const envelope: Envelope = {
@@ -564,8 +573,36 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
           params: cmd.args as OperationParamMap[Envelope['op']],
           idempotencyKey: cmd.id,
         };
-
+        const params = envelope.params as { id?: string } | undefined;
+        if (params && typeof params.id === 'string' && params.id.length > 0) {
+          knownWindows.add(params.id);
+        }
         // Await each replay so persistence or DOM errors fail loud instead of silently skipping.
+        const result = await applyCommand(envelope);
+        if (result.success) {
+          applied += 1;
+        } else {
+          errors.push(`${cmd.tool}: ${result.error}`);
+        }
+      } catch (error) {
+        errors.push(`${cmd.tool}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // Then apply the rest, skipping orphaned window operations
+    for (const cmd of others) {
+      try {
+        const envelope: Envelope = {
+          op: cmd.tool as Envelope['op'],
+          params: cmd.args as OperationParamMap[Envelope['op']],
+          idempotencyKey: cmd.id,
+        };
+        // If the command targets a window and that window wasn't created, skip with a clear error
+        const p = envelope.params as { windowId?: string } | undefined;
+        if (p && typeof p.windowId === 'string' && p.windowId.length > 0 && !knownWindows.has(p.windowId)) {
+          errors.push(`${cmd.tool}: Unknown window ${p.windowId}`);
+          continue;
+        }
         const result = await applyCommand(envelope);
         if (result.success) {
           applied += 1;
