@@ -1,6 +1,13 @@
 import type { ToolSpec, StreamEvent } from './ollama';
 import { streamOllamaCompletion } from './ollama';
 import { getActorProfile, getPlannerProfile, type ActorProfileKey, type PlannerProfileKey } from './profiles';
+import { buildEnvironmentSnapshot } from '../env';
+
+const readBool = (value: unknown, fallback: boolean): boolean => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value === '1' || value.toLowerCase() === 'true';
+  return fallback;
+};
 
 export type LLMStream = AsyncIterable<StreamEvent>;
 
@@ -29,7 +36,13 @@ export function getPlannerClient(): PlannerClient {
     streamIntent: (intent: string, options?: PlannerStreamOptions) => {
       const profile = getPlannerProfile(options?.profileKey);
       // Profile formatting keeps planner prompts aligned with the selected model contract.
-      const messages = profile.formatMessages(intent, { tools: options?.tools });
+      const includeDom = readBool((import.meta as any)?.env?.VITE_LLM_INCLUDE_DOM, false);
+      const env = buildEnvironmentSnapshot({ includeDom });
+      const messages = [
+        // Prepend a compact environment snapshot to improve context-awareness.
+        { role: 'system', content: env },
+        ...profile.formatMessages(intent, { tools: options?.tools }),
+      ];
       const model = options?.model ?? profile.defaultModel;
       // Force JSON-mode responses so downstream schema validation never sees prose.
       // Provide OpenAI-compatible response_format as a hint for local daemons.
@@ -46,7 +59,12 @@ export function getActorClient(): ActorClient {
     streamPlan: (planJson: string, options?: ActorStreamOptions) => {
       const profile = getActorProfile(options?.profileKey);
       // Actor profiles encapsulate templating so downstream consumers get consistent outputs.
-      const messages = profile.formatMessages(planJson, { tools: options?.tools });
+      const includeDom = readBool((import.meta as any)?.env?.VITE_LLM_INCLUDE_DOM, false);
+      const env = buildEnvironmentSnapshot({ includeDom });
+      const messages = [
+        { role: 'system', content: env },
+        ...profile.formatMessages(planJson, { tools: options?.tools }),
+      ];
       const model = options?.model ?? profile.defaultModel;
       // Actor output must be valid JSON; request strict JSON formatting and provide OpenAI-compatible hint.
       return streamOllamaCompletion(messages, model, options?.tools, {

@@ -44,8 +44,8 @@ export const Desktop = () => {
   const shortcutPositions = useAppStore((s) => s.desktopShortcuts);
   const workspaceWindows = useAppStore((s) => s.workspaceWindows);
   const upsertWorkspaceWindow = useAppStore((s) => s.upsertWorkspaceWindow);
-  const removeWorkspaceWindow = useAppStore((s) => s.removeWorkspaceWindow);
-
+  const removeWorkspaceWindow = useAppStore((s) => s.removeWorkspaceWindow); 
+  
   useEffect(() => {
     if (!rootRef.current) return;
     registerWorkspaceRoot(rootRef.current);

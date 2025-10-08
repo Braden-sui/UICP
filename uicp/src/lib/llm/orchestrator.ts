@@ -241,6 +241,7 @@ function augmentPlan(input: Plan): Plan {
   const risks = Array.isArray(input.risks) ? input.risks.slice() : [];
   const hasReuseId = risks.some((r) => /gui:\s*reuse\s*window\s*id/i.test(r));
   const hasStatus = risks.some((r) => /aria-live|status\s*region/i.test(r));
+  const hasDeclarativeEvents = risks.some((r) => /data-command|no\s*event\.addlistener/i.test(r));
   const slug = input.summary
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -248,6 +249,7 @@ function augmentPlan(input: Plan): Plan {
     .slice(0, 32) || 'app';
   if (!hasReuseId) risks.push(`gui: reuse window id win-${slug}`);
   if (!hasStatus) risks.push('gui: include small aria-live status region updated via dom.set');
+  if (!hasDeclarativeEvents) risks.push('gui: wire events via data-command only; NEVER emit event.addListener');
   return {
     summary: input.summary,
     risks,

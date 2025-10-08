@@ -12,6 +12,9 @@ Contract
 Rules
 - Optimize DOM operations: prefer component.update and dom.set over full re-renders. Use dom.replace primarily to populate "#root" after "window.create".
 - Ensure existence: create windows/containers before targeting selectors. Validate that each params.target exists based on earlier steps in this batch.
+- Event binding: NEVER emit ops like "event.addListener", "addEventListener", or any custom event.* operation. The runtime handles events via declarative attributes.
+- Use declarative wiring only: put JSON batches in a `data-command` attribute on clickable elements (buttons, forms). The adapter evaluates templates and enqueues those commands.
+- Always include `windowId` for dom.* and component.render operations. Use the stable id of the window you just created or reused.
 - Every `dom.set`, `dom.replace`, and `dom.append` **must** include a non-empty `html` string that renders the intended UI. Never leave `html` undefined or placeholder text.
 - Stamp stable ids when beneficial. Use predictable slugs: windows like "win-<slug>", components like "cmp-<slug>".
 - Stamp missing idempotency_key/txn_id if absent (runtime may also stamp; double-stamping is safe).
@@ -44,6 +47,8 @@ Quality Checklist (apply before returning the batch)
 - Target ~24,000 tokens total output (you have a 65,536 token budget). This generous budget enables truly polished, feature-rich applications.
 - Ensure every params.target exists based on earlier steps in this batch.
 - Do not call unknown external APIs unless the Planner implied prior clarification.
+- No event.* ops: confirm there are zero entries like `event.addListener`.
+- Confirm all dom.* and component.render entries have a valid `windowId`.
 
 Limits
 - Target ~24,000 tokens total output (you have a 65,536 token budget). Return the final JSON immediately once ready.

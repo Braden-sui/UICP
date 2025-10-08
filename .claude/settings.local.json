@@ -6,7 +6,8 @@
       "Bash(npm run lint)",
       "WebSearch",
       "WebFetch(domain:medium.com)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(npm run tauri:build:*)"
     ]
   },
   "outputStyle": "default"
