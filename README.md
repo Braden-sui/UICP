@@ -2,6 +2,12 @@
 
 Local-first Tauri UI that exposes a clean desktop canvas and a DockChat surface. DockChat is the only control that users touch while the agent drives the UI through UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
 
+Key runtime guardrails
+- Environment Snapshot is prepended to planner/actor prompts (agent flags, open windows, last trace, and a trimmed DOM summary) to boost context-awareness.
+- Models must not emit event APIs or inline JS. Interactivity is declared via `data-command` and `data-state-*` attributes only; the adapter executes these declaratively.
+- Adapter auto-creates a shell window if a batch targets a missing `windowId` for `window.update`, `dom.*`, or `component.render`, and persists the synthetic `window.create` to keep replay consistent.
+- Command replay preserves original creation order (no hoisting). Window closure deletes persisted commands for that window; workspace reset clears all.
+
 ## Quickstart
 
 ```bash
@@ -32,6 +38,9 @@ Open `http://127.0.0.1:1420`.
 | `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend)
 | `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `gpt-oss`, ...). Overridable via Agent Settings window. |
 | `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `gpt-oss`, ...). Overridable via Agent Settings window. |
+
+Environment Snapshot
+- Included by default in planner/actor prompts; no flag required. It lists agent state and open windows (with a trimmed DOM summary) to help models target updates instead of recreating UI.
 
 ## Agent profiles & settings
 

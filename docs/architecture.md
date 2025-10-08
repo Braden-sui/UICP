@@ -21,9 +21,9 @@
    - Calls the local daemon using `http://127.0.0.1:11434/v1` when `USE_DIRECT_CLOUD=0`.
    - For `chat_completion`, spawns the streaming HTTP task keyed by `request_id` and emits `ollama-completion` events. `cancel_chat` aborts the task when requested.
 4. **Frontend Aggregation:** the Tauri bridge accumulates commentary-channel deltas and attempts a fast parse on each chunk. If a complete JSON object/array appears, it short-circuits; otherwise it parses on completion. A gating callback then decides:
-   - Suppress preview/apply when the orchestrator is running (prevents duplicate apply).
-   - Auto-apply via the queue when Full Control is enabled.
-   - Otherwise set a pending plan preview.
+  - Suppress preview/apply when the orchestrator is running (prevents duplicate apply).
+  - Auto-apply via the queue when Full Control is enabled.
+  - Otherwise set a pending plan preview.
 5. **Frontend Rendering:** updates React state (windows, modals, indicators), renders sanitized HTML under `#workspace-root`, surfaces the desktop menu bar backed by workspace window metadata, and keeps a menu-controlled Logs panel so users can review the conversation history (user / assistant / system messages with timestamps and error codes).
 
 ## Interactivity Runtime (no JS in model output)
@@ -31,6 +31,10 @@
 - Any clickable or form element may include `data-command` with a JSON batch to enqueue on `click`/`submit`.
 - Template tokens inside `data-command` strings are resolved at event time: `{{value}}`, `{{form.FIELD}}`, `{{windowId}}`, `{{componentId}}`.
 - `dom.set` is preferred for replacing specific regions; `dom.append` adds content without re-rendering entire windows.
+
+Hard rules for models:
+- Never emit event APIs (e.g., `event.addListener`, `addEventListener`, custom `event.*` ops). All interactivity is declared via attributes; the runtime executes them.
+- Always include a valid `windowId` for `dom.*` and `component.render` operations.
 
 ### Follow-up intents from UI
 - Planner-built forms can trigger a new chat run with `api.call` using the special URL `uicp://intent` and body `{ text }`.
@@ -65,6 +69,7 @@
 #### LLM profiles
 - `uicp/src/lib/llm/profiles.ts` registers planner/actor profiles (DeepSeek/Tuned Qwen today, Harmony-capable GPT-OSS soon). Each profile owns its prompt formatter, default model name, and response mode (`legacy` vs `harmony`).
 - `uicp/src/lib/llm/provider.ts` resolves the active profile (via env/UI) and delegates stream construction to `streamOllamaCompletion`.
+- The provider prepends a compact Environment Snapshot (agent mode/phase, open windows, last trace) to planner/actor prompts. The DOM is included by default to improve context awareness; content is trimmed and sanitized for size.
 
 ## Ollama Cloud Integration
 - Base URL (cloud): `https://ollama.com` (no `/v1` by policy; runtime assertion enforces this)
@@ -94,16 +99,19 @@ Apps now persist across restarts via command replay:
   - OR `args.windowId = windowId` (dom.*, component.*, etc.)
   - Called when window closes to prevent it from reappearing on restart
 
-**Frontend Integration** (adapter.ts:69-277):
+**Frontend Integration** (adapter.ts):
 - `persistCommand(envelope)`: Called after successful `applyCommand`
   - Skips ephemeral ops: `txn.cancel`, `state.get`, `state.watch`, `state.unwatch`
   - Async fire-and-forget (errors logged, don't throw)
 - `replayWorkspace()`: Called on Desktop mount (Desktop.tsx:42-55)
   - Fetches commands from DB
-  - Reapplies in creation order
+  - Reapplies in creation order (no reordering); preserves `destroy → create` semantics for stable IDs
   - Returns `{ applied, errors }` for observability
 - `resetWorkspace()`: Clears both in-memory state and persisted commands
 - `destroyWindow(id)`: Removes window from DOM and deletes its persisted commands
+
+Auto-create safety net:
+- When a batch targets a window that is not yet present, the adapter auto-creates a shell for `window.update`, `dom.set`, `dom.replace`, `dom.append`, and `component.render`. The synthetic `window.create` is persisted so replay remains consistent.
 
 **Lifecycle**:
 1. User asks agent: "make a notepad"

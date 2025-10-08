@@ -1,3 +1,46 @@
+# Repository Guidelines
+
+This document helps contributors work efficiently in this repo.
+
+## Project Structure & Module Organization
+- `uicp/` — desktop app (React + Tailwind + Tauri)
+  - `src/` UI, state, LLM orchestration (TypeScript)
+  - `src-tauri/` Rust backend (SQLite, streaming, commands)
+- `docs/` — architecture, prompts, checklists
+- `uicp/tests/unit/` — Vitest unit tests; `test:e2e` uses Playwright
+
+## Build, Test, and Development Commands
+- `cd uicp && npm run dev` — run Vite + Tauri dev shell
+- `cd uicp && npm run build` — typecheck + bundle
+- `cd uicp && npm run test` — Vitest unit suite
+- `cd uicp && npm run test:e2e` — Playwright smoke
+- `cd uicp && npm run lint && npm run format` — ESLint + Prettier
+
+## Coding Style & Naming Conventions
+- TypeScript strict; React 18; Rust async (Tokio)
+- Formatting via Prettier; lint via ESLint (`@typescript-eslint`)
+- Indentation: 2 spaces; no trailing whitespace
+- Names: `PascalCase` React components, `camelCase` vars/functions, `kebab-case` file names where practical
+- No inline JS from models; interactivity via `data-command`/`data-state-*`
+
+## Testing Guidelines
+- Framework: Vitest (unit), Playwright (e2e)
+- Tests live beside code or under `uicp/tests/unit`; name `*.test.ts|tsx`
+- Keep suite green; add tests for every behavior change (negative cases too)
+- Example: `cd uicp && npm run test -- -t "adapter.replay"`
+
+## Commit & Pull Request Guidelines
+- Commits: imperative mood, concise subject, describe what/why (e.g., "adapter: preserve replay order; add regression test")
+- PRs include: summary, scope, risks, tests, screenshots/logs when UI changes, and updated docs
+- Link issues when applicable; keep diffs focused and reversible
+
+## Security & Configuration Tips (Optional)
+- Never commit secrets; use `.env` locally (e.g., `OLLAMA_API_KEY`)
+- Cloud calls use `https://ollama.com/api/chat`; local daemon uses `/v1`
+- Treat warnings as errors, fail loud, sanitize all HTML before DOM
+
+---
+
 # codex-agents.md
 
 Purpose: a single, opinionated spec for an autonomous code agent that makes correct changes quickly, reasons across full context, builds tests for every layer, deletes obsolete code safely, and always fails loud. The agent prefers small, reversible edits, but will ship large refactors when they are the right answer. The agent may work everywhere in the repo. Risk is handled with tiered allowances that add safeguards where impact is high. No blanket no go zones.

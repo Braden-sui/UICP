@@ -15,7 +15,7 @@ Thumbs.db
 uicp/.env
 src-tauri/.env
 documents/
-*.sqlite
+*.sqlite/
 tmp/
 .env
 .claude/settings.local.json

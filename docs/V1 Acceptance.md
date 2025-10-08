@@ -30,6 +30,7 @@ Persistence
   - Window closure deletes window-specific commands (prevents closed windows from reappearing).
   - Workspace reset clears all persisted commands.
   - **Acceptance test**: Build notepad → close app → reopen → notepad reappears with last state.
+  - Adapter safety net: if a batch targets a missing window (`window.update`, `dom.*`, `component.render`), a shell window is auto-created and the synthetic `window.create` is persisted to keep replay consistent.
 - Save indicator events reflect success/failure.
 
 Performance
@@ -41,6 +42,7 @@ Observability & UX
 - System messages include phase/fallback notices and trace IDs.
 - Toasts surface apply success/errors and save status.
 - Logs window accessible via desktop menu.
+ - Planner/actor receive an Environment Snapshot (agent flags, open windows, last trace, DOM summary) to improve context-awareness.
 
 Security & Config
 - Cloud path uses `https://ollama.com/api/chat`; local uses `/v1/chat/completions`.

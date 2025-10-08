@@ -1,0 +1,39 @@
+package uicp:host@1.0.0
+
+use wasi:io/poll@0.2.0;
+use wasi:io/streams@0.2.0;
+use wasi:clocks/monotonic-clock@0.2.0;
+use wasi:random/random@0.2.0;
+
+/// Unique identifier for a job
+type job-id = string
+
+/// Opaque binary blob (e.g., CBOR chunk)
+type blob = list<u8>
+
+/// Host control surface for tasks
+interface control {
+  /// For cooperative cancellation with poll()
+  cancel-pollable: func(job: job-id) -> poll.pollable
+
+  /// Progress / partials over a host-provided stream
+  open-partial-sink: func(job: job-id) -> streams.output-stream
+
+  /// Structured logging
+  log: func(level: enum { trace, debug, info, warn, error }, msg: string)
+}
+
+/// System world wires stable control + selected WASI imports.
+world system {
+  import control
+
+  // Core capabilities — always available
+  import streams
+  import monotonic-clock
+  import random
+
+  // Optional (off by default; allowlist enforced by host)
+  // import wasi:filesystem/types
+  // import wasi:http/outgoing-handler
+}
+

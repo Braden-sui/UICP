@@ -16,6 +16,12 @@ Update log - 2025-10-05
 - Rust backend updated to support USE_DIRECT_CLOUD toggle with automatic `-cloud` model suffix and host selection.
 - Plan/Batch Zod validation added with unsafe HTML guardrails; snake_case accepted and normalised; pointer-based error hints wired to system messages.
 
+## Recent adjustments (2025-10-08)
+- Environment Snapshot is prepended to planner/actor prompts to improve context-awareness (agent flags, open windows, last trace). The DOM is included by default in the snapshot.
+- Actor prompt explicitly forbids event APIs (no `event.addListener`, no inline JS); interactivity is declared via `data-command` only. All `dom.*` and `component.render` ops must include a valid `windowId`.
+- Replay preserves original command order (no hoisting of `window.create`).
+- Adapter auto-creates a shell window when targeted by `window.update`, `dom.set`, `dom.replace`, `dom.append`, or `component.render` and missing at apply time; persists the synthetic `window.create` to keep replay consistent.
+
 ## Architecture Summary
 - Platform: Tauri desktop application (Windows MVP; Linux post-MVP)
 - Frontend: React + Tailwind CSS with DockChat proximity dock and orchestrator phases

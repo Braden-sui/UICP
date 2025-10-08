@@ -3,6 +3,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
 import { enqueueBatch, setQueueAppliedListener } from '../uicp/queue';
+import { finalEventSchema, type JobSpec } from '../../compute/types';
 import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
 import { createId } from '../../lib/utils';
@@ -150,6 +151,74 @@ export async function initializeTauriBridge() {
           handleAggregatorError(error);
         }
       }
+    }),
+  );
+
+  // Compute plane: partials + finals
+  const pendingBinds = new Map<string, { task: string; binds: { toStatePath: string }[] }>();
+
+  // Expose a helper for callers to submit jobs and remember bindings.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).uicpComputeCall = async (spec: JobSpec) => {
+    try {
+      pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [] });
+      await invoke('compute_call', { spec });
+    } catch (error) {
+      pendingBinds.delete(spec.jobId);
+      throw error;
+    }
+  };
+
+  unsubs.push(
+    await listen('compute.result.partial', (event) => {
+      const payload = event.payload as { jobId?: string; task?: string; seq?: number; payloadB64?: string } | undefined;
+      if (!payload) return;
+      // Best-effort dev log; adapter doesn’t apply partials to state yet.
+      try {
+        const jobId = String(payload.jobId ?? '');
+        const task = String(payload.task ?? '');
+        const seq = Number(payload.seq ?? 0);
+        // eslint-disable-next-line no-console
+        console.debug(`[compute.partial] job=${jobId} task=${task} seq=${seq}`);
+      } catch {
+        // ignore
+      }
+    }),
+  );
+
+  unsubs.push(
+    await listen('compute.result.final', async (event) => {
+      const payload = event.payload as unknown;
+      const parsed = finalEventSchema.safeParse(payload);
+      if (!parsed.success) {
+        console.error('Invalid compute final payload', parsed.error);
+        return;
+      }
+      const final = parsed.data;
+      const entry = pendingBinds.get(final.jobId);
+      if (!final.ok) {
+        // Surface error feedback; bindings are ignored.
+        useAppStore.getState().pushToast({ variant: 'error', message: `${final.task}: ${final.code}` });
+        pendingBinds.delete(final.jobId);
+        return;
+      }
+      if (entry && entry.binds && entry.binds.length) {
+        // State-only bindings: map each to a workspace-scoped state.set
+        const batch = entry.binds.map((b) => ({
+          op: 'state.set',
+          params: {
+            scope: 'workspace',
+            key: b.toStatePath,
+            value: final.output,
+          },
+        } as const));
+        const outcome = await enqueueBatch(batch);
+        if (!outcome.success) {
+          console.error('Failed to apply compute bindings', outcome.errors);
+          useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
+        }
+      }
+      pendingBinds.delete(final.jobId);
     }),
   );
 

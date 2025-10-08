@@ -1068,6 +1068,20 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
       try {
         const params = command.params as OperationParamMap["api.call"];
         const url = params.url;
+        // UICP compute plane submission: uicp://compute.call (body = JobSpec)
+        if (url.startsWith('uicp://compute.call')) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const computeCall = (window as any).uicpComputeCall as ((spec: import('../../compute/types').JobSpec) => Promise<void>) | undefined;
+            if (!computeCall) throw new Error('compute bridge not initialized');
+            const body = (params.body ?? {}) as import('../../compute/types').JobSpec;
+            await computeCall(body);
+          } catch (error) {
+            console.error('compute.call failed', error);
+            return toFailure(error);
+          }
+          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
+        }
         // Tauri FS special-case
         if (url.startsWith('tauri://fs/writeTextFile')) {
           // Expect body: { path: string, contents: string, directory?: 'Desktop' | 'Document' | ... }

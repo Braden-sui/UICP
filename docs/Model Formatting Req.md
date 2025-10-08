@@ -11,6 +11,8 @@ Model naming: Cloud endpoints expect hyphen-delimited tags (e.g., `gpt-oss-120b-
 UICP output constraints (planner/actor)
 - When targeting the desktop builder, models must emit a single JSON object for the planner, and `{ "batch": [...] }` for the actor, using the UICP operation names (e.g., `window.create`, `dom.set`).
 - No JavaScript, `<script>`/`<style>` tags, or inline event handlers. Interactivity is declared via HTML `data-*` attributes that the runtime executes (`data-command`, `data-state-scope`, `data-state-key`).
+ - Do not emit any event APIs or custom ops (`event.addListener`, `addEventListener`, or `event.*`). The runtime wires events declaratively via attributes only.
+ - The provider prepends a compact Environment Snapshot (agent state, open windows, and a trimmed DOM summary) to planner/actor prompts to improve context-awareness.
 - Prefer compact HTML; avoid excessive whitespace.
 - For follow-ups, render a "Clarify" window and wire Submit to `api.call` with `url: "uicp://intent"` and body `{ text: "{{form.answer}}" }` — the app converts this to a new user message automatically.
 - The active planner/actor format is controlled via **Agent Settings** (desktop shortcut) or environment (`VITE_PLANNER_PROFILE`, `VITE_ACTOR_PROFILE`). GPT‑OSS profiles enable Harmony formatting; DeepSeek/Qwen remain legacy defaults.

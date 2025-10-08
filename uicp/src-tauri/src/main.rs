@@ -15,8 +15,11 @@ use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State,
 };
-use tokio::{io::AsyncWriteExt, sync::RwLock, time::interval};
+use tokio::{io::AsyncWriteExt, sync::{RwLock, Semaphore}, time::interval};
 use tokio_stream::StreamExt;
+
+mod compute;
+mod compute_cache;
 
 static APP_NAME: &str = "UICP";
 static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
@@ -29,7 +32,7 @@ static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
 static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
 static LOGS_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("logs"));
 
-struct AppState {
+pub struct AppState {
     db_path: PathBuf,
     last_save_ok: RwLock<bool>,
     ollama_key: RwLock<Option<String>>,
@@ -37,6 +40,8 @@ struct AppState {
     debug_enabled: RwLock<bool>,
     http: Client,
     ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
+    compute_ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
+    compute_sem: Semaphore,
 }
 
 #[derive(Clone, Serialize)]
@@ -56,6 +61,245 @@ struct CommandRequest {
     id: String,
     tool: String,
     args: serde_json::Value,
+}
+
+// --- Compute plane: JobSpec mirror (Phase 0 scaffold; no Wasmtime yet) ---
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ComputeBindSpec {
+    to_state_path: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct ComputeCapabilitiesSpec {
+    #[serde(default)]
+    fs_read: Vec<String>,
+    #[serde(default)]
+    fs_write: Vec<String>,
+    #[serde(default)]
+    net: Vec<String>,
+    #[serde(default)]
+    long_run: bool,
+    #[serde(default)]
+    mem_high: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ComputeProvenanceSpec {
+    env_hash: String,
+    agent_trace_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ComputeJobSpec {
+    job_id: String,
+    task: String,
+    input: serde_json::Value,
+    timeout_ms: Option<u64>,
+    fuel: Option<u64>,
+    mem_limit_mb: Option<u64>,
+    #[serde(default)]
+    bind: Vec<ComputeBindSpec>,
+    #[serde(default = "default_cache_mode")] 
+    cache: String,
+    #[serde(default)]
+    capabilities: ComputeCapabilitiesSpec,
+    #[serde(default = "default_replayable")] 
+    replayable: bool,
+    provenance: ComputeProvenanceSpec,
+}
+
+fn default_cache_mode() -> String { "readwrite".into() }
+fn default_replayable() -> bool { true }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ComputeFinalOk {
+    ok: bool,
+    job_id: String,
+    task: String,
+    output: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metrics: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ComputeFinalErr {
+    ok: bool,
+    job_id: String,
+    task: String,
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ComputePartialEvent {
+    job_id: String,
+    task: String,
+    seq: u64,
+    // base64-encoded chunk; guest will use CBOR/JSON when wired
+    payload_b64: String,
+}
+
+#[tauri::command]
+async fn compute_call(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    spec: ComputeJobSpec,
+) -> Result<(), String> {
+    // Reject duplicate job ids
+    if state
+        .compute_ongoing
+        .read()
+        .await
+        .contains_key(&spec.job_id)
+    {
+        return Err(format!("Duplicate job id {}", spec.job_id));
+    }
+
+    let app_handle = window.app_handle().clone();
+
+    // --- Policy enforcement (Non-negotiables v1) ---
+    // Timeouts: default 30s, allowed 1s-120s; >30s requires cap.longRun
+    let timeout = spec.timeout_ms.unwrap_or(30_000);
+    if timeout < 1_000 || timeout > 120_000 {
+        let payload = ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "Compute.CapabilityDenied".into(),
+            message: "timeoutMs outside allowed range (1000-120000)".into(),
+        };
+        emit_or_log(&app_handle, "compute.result.final", &payload);
+        return Ok(());
+    }
+    if timeout > 30_000 && !spec.capabilities.long_run {
+        let payload = ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "Compute.CapabilityDenied".into(),
+            message: "timeoutMs>30000 requires capabilities.longRun".into(),
+        };
+        emit_or_log(&app_handle, "compute.result.final", &payload);
+        return Ok(());
+    }
+
+    // Memory limits: default 256MB, allowed 64-1024; >256 requires cap.memHigh
+    if let Some(mem) = spec.mem_limit_mb {
+        if mem < 64 || mem > 1024 {
+            let payload = ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: "Compute.CapabilityDenied".into(),
+                message: "memLimitMb outside allowed range (64-1024)".into(),
+            };
+            emit_or_log(&app_handle, "compute.result.final", &payload);
+            return Ok(());
+        }
+        if mem > 256 && !spec.capabilities.mem_high {
+            let payload = ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: "Compute.CapabilityDenied".into(),
+                message: "memLimitMb>256 requires capabilities.memHigh".into(),
+            };
+            emit_or_log(&app_handle, "compute.result.final", &payload);
+            return Ok(());
+        }
+    }
+
+    // Network: default deny in v1
+    if !spec.capabilities.net.is_empty() {
+        let payload = ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "Compute.CapabilityDenied".into(),
+            message: "Network is disabled by policy (cap.net required)".into(),
+        };
+        emit_or_log(&app_handle, "compute.result.final", &payload);
+        return Ok(());
+    }
+
+    // Filesystem: allow only ws:/ globs in v1
+    let fs_ok = spec
+        .capabilities
+        .fs_read
+        .iter()
+        .chain(spec.capabilities.fs_write.iter())
+        .all(|p| p.starts_with("ws:/"));
+    if !fs_ok {
+        let payload = ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "Compute.CapabilityDenied".into(),
+            message: "Filesystem paths must be workspace-scoped (ws:/...)".into(),
+        };
+        emit_or_log(&app_handle, "compute.result.final", &payload);
+        return Ok(());
+    }
+
+    // Content-addressed cache lookup when enabled
+    let cache_mode = spec.cache.clone();
+    if cache_mode == "readwrite" || cache_mode == "readOnly" {
+        let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+        if let Ok(Some(mut cached)) = compute_cache::lookup(&app_handle, &key).await {
+            // Mark cache hit in metrics if possible
+            if let Some(obj) = cached.as_object_mut() {
+                let metrics = obj.entry("metrics").or_insert_with(|| serde_json::json!({}));
+                if metrics.is_object() {
+                    metrics.as_object_mut().unwrap().insert("cacheHit".into(), serde_json::json!(true));
+                } else {
+                    *metrics = serde_json::json!({ "cacheHit": true });
+                }
+            }
+            emit_or_log(&app_handle, "compute.result.final", cached);
+            return Ok(());
+        } else if cache_mode == "readOnly" {
+            let payload = ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: "Runtime.Fault".into(),
+                message: "Cache miss under readOnly cache policy".into(),
+            };
+            emit_or_log(&app_handle, "compute.result.final", &payload);
+            return Ok(());
+        }
+    }
+
+    // Spawn the job via compute host (feature-gated implementation), respecting concurrency cap.
+    let permit = state.compute_sem.clone().acquire_owned().await.map_err(|e| e.to_string())?;
+    let join = compute::spawn_job(app_handle, spec.clone(), Some(permit));
+    state.compute_ongoing.write().await.insert(spec.job_id.clone(), join);
+    Ok(())
+}
+
+#[tauri::command]
+async fn compute_cancel(state: State<'_, AppState>, job_id: String, window: tauri::Window) -> Result<(), String> {
+    if let Some(handle) = state.compute_ongoing.write().await.remove(&job_id) {
+        handle.abort();
+        let app_handle = window.app_handle();
+        let payload = ComputeFinalErr {
+            ok: false,
+            job_id: job_id.clone(),
+            task: "".into(),
+            code: "Compute.Cancelled".into(),
+            message: "Job cancelled by user".into(),
+        };
+        emit_or_log(&app_handle, "compute.result.final", &payload);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -889,6 +1133,13 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             created_at INTEGER NOT NULL,
             FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS compute_cache (
+            key TEXT PRIMARY KEY,
+            task TEXT NOT NULL,
+            env_hash TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
         "#,
     )
     .context("apply migrations")?;
@@ -1036,13 +1287,19 @@ fn derive_size_token(width: f64, height: f64) -> String {
     }
 }
 
-fn emit_or_log<T>(app_handle: &tauri::AppHandle, event: &str, payload: T)
+pub(crate) fn emit_or_log<T>(app_handle: &tauri::AppHandle, event: &str, payload: T)
 where
     T: serde::Serialize + Clone,
 {
     if let Err(err) = app_handle.emit(event, payload) {
         eprintln!("Failed to emit {event}: {err}");
     }
+}
+
+/// Remove a compute job from the ongoing map. Used by the compute host to release state.
+pub(crate) async fn remove_compute_job(app_handle: &tauri::AppHandle, job_id: &str) {
+    let state: State<'_, AppState> = app_handle.state();
+    state.compute_ongoing.write().await.remove(job_id);
 }
 
 fn spawn_autosave(app_handle: tauri::AppHandle) {
@@ -1104,6 +1361,8 @@ fn main() {
             .build()
             .expect("Failed to build HTTP client"),
         ongoing: RwLock::new(HashMap::new()),
+        compute_ongoing: RwLock::new(HashMap::new()),
+        compute_sem: Semaphore::new(2),
     };
 
     if let Err(err) = init_database(&db_path) {
@@ -1139,7 +1398,9 @@ fn main() {
             load_workspace,
             save_workspace,
             chat_completion,
-            cancel_chat
+            cancel_chat,
+            compute_call,
+            compute_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
