@@ -4,7 +4,7 @@
 //! - when enabled, it embeds Wasmtime with typed hostcalls and module registry.
 //! - when disabled, it emits deterministic placeholder events for adapter wiring.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;
@@ -20,9 +20,10 @@ use crate::registry;
 mod with_runtime {
     use super::*;
     use wasmtime::{component::{Linker, Component, TypedFunc}, Config, Engine, StoreLimits, StoreLimitsBuilder};
-    use wasmtime_wasi::preview2::{self, WasiCtx, WasiCtxBuilder, WasiView, Table};
+    use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView, Table};
+    use wasmtime_wasi::bindings;
     #[allow(unused_imports)]
-    use wasmtime_wasi::preview2::{HostOutputStream, StreamError};
+    use wasmtime_wasi::bindings::wasi::io::streams::{HostOutputStream, StreamError};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
     fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
@@ -446,7 +447,7 @@ mod with_runtime {
     /// Wire core WASI Preview 2 imports and uicp:host control stubs.
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // WASI Preview 2: streams only (no ambient clocks/random in V1)
-        preview2::wasi::io::streams::add_to_linker(linker, |ctx| ctx)?;
+        bindings::wasi::io::streams::add_to_linker(linker, |ctx| ctx)?;
 
         // uicp:host/logger.log(level, msg) with truncation and rate limit
         linker.func_wrap(

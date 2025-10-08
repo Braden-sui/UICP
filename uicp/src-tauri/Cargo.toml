@@ -34,7 +34,7 @@ ciborium = "0.2"
 # Optional Wasm runtime (Preview 2) for compute plane
 # Enabled via `--features wasm_compute`; off by default to avoid toolchain churn.
 wasmtime = { version = "22", default-features = false, features = ["cranelift", "component-model"], optional = true }
-wasmtime-wasi = { version = "22", default-features = false, optional = true }
+wasmtime-wasi = { version = "22", features = ["component-model"], optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2.4.1", features = [] }

@@ -69,6 +69,7 @@ export type DevtoolsAnalyticsContext = {
   metricsOpen: boolean;
   notepadOpen: boolean;
   agentSettingsOpen: boolean;
+  computeDemoOpen: boolean;
   workspaceWindows: number;
   devMode: boolean;
   agentMode: AgentMode;
@@ -151,6 +152,7 @@ export type AppState = {
   setMetricsOpen: (value: boolean) => void;
   setNotepadOpen: (value: boolean) => void;
   setAgentSettingsOpen: (value: boolean) => void;
+  setComputeDemoOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
@@ -199,6 +201,7 @@ export const useAppStore = create<AppState>()(
       metricsOpen: false,
       notepadOpen: false,
       agentSettingsOpen: false,
+      computeDemoOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
       desktopShortcuts: {},
@@ -222,6 +225,7 @@ export const useAppStore = create<AppState>()(
       setMetricsOpen: (value) => set({ metricsOpen: value }),
       setNotepadOpen: (value) => set({ notepadOpen: value }),
       setAgentSettingsOpen: (value) => set({ agentSettingsOpen: value }),
+      setComputeDemoOpen: (value) => set({ computeDemoOpen: value }),
       setPlannerProfileKey: (key) => set({ plannerProfileKey: key }),
       setActorProfileKey: (key) => set({ actorProfileKey: key }),
       ensureDesktopShortcut: (id, fallback) =>
@@ -399,6 +403,7 @@ export const useAppStore = create<AppState>()(
         plannerProfileKey: state.plannerProfileKey,
         actorProfileKey: state.actorProfileKey,
         agentSettingsOpen: state.agentSettingsOpen,
+        computeDemoOpen: (state as any).computeDemoOpen,
       }),
     },
   ),

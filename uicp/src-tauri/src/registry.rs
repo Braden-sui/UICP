@@ -37,6 +37,68 @@ fn resolve_modules_dir(app: &AppHandle) -> PathBuf {
     dir
 }
 
+/// Public accessor for the resolved modules directory path.
+pub fn modules_dir(app: &AppHandle) -> PathBuf { resolve_modules_dir(app) }
+
+/// Best-effort installer that ensures the modules directory exists and contains
+/// files referenced by the manifest. If the user's modules directory is empty
+/// or missing files, and a bundled copy is present under the app resources,
+/// copy the bundled directory into place.
+pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
+    let target = resolve_modules_dir(app);
+    let manifest_path = target.join("manifest.json");
+
+    // Resolve the bundled resources path (tauri bundle resources) if available.
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map(|dir| dir.join("modules"));
+
+    // If target manifest is missing but we have a bundled copy, copy all.
+    if !manifest_path.exists() {
+        if let Some(src) = &bundled {
+            if src.join("manifest.json").exists() {
+                fs::create_dir_all(&target).with_context(|| format!("mkdir: {}", target.display()))?;
+                copy_dir_all(src, &target)?;
+                return Ok(());
+            }
+        }
+        return Ok(());
+    }
+
+    // Otherwise validate listed files exist; copy missing ones from bundle when possible.
+    let text = fs::read_to_string(&manifest_path).with_context(|| format!("read manifest: {}", manifest_path.display()))?;
+    let manifest: ModuleManifest = serde_json::from_str(&text).context("parse module manifest")?;
+    for entry in manifest.entries {
+        let path = target.join(&entry.filename);
+        if path.exists() { continue; }
+        if let Some(src) = &bundled {
+            let candidate = src.join(&entry.filename);
+            if candidate.exists() {
+                if let Some(parent) = path.parent() { fs::create_dir_all(parent).ok(); }
+                fs::copy(&candidate, &path).ok();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("mkdir: {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("readdir: {}", src.display()))? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else if ty.is_file() {
+            fs::copy(&from, &to).with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn load_manifest(app: &AppHandle) -> Result<ModuleManifest> {
     let dir = resolve_modules_dir(app);
     let manifest_path = dir.join("manifest.json");

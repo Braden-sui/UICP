@@ -3,6 +3,7 @@ import { createFrameCoalescer, createId, sanitizeHtml } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
+import { tryRecoverJsonFromAttribute } from "./cleanup";
 
 const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
@@ -511,8 +512,13 @@ const handleDelegatedEvent = (event: Event) => {
       cmdHost = cmdHost.parentElement;
     }
     if (commandJson) {
+      const recovered = tryRecoverJsonFromAttribute(commandJson);
+      const normalized = recovered ?? commandJson;
+      if (recovered && cmdHost) {
+        cmdHost.setAttribute('data-command', normalized);
+      }
       try {
-        const raw = JSON.parse(commandJson) as unknown;
+        const raw = JSON.parse(normalized) as unknown;
         const evaluated = evalTemplates(raw, {
           ...payload,
           value: (target as HTMLInputElement | HTMLTextAreaElement).value,

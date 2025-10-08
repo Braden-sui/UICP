@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppStore } from '../state/app';
@@ -9,6 +9,7 @@ import {
   getActorProfile,
 } from '../lib/llm/profiles';
 import type { PlannerProfileKey, ActorProfileKey } from '../lib/llm/profiles';
+import { invoke } from '@tauri-apps/api/core';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -39,6 +40,42 @@ const AgentSettingsWindow = () => {
   );
 
   const handleClose = useCallback(() => setAgentSettingsOpen(false), [setAgentSettingsOpen]);
+
+  // Modules directory info (Wasm compute)
+  const [modulesDir, setModulesDir] = useState<string>('');
+  const [modulesCount, setModulesCount] = useState<number>(0);
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const info = await invoke('get_modules_info');
+        if (!mounted) return;
+        const obj = info as { dir?: string; entries?: number };
+        setModulesDir(obj.dir ?? '');
+        setModulesCount(obj.entries ?? 0);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  const handleCopyModulesPath = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(modulesDir);
+    } catch {
+      // ignore
+    }
+  }, [modulesDir]);
+  const handleOpenModulesFolder = useCallback(async () => {
+    try {
+      if (!modulesDir) return;
+      await invoke('open_path', { path: modulesDir });
+    } catch {
+      // ignore
+    }
+  }, [modulesDir]);
 
   return (
     <DesktopWindow
@@ -92,6 +129,27 @@ const AgentSettingsWindow = () => {
               Channels: {actorProfile.capabilities?.channels.join(', ') ?? 'commentary'}
             </span>
           </label>
+        </div>
+        <div className="rounded border border-slate-200 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Wasm Modules</div>
+          <div className="text-xs text-slate-600">Directory: <span className="font-mono">{modulesDir || 'unresolved'}</span></div>
+          <div className="text-xs text-slate-600">Manifest entries: {modulesCount}</div>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={handleCopyModulesPath}
+              className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
+            >
+              Copy Path
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenModulesFolder}
+              className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
+            >
+              Open Folder
+            </button>
+          </div>
         </div>
         <div className="flex justify-end">
           <button

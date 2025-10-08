@@ -80,16 +80,21 @@ Trap mapping (planned)
 
 Running locally (V1 quick start)
 
-- Build the csv.parse component (requires cargo-component):
-  - `cd uicp/components/csv.parse && cargo component build --release -Zunstable-options`
-- Copy wasm and update digest in the sample manifest:
-  - `node uicp/scripts/update-manifest.mjs --manifest uicp/src-tauri/modules/manifest.json --task csv.parse --version 1.2.0 --wasm uicp/components/csv.parse/target/wasm32-wasi/release/uicp_task_csv_parse.wasm --filename csv.parse@1.2.0.wasm --copy --outdir uicp/src-tauri/modules`
-- Point the app to your modules dir at runtime:
-  - Typed-only is ON by default. Disable generic path only if needed.
-  - Default (typed-only ON): `UICP_MODULES_DIR=$(pwd)/uicp/src-tauri/modules npm run tauri:dev -- --features wasm_compute`
-- To allow generic `run` fallback (typed-only OFF): `UICP_COMPUTE_TYPED_ONLY=0 UICP_MODULES_DIR=$(pwd)/uicp/src-tauri/modules npm run tauri:dev -- --features wasm_compute`
-- Submit a job from console (DevTools):
-  - `window.uicpComputeCall({ jobId: crypto.randomUUID(), task: 'csv.parse@1.2.0', input: { source: 'data:text/csv,foo%2Cbar%0A1%2C2', hasHeader: true }, bind: [{ toStatePath: '/tables/sales' }], provenance: { envHash: 'abc123' } })`
+New dev helpers (repo scripts)
+
+- Build both components:
+  - `cd uicp && npm run modules:build`
+- Publish artifacts + digests to the dev registry:
+  - `cd uicp && npm run modules:publish`
+- Verify manifest/file digests:
+  - `cd uicp && npm run modules:verify`
+- Run desktop with local modules dir:
+  - `cd uicp && npm run dev:wasm`
+
+UI demo
+- Open the Desktop and click “Compute Demo” to submit sample jobs:
+  - csv.parse@1.2.0 → binds to `/tables/demoCsv`
+  - table.query@0.1.0 → binds to `/tables/demoQuery`
 
 Metrics (final Ok)
 

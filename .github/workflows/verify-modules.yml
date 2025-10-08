@@ -1,0 +1,33 @@
+name: Verify Modules Manifest
+
+on:
+  push:
+    paths:
+      - 'uicp/src-tauri/modules/**'
+      - 'uicp/scripts/verify-modules.mjs'
+      - 'uicp/package.json'
+      - 'uicp/package-lock.json'
+  pull_request:
+    paths:
+      - 'uicp/src-tauri/modules/**'
+      - 'uicp/scripts/verify-modules.mjs'
+      - 'uicp/package.json'
+      - 'uicp/package-lock.json'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Verify modules (non-strict)
+        run: |
+          node uicp/scripts/verify-modules.mjs --manifest uicp/src-tauri/modules/manifest.json --dir uicp/src-tauri/modules || true
+      - name: Verify modules (strict)
+        if: ${{ env.STRICT_MODULES_VERIFY == '1' }}
+        run: |
+          node uicp/scripts/verify-modules.mjs --manifest uicp/src-tauri/modules/manifest.json --dir uicp/src-tauri/modules

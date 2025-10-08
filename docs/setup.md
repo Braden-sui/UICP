@@ -63,6 +63,42 @@ npm ci
 npm run tauri:dev
 ```
 
+### Wasm compute (optional, now default-enabled)
+
+If you enabled the `wasm_compute` feature (default in this repo), you need to build and publish the task components and point the app at the module directory during development:
+
+1) Install toolchain for components
+
+```bash
+rustup target add wasm32-wasi
+cargo install cargo-component --locked
+```
+
+2) Build the components
+
+```bash
+cd uicp
+npm run modules:build
+```
+
+3) Publish to the dev registry (copies `.wasm` to `src-tauri/modules` and updates digests)
+
+```bash
+cd uicp
+npm run modules:publish
+```
+
+4) Run Tauri with the module directory set for dev
+
+```bash
+cd uicp
+npm run dev:wasm
+```
+
+Notes
+- The runtime resolves modules from the app data dir by default: `~/Documents/UICP/modules`. During dev we override with `UICP_MODULES_DIR=src-tauri/modules`.
+- To switch back to the non-Wasm placeholder path without removing the feature, set `UICP_COMPUTE_TYPED_ONLY=0`.
+
 ## Tests
 
 ```bash

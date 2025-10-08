@@ -1415,6 +1415,10 @@ fn main() {
         .manage(state)
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            // Ensure bundled compute modules are installed into the user modules dir
+            if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
+                eprintln!("module install failed: {err:?}");
+            }
             spawn_autosave(app.handle().clone());
             // Run DB health check at startup; enter Safe Mode on failure
             let handle = app.handle().clone();
@@ -1427,6 +1431,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_paths,
+            get_modules_info,
+            open_path,
             load_api_key,
             save_api_key,
             set_debug,
@@ -1451,6 +1457,60 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let dir = crate::registry::modules_dir(&app);
+    let manifest = dir.join("manifest.json");
+    let exists = manifest.exists();
+    let mut entries = 0usize;
+    if exists {
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                entries = json["entries"].as_array().map(|a| a.len()).unwrap_or(0);
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "dir": dir.display().to_string(),
+        "manifest": manifest.display().to_string(),
+        "hasManifest": exists,
+        "entries": entries,
+    }))
+}
+
+#[tauri::command]
+async fn open_path(path: String) -> Result<(), String> {
+    use std::process::Command;
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(p)
+            .spawn()
+            .map_err(|e| format!("Failed to open explorer: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(p)
+            .spawn()
+            .map_err(|e| format!("Failed to open path: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(p)
+            .spawn()
+            .map_err(|e| format!("Failed to open path: {e}"))?;
+        return Ok(());
+    }
 }
 
 async fn enter_safe_mode(app: &tauri::AppHandle, reason: &str) {

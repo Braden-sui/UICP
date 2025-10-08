@@ -30,6 +30,9 @@
   "bundle": {
     "icon": [
       "icons/dev_logo_icon_267632.ico"
+    ],
+    "resources": [
+      "modules/**/*"
     ]
   },
   "plugins": {}
