@@ -36,19 +36,20 @@ Open `http://127.0.0.1:1420`.
 | `VITE_DEV_MODE` | `true` | enables developer UX touches |
 | `VITE_MOCK_MODE` | `true` | when true the deterministic planner + mock api are used |
 | `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend)
-| `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `gpt-oss`, ...). Overridable via Agent Settings window. |
-| `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `gpt-oss`, ...). Overridable via Agent Settings window. |
+| `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window. |
+| `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window. |
 
 Environment Snapshot
 - Included by default in planner/actor prompts; no flag required. It lists agent state and open windows (with a trimmed DOM summary) to help models target updates instead of recreating UI.
 
 ## Agent profiles & settings
 
-- **Planner / actor selection** – The desktop now ships an *Agent Settings* utility (gear shortcut on the left rail). Switch the planner (reasoning) and actor (batch builder) between legacy DeepSeek/Qwen flows and the new GPT‑OSS Harmony formatter without rebuilding.
+- **Planner / actor selection** – The desktop ships an *Agent Settings* utility (gear shortcut on the left rail). Switch the planner (reasoning) and actor (batch builder) between available profiles without rebuilding.
+  - Planner profiles: `deepseek` (default: `deepseek-v3.1:671b`), `kimi` (default: `kimi-k2:1t`)
+  - Actor profiles: `qwen` (default: `qwen3-coder:480b`), `kimi` (default: `kimi-k2:1t`)
 - **Persistence** – Selections persist via Zustand storage (`uicp-app` key) and apply to the next intent immediately.
-- **Harmony support** – GPT‑OSS profiles emit Harmony developer messages and multi-channel responses. Ensure the backend key has access to the corresponding Ollama Cloud models.
-  - Cloud endpoint: `POST https://ollama.com/api/chat` (SSE streaming).
-  - Model IDs: prefer colon tags (e.g., `gpt-oss:120b`). `-cloud` suffix in settings is accepted but normalized by the app.
+- **Cloud endpoint** – Uses Ollama Cloud native API: `POST https://ollama.com/api/chat` (SSE streaming). Local daemon uses OpenAI-compatible `/v1/chat/completions`.
+- **Model IDs** – Use colon tags (e.g., `deepseek-v3.1:671b`, `qwen3-coder:480b`). Ensure your Ollama Cloud API key has access to the selected models.
 
 ## Architecture
 

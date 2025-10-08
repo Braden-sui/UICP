@@ -6,12 +6,17 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const witDir = join(here, '..', 'docs', 'wit', 'tasks');
+const witDir = join(here, '..', '..', 'docs', 'wit', 'tasks');
 const out = join(here, '..', 'src', 'compute', 'types.gen.ts');
 
 /** Camel-case a WIT identifier (dash/underscore to camel). */
 function camel(s) {
   return s.replace(/[-_]+([a-zA-Z0-9])/g, (_, c) => c.toUpperCase());
+}
+
+function pascal(s) {
+  const c = camel(s);
+  return c.charAt(0).toUpperCase() + c.slice(1);
 }
 
 /** Map WIT type to TS type (limited to shapes used here). */
@@ -36,11 +41,13 @@ function mapType(ty) {
 function parseRecord(src) {
   const m = src.match(/record\s*\{([\s\S]*)\}/);
   if (!m) return 'unknown';
-  const body = m[1];
-  const fields = body.split(',').map((s) => s.trim()).filter(Boolean);
+  const body = m[1].replace(/\/\/.*$/gm, '');
+  const fields = splitTopLevel(body);
   const props = [];
   for (const f of fields) {
-    const mm = f.match(/([a-zA-Z0-9_\-]+)\s*:\s*([\s\S]+)/);
+    const line = f.trim();
+    if (!line) continue;
+    const mm = line.match(/([a-zA-Z0-9_\-]+)\s*:\s*([\s\S]+)/);
     if (!mm) continue;
     const name = camel(mm[1]);
     const ty = mapType(mm[2]);
@@ -49,14 +56,36 @@ function parseRecord(src) {
   return `{ ${props.join('; ')} }`;
 }
 
+function splitTopLevel(body) {
+  const parts = [];
+  let current = '';
+  let depthBraces = 0;
+  let depthAngles = 0;
+  for (const ch of body) {
+    if (ch === '{') depthBraces++;
+    else if (ch === '}') depthBraces = Math.max(depthBraces - 1, 0);
+    else if (ch === '<') depthAngles++;
+    else if (ch === '>') depthAngles = Math.max(depthAngles - 1, 0);
+
+    if (ch === ',' && depthBraces === 0 && depthAngles === 0) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
 async function parseTaskFile(file) {
   const text = await readFile(file, 'utf8');
   const nameMatch = text.match(/package\s+uicp:task-([a-z0-9\-]+)@([0-9.]+)/);
   if (!nameMatch) return null;
   const taskName = nameMatch[1].replace(/-/g, '.');
   const version = nameMatch[2];
-  const inputMatch = text.match(/type\s+input\s*=\s*([\s\S]*?)\n/);
-  const outputMatch = text.match(/type\s+output\s*=\s*([\s\S]*?)\n/);
+  const inputMatch = text.match(/type\s+input\s*=\s*([\s\S]*?)\n\s*type\s+output/);
+  const outputMatch = text.match(/type\s+output\s*=\s*([\s\S]*?)\n\s*run/);
   if (!inputMatch || !outputMatch) return null;
   const inputTy = inputMatch[1].trim();
   const outputTy = outputMatch[1].trim();
@@ -77,8 +106,9 @@ async function main() {
   }
   let outSrc = `// Generated from WIT files. Do not edit by hand.\n`;
   for (const e of entries) {
-    const inName = camel(`${e.taskName.replace(/\./g, '-')}-input`);
-    const outName = camel(`${e.taskName.replace(/\./g, '-')}-output`);
+    const base = e.taskName.replace(/\./g, '-');
+    const inName = pascal(`${base}-input`);
+    const outName = pascal(`${base}-output`);
     outSrc += `export type ${inName} = ${e.inputTs};\n`;
     outSrc += `export type ${outName} = ${e.outputTs};\n`;
   }
@@ -86,9 +116,10 @@ async function main() {
   outSrc += `\nexport type KnownTaskIO =\n`;
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
-    const inName = camel(`${e.taskName.replace(/\./g, '-')}-input`);
-    const outName = camel(`${e.taskName.replace(/\./g, '-')}-output`);
-    const line = `  | { task: \`${e.taskName}@\${'string'}\`; input: ${inName}; output: ${outName} }`;
+    const base = e.taskName.replace(/\./g, '-');
+    const inName = pascal(`${base}-input`);
+    const outName = pascal(`${base}-output`);
+    const line = '  | { task: `' + e.taskName + '@${string}`; input: ' + inName + '; output: ' + outName + ' }';
     outSrc += (i === 0 ? '' : '\n') + line;
   }
   outSrc += `;\n`;

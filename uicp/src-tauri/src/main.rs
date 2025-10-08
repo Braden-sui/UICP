@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use chrono::Utc;
@@ -9,7 +9,7 @@ use dotenvy::dotenv;
 use keyring::Entry;
 use once_cell::sync::Lazy;
 use reqwest::Client;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{
     async_runtime::{spawn, JoinHandle},
@@ -42,7 +42,7 @@ pub struct AppState {
     http: Client,
     ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
     compute_ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
-    compute_sem: Semaphore,
+    compute_sem: Arc<Semaphore>,
     compute_cancel: RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>,
     safe_mode: RwLock<bool>,
     safe_reason: RwLock<Option<String>>,
@@ -297,20 +297,19 @@ async fn compute_cancel(state: State<'_, AppState>, job_id: String, window: taur
     }
 
     // Give 250ms grace, then hard abort if still running
-    let handle_opt = state.compute_ongoing.read().await.get(&job_id).cloned();
-    if let Some(handle) = handle_opt {
-        let app_handle = window.app_handle().clone();
-        let jid = job_id.clone();
-        spawn(async move {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+    let app_handle = window.app_handle().clone();
+    let jid = job_id.clone();
+    spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let state: State<'_, AppState> = app_handle.state();
+        if let Some(handle) = state.compute_ongoing.read().await.get(&jid) {
             handle.abort();
-            // Best-effort marker event; the job should emit final on cooperative path.
             let _ = app_handle.emit(
                 "compute.debug",
                 serde_json::json!({ "jobId": jid, "event": "cancel_aborted_after_grace" }),
             );
-        });
-    }
+        }
+    });
     Ok(())
 }
 
@@ -1384,7 +1383,7 @@ fn main() {
             .expect("Failed to build HTTP client"),
         ongoing: RwLock::new(HashMap::new()),
         compute_ongoing: RwLock::new(HashMap::new()),
-        compute_sem: Semaphore::new(2),
+        compute_sem: Arc::new(Semaphore::new(2)),
         compute_cancel: RwLock::new(HashMap::new()),
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),

@@ -9,7 +9,7 @@
   - Event streaming to the frontend (Tauri emit)
   - File operations (exports, .env management)
 - **Data Storage:** Local SQLite (`~/Documents/UICP/data.db`), `.env` for API key (MVP).
-- **Models:** Qwen3-Coder (`qwen3-coder:480b-cloud`) GUI (Guy); local fallback uses `qwen3-coder:480b` post-MVP.
+- **Models:** Planner uses DeepSeek V3.1 (`deepseek-v3.1:671b`) or Kimi K2 (`kimi-k2:1t`); Actor uses Qwen3-Coder (`qwen3-coder:480b`) or Kimi K2. Cloud models use colon-tag IDs; local daemon accessible via `/v1` endpoints.
 
 ## Data Flow
 
@@ -113,17 +113,17 @@ Hard rules for models:
 - LLM provider/orchestrator stream commentary JSON and validate via Zod before enqueueing batches.
 
 #### LLM profiles
-- `uicp/src/lib/llm/profiles.ts` registers planner/actor profiles (DeepSeek/Tuned Qwen today, Harmony-capable GPT-OSS soon). Each profile owns its prompt formatter, default model name, and response mode (`legacy` vs `harmony`).
+- `uicp/src/lib/llm/profiles.ts` registers planner/actor profiles: `deepseek`/`kimi` for planner, `qwen`/`kimi` for actor. Each profile owns its prompt formatter, default model name, and capabilities.
 - `uicp/src/lib/llm/provider.ts` resolves the active profile (via env/UI) and delegates stream construction to `streamOllamaCompletion`.
 - The provider prepends a compact Environment Snapshot (agent mode/phase, open windows, last trace) to planner/actor prompts. The DOM is included by default to improve context awareness; content is trimmed and sanitized for size.
 
 ## Ollama Cloud Integration
-- Base URL (cloud): `https://ollama.com` (no `/v1` by policy; runtime assertion enforces this)
-- Base URL (local): `http://127.0.0.1:11434/v1`
-- Authentication: `Authorization: Bearer <api-key>`.
+- Base URL (cloud): `https://ollama.com` (runtime assertion rejects hosts containing `/v1` to prevent config drift)
+- Base URL (local): `http://127.0.0.1:11434/v1` (OpenAI-compatible)
+- Authentication: `Authorization: Bearer <api-key>` (cloud only).
 - Endpoints:
-  - `GET /api/tags`: validate key, list models.
-  - `POST /api/chat`: stream completions for tool orchestration.
+  - Cloud: `GET /api/tags` (validate key, list models), `POST /api/chat` (stream completions)
+  - Local: `GET /v1/models`, `POST /v1/chat/completions`
 - The HTTP client uses `reqwest` with Rustls TLS.
 
 ## Persistence

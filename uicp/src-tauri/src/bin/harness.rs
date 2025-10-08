@@ -1,7 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 fn usage() -> ! {

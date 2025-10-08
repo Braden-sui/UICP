@@ -6,8 +6,10 @@
 
 use std::time::{Duration, Instant};
 
-use tauri::AppHandle;
-use tokio::task::JoinHandle;
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine;
+use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{ComputeFinalErr, ComputeJobSpec};
@@ -130,7 +132,7 @@ mod with_runtime {
 
     /// Spawn a compute job using Wasmtime with epoch timeout and memory limits configured.
     pub(super) fn spawn_job(app: AppHandle, spec: ComputeJobSpec, permit: Option<OwnedSemaphorePermit>) -> JoinHandle<()> {
-        tokio::spawn(async move {
+        tauri_spawn(async move {
             let _permit = permit;
 
             let engine = match build_engine() {
@@ -200,7 +202,7 @@ mod with_runtime {
                 let engine_for_timer = engine.clone();
                 let job_for_timer = spec.job_id.clone();
                 let app_for_timer = app.clone();
-                tokio::spawn(async move {
+                tauri_spawn(async move {
                     tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
                     engine_for_timer.increment_epoch();
                     let payload = serde_json::json!({
@@ -237,7 +239,7 @@ mod with_runtime {
                 state.compute_cancel.write().await.insert(spec.job_id.clone(), tx_cancel);
             }
             let cancel_flag_for_task = cancel_flag.clone();
-            tokio::spawn(async move {
+            tauri_spawn(async move {
                 let _ = rx_cancel.changed().await;
                 cancel_flag_for_task.store(true, Ordering::Relaxed);
             });
@@ -563,7 +565,7 @@ mod with_runtime {
                             job_id: self.job_id.clone(),
                             task: self.task.clone(),
                             seq: self.seq,
-                            payload_b64: base64::encode(chunk),
+                            payload_b64: BASE64_ENGINE.encode(chunk),
                         };
                         let _ = self.app.emit("compute.result.partial", payload);
                         self.seq = self.seq.saturating_add(1);
@@ -794,7 +796,7 @@ mod no_runtime {
 
     /// Spawn a placeholder compute job (no Wasm runtime compiled).
     pub(super) fn spawn_job(app: AppHandle, spec: ComputeJobSpec, permit: Option<OwnedSemaphorePermit>) -> JoinHandle<()> {
-        tokio::spawn(async move {
+        tauri_spawn(async move {
             let _permit = permit;
             // Register cancel channel
             let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
@@ -804,7 +806,7 @@ mod no_runtime {
             }
 
             // Emit a stub partial to exercise the event path.
-            let partial = crate::ComputePartialEvent { job_id: spec.job_id.clone(), task: spec.task.clone(), seq: 0, payload_b64: base64::encode("stub-partial") };
+            let partial = crate::ComputePartialEvent { job_id: spec.job_id.clone(), task: spec.task.clone(), seq: 0, payload_b64: BASE64_ENGINE.encode("stub-partial") };
             let _ = app.emit("compute.result.partial", partial);
 
             tokio::select! {

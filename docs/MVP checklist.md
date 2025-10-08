@@ -1,4 +1,4 @@
-﻿# UICP MVP - Local-First Desktop App
+# UICP MVP - Local-First Desktop App
 
 Update log - 2025-10-05
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
@@ -40,7 +40,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 ## User Flow
 1. Configure `.env` with planner/actor models and cloud/local toggle.
 2. Launch app, DockChat reveals on proximity or `/` hotkey.
-3. Planner (DeepSeek) produces plan, Actor (Qwen3-Coder:480b) translates to batches.
+3. Planner (DeepSeek or Kimi) produces plan, Actor (Qwen3-Coder or Kimi) translates to batches.
 4. Full Control OFF -> preview; ON -> auto-apply; STOP cancels txn.
 5. Workspace state persists in SQLite; reconnect recovers cleanly.
 
@@ -83,7 +83,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - `ACTOR_MODEL=qwen3-coder:480b`
   - `OLLAMA_CLOUD_HOST=https://ollama.com`
   - `OLLAMA_LOCAL_BASE=http://127.0.0.1:11434/v1`
-- Legacy WebSocket env vars have been removed; streaming now relies on the Tauri event bridge exclusively.
+- Streaming uses Tauri event bridge exclusively (no WebSocket dependency).
 - [x] Local offload (daemon) uses `*-cloud` model tags + `USE_DIRECT_CLOUD=0`.
 - [x] Runtime assertion rejects any Cloud host containing `/v1` ("Do not use /v1 for Cloud. Use https://ollama.com").
 
