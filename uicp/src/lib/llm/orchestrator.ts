@@ -10,12 +10,36 @@ const normaliseHarmonyPayload = (data: unknown): unknown => {
   const tryParseJsonString = (input: string): unknown | undefined => {
     const cleaned = toJsonSafe(input);
     const trimmed = cleaned.trim();
-    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined;
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return undefined;
+    if (!trimmed.length) return undefined;
+
+    const attemptParse = (target: string): unknown | undefined => {
+      try {
+        return JSON.parse(target);
+      } catch {
+        const firstBrace = target.indexOf('{');
+        const firstBracket = target.indexOf('[');
+        const first = [firstBrace, firstBracket].filter((idx) => idx >= 0).sort((a, b) => a - b)[0] ?? -1;
+        const lastBrace = target.lastIndexOf('}');
+        const lastBracket = target.lastIndexOf(']');
+        const last = Math.max(lastBrace, lastBracket);
+        if (first >= 0 && last > first) {
+          const slice = target.slice(first, last + 1);
+          try {
+            return JSON.parse(slice);
+          } catch {
+            return undefined;
+          }
+        }
+        return undefined;
+      }
+    };
+
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      const parsed = attemptParse(trimmed);
+      if (parsed !== undefined) return parsed;
     }
+
+    return attemptParse(trimmed);
   };
 
   const extractTextCandidate = (block: unknown): string | undefined => {
