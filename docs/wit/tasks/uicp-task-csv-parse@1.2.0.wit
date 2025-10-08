@@ -3,18 +3,9 @@ package uicp:task-csv-parse@1.2.0
 use uicp:host@1.0.0/host;
 
 interface task {
-  /// CSV parse input
-  type input = record {
-    /// Source URI (e.g., ws:/files/sales.csv)
-    source: string,
-    /// Whether the first row contains a header
-    has-header: bool,
-  }
-
-  /// CSV parse output: rows as lists of columns
-  type output = list<record { cols: list<string> }>
-
-  /// Entrypoint for the compute task
+  type input = record { source: string, has-header: bool }
+  // V1 host expects a simple list-of-rows where each row is list<string>.
+  type output = list<list<string>>
   run: func(job: host/job-id, input: input) -> result<output, string>
 }
 
@@ -22,4 +13,3 @@ world entry {
   import uicp:host@1.0.0/system
   export task
 }
-

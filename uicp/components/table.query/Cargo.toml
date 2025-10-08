@@ -1,0 +1,15 @@
+[package]
+name = "uicp-task-table-query"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.26", default-features = false, features = ["macros"] }
+ciborium = "0.2"
+
+[package.metadata.component]
+world = "entry"
+wit-path = "../../docs/wit/tasks/uicp-task-table-query@0.1.0.wit"

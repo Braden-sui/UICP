@@ -19,6 +19,10 @@
         "test": "cross-env ROLLUP_SKIP_NODE_NATIVE=true vitest run",
         "test:watch": "cross-env ROLLUP_SKIP_NODE_NATIVE=true vitest",
         "test:e2e": "playwright test",
+        "gen:io": "node scripts/wit-to-ts.mjs",
+        "build:components": "node scripts/build-components.mjs",
+        "modules:update:csv": "node scripts/update-manifest.mjs --manifest uicp/src-tauri/modules/manifest.json --task csv.parse --version 1.2.0 --wasm uicp/components/csv.parse/target/wasm32-wasi/release/uicp_task_csv_parse.wasm --filename csv.parse@1.2.0.wasm --copy --outdir uicp/src-tauri/modules",
+        "modules:update:table": "node scripts/update-manifest.mjs --manifest uicp/src-tauri/modules/manifest.json --task table.query --version 0.1.0 --wasm uicp/components/table.query/target/wasm32-wasi/release/uicp_task_table_query.wasm --filename table.query@0.1.0.wasm --copy --outdir uicp/src-tauri/modules",
         "tauri:dev": "tauri dev",
         "tauri:build": "tauri build",
         "postinstall": "node scripts/postinstall.cjs"

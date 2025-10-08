@@ -20,6 +20,7 @@ use tokio_stream::StreamExt;
 
 mod compute;
 mod compute_cache;
+mod registry;
 
 static APP_NAME: &str = "UICP";
 static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
@@ -42,6 +43,9 @@ pub struct AppState {
     ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
     compute_ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
     compute_sem: Semaphore,
+    compute_cancel: RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>,
+    safe_mode: RwLock<bool>,
+    safe_reason: RwLock<Option<String>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -173,7 +177,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
+            code: "CapabilityDenied".into(),
             message: "timeoutMs outside allowed range (1000-120000)".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -184,7 +188,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
+            code: "CapabilityDenied".into(),
             message: "timeoutMs>30000 requires capabilities.longRun".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -198,7 +202,7 @@ async fn compute_call(
                 ok: false,
                 job_id: spec.job_id.clone(),
                 task: spec.task.clone(),
-                code: "Compute.CapabilityDenied".into(),
+                code: "CapabilityDenied".into(),
                 message: "memLimitMb outside allowed range (64-1024)".into(),
             };
             emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -209,7 +213,7 @@ async fn compute_call(
                 ok: false,
                 job_id: spec.job_id.clone(),
                 task: spec.task.clone(),
-                code: "Compute.CapabilityDenied".into(),
+                code: "CapabilityDenied".into(),
                 message: "memLimitMb>256 requires capabilities.memHigh".into(),
             };
             emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -223,7 +227,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
+            code: "CapabilityDenied".into(),
             message: "Network is disabled by policy (cap.net required)".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -242,7 +246,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
+            code: "CapabilityDenied".into(),
             message: "Filesystem paths must be workspace-scoped (ws:/...)".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -287,17 +291,25 @@ async fn compute_call(
 
 #[tauri::command]
 async fn compute_cancel(state: State<'_, AppState>, job_id: String, window: tauri::Window) -> Result<(), String> {
-    if let Some(handle) = state.compute_ongoing.write().await.remove(&job_id) {
-        handle.abort();
-        let app_handle = window.app_handle();
-        let payload = ComputeFinalErr {
-            ok: false,
-            job_id: job_id.clone(),
-            task: "".into(),
-            code: "Compute.Cancelled".into(),
-            message: "Job cancelled by user".into(),
-        };
-        emit_or_log(&app_handle, "compute.result.final", &payload);
+    // Signal cancellation to the job if it registered a cancel channel
+    if let Some(tx) = state.compute_cancel.read().await.get(&job_id).cloned() {
+        let _ = tx.send(true);
+    }
+
+    // Give 250ms grace, then hard abort if still running
+    let handle_opt = state.compute_ongoing.read().await.get(&job_id).cloned();
+    if let Some(handle) = handle_opt {
+        let app_handle = window.app_handle().clone();
+        let jid = job_id.clone();
+        spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            handle.abort();
+            // Best-effort marker event; the job should emit final on cooperative path.
+            let _ = app_handle.emit(
+                "compute.debug",
+                serde_json::json!({ "jobId": jid, "event": "cancel_aborted_after_grace" }),
+            );
+        });
     }
     Ok(())
 }
@@ -438,6 +450,10 @@ async fn test_api_key(
 
 #[tauri::command]
 async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
+    // Freeze writes in Safe Mode
+    if *state.safe_mode.read().await {
+        return Ok(());
+    }
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite persist command")?;
@@ -1156,6 +1172,12 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
+    // Migration: add workspace_id to compute_cache for workspace-scoped cleanup
+    match conn.execute("ALTER TABLE compute_cache ADD COLUMN workspace_id TEXT DEFAULT 'default'", []) {
+        Ok(_) => {}
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => {}
+        Err(err) => return Err(err.into()),
+    }
 
     Ok(())
 }
@@ -1363,6 +1385,9 @@ fn main() {
         ongoing: RwLock::new(HashMap::new()),
         compute_ongoing: RwLock::new(HashMap::new()),
         compute_sem: Semaphore::new(2),
+        compute_cancel: RwLock::new(HashMap::new()),
+        safe_mode: RwLock::new(false),
+        safe_reason: RwLock::new(None),
     };
 
     if let Err(err) = init_database(&db_path) {
@@ -1383,6 +1408,13 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             spawn_autosave(app.handle().clone());
+            // Run DB health check at startup; enter Safe Mode on failure
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = health_quick_check_internal(&handle).await {
+                    eprintln!("health_quick_check failed: {err:?}");
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1392,6 +1424,13 @@ fn main() {
             set_debug,
             test_api_key,
             persist_command,
+            save_checkpoint,
+            health_quick_check,
+            determinism_probe,
+            recovery_action,
+            recovery_auto,
+            recovery_export,
+            clear_compute_cache,
             get_workspace_commands,
             clear_workspace_commands,
             delete_window_commands,
@@ -1404,4 +1443,276 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn enter_safe_mode(app: &tauri::AppHandle, reason: &str) {
+    let state: State<'_, AppState> = app.state();
+    *state.safe_mode.write().await = true;
+    *state.safe_reason.write().await = Some(reason.to_string());
+    let _ = app.emit(
+        "replay-issue",
+        serde_json::json!({ "reason": reason, "action": "enter_safe_mode" }),
+    );
+}
+
+#[tauri::command]
+async fn health_quick_check(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    health_quick_check_internal(&app)
+        .await
+        .map_err(|e| format!("{e:?}"))
+}
+
+async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<serde_json::Value> {
+    let state: State<'_, AppState> = app.state();
+    let db_path = state.db_path.clone();
+    let status = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let conn = Connection::open(db_path).context("open sqlite for quick_check")?;
+        let mut stmt = conn.prepare("PRAGMA quick_check").context("prepare quick_check")?;
+        let mut rows = stmt.query([]).context("exec quick_check")?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            let s: String = row.get(0)?;
+            results.push(s);
+        }
+        Ok(results.join(", "))
+    })
+    .await??;
+
+    let ok = status.to_lowercase().contains("ok");
+    if !ok {
+        enter_safe_mode(app, "CORRUPT_DB").await;
+    } else {
+        emit_replay_telemetry(app, "ok", None, 0).await;
+    }
+    Ok(serde_json::json!({ "ok": ok, "status": status }))
+}
+
+#[tauri::command]
+async fn clear_compute_cache(app: tauri::AppHandle, workspace_id: Option<String>) -> Result<(), String> {
+    let ws = workspace_id.unwrap_or_else(|| "default".into());
+    let state: State<'_, AppState> = app.state();
+    let path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = Connection::open(path).context("open sqlite for clear_compute_cache")?;
+        conn.execute("DELETE FROM compute_cache WHERE workspace_id = ?1", params![ws])?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("{e}"))?
+    .map_err(|e| format!("{e:?}"))
+}
+
+#[tauri::command]
+async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    let state: State<'_, AppState> = app.state();
+    if *state.safe_mode.read().await {
+        return Ok(());
+    }
+    let db_path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = Connection::open(db_path).context("open sqlite for checkpoint")?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
+            [],
+        )?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
+            params![hash, now],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("{e}"))?
+    .map_err(|e| format!("{e:?}"))
+}
+
+#[tauri::command]
+async fn determinism_probe(app: tauri::AppHandle, n: u32, recomputed_hash: Option<String>) -> Result<serde_json::Value, String> {
+    let state: State<'_, AppState> = app.state();
+    let db_path = state.db_path.clone();
+    let samples = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<String>> {
+        let conn = Connection::open(db_path).context("open sqlite for determinism probe")?;
+        let mut stmt = conn.prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1").context("prepare select checkpoints")?;
+        let rows = stmt
+            .query_map(params![n as i64], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| format!("{e}"))?
+    .map_err(|e| format!("{e:?}"))?;
+
+    let mut drift = false;
+    if let Some(current) = recomputed_hash {
+        for h in &samples {
+            if h != &current {
+                drift = true;
+                break;
+            }
+        }
+    }
+    if drift {
+        enter_safe_mode(&app, "DRIFT").await;
+    }
+    Ok(serde_json::json!({ "drift": drift, "sampled": samples.len() }))
+}
+
+#[tauri::command]
+async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+    // Placeholder: log the requested action; a real implementation would perform restore/rollback/reset.
+    let _ = app.emit("replay-issue", serde_json::json!({ "event": "recovery_action", "kind": kind }));
+    Ok(())
+}
+
+#[tauri::command]
+async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let mut attempts: Vec<serde_json::Value> = Vec::new();
+    let mut status: &str = "failed";
+    let mut failed_reason: Option<String> = None;
+
+    // a) Reindex + integrity_check
+    let res_a = reindex_and_integrity(&app).await;
+    match res_a {
+        Ok(ok) => {
+            attempts.push(serde_json::json!({"step":"reindex","ok": ok }));
+            if ok {
+                status = "reindexed";
+                emit_replay_telemetry(&app, status, None, 0).await;
+                return Ok(serde_json::json!({"attempts": attempts, "resolved": true}));
+            }
+        }
+        Err(e) => {
+            attempts.push(serde_json::json!({"step":"reindex","ok": false, "error": format!("{e:?}")}));
+            failed_reason = Some(format!("reindex: {e}"));
+        }
+    }
+
+    // b) Compact log: drop trailing incomplete segment after last checkpoint
+    let res_b = compact_log_after_last_checkpoint(&app).await;
+    match res_b {
+        Ok(deleted) => attempts.push(serde_json::json!({"step":"compact_log","ok": deleted >= 0, "deleted": deleted })),
+        Err(e) => attempts.push(serde_json::json!({"step":"compact_log","ok": false, "error": format!("{e:?}")})),
+    }
+
+    // Re-run integrity_check
+    if let Ok(ok) = reindex_and_integrity(&app).await { if ok {
+        status = "compacted";
+        emit_replay_telemetry(&app, status, None, 0).await;
+        return Ok(serde_json::json!({"attempts": attempts, "resolved": true}))
+    } }
+
+    // c) Roll back to last checkpoint (truncate log beyond checkpoint)
+    let res_c = rollback_to_last_checkpoint(&app).await;
+    match res_c {
+        Ok(truncated) => attempts.push(serde_json::json!({"step":"rollback_checkpoint","ok": truncated >= 0, "truncated": truncated })),
+        Err(e) => attempts.push(serde_json::json!({"step":"rollback_checkpoint","ok": false, "error": format!("{e:?}")})),
+    }
+
+    // d) Re-enqueue replayable jobs missing terminal results (not tracked yet)
+    attempts.push(serde_json::json!({"step":"reenqueue_missing","ok": true, "note": "no-op in v1" }));
+
+    // Still not OK
+    failed_reason = failed_reason.or(Some("recovery_failed".into()));
+    emit_replay_telemetry(&app, status, failed_reason.as_deref(), 0).await;
+    Ok(serde_json::json!({"attempts": attempts, "resolved": false}))
+}
+
+#[tauri::command]
+async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let state: State<'_, AppState> = app.state();
+    let db_path = state.db_path.clone();
+    let logs_dir = LOGS_DIR.clone();
+    let integrity = reindex_and_integrity(&app).await.unwrap_or(false);
+    let counts = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        let conn = Connection::open(db_path)?;
+        let tool_calls: i64 = conn.query_row("SELECT COUNT(*) FROM tool_call", [], |r| r.get(0))?;
+        let cache_rows: i64 = conn.query_row("SELECT COUNT(*) FROM compute_cache", [], |r| r.get(0))?;
+        Ok(serde_json::json!({"tool_call": tool_calls, "compute_cache": cache_rows}))
+    }).await.map_err(|e| format!("{e}"))?.map_err(|e| format!("{e:?}"))?;
+
+    let bundle = serde_json::json!({
+        "integrity_ok": integrity,
+        "counts": counts,
+        "ts": chrono::Utc::now().timestamp(),
+    });
+    let path = logs_dir.join(format!("diagnostics-{}.json", chrono::Utc::now().timestamp()));
+    tokio::fs::create_dir_all(&logs_dir).await.map_err(|e| format!("{e}"))?;
+    tokio::fs::write(&path, serde_json::to_vec_pretty(&bundle).unwrap()).await.map_err(|e| format!("{e}"))?;
+    Ok(serde_json::json!({"path": path.display().to_string()}))
+}
+
+async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
+    let state: State<'_, AppState> = app.state();
+    let db_path = state.db_path.clone();
+    let status = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let conn = Connection::open(db_path)?;
+        conn.execute("REINDEX", [])?;
+        let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+        let mut rows = stmt.query([])?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            let s: String = row.get(0)?; results.push(s);
+        }
+        Ok(results.join(", "))
+    }).await??;
+    Ok(status.to_lowercase().contains("ok"))
+}
+
+async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64>> {
+    let state: State<'_, AppState> = app.state();
+    let db_path = state.db_path.clone();
+    let ts = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<i64>> {
+        let conn = Connection::open(db_path)?;
+        conn.execute("CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)", [])?;
+        let ts: Option<i64> = conn.query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0)).optional()?;
+        Ok(ts)
+    }).await??;
+    Ok(ts)
+}
+
+async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
+    let ts_opt = last_checkpoint_ts(app).await?;
+    if ts_opt.is_none() { return Ok(0); }
+    let since = ts_opt.unwrap();
+    let state: State<'_, AppState> = app.state();
+    let db_path = state.db_path.clone();
+    let deleted = tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+        let conn = Connection::open(db_path)?;
+        // Drop trailing incomplete rows after the last checkpoint
+        let n = conn.execute(
+            "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
+            params![since],
+        )?;
+        Ok(n as i64)
+    }).await??;
+    Ok(deleted)
+}
+
+async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
+    let ts_opt = last_checkpoint_ts(app).await?;
+    if ts_opt.is_none() { return Ok(0); }
+    let since = ts_opt.unwrap();
+    let state: State<'_, AppState> = app.state();
+    let db_path = state.db_path.clone();
+    let truncated = tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+        let conn = Connection::open(db_path)?;
+        // Truncate tool_call beyond checkpoint
+        let n = conn.execute("DELETE FROM tool_call WHERE created_at > ?1", params![since])?;
+        Ok(n as i64)
+    }).await??;
+    Ok(truncated)
+}
+
+async fn emit_replay_telemetry(app: &tauri::AppHandle, replay_status: &str, failed_reason: Option<&str>, rerun_count: i64) {
+    let checkpoint_id = last_checkpoint_ts(app).await.ok().flatten();
+    let _ = app.emit(
+        "replay-telemetry",
+        serde_json::json!({
+            "replay_status": replay_status,
+            "failed_reason": failed_reason,
+            "checkpoint_id": checkpoint_id,
+            "rerun_count": rerun_count,
+        }),
+    );
 }

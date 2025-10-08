@@ -9,7 +9,7 @@ UICP Compute Shakedown Tests (v1)
 - User cancel emits Compute.Cancelled within 250 ms and stops execution.
 
 3) Determinism
-- Run same (task, input, module, envHash) twice → identical output hash and same state ops order.
+- Run same (task, input, module, envHash) twice → identical metrics.outputHash and same state ops order.
 
 4) Capability fences
 - Attempt network call without cap.net → IO.Denied.
@@ -28,5 +28,5 @@ UICP Compute Shakedown Tests (v1)
 - Run the suite on Windows, macOS, Linux with identical outcomes.
 
 Notes
-- Determinism tests double-run the same module to assert equality on output hash and resulting state binder ops.
+- Determinism tests double-run the same module to assert equality on metrics.outputHash and resulting state binder ops.
 - Poisoning tests operate on a test-only cache namespace.

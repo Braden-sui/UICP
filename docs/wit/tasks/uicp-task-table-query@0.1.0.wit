@@ -1,0 +1,23 @@
+package uicp:task-table-query@0.1.0
+
+use uicp:host@1.0.0/host;
+
+interface task {
+  /// Table query input: simple projection and filter
+  type input = record {
+    rows: list<list<string>>,
+    select: list<u32>,             // column indices to select
+    where_contains: option<record { col: u32, needle: string }>
+  }
+
+  /// Output: projected rows
+  type output = list<list<string>>
+
+  run: func(job: host/job-id, input: input) -> result<output, string>
+}
+
+world entry {
+  import uicp:host@1.0.0/system
+  export task
+}
+

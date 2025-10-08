@@ -1,39 +1,74 @@
 package uicp:host@1.0.0
 
-use wasi:io/poll@0.2.0;
 use wasi:io/streams@0.2.0;
-use wasi:clocks/monotonic-clock@0.2.0;
-use wasi:random/random@0.2.0;
 
-/// Unique identifier for a job
+/// A stable identifier for the running job. Provided by the host.
 type job-id = string
 
-/// Opaque binary blob (e.g., CBOR chunk)
-type blob = list<u8>
+/// Log levels for structured logs.
+enum log-level { trace, debug, info, warn, error }
 
-/// Host control surface for tasks
+/// Control and coordination with the host.
 interface control {
-  /// For cooperative cancellation with poll()
-  cancel-pollable: func(job: job-id) -> poll.pollable
-
-  /// Progress / partials over a host-provided stream
+  /// Open an output stream for partial, structured updates.
+  /// The host may apply backpressure; see semantics.
   open-partial-sink: func(job: job-id) -> streams.output-stream
 
-  /// Structured logging
-  log: func(level: enum { trace, debug, info, warn, error }, msg: string)
+  /// Cooperative cancellation signal. Return true if the job should
+  /// begin graceful shutdown. Host may still hard-stop after the deadline.
+  should-cancel: func(job: job-id) -> bool
+
+  /// Return the total wall-clock budget (ms) that the host granted this job.
+  /// Deterministic, constant for the job lifetime.
+  deadline-ms: func(job: job-id) -> u32
+
+  /// Return remaining wall-clock budget (ms) at call time.
+  /// Decreases to 0; may return 0 before a hard stop to let the guest exit cleanly.
+  remaining-ms: func(job: job-id) -> u32
 }
 
-/// System world wires stable control + selected WASI imports.
+/// Deterministic random values (seeded by host per job).
+/// Replay of the same job yields the same sequence.
+interface rng {
+  /// Next 64-bit value from the job-scoped PRNG.
+  next-u64: func(job: job-id) -> u64
+  /// Fill a buffer with pseudorandom bytes.
+  fill: func(job: job-id, len: u32) -> list<u8>
+}
+
+/// Structured logging to host.
+interface logger {
+  /// Emit a log message. Host may truncate or drop if over limits.
+  log: func(level: log-level, msg: string)
+}
+
+/// Logical, deterministic time for guests.
+/// Starts at 0 at job start; monotonic and host-controlled.
+interface clock {
+  /// Milliseconds since job start (logical).
+  now-ms: func(job: job-id) -> u64
+}
+
 world system {
+  // These are host-provided to the guest component:
   import control
+  import rng
+  import logger
+  import clock
 
-  // Core capabilities — always available
+  // Host wires WASI Preview 2 IO streams for partial output.
   import streams
-  import monotonic-clock
-  import random
-
-  // Optional (off by default; allowlist enforced by host)
-  // import wasi:filesystem/types
-  // import wasi:http/outgoing-handler
 }
 
+// Optional determinism helpers (preview)
+package uicp:host-determinism@1.0.0
+
+interface rand {
+  /// Deterministic 64-bit value derived from a per-job seed and logical clock.
+  next64: func() -> u64
+}
+
+interface clock {
+  /// Logical time (monotonic tick), not wall clock.
+  now: func() -> u64
+}

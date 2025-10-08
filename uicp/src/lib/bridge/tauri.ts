@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
 import { enqueueBatch, setQueueAppliedListener } from '../uicp/queue';
 import { finalEventSchema, type JobSpec } from '../../compute/types';
+import { useComputeStore } from '../../state/compute';
 import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
 import { createId } from '../../lib/utils';
@@ -115,6 +116,23 @@ export async function initializeTauriBridge() {
     }),
   );
 
+  // Health and Safe Mode
+  unsubs.push(
+    await listen('replay-issue', (event) => {
+      const payload = event.payload as { reason?: string; action?: string } | undefined;
+      const reason = payload?.reason ?? 'Unknown';
+      // Extend store at runtime to avoid breaking tests if fields not present.
+      try {
+        (useAppStore.getState() as any).safeMode = true;
+        (useAppStore.getState() as any).safeReason = reason;
+        useAppStore.setState({} as any);
+      } catch (err) {
+        console.error('failed to set safe mode', err);
+      }
+      useAppStore.getState().pushToast({ variant: 'error', message: `Replay issue detected: ${reason}` });
+    }),
+  );
+
   unsubs.push(
     await listen('api-key-status', (event) => {
       const payload = event.payload as { valid: boolean; message?: string } | undefined;
@@ -162,9 +180,11 @@ export async function initializeTauriBridge() {
   (window as any).uicpComputeCall = async (spec: JobSpec) => {
     try {
       pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [] });
+      useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
       await invoke('compute_call', { spec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
+      useComputeStore.getState().markFinal(spec.jobId, false, undefined, 'Compute.CapabilityDenied');
       throw error;
     }
   };
@@ -178,6 +198,7 @@ export async function initializeTauriBridge() {
         const jobId = String(payload.jobId ?? '');
         const task = String(payload.task ?? '');
         const seq = Number(payload.seq ?? 0);
+        if (jobId) useComputeStore.getState().markPartial(jobId);
         // eslint-disable-next-line no-console
         console.debug(`[compute.partial] job=${jobId} task=${task} seq=${seq}`);
       } catch {
@@ -199,6 +220,7 @@ export async function initializeTauriBridge() {
       if (!final.ok) {
         // Surface error feedback; bindings are ignored.
         useAppStore.getState().pushToast({ variant: 'error', message: `${final.task}: ${final.code}` });
+        useComputeStore.getState().markFinal(final.jobId, false, undefined, final.code);
         pendingBinds.delete(final.jobId);
         return;
       }
@@ -218,6 +240,13 @@ export async function initializeTauriBridge() {
           useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
         }
       }
+      const meta = (final as any).metrics as { durationMs?: number; fuelUsed?: number; memPeakMb?: number; cacheHit?: boolean } | undefined;
+      useComputeStore.getState().markFinal(final.jobId, true, {
+        durationMs: meta?.durationMs,
+        fuelUsed: meta?.fuelUsed,
+        memPeakMb: meta?.memPeakMb,
+        cacheHit: meta?.cacheHit,
+      });
       pendingBinds.delete(final.jobId);
     }),
   );

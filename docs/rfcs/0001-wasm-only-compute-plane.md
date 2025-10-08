@@ -382,3 +382,23 @@ Host — map partial CBOR chunks to `compute.result.partial` events; on final Ok
 13) Bottom line
 
 This Wasm‑only path is viable and future‑proof, front‑loading componentization, WIT discipline, and streaming. The plan keeps contracts stable, uses WASI P2 + Wasmtime, and leaves room to grow (registries, more languages) without rip‑and‑replace.
+
+14) Timeline & Reassessment
+
+- V1 scope: host skeleton, compute.call, compute.cancel, result cache, 2 tasks (csv.parse, table.query), dashboard v1.
+- Start: 2025-10-15. Code freeze: 2025-11-30.
+- Reassessment of WASI P2 tooling: 2025-12-15. If breaking changes land, pin and defer upgrades.
+- V2 scope: FS preopens, HTTP allowlist, golden determinism tests expanded, policy toggles.
+- If that timeline is tight, reduce to one task in V1 and ship surfaces first.
+- Recovery Playbook
+
+Automated attempts (in order)
+- Reindex: rebuild SQLite indices and run `PRAGMA integrity_check`.
+- Compact log: drop trailing incomplete segment after the last checkpoint, then retry replay.
+- Roll back to last valid checkpoint snapshot, then apply log from that point.
+- If replayable jobs are missing terminal results, re-enqueue them; otherwise mark as stale.
+
+User choices
+- Restore from checkpoint X (recommended).
+- Export diagnostics bundle (sanitized log tail + integrity report).
+- Start fresh workspace (keeps files in `ws:/files`, resets state and log).

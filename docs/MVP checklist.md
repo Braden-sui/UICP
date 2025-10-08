@@ -297,3 +297,11 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 
 
+- Replay Recovery implemented and tested
+- State semantics documented
+- Environment snapshot implemented, capped, and hashed
+- Integration tests green on Win/Mac/Linux
+- One reference app used daily by the team
+
+Backlog
+- See BACKLOG.md for follow-ups and V2 scope

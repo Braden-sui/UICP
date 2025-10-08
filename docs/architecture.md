@@ -12,6 +12,52 @@
 - **Models:** Qwen3-Coder (`qwen3-coder:480b-cloud`) GUI (Guy); local fallback uses `qwen3-coder:480b` post-MVP.
 
 ## Data Flow
+
+## Happy Path Sequence
+
+```
+sequenceDiagram
+  participant User
+  participant Planner
+  participant Actor
+  participant Adapter
+  participant Persistence
+  participant Compute
+
+  User->>Planner: Describe intent
+  Planner->>Actor: Step 1 spec
+  Actor->>Adapter: Validated data-ops
+  Adapter->>Persistence: Append ops to log
+  Adapter->>Compute: compute.call (if any)
+  Compute-->>Adapter: compute.result.partial/final
+  Adapter->>Adapter: Materialize to state
+  Adapter-->>User: UI updated
+```
+
+## Environment Snapshot
+
+Purpose
+- Give models stable, minimal context that explains what they can see and do without leaking secrets or huge blobs.
+
+Contents
+- `app`: `{ version, build, feature_flags[] }`
+- `os`: `{ family, version, locale }`
+- `workspace`: `{ id, name, created_at }`
+- `windows`: summary list `[{ id, title, route, size }]`
+- `modules`: `[{ name, version, enabled }]`
+- `policy`: `{ net_allowed: false|true, fs_roots: ["ws:/..."] }`
+- `seeds`: `{ rng_seed_prefix }`
+- `clock`: logical timestamp (not wall clock)
+- `envHash`: sha256 over the canonicalized snapshot
+
+Size budget
+- Target 16 KB. Hard cap 32 KB.
+
+Truncation rules
+- Drop window list beyond 10 entries with “...truncated”.
+- Drop module private metadata.
+- Never include file contents, only URIs and digests.
+- Deterministic ordering of keys and arrays.
 1. **User Action:** prompts or clicks UI element.
 2. **Frontend -> Backend:** `streamOllamaCompletion(messages, model, tools, { requestId })` registers a listener for `ollama-completion` events before invoking the `chat_completion` Tauri command. The iterator returns content/tool_call/done events and supports early cancellation via `cancel_chat(requestId)` when the consumer stops.
 3. **Backend:**
@@ -33,7 +79,7 @@
 - `dom.set` is preferred for replacing specific regions; `dom.append` adds content without re-rendering entire windows.
 
 Hard rules for models:
-- Never emit event APIs (e.g., `event.addListener`, `addEventListener`, custom `event.*` ops). All interactivity is declared via attributes; the runtime executes them.
+- Never emit event APIs (e.g., `event.addListener`, `addEventListener`, custom `event.*` ops). All interactivity is declared via attributes; the runtime executes them. See also: `uicp/src/prompts/actor.txt`.
 - Always include a valid `windowId` for `dom.*` and `component.render` operations.
 
 ### Follow-up intents from UI
@@ -122,6 +168,76 @@ Auto-create safety net:
 6. User resets workspace → all commands deleted
 
 **Retention**: Commands persist indefinitely until window closed or workspace reset.
+
+## State Management Semantics
+
+State Model and Scopes
+
+- Scope `window`: namespaced by `windowId`. Lifetime equals the window. Not persisted across window close unless persisted via explicit ops.
+- Scope `workspace`: shared by all windows within a workspace. Persisted and replayed.
+- Scope `global`: shared across all workspaces on the device. Persisted in a separate store.
+
+Ops and Semantics
+
+- `state.set(path, value, scope=workspace)`: atomic replace of the value at `path`. No implicit merge.
+- `state.patch(path, object, scope=workspace)`: shallow merge of object keys. Arrays are replaced, not merged.
+- `state.clear(path, scope)`: remove key at `path`.
+
+Replay Invariants
+
+- Never apply partial state without recording exactly which step failed.
+- Do not auto-delete files under `ws:/files`.
+- Errors are terminal envelopes that replay as errors; they are never silently dropped.
+
+Ordering & Replay Behavior
+
+- Within a single replay, ops apply strictly in log order.
+- When multiple ops target the same `path` during replay, last write wins.
+- Replay replays the exact ops; it does not merge with any existing in-memory state. The in-memory state is replaced by the replayed ops.
+
+After replay completes
+
+- Transient in-memory state that was not persisted is discarded unless a specific module rehydrates it from its own persisted store.
+
+## Replay Recovery
+
+Goal
+- If replay cannot complete deterministically, the system must fail safe, keep the UI usable, and guide the user to a clean state.
+
+Definitions
+- Replay: reapplying the persisted command log to rebuild state.
+- Drift: the materialized state diverges from what the log implies for the same inputs and versions.
+
+Detection
+- Schema version check at startup: if `schema_version` in SQLite or log header does not match the running app, mark `NEEDS_MIGRATION`.
+- Log integrity: verify content hashes per segment. On mismatch mark `CORRUPT_LOG`.
+- SQLite health: `PRAGMA quick_check`. On failure mark `CORRUPT_DB`.
+- Determinism probe: spot-check N random checkpoints in the log by recomputing a state hash; if any mismatch, mark `DRIFT`.
+
+Recovery playbook
+
+Enter Safe Mode
+- Freeze write ops to persistence.
+- Show banner: “Replay issue detected: <reason>. You can attempt restore, roll back to last checkpoint, or start fresh.”
+
+Automated attempts (in order)
+- a) Reindex: rebuild SQLite indices and run `PRAGMA integrity_check`.
+- b) Compact log: drop trailing incomplete segment and retry replay.
+- c) Roll back to last valid checkpoint snapshot, then apply log from that point.
+- d) If replayable jobs are missing terminal results, re-enqueue them; otherwise mark as stale.
+
+User choices
+- Restore from checkpoint X (recommended).
+- Export diagnostics bundle (sanitized log tail + integrity report).
+- Start fresh workspace (keeps files in `ws:/files`, resets state and log).
+
+Invariants
+- Never apply partial state without recording exactly which step failed.
+- Do not auto-delete files under `ws:/files`.
+- Errors are terminal envelopes that replay as errors; we do not silently drop them.
+
+Telemetry
+- Record `replay_status={ok|reindexed|compacted|rolled_back|failed}`, `failed_reason`, `checkpoint_id`, and counts of re-run jobs.
 
 ## Save Indicator Logic
 - `AppState.last_save_ok` tracks status.

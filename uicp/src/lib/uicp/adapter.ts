@@ -535,7 +535,7 @@ const handleDelegatedEvent = (event: Event) => {
   }
 };
 
-export const resetWorkspace = () => {
+export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
   windows.clear();
   components.clear();
   for (const scope of stateStore.values()) scope.clear();
@@ -547,6 +547,14 @@ export const resetWorkspace = () => {
   void invoke('clear_workspace_commands').catch((error) => {
     console.error('Failed to clear workspace commands', error);
   });
+  // Clear compute cache entries for this workspace
+  void invoke('clear_compute_cache', { workspaceId: 'default' }).catch((error) => {
+    console.error('Failed to clear compute cache', error);
+  });
+  if (options?.deleteFiles) {
+    // Intentionally not implemented in v1 to avoid accidental deletion.
+    console.warn('deleteFiles=true requested, but deletion of ws:/files is not implemented in v1.');
+  }
 };
 
 // Replay persisted commands from database to restore workspace state
@@ -555,6 +563,8 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
     const commands = await invoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
     const errors: string[] = [];
     let applied = 0;
+    // Discard transient in-memory state before replay so replayed ops fully define the state.
+    for (const scope of stateStore.values()) scope.clear();
 
     // Preserve original creation order to avoid inverting
     // window lifecycle (e.g., a prior close followed by a create
@@ -1205,6 +1215,35 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
       });
     });
   });
+
+  // After successful apply, record a lightweight state checkpoint for determinism probe.
+  if (errors.length === 0) {
+    try {
+      const computeStateHash = () => {
+        const stable = (obj: unknown): string => {
+          if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+          if (Array.isArray(obj)) return `[${obj.map(stable).join(',')}]`;
+          const o = obj as Record<string, unknown>;
+          const keys = Object.keys(o).sort();
+          return `{${keys.map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(',')}}`;
+        };
+        const snapshot = {
+          window: Object.fromEntries(stateStore.get('window')!),
+          workspace: Object.fromEntries(stateStore.get('workspace')!),
+          global: Object.fromEntries(stateStore.get('global')!),
+        };
+        return stable(snapshot);
+      };
+      const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(computeStateHash()));
+      const hex = Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (typeof (window as any).__TAURI__ !== 'undefined') {
+        await invoke('save_checkpoint', { hash: hex });
+      }
+    } catch (err) {
+      console.error('save_checkpoint failed', err);
+    }
+  }
 
   return {
     success: errors.length === 0,
