@@ -1,6 +1,8 @@
 ﻿import { describe, it, expect, beforeEach } from 'vitest';
 import { applyBatch, registerWorkspaceRoot, resetWorkspace, closeWorkspaceWindow, listWorkspaceWindows } from '../../src/lib/uicp/adapter';
 import { validateBatch } from '../../src/lib/uicp/schemas';
+import { nextFrame } from '../../src/lib/utils';
+import { getTauriMocks } from '../mocks/tauri';
 
 // Adapter test ensures batches create DOM windows as expected.
 describe('adapter.applyBatch', () => {
@@ -10,6 +12,8 @@ describe('adapter.applyBatch', () => {
     root.id = 'workspace-root';
     document.body.appendChild(root);
     registerWorkspaceRoot(root);
+    const { invokeMock } = getTauriMocks();
+    invokeMock.mockClear();
   });
 
   it('creates a window and injects HTML', async () => {
@@ -25,8 +29,29 @@ describe('adapter.applyBatch', () => {
     ]);
 
     const outcome = await applyBatch(batch);
+    await nextFrame();
     expect(outcome.success).toBe(true);
     expect(document.querySelector('[data-testid="payload"]')).not.toBeNull();
+
+    const { invokeMock } = getTauriMocks();
+    const persistCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === 'persist_command');
+    expect(persistCalls.length).toBe(2);
+    expect(persistCalls).toEqual(
+      expect.arrayContaining([
+        [
+          'persist_command',
+          expect.objectContaining({
+            cmd: expect.objectContaining({ tool: 'window.create' }),
+          }),
+        ],
+        [
+          'persist_command',
+          expect.objectContaining({
+            cmd: expect.objectContaining({ tool: 'dom.set' }),
+          }),
+        ],
+      ]),
+    );
   });
 
   it('tracks windows and allows menu-driven close', async () => {
@@ -38,10 +63,18 @@ describe('adapter.applyBatch', () => {
     ]);
 
     await applyBatch(batch);
+    await nextFrame();
     const snapshot = listWorkspaceWindows();
     expect(snapshot.find((entry) => entry.id === 'win-close')?.title).toBe('Closable');
+
+    const { invokeMock } = getTauriMocks();
+    invokeMock.mockClear();
     closeWorkspaceWindow('win-close');
     expect(document.querySelector('[data-window-id="win-close"]')).toBeNull();
+    expect(invokeMock).toHaveBeenCalledWith(
+      'delete_window_commands',
+      expect.objectContaining({ windowId: 'win-close' }),
+    );
   });
 
   it('renders structured clarifier form via intent metadata', async () => {
@@ -61,6 +94,7 @@ describe('adapter.applyBatch', () => {
     ]);
 
     const outcome = await applyBatch(clarifierBatch);
+    await nextFrame();
     expect(outcome.success).toBe(true);
 
     const windowEl = document.querySelector('[data-window-id]');
@@ -77,6 +111,10 @@ describe('adapter.applyBatch', () => {
     expect(Array.isArray(commands)).toBe(true);
     expect(commands[0]?.op).toBe('api.call');
     expect(commands.some((cmd: any) => cmd.op === 'window.close')).toBe(true);
+
+    const { invokeMock } = getTauriMocks();
+    const persistCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === 'persist_command');
+    expect(persistCalls.length).toBe(0);
   });
 });
 

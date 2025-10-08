@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+jimport { describe, it, expect, vi } from 'vitest';
 import { createOllamaAggregator } from '../../src/lib/uicp/stream';
 import type { Batch } from '../../src/lib/uicp/schemas';
 

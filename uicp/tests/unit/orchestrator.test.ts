@@ -1,32 +1,39 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { StreamEvent } from '../../src/lib/llm/ollama';
 
+const plannerBase: StreamEvent[] = [
+  { type: 'content', channel: 'commentary', text: '```json' },
+  {
+    type: 'content',
+    channel: 'commentary',
+    text: JSON.stringify({ summary: 'Create notepad', batch: [{ op: 'window.create', params: { title: 'Notepad' } }] }),
+  },
+  { type: 'content', channel: 'commentary', text: '```' },
+  { type: 'done' },
+];
+
+const actorBase: StreamEvent[] = [
+  { type: 'content', channel: 'commentary', text: '```json' },
+  {
+    type: 'content',
+    channel: 'commentary',
+    text: JSON.stringify({ batch: [{ op: 'window.create', params: { title: 'Notepad' } }] }),
+  },
+  { type: 'content', channel: 'commentary', text: '```' },
+  { type: 'done' },
+];
+
+let plannerEvents: StreamEvent[] = plannerBase;
+let actorEvents: StreamEvent[] = actorBase;
+
 // Mock provider to drive orchestrator with deterministic streams
 vi.mock('../../src/lib/llm/provider', () => {
   return {
     getPlannerClient: () => ({
-      streamIntent: (_intent: string) => makeStream([
-        { type: 'content', channel: 'commentary', text: '```json' },
-        {
-          type: 'content',
-          channel: 'commentary',
-          text: JSON.stringify({ summary: 'Create notepad', batch: [{ op: 'window.create', params: { title: 'Notepad' } }] }),
-        },
-        { type: 'content', channel: 'commentary', text: '```' },
-        { type: 'done' },
-      ]),
+      streamIntent: (_intent: string) => makeStream(plannerEvents),
     }),
     getActorClient: () => ({
-      streamPlan: (_planJson: string) => makeStream([
-        { type: 'content', channel: 'commentary', text: '```json' },
-        {
-          type: 'content',
-          channel: 'commentary',
-          text: JSON.stringify({ batch: [{ op: 'window.create', params: { title: 'Notepad' } }] }),
-        },
-        { type: 'content', channel: 'commentary', text: '```' },
-        { type: 'done' },
-      ]),
+      streamPlan: (_planJson: string) => makeStream(actorEvents),
     }),
   };
 });
@@ -41,11 +48,13 @@ function makeStream(events: StreamEvent[]): AsyncIterable<StreamEvent> {
 }
 
 // Import under test AFTER mocks
-import { planWithDeepSeek, actWithGui, runIntent } from '../../src/lib/llm/orchestrator';
+import { planWithDeepSeek, actWithGui, runIntent, planWithProfile, actWithProfile } from '../../src/lib/llm/orchestrator';
 
 describe('orchestrator integration', () => {
   beforeEach(() => {
     vi.useRealTimers();
+    plannerEvents = [...plannerBase];
+    actorEvents = [...actorBase];
   });
 
   it('parses fenced JSON from planner stream', async () => {
@@ -90,5 +99,27 @@ describe('orchestrator integration', () => {
     expect(phases[1]?.phase).toBe('acting');
     expect(typeof phases[1]?.planMs).toBe('number');
     expect((phases[1]?.planMs ?? 0)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('consumes return events emitted by harmony adapter', async () => {
+    plannerEvents = [
+      { type: 'return', channel: 'final', result: { summary: 'Return plan', batch: [] } },
+      { type: 'done' },
+    ];
+    actorEvents = [
+      {
+        type: 'return',
+        channel: 'final',
+        result: { batch: [{ op: 'window.create', params: { title: 'FromReturn' } }] },
+      },
+      { type: 'done' },
+    ];
+
+    const { plan } = await planWithProfile('unused', { profileKey: 'gpt-oss' });
+    expect(plan.summary).toBe('Return plan');
+
+    const { batch } = await actWithProfile(plan, { profileKey: 'gpt-oss' });
+    expect(Array.isArray(batch)).toBe(true);
+    expect(batch[0]?.params).toMatchObject({ title: 'FromReturn' });
   });
 });

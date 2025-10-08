@@ -1,5 +1,6 @@
 ﻿// Extend Vitest expect with Testing Library matchers.
 import "@testing-library/jest-dom/vitest";
+import { beforeEach, vi } from "vitest";
 
 if (typeof window !== "undefined" && typeof window.PointerEvent === "undefined") {
   class FakePointerEvent extends MouseEvent {
@@ -12,24 +13,29 @@ if (typeof window !== "undefined" && typeof window.PointerEvent === "undefined")
       this.pointerType = options.pointerType ?? "mouse";
     }
   }
-    Object.defineProperty(window, "PointerEvent", {
+  Object.defineProperty(window, "PointerEvent", {
     configurable: true,
     writable: true,
     value: FakePointerEvent as unknown as typeof PointerEvent,
   });
 }
 
-// Provide a minimal Tauri bridge so modules importing @tauri-apps/api don't throw during tests.
-if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__TAURI__ === undefined) {
-  (globalThis as Record<string, unknown>).__TAURI__ = {
-    core: {
-      invoke: async () => undefined,
-    },
-    event: {
-      emit: async () => undefined,
-      listen: async () => ({
-        unlisten: () => undefined,
-      }),
-    },
-  };
-}
+const tauriMocks = vi.hoisted(() => ({
+  invokeMock: vi.fn(async () => undefined),
+  listenMock: vi.fn(async () => () => undefined),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: tauriMocks.invokeMock,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: tauriMocks.listenMock,
+}));
+
+(globalThis as Record<string, unknown>).__TAURI_MOCKS__ = tauriMocks;
+
+beforeEach(() => {
+  tauriMocks.invokeMock.mockClear();
+  tauriMocks.listenMock.mockClear();
+});
