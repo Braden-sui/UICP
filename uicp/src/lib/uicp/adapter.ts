@@ -556,53 +556,19 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
     const errors: string[] = [];
     let applied = 0;
 
-    // Reorder so window.create comes first, then others. This avoids orphan DOM ops.
-    const creates: typeof commands = [];
-    const others: typeof commands = [];
-    for (const c of commands) {
-      if (c.tool === 'window.create') creates.push(c); else others.push(c);
-    }
-    const knownWindows = new Set<string>();
-
-    // Apply window.create first
-    for (const cmd of creates) {
-      try {
-        // Reconstruct envelope from persisted command
-        const envelope: Envelope = {
-          op: cmd.tool as Envelope['op'],
-          params: cmd.args as OperationParamMap[Envelope['op']],
-          idempotencyKey: cmd.id,
-        };
-        const params = envelope.params as { id?: string } | undefined;
-        if (params && typeof params.id === 'string' && params.id.length > 0) {
-          knownWindows.add(params.id);
-        }
-        // Await each replay so persistence or DOM errors fail loud instead of silently skipping.
-        const result = await applyCommand(envelope);
-        if (result.success) {
-          applied += 1;
-        } else {
-          errors.push(`${cmd.tool}: ${result.error}`);
-        }
-      } catch (error) {
-        errors.push(`${cmd.tool}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    // Then apply the rest, skipping orphaned window operations
-    for (const cmd of others) {
+    // Preserve original creation order to avoid inverting
+    // window lifecycle (e.g., a prior close followed by a create
+    // for the same id). Hoisting all creates caused a regression
+    // where a later replayed close would immediately remove a
+    // newly created window. We intentionally replay in-order and
+    // fail loud on any invalid sequence.
+    for (const cmd of commands) {
       try {
         const envelope: Envelope = {
           op: cmd.tool as Envelope['op'],
           params: cmd.args as OperationParamMap[Envelope['op']],
           idempotencyKey: cmd.id,
         };
-        // If the command targets a window and that window wasn't created, skip with a clear error
-        const p = envelope.params as { windowId?: string } | undefined;
-        if (p && typeof p.windowId === 'string' && p.windowId.length > 0 && !knownWindows.has(p.windowId)) {
-          errors.push(`${cmd.tool}: Unknown window ${p.windowId}`);
-          continue;
-        }
         const result = await applyCommand(envelope);
         if (result.success) {
           applied += 1;
@@ -659,6 +625,20 @@ const ensureRoot = () => {
     throw new Error("Workspace root not registered.");
   }
   return workspaceRoot;
+};
+
+// Friendly title from a stable id like "win-ascii-gallery" → "Ascii Gallery"
+const titleizeWindowId = (id: string): string => {
+  try {
+    const raw = id.replace(/^win[-_]?/i, "");
+    const parts = raw.split(/[-_\s]+/).filter(Boolean);
+    if (parts.length === 0) return id;
+    return parts
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join(" ");
+  } catch {
+    return id;
+  }
 };
 
 const applyWindowGeometry = (
@@ -828,6 +808,36 @@ const executeWindowCreate = (
   }
 };
 
+// Ensure a host window exists for commands that target a window id.
+// When absent, auto-create a sensible shell and persist the synthetic create so replay stays consistent.
+const ensureWindowExists = async (
+  id: string,
+  hint?: Partial<OperationParamMap["window.create"]>,
+): Promise<CommandResult<string>> => {
+  try {
+    if (windows.has(id)) return { success: true, value: id };
+    const title = hint?.title && typeof hint.title === 'string' && hint.title.trim() ? hint.title : titleizeWindowId(id);
+    const params: OperationParamMap["window.create"] = {
+      id,
+      title,
+      x: hint?.x,
+      y: hint?.y,
+      width: hint?.width ?? 640,
+      height: hint?.height ?? 480,
+      zIndex: hint?.zIndex,
+      size: hint?.size,
+    };
+    const created = executeWindowCreate(params);
+    if (!created.success) return created;
+    // Persist the synthetic create so the workspace can be restored.
+    const envelope: Envelope<'window.create'> = { op: 'window.create', params };
+    await persistCommand(envelope);
+    return created;
+  } catch (error) {
+    return toFailure(error);
+  }
+};
+
 // Replaces the target node contents while re-sanitising as a last line of defence.
 const executeDomSet = (params: OperationParamMap["dom.set"]): CommandResult<string> => {
   try {
@@ -929,14 +939,27 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "dom.set": {
       const params = command.params as OperationParamMap["dom.set"];
+      if (!windows.has(params.windowId)) {
+        const ensured = await ensureWindowExists(params.windowId);
+        if (!ensured.success) return ensured;
+      }
       return executeDomSet(params);
     }
     case "window.update": {
       try {
         const params = command.params as OperationParamMap["window.update"];
-        const record = windows.get(params.id);
+        let record = windows.get(params.id);
         if (!record) {
-          return { success: false, error: `Unknown window ${params.id}` };
+          const ensured = await ensureWindowExists(params.id, {
+            title: params.title ?? titleizeWindowId(params.id),
+            x: params.x,
+            y: params.y,
+            width: params.width,
+            height: params.height,
+            zIndex: params.zIndex,
+          });
+          if (!ensured.success) return ensured;
+          record = windows.get(params.id)!;
         }
         if (params.title) {
           record.titleText.textContent = params.title;
@@ -959,6 +982,10 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "dom.replace": {
       const params = command.params as OperationParamMap["dom.replace"];
+      if (!windows.has(params.windowId)) {
+        const ensured = await ensureWindowExists(params.windowId);
+        if (!ensured.success) return ensured;
+      }
       return executeDomSet({
         windowId: params.windowId,
         target: params.target,
@@ -969,9 +996,11 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     case "dom.append": {
       try {
         const params = command.params as OperationParamMap["dom.append"];
-        const record = windows.get(params.windowId);
+        let record = windows.get(params.windowId);
         if (!record) {
-          return { success: false, error: `Unknown window ${params.windowId}` };
+          const ensured = await ensureWindowExists(params.windowId);
+          if (!ensured.success) return ensured;
+          record = windows.get(params.windowId)!;
         }
         const target = record.content.querySelector(params.target);
         if (!target) {
@@ -985,6 +1014,10 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "component.render": {
       const params = command.params as OperationParamMap["component.render"];
+      if (!windows.has(params.windowId)) {
+        const ensured = await ensureWindowExists(params.windowId);
+        if (!ensured.success) return ensured;
+      }
       return executeComponentRender(params);
     }
     case "component.update": {

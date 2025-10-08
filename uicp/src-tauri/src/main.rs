@@ -6,6 +6,7 @@ use anyhow::Context;
 use chrono::Utc;
 use dirs::document_dir;
 use dotenvy::dotenv;
+use keyring::Entry;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection};
@@ -14,7 +15,7 @@ use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State,
 };
-use tokio::{fs, io::AsyncWriteExt, sync::RwLock, time::interval};
+use tokio::{io::AsyncWriteExt, sync::RwLock, time::interval};
 use tokio_stream::StreamExt;
 
 static APP_NAME: &str = "UICP";
@@ -114,15 +115,21 @@ async fn set_debug(state: State<'_, AppState>, enabled: bool) -> Result<(), Stri
 
 #[tauri::command]
 async fn save_api_key(state: State<'_, AppState>, key: String) -> Result<(), String> {
-    // ensure documents directory exists
-    fs::create_dir_all(&*DATA_DIR)
-        .await
-        .map_err(|e| format!("Failed to create data dir: {e}"))?;
-    let content = format!("OLLAMA_API_KEY={}\n", key.trim());
-    fs::write(&*ENV_PATH, content)
-        .await
-        .map_err(|e| format!("Failed to write .env: {e}"))?;
-    *state.ollama_key.write().await = Some(key);
+    let key_trimmed = key.trim().to_string();
+
+    // Store in OS keyring using blocking task since keyring is sync
+    let key_clone = key_trimmed.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let entry = Entry::new("UICP", "ollama_api_key")
+            .map_err(|e| format!("Failed to access keyring: {e}"))?;
+        entry.set_password(&key_clone)
+            .map_err(|e| format!("Failed to store key in keyring: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))??;
+
+    *state.ollama_key.write().await = Some(key_trimmed);
     Ok(())
 }
 
@@ -914,11 +921,23 @@ fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
 }
 
 fn load_env_key(state: &AppState) -> anyhow::Result<()> {
+    // Try to load API key from keyring first
+    let entry = Entry::new("UICP", "ollama_api_key")?;
+    let mut key_from_keyring = false;
+
+    if let Ok(stored_key) = entry.get_password() {
+        state.ollama_key.blocking_write().replace(stored_key);
+        key_from_keyring = true;
+    }
+
+    // Load other config from .env or environment
+    let mut env_api_key: Option<String> = None;
+
     if ENV_PATH.exists() {
         for item in dotenvy::from_path_iter(&*ENV_PATH)? {
             let (key, value) = item?;
             if key == "OLLAMA_API_KEY" {
-                state.ollama_key.blocking_write().replace(value);
+                env_api_key = Some(value);
             } else if key == "USE_DIRECT_CLOUD" {
                 let use_cloud = value == "1" || value.to_lowercase() == "true";
                 *state.use_direct_cloud.blocking_write() = use_cloud;
@@ -929,14 +948,26 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
         if let Err(err) = dotenv() {
             eprintln!("Failed to load fallback .env: {err:?}");
         }
-        if let Ok(val) = std::env::var("OLLAMA_API_KEY") {
-            state.ollama_key.blocking_write().replace(val);
-        }
+        env_api_key = std::env::var("OLLAMA_API_KEY").ok();
         if let Ok(val) = std::env::var("USE_DIRECT_CLOUD") {
             let use_cloud = val == "1" || val.to_lowercase() == "true";
             *state.use_direct_cloud.blocking_write() = use_cloud;
         }
     }
+
+    // Migration: if API key was in .env but not in keyring, migrate it
+    if !key_from_keyring {
+        if let Some(key_value) = env_api_key {
+            eprintln!("Migrating OLLAMA_API_KEY from .env to secure keyring...");
+            if let Err(e) = entry.set_password(&key_value) {
+                eprintln!("Warning: Failed to migrate API key to keyring: {e}");
+            } else {
+                eprintln!("Successfully migrated API key to keyring. You can now remove OLLAMA_API_KEY from .env");
+            }
+            state.ollama_key.blocking_write().replace(key_value);
+        }
+    }
+
     Ok(())
 }
 

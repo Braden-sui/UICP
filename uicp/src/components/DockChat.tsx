@@ -184,11 +184,20 @@ export const DockChat = () => {
               <li
                 key={message.id}
                 className={
+                  // Use calmer blue for non-error system notices (planner hints, telemetry)
+                  // to avoid implying failure where there is none. Keep red for error codes.
                   message.role === 'user'
                     ? 'text-slate-800'
                     : message.role === 'assistant'
                       ? 'text-slate-600'
-                      : 'text-red-600'
+                      : (message.errorCode && (
+                          message.errorCode.includes('error') ||
+                          message.errorCode === 'apply_errors' ||
+                          message.errorCode === 'clarifier_apply_failed' ||
+                          message.errorCode === 'ollama_stream_error'
+                        ))
+                        ? 'text-red-600'
+                        : 'text-sky-700'
                 }
               >
                 <span className="block text-xs uppercase tracking-wide text-slate-400">

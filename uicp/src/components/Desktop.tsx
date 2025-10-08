@@ -9,6 +9,7 @@ import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon } from '../icons';
 import { useAppStore, type DesktopShortcutPosition } from '../state/app';
 import AgentSettingsWindow from './AgentSettingsWindow';
 import DevtoolsAnalyticsListener from './DevtoolsAnalyticsListener';
+import { installWorkspaceArtifactCleanup } from '../lib/uicp/cleanup';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
@@ -48,6 +49,7 @@ export const Desktop = () => {
   useEffect(() => {
     if (!rootRef.current) return;
     registerWorkspaceRoot(rootRef.current);
+    const teardownArtifacts = installWorkspaceArtifactCleanup(rootRef.current);
 
     // Replay persisted commands to restore workspace state
     void replayWorkspace().then(({ applied, errors }) => {
@@ -58,6 +60,13 @@ export const Desktop = () => {
         console.warn('Replay errors:', errors);
       }
     });
+    return () => {
+      try {
+        teardownArtifacts?.();
+      } catch {
+        // ignore
+      }
+    };
   }, []);
 
   // Register defaults so the built-in shortcuts render even on first run.
