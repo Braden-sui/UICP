@@ -40,6 +40,7 @@ The adapter maintains per-window DOM islands under `#workspace-root`. Commands a
 * `dom.set` is the preferred path for replacing the entire target subtree in one shot; `dom.append` appends sanitized HTML at the end of the target.
 * `component.*` calls are mapped onto lightweight mock components so MOCK mode can emulate planner output.
 * `state.*` stores values in memory to support planned future diffing. In MOCK mode watchers are inert.
+* Safety net: if a `dom.*`, `component.render`, or `window.update` operation targets a `windowId` that is not present, the adapter auto-creates a shell window and persists the synthetic `window.create` so that replay on restart remains consistent.
 
 ## Interactivity via data-* attributes (no JS)
 
@@ -92,7 +93,7 @@ Validation
 
 ## LLM Integration & Aggregation
 
-Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider.ts`) streams completions using the Tauri-backed Ollama bridge, and the orchestrator (`lib/llm/orchestrator.ts`) parses commentary-channel JSON into validated plans/batches.
+Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider.ts`) streams completions using the Tauri-backed Ollama bridge, and the orchestrator (`lib/llm/orchestrator.ts`) parses commentary-channel JSON into validated plans/batches. An Environment Snapshot (agent flags, open windows, last trace; DOM summary by default) is prepended to prompts to increase context-awareness without leaking unsafe content.
 
 ### Aggregator
 
