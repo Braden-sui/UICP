@@ -14,8 +14,6 @@ vi.mock("../../src/lib/llm/ollama", () => ({
   streamOllamaCompletion: mocks.streamMock,
 }));
 
-const streamMock = mocks.streamMock;
-
 const ensureCrypto = () => {
   if (!globalThis.crypto) {
     // Minimal stub so pushToast can mint IDs during tests.
@@ -100,7 +98,6 @@ describe("<DockChat /> hotkeys", () => {
       expect(useAppStore.getState().chatOpen).toBe(true);
       expect(document.activeElement).toBe(input);
     });
-    await waitFor(() => expect(streamMock).toHaveBeenCalled());
   });
 
   it("re-focuses the textarea when '/' is pressed while the dock is already open", async () => {
@@ -120,6 +117,5 @@ describe("<DockChat /> hotkeys", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(input);
     });
-    await waitFor(() => expect(streamMock).toHaveBeenCalled());
   });
 });

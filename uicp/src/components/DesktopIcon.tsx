@@ -1,7 +1,6 @@
 import { useCallback, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import clsx from 'clsx';
 import type { DesktopShortcutPosition } from '../state/app';
-import { LiquidGlass } from '@liquidglass/react';
 
 const ICON_WIDTH = 96; // Tailwind w-24
 const ICON_HEIGHT = 104; // Icon + label stack footprint
@@ -138,24 +137,14 @@ const DesktopIcon = ({
       onPointerUp={endPointerTracking}
       onPointerCancel={endPointerTracking}
     >
-      <LiquidGlass
-        borderRadius={16}
-        blur={0.3}
-        contrast={1.12}
-        brightness={1.05}
-        saturation={1.08}
-        shadowIntensity={0.25}
-        elasticity={0.6}
+      <div
+        className={clsx(
+          'flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-200/70 bg-white/80 shadow-xl backdrop-blur',
+          active && 'ring-2 ring-slate-500',
+        )}
       >
-        <div
-          className={clsx(
-            'flex h-16 w-16 items-center justify-center border border-slate-200/70 bg-white/80 shadow-xl backdrop-blur',
-            active && 'ring-2 ring-slate-500',
-          )}
-        >
-          {icon}
-        </div>
-      </LiquidGlass>
+        {icon}
+      </div>
       <span className={clsx('text-center text-xs font-semibold', active ? 'text-slate-900' : 'text-slate-700')}>
         {label}
       </span>

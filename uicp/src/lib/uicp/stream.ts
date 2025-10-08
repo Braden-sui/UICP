@@ -1,4 +1,5 @@
 import { enqueueBatch } from './queue';
+import type { ApplyOutcome } from './adapter';
 import type { Batch } from './schemas';
 
 // Minimal streaming aggregator for Ollama Cloud/OpenAI SSE chunks.
@@ -51,7 +52,7 @@ const extractChannelContent = (payload: OllamaChunk): { channel?: string; conten
 };
 
 // Optional onBatch allows the caller to gate application (e.g., Full Control)
-export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<void> | void) => {
+export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<ApplyOutcome | void> | ApplyOutcome | void) => {
   let commentaryBuffer = '';
   let finalBuffer = '';
 
@@ -100,13 +101,16 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<void>
     const batch = tryExtractBatch(candidate as unknown);
     if (batch && Array.isArray(batch) && batch.length > 0) {
       try {
-        if (onBatch) {
-          await onBatch(batch);
-        } else {
-          await enqueueBatch(batch);
+        // Bubble queue results so streaming runs fail immediately instead of logging-and-continuing.
+        const outcome = onBatch ? await onBatch(batch) : await enqueueBatch(batch);
+        const applied = outcome ?? { success: true, applied: batch.length, errors: [] };
+        if (!applied.success) {
+          const details = applied.errors.join('; ');
+          throw new Error(details || 'enqueueBatch reported failure');
         }
       } catch (err) {
         console.error('enqueueBatch failed', err);
+        throw err instanceof Error ? err : new Error(String(err));
       }
     }
   };

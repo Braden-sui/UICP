@@ -565,7 +565,8 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
           idempotencyKey: cmd.id,
         };
 
-        const result = applyCommand(envelope);
+        // Await each replay so persistence or DOM errors fail loud instead of silently skipping.
+        const result = await applyCommand(envelope);
         if (result.success) {
           applied += 1;
         } else {
@@ -883,7 +884,7 @@ const getStateValue = (params: OperationParamMap["state.get"]) => {
   return scopeStore.get(key);
 };
 
-const applyCommand = (command: Envelope): CommandResult => {
+const applyCommand = async (command: Envelope): Promise<CommandResult> => {
   switch (command.op) {
     case "window.create": {
       const params = command.params as OperationParamMap["window.create"];
@@ -1005,9 +1006,13 @@ const applyCommand = (command: Envelope): CommandResult => {
           const contents = String(body.contents ?? '');
           const dirToken = String(body.directory ?? 'Desktop');
           const dir = (BaseDirectory as unknown as Record<string, BaseDirectory>)[dirToken] ?? BaseDirectory.Desktop;
-          void writeTextFile(path, contents, { baseDir: dir }).catch((err: unknown) => {
-            console.error('tauri fs write failed', err);
-          });
+          try {
+            // Do not fire-and-forget; persist failures so the calling batch aborts and surfaces to the user.
+            await writeTextFile(path, contents, { baseDir: dir });
+          } catch (error) {
+            console.error('tauri fs write failed', { path, directory: dirToken, error });
+            return toFailure(error);
+          }
           return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
         }
         // UICP intent dispatch: hand off to app chat pipeline
@@ -1035,7 +1040,18 @@ const applyCommand = (command: Envelope): CommandResult => {
             init.body = typeof params.body === 'string' ? params.body : JSON.stringify(params.body);
             init.headers = { 'content-type': 'application/json', ...(params.headers ?? {}) };
           }
-          void fetch(url, init).catch((err) => console.error('api.call fetch failed', err));
+          try {
+            // Fail loud when remote endpoints reject or networking breaks so queues don't report false success.
+            const response = await fetch(url, init);
+            if (!response.ok) {
+              const statusText = response.statusText?.trim();
+              const label = statusText ? `${response.status} ${statusText}` : `${response.status}`;
+              return { success: false, error: `HTTP ${label}` };
+            }
+          } catch (error) {
+            console.error('api.call fetch failed', { url, error });
+            return toFailure(error);
+          }
           return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
         }
         // Unknown scheme: treat as no-op success for now
@@ -1065,20 +1081,24 @@ export type ApplyOutcome = {
 };
 
 export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
-  const plannedJobs: Array<() => void> = [];
+  const plannedJobs: Array<() => Promise<void>> = [];
   const errors: string[] = [];
   let applied = 0;
 
   for (const command of batch) {
-    plannedJobs.push(() => {
-      const result = applyCommand(command);
-      if (result.success) {
-        applied += 1;
-        // Persist command for replay on restart (async, fire-and-forget)
-        void persistCommand(command);
-        return;
+    plannedJobs.push(async () => {
+      try {
+        const result = await applyCommand(command);
+        if (result.success) {
+          applied += 1;
+          // Persist command for replay on restart (async, fire-and-forget)
+          void persistCommand(command);
+          return;
+        }
+        errors.push(`${command.op}: ${result.error}`);
+      } catch (error) {
+        errors.push(`${command.op}: ${error instanceof Error ? error.message : String(error)}`);
       }
-      errors.push(`${command.op}: ${result.error}`);
     });
   }
 
@@ -1088,8 +1108,17 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
 
   await new Promise<void>((resolve) => {
     coalescer.schedule(() => {
-      for (const job of plannedJobs) job();
-      resolve();
+      // Execute sequentially inside the animation frame so DOM mutations remain ordered even with awaits.
+      (async () => {
+        for (const job of plannedJobs) {
+          // eslint-disable-next-line no-await-in-loop
+          await job();
+        }
+        resolve();
+      })().catch((error) => {
+        errors.push(error instanceof Error ? error.message : String(error));
+        resolve();
+      });
     });
   });
 

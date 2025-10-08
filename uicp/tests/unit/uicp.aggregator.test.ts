@@ -1,4 +1,4 @@
-jimport { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createOllamaAggregator } from '../../src/lib/uicp/stream';
 import type { Batch } from '../../src/lib/uicp/schemas';
 
@@ -68,5 +68,18 @@ describe('uicp stream aggregator', () => {
     expect(batch.length).toBe(1);
     expect(batch[0].op).toBe('window.create');
   });
-});
 
+  it('throws when downstream batch application reports failure', async () => {
+    const onBatch = vi.fn(async () => ({ success: false, applied: 0, errors: ['apply failed'] }));
+    const agg = createOllamaAggregator(onBatch);
+    const payload = [{ op: 'window.create', params: { title: 'Boom' } }];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: JSON.stringify(payload) } }] }));
+      await expect(agg.flush()).rejects.toThrow('apply failed');
+      expect(onBatch).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});

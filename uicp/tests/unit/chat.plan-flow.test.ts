@@ -201,5 +201,34 @@ describe('chat.plan-flow', () => {
     expect(status.phase).toBe('idle');
     expect(status.applyMs).not.toBeNull();
   });
+
+  it('surfaces planner failure details when orchestrator falls back', async () => {
+    useAppStore.setState({ agentMode: 'live', fullControl: false, fullControlLocked: false });
+    const fallbackPlan = validatePlan({
+      summary: 'Planner degraded: using actor-only',
+      risks: ['planner_error: upstream offline'],
+      batch: [],
+    });
+    runIntentMock.mockResolvedValueOnce({
+      plan: fallbackPlan,
+      batch: validateBatch([]),
+      notice: 'planner_fallback',
+      traceId: 'trace-fail',
+      timings: { planMs: 12, actMs: 34 },
+      channels: { planner: 'commentary' },
+      autoApply: false,
+      failures: { planner: 'upstream offline' },
+    });
+
+    const { sendMessage } = useChatStore.getState();
+    const promise = sendMessage('trigger failure');
+    await vi.advanceTimersByTimeAsync(200);
+    await promise;
+
+    const systemMessages = useChatStore.getState().messages.filter((msg) => msg.role === 'system');
+    expect(systemMessages.some((msg) => msg.content.includes('upstream offline'))).toBe(true);
+    const telemetry = useAppStore.getState().telemetry;
+    expect(telemetry[0]?.error).toContain('upstream offline');
+  });
 });
 

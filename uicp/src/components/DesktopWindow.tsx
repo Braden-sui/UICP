@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import clsx from 'clsx';
-import { LiquidGlass } from '@liquidglass/react';
 
 export type DesktopWindowProps = {
   id: string;
@@ -142,36 +141,25 @@ const DesktopWindow = ({
         aria-labelledby={titleId}
         data-desktop-window={id}
       >
-        <LiquidGlass
-          borderRadius={16}
-          blur={0.35}
-          contrast={1.18}
-          brightness={1.06}
-          saturation={1.12}
-          shadowIntensity={0.28}
-          elasticity={0.65}
-          className="h-full"
+        <div
+          className={clsx(
+            'flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200/60 bg-white/90 backdrop-blur transition-all duration-200',
+            dragging ? 'scale-[1.01] shadow-[0_25px_60px_rgba(0,0,0,0.18)]' : 'shadow-[0_20px_50px_rgba(0,0,0,0.12),0_8px_20px_rgba(0,0,0,0.08)]',
+          )}
         >
           <div
-            className={clsx(
-              'flex h-full flex-col overflow-hidden border border-slate-200/60 bg-white/90 backdrop-blur transition-all duration-200',
-              dragging ? 'scale-[1.01] shadow-[0_25px_60px_rgba(0,0,0,0.18)]' : 'shadow-[0_20px_50px_rgba(0,0,0,0.12),0_8px_20px_rgba(0,0,0,0.08)]',
-            )}
+            className={chromeClasses}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={endPointerTracking}
+            onPointerCancel={endPointerTracking}
           >
-            <div
-              className={chromeClasses}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={endPointerTracking}
-              onPointerCancel={endPointerTracking}
-            >
-              <span id={titleId} className="truncate text-center">
-                {title}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto bg-white/70 px-4 py-3 text-sm text-slate-700">{children}</div>
+            <span id={titleId} className="truncate text-center">
+              {title}
+            </span>
           </div>
-        </LiquidGlass>
+          <div className="flex-1 overflow-y-auto bg-white/70 px-4 py-3 text-sm text-slate-700">{children}</div>
+        </div>
       </div>
     </div>
   );

@@ -192,6 +192,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             );
           }
           notice = result.notice;
+          const plannerFailure = result.failures?.planner;
+          const actorFailure = result.failures?.actor;
           const safePlan = validatePlan({ summary: result.plan.summary, risks: result.plan.risks, batch: result.plan.batch });
           const safeBatch = validateBatch(result.batch);
           summary = safePlan.summary;
@@ -207,23 +209,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
             planMs: planDuration,
             actMs: actDuration,
           });
-          app.upsertTelemetry(traceId, {
+          const telemetryPatch: Parameters<typeof app.upsertTelemetry>[1] = {
             summary,
             startedAt,
             planMs: planDuration,
             actMs: actDuration,
             batchSize: batch.length,
             status: autoApply || (app.fullControl && !app.fullControlLocked) ? 'applying' : 'acting',
-          });
+          };
+          const failureMessages = [plannerFailure, actorFailure].filter((msg): msg is string => Boolean(msg));
+          if (failureMessages.length > 0) {
+            telemetryPatch.error = failureMessages.join('; ');
+          }
+          app.upsertTelemetry(traceId, telemetryPatch);
           const plannerRisks = (safePlan.risks ?? []).filter((risk) => !risk.trim().toLowerCase().startsWith('clarifier:'));
           if (plannerRisks.length > 0) {
             const lines = plannerRisks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
             get().pushSystemMessage(`Planner hints${traceId ? ` [${traceId}]` : ''}:\n${lines}`, 'planner_hints');
           }
           if (notice === 'planner_fallback') {
-            get().pushSystemMessage('Planner degraded: using actor-only fallback for this intent.', 'planner_fallback');
+            const message = plannerFailure
+              ? `Planner degraded: ${plannerFailure}`
+              : 'Planner degraded: using actor-only fallback for this intent.';
+            get().pushSystemMessage(message, 'planner_fallback');
           } else if (notice === 'actor_fallback') {
-            get().pushSystemMessage('Actor failed to produce a batch. Showing a safe error window.', 'actor_fallback');
+            const message = actorFailure
+              ? `Actor failed to produce a batch: ${actorFailure}`
+              : 'Actor failed to produce a batch. Showing a safe error window.';
+            get().pushSystemMessage(message, 'actor_fallback');
+          }
+          if (plannerFailure && notice !== 'planner_fallback') {
+            get().pushSystemMessage(
+              `Planner error${traceId ? ` [${traceId}]` : ''}: ${plannerFailure}`,
+              'planner_error',
+            );
+          }
+          if (actorFailure && notice !== 'actor_fallback') {
+            get().pushSystemMessage(
+              `Actor error${traceId ? ` [${traceId}]` : ''}: ${actorFailure}`,
+              'actor_error',
+            );
           }
         } finally {
           app.setSuppressAutoApply(false);

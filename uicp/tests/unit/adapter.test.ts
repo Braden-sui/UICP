@@ -1,4 +1,5 @@
-﻿import { describe, it, expect, beforeEach } from 'vitest';
+﻿import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as fsPlugin from '@tauri-apps/plugin-fs';
 import { applyBatch, registerWorkspaceRoot, resetWorkspace, closeWorkspaceWindow, listWorkspaceWindows } from '../../src/lib/uicp/adapter';
 import { validateBatch } from '../../src/lib/uicp/schemas';
 import { nextFrame } from '../../src/lib/utils';
@@ -31,6 +32,7 @@ describe('adapter.applyBatch', () => {
     const outcome = await applyBatch(batch);
     await nextFrame();
     expect(outcome.success).toBe(true);
+    expect(outcome.errors).toEqual([]);
     expect(document.querySelector('[data-testid="payload"]')).not.toBeNull();
 
     const { invokeMock } = getTauriMocks();
@@ -96,6 +98,7 @@ describe('adapter.applyBatch', () => {
     const outcome = await applyBatch(clarifierBatch);
     await nextFrame();
     expect(outcome.success).toBe(true);
+    expect(outcome.errors).toEqual([]);
 
     const windowEl = document.querySelector('[data-window-id]');
     expect(windowEl).not.toBeNull();
@@ -116,5 +119,58 @@ describe('adapter.applyBatch', () => {
     const persistCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === 'persist_command');
     expect(persistCalls.length).toBe(0);
   });
-});
 
+  it('fails loudly when api.call network request rejects', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockRejectedValue(new Error('network offline'));
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const batch = validateBatch([
+        {
+          op: 'api.call',
+          params: {
+            url: 'https://example.test/data',
+            method: 'POST',
+            body: { ping: true },
+          },
+        },
+      ]);
+
+      const outcome = await applyBatch(batch);
+      await nextFrame();
+      expect(outcome.success).toBe(false);
+      expect(outcome.errors[0]).toContain('api.call');
+      expect(outcome.errors[0]).toContain('network offline');
+    } finally {
+      errorSpy.mockRestore();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('fails loudly when tauri fs write rejects', async () => {
+    const writeSpy = vi.spyOn(fsPlugin, 'writeTextFile').mockRejectedValue(new Error('fs denied'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const batch = validateBatch([
+        {
+          op: 'api.call',
+          params: {
+            url: 'tauri://fs/writeTextFile',
+            body: { path: 'note.txt', contents: 'hi there', directory: 'Downloads' },
+          },
+        },
+      ]);
+
+      const outcome = await applyBatch(batch);
+      await nextFrame();
+      expect(outcome.success).toBe(false);
+      expect(outcome.errors[0]).toContain('api.call');
+      expect(outcome.errors[0]).toContain('fs denied');
+    } finally {
+      errorSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+  });
+});

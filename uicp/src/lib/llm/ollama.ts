@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 export type StreamEvent =
   | { type: 'content'; channel?: string; text: string }
   | { type: 'tool_call'; index: number; id?: string; name?: string; arguments: string; isDelta: boolean }
+  | { type: 'return'; channel?: string; name?: string; result: unknown }
   | { type: 'done' };
 
 export type ChatMessage = { role: string; content: string | Record<string, unknown> };

@@ -61,6 +61,18 @@ export async function initializeTauriBridge() {
     );
   }
 
+  let aggregatorFailed = false;
+  const handleAggregatorError = (error: unknown) => {
+    if (aggregatorFailed) return;
+    aggregatorFailed = true;
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('ollama aggregator failed', { error: message });
+    const appState = useAppStore.getState();
+    appState.setStreaming(false);
+    appState.pushToast({ variant: 'error', message: `Streaming apply failed: ${message}` });
+    useChatStore.getState().pushSystemMessage(`Failed to apply streaming batch: ${message}`, 'ollama_stream_error');
+  };
+
   const aggregator = createOllamaAggregator(async (batch) => {
     const app = useAppStore.getState();
     // If an orchestrator-managed run is in flight, avoid duplicate apply/preview.
@@ -69,7 +81,10 @@ export async function initializeTauriBridge() {
 
     const canAutoApply = app.fullControl && !app.fullControlLocked;
     if (canAutoApply) {
-      await enqueueBatch(batch);
+      const outcome = await enqueueBatch(batch);
+      if (!outcome.success) {
+        throw new Error(outcome.errors.join('; ') || 'enqueueBatch failed');
+      }
       return;
     }
     const chat = useChatStore.getState();
@@ -113,14 +128,27 @@ export async function initializeTauriBridge() {
       const payload = event.payload as { done?: boolean; delta?: unknown } | undefined;
       if (!payload) return;
       if (payload.done) {
-        await aggregator.flush();
+        try {
+          await aggregator.flush();
+        } catch (error) {
+          handleAggregatorError(error);
+        }
         useAppStore.getState().setStreaming(false);
+        aggregatorFailed = false;
         return;
       }
       if (payload.delta !== undefined) {
         const text = typeof payload.delta === 'string' ? payload.delta : JSON.stringify(payload.delta);
-        await aggregator.processDelta(text);
-        useAppStore.getState().setStreaming(true);
+        try {
+          // Reset failure latch when a new stream starts so future runs can surface their own errors.
+          if (!useAppStore.getState().streaming) {
+            aggregatorFailed = false;
+          }
+          await aggregator.processDelta(text);
+          useAppStore.getState().setStreaming(true);
+        } catch (error) {
+          handleAggregatorError(error);
+        }
       }
     }),
   );

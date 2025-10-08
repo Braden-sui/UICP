@@ -1,11 +1,107 @@
 import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
-import { decodeHarmonyPlan, decodeHarmonyBatch, harmonyHasMissingEnd } from './harmony';
 import type { StreamEvent } from './ollama';
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
 import { createId } from '../utils';
 
 const toJsonSafe = (s: string) => s.replace(/```(json)?/gi, '').trim();
+
+const normaliseHarmonyPayload = (data: unknown): unknown => {
+  const tryParseJsonString = (input: string): unknown | undefined => {
+    const cleaned = toJsonSafe(input);
+    const trimmed = cleaned.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const extractTextCandidate = (block: unknown): string | undefined => {
+    if (!block) return undefined;
+    if (typeof block === 'string') return block;
+    if (typeof block !== 'object') return undefined;
+    const record = block as Record<string, unknown>;
+    let direct: string | undefined;
+    const textField = record.text;
+    if (typeof textField === 'string') {
+      direct = textField;
+    } else if (Array.isArray(textField)) {
+      direct = textField.map((entry) => (typeof entry === 'string' ? entry : extractTextCandidate(entry))).filter(Boolean).join('');
+    } else if (typeof record.value === 'string') {
+      direct = record.value as string;
+    } else if (Array.isArray(record.value)) {
+      direct = (record.value as unknown[]).map((entry) => (typeof entry === 'string' ? entry : extractTextCandidate(entry))).filter(Boolean).join('');
+    } else if (typeof record.content === 'string') {
+      direct = record.content as string;
+    } else if (Array.isArray(record.content)) {
+      const combined = (record.content as unknown[]).map((entry) => extractTextCandidate(entry)).filter(Boolean).join('');
+      direct = combined.length > 0 ? combined : undefined;
+    } else if (typeof record.output_text === 'string') {
+      direct = record.output_text as string;
+    } else if (Array.isArray(record.output_text)) {
+      direct = (record.output_text as unknown[]).map((entry) => (typeof entry === 'string' ? entry : extractTextCandidate(entry))).filter(Boolean).join('');
+    } else if (typeof record.data === 'string') {
+      direct = record.data as string;
+    }
+    if (direct && direct.trim().length > 0) return direct;
+    if (Array.isArray(record.content)) {
+      for (const entry of record.content) {
+        const nested = extractTextCandidate(entry);
+        if (nested) return nested;
+      }
+    }
+    if (Array.isArray(record.parts)) {
+      for (const entry of record.parts) {
+        const nested = extractTextCandidate(entry);
+        if (nested) return nested;
+      }
+    }
+    return undefined;
+  };
+
+  const extractFromMessage = (message: unknown): unknown | undefined => {
+    if (!message || typeof message !== 'object') return undefined;
+    const record = message as Record<string, unknown>;
+    const content = record.content;
+    if (typeof content === 'string') {
+      return tryParseJsonString(content);
+    }
+    if (Array.isArray(content)) {
+      for (const entry of content) {
+        const candidate = extractTextCandidate(entry);
+        if (candidate) {
+          const parsed = tryParseJsonString(candidate);
+          if (parsed !== undefined) return parsed;
+        }
+      }
+    }
+    const text = extractTextCandidate(record);
+    if (text) {
+      const parsed = tryParseJsonString(text);
+      if (parsed !== undefined) return parsed;
+    }
+    return undefined;
+  };
+
+  if (!data || typeof data !== 'object') {
+    return data;
+  }
+  const record = data as Record<string, unknown>;
+  if (record.message) {
+    const extracted = extractFromMessage(record.message);
+    if (extracted !== undefined) return extracted;
+  }
+  const choices = record.choices;
+  if (Array.isArray(choices)) {
+    for (const choice of choices) {
+      const extracted = extractFromMessage((choice as Record<string, unknown>).message);
+      if (extracted !== undefined) return extracted;
+    }
+  }
+  return data;
+};
 
 const readEnvMs = (key: string, fallback: number): number => {
   // Vite exposes env via import.meta.env; coerce string → number if valid
@@ -19,6 +115,14 @@ const DEFAULT_PLANNER_TIMEOUT_MS = readEnvMs('VITE_PLANNER_TIMEOUT_MS', 120_000)
 const DEFAULT_ACTOR_TIMEOUT_MS = readEnvMs('VITE_ACTOR_TIMEOUT_MS', 180_000);
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const toError = (input: unknown): Error => (input instanceof Error ? input : new Error(String(input)));
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
 export type RunIntentPhaseDetail =
   | { phase: 'planning'; traceId: string }
@@ -36,6 +140,7 @@ export type RunIntentResult = {
   timings: { planMs: number; actMs: number };
   channels?: { planner?: string; actor?: string };
   autoApply?: boolean;
+  failures?: { planner?: string; actor?: string };
 };
 
 type ChannelCollectors = {
@@ -45,17 +150,22 @@ type ChannelCollectors = {
 
 async function collectJsonFromChannels<T = unknown>(
   stream: AsyncIterable<StreamEvent>,
-  options?: { timeoutMs?: number } & ChannelCollectors,
+  options?: { timeoutMs?: number; preferReturn?: boolean } & ChannelCollectors,
 ): Promise<{ data: T; channelUsed?: string }> {
   const iterator = stream[Symbol.asyncIterator]();
-  const primarySet = new Set((options?.primaryChannels ?? ['commentary']).map((c) => c.toLowerCase()));
-  const fallbackSet = new Set((options?.fallbackChannels ?? []).map((c) => c.toLowerCase()));
+  const primaryChannels = options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['commentary'];
+  const fallbackChannels = options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? [];
+  const primarySet = new Set(primaryChannels);
+  const fallbackSet = new Set(fallbackChannels);
   let primaryBuf = '';
   let fallbackBuf = '';
+  let primaryChannelUsed: string | undefined;
+  let fallbackChannelUsed: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const timeoutMs = options?.timeoutMs ?? 35_000;
   const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
+  const preferReturn = options?.preferReturn ?? false; // Harmony adapters emit typed return events we can short-circuit on.
 
   const parseBuffer = (input: string) => {
     const raw = toJsonSafe(input);
@@ -78,24 +188,34 @@ async function collectJsonFromChannels<T = unknown>(
 
   const consume = (async () => {
     let parsed: T | undefined;
-    let used: string | undefined;
     try {
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;
         const event = value as StreamEvent;
         if (event.type === 'done') break;
-        if (event.type === 'content') {
-          const channel = event.channel?.toLowerCase();
-          const isPrimary = !channel || primarySet.has(channel);
-          const isFallback = channel ? fallbackSet.has(channel) : false;
-          if (isPrimary) {
-            primaryBuf += event.text;
-          // Attempt fast-path parse on each chunk: if a full JSON object/array is present, parse and stop streaming.
+        if (preferReturn && event.type === 'return') {
+          const channel = (event.channel ?? 'final').toLowerCase();
+          if (typeof iterator.return === 'function') {
+            try {
+              await iterator.return();
+            } catch {
+              // ignore iterator return errors
+            }
+          }
+          const result = normaliseHarmonyPayload(event.result);
+          return { data: result as T, channelUsed: channel };
+        }
+        if (event.type !== 'content') continue;
+        const channel = event.channel?.toLowerCase();
+        const isPrimary = !channel || primarySet.has(channel);
+        const isFallback = channel ? fallbackSet.has(channel) : false;
+        if (isPrimary) {
+          primaryBuf += event.text;
+          primaryChannelUsed = channel ?? primaryChannels[0] ?? 'commentary';
           try {
             parsed = parseBuffer(primaryBuf);
-            used = Array.from(primarySet)[0] ?? 'commentary';
-            // If parse succeeds, stop upstream stream early to cut latency and token usage.
+            parsed = normaliseHarmonyPayload(parsed) as T;
             if (typeof iterator.return === 'function') {
               try {
                 await iterator.return();
@@ -103,20 +223,25 @@ async function collectJsonFromChannels<T = unknown>(
                 // ignore iterator return errors
               }
             }
-            return { data: parsed as T, channelUsed: used };
+            return { data: parsed as T, channelUsed: primaryChannelUsed };
           } catch {
-            // keep accumulating until valid JSON is detected or stream ends
+            // continue accumulating until buffer parses
           }
-          } else if (isFallback) {
-            fallbackBuf += event.text;
-          }
+        } else if (isFallback) {
+          fallbackBuf += event.text;
+          fallbackChannelUsed = channel;
         }
       }
       if (primaryBuf.trim().length) {
-        return { data: parseBuffer(primaryBuf), channelUsed: Array.from(primarySet)[0] };
+        const payload = normaliseHarmonyPayload(parseBuffer(primaryBuf));
+        return { data: payload as T, channelUsed: primaryChannelUsed ?? primaryChannels[0] ?? 'commentary' };
       }
       if (fallbackBuf.trim().length) {
-        return { data: parseBuffer(fallbackBuf), channelUsed: Array.from(fallbackSet)[0] };
+        const payload = normaliseHarmonyPayload(parseBuffer(fallbackBuf));
+        return {
+          data: payload as T,
+          channelUsed: fallbackChannelUsed ?? fallbackChannels[0] ?? 'commentary',
+        };
       }
       throw new Error('Model did not emit parsable JSON on expected channels');
     } finally {
@@ -150,65 +275,6 @@ async function collectJsonFromChannels<T = unknown>(
   }
 }
 
-async function collectHarmonyTurn(
-  stream: AsyncIterable<StreamEvent>,
-  timeoutMs = 35_000,
-): Promise<string> {
-  const iterator = stream[Symbol.asyncIterator]();
-  let buffer = '';
-  let finalBuffer = '';
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
-
-  const consume = (async () => {
-    try {
-      while (true) {
-        const { value, done } = await iterator.next();
-        if (done) break;
-        const event = value as StreamEvent;
-        if (event.type === 'done') break;
-        if (event.type === 'content') {
-          const channel = event.channel?.toLowerCase();
-          if (channel === 'final') {
-            finalBuffer += event.text;
-          } else {
-            buffer += event.text;
-          }
-        }
-      }
-      return finalBuffer.trim().length > 0 ? finalBuffer : buffer;
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-    }
-  })();
-
-  const timeoutPromise = new Promise<string>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      reject(timeoutError);
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([consume, timeoutPromise]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-    if (timedOut && typeof iterator.return === 'function') {
-      try {
-        await iterator.return();
-      } catch {
-        // ignore iterator return errors
-      }
-    }
-  }
-}
-
 export async function planWithProfile(
   intent: string,
   options?: { timeoutMs?: number; profileKey?: PlannerProfileKey },
@@ -219,23 +285,11 @@ export async function planWithProfile(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamIntent(intent, { profileKey: profile.key });
-      if (profile.responseMode === 'harmony') {
-        const raw = await collectHarmonyTurn(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
-        const decoded = decodeHarmonyPlan(raw);
-        if (harmonyHasMissingEnd(decoded)) {
-          throw new Error(decoded.error.message);
-        }
-        let json: unknown;
-        try {
-          json = JSON.parse(decoded.planText);
-        } catch {
-          throw new Error('Harmony planner final output is not valid JSON');
-        }
-        const plan = validatePlan(json);
-        return { plan, channelUsed: decoded.channel };
-      }
       const { data, channelUsed } = await collectJsonFromChannels(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS,
+        preferReturn: profile.responseMode === 'harmony',
+        primaryChannels: profile.responseMode === 'harmony' ? ['final', 'commentary'] : ['commentary'],
+        fallbackChannels: profile.responseMode === 'harmony' ? ['commentary'] : [],
       });
       return { plan: validatePlan(data), channelUsed };
     } catch (err) {
@@ -297,25 +351,14 @@ export async function actWithProfile(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamPlan(planJson, { profileKey: profile.key });
-      if (profile.responseMode === 'harmony') {
-        const raw = await collectHarmonyTurn(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
-        const decoded = decodeHarmonyBatch(raw);
-        if (harmonyHasMissingEnd(decoded)) {
-          throw new Error(decoded.error.message);
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(decoded.batchText);
-        } catch {
-          throw new Error('Harmony actor final output is not valid JSON');
-        }
-        const batchData = Array.isArray(parsed) ? parsed : (parsed as { batch?: unknown })?.batch;
-        return { batch: validateBatch(batchData), channelUsed: decoded.channel };
-      }
       const { data, channelUsed } = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS,
+        preferReturn: profile.responseMode === 'harmony',
+        primaryChannels: profile.responseMode === 'harmony' ? ['final', 'commentary'] : ['commentary'],
+        fallbackChannels: profile.responseMode === 'harmony' ? ['commentary'] : [],
       });
-      return { batch: validateBatch(data?.batch as unknown), channelUsed };
+      const payload = Array.isArray(data) ? data : (data as { batch?: unknown })?.batch;
+      return { batch: validateBatch(payload as unknown), channelUsed };
     } catch (err) {
       lastErr = err;
     }
@@ -342,6 +385,7 @@ export async function runIntent(
   let notice: 'planner_fallback' | 'actor_fallback' | undefined;
   const traceId = createId('trace');
   const txnId = createId('txn');
+  const failures: RunIntentResult['failures'] = {};
 
   hooks?.onPhaseChange?.({ phase: 'planning', traceId });
 
@@ -354,10 +398,17 @@ export async function runIntent(
     const out = await planWithProfile(text, { profileKey: options?.plannerProfileKey });
     plan = out.plan;
     plannerChannelUsed = out.channelUsed;
-  } catch {
+  } catch (err) {
+    const failure = toError(err);
     // Planner degraded: proceed with actor-only fallback using the raw intent as summary
     notice = 'planner_fallback';
-    const fallback = validatePlan({ summary: `Planner degraded: using actor-only`, batch: [] });
+    failures.planner = failure.message;
+    console.error('planner failed', { traceId, error: failure });
+    const fallback = validatePlan({
+      summary: `Planner degraded: using actor-only`,
+      batch: [],
+      risks: [`planner_error: ${failure.message}`],
+    });
     plan = fallback;
   }
   const isClarifier = isStructuredClarifierPlan(plan);
@@ -391,9 +442,12 @@ export async function runIntent(
     const out = await actWithProfile(plan, { profileKey: options?.actorProfileKey });
     batch = out.batch;
     actorChannelUsed = out.channelUsed;
-  } catch {
+  } catch (err) {
+    const failure = toError(err);
     // Actor failed: return a safe error window batch to surface failure without partial apply
     notice = 'actor_fallback';
+    failures.actor = failure.message;
+    console.error('actor failed', { traceId, error: failure });
     const errorWin: Envelope<'window.create'> = {
       op: 'window.create',
       idempotencyKey: createId('idemp'),
@@ -401,6 +455,7 @@ export async function runIntent(
       txnId,
       params: { id: createId('window'), title: 'Action Failed', width: 520, height: 320, x: 80, y: 80 },
     };
+    const safeMessage = escapeHtml(failure.message);
     const errorDom: Envelope<'dom.set'> = {
       op: 'dom.set',
       idempotencyKey: createId('idemp'),
@@ -409,7 +464,7 @@ export async function runIntent(
       params: {
         windowId: errorWin.params.id!,
         target: '#root',
-        html: `<div class="space-y-2"><h2 class="text-base font-semibold text-slate-800">Unable to apply plan</h2><p class="text-sm text-slate-600">The actor failed to produce a valid batch for this intent.</p></div>`,
+        html: `<div class="space-y-2"><h2 class="text-base font-semibold text-slate-800">Unable to apply plan</h2><p class="text-sm text-slate-600">The actor failed to produce a valid batch for this intent.</p><pre class="rounded bg-slate-100 p-2 text-xs text-slate-700">${safeMessage}</pre></div>`,
       },
     };
     batch = validateBatch([errorWin, errorDom]);
@@ -432,5 +487,6 @@ export async function runIntent(
     traceId,
     timings: { planMs, actMs },
     channels: { planner: plannerChannelUsed, actor: actorChannelUsed },
+    failures: Object.keys(failures).length > 0 ? failures : undefined,
   };
 }
