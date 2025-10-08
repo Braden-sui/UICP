@@ -2,8 +2,8 @@ import plannerPrompt from '../../prompts/planner.txt?raw';
 import actorPrompt from '../../prompts/actor.txt?raw';
 import type { ChatMessage, ToolSpec } from './ollama';
 
-export type PlannerProfileKey = 'deepseek';
-export type ActorProfileKey = 'qwen';
+export type PlannerProfileKey = 'deepseek' | 'kimi';
+export type ActorProfileKey = 'qwen' | 'kimi';
 
 export interface PlannerProfile {
   key: PlannerProfileKey;
@@ -34,6 +34,17 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
       { role: 'user', content: intent },
     ],
   },
+  kimi: {
+    key: 'kimi',
+    label: 'Kimi K2',
+    description: 'Planner prompt for Kimi-k2:1t.',
+    defaultModel: 'kimi-k2:1t',
+    capabilities: { channels: ['commentary'], supportsTools: true },
+    formatMessages: (intent) => [
+      { role: 'system', content: plannerPrompt.trim() },
+      { role: 'user', content: intent },
+    ],
+  },
 };
 
 const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
@@ -41,6 +52,17 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     key: 'qwen',
     label: 'Qwen3-Coder 480B',
     description: 'Legacy actor prompt tuned for Qwen tool calling.',
+    capabilities: { channels: ['commentary'], supportsTools: true },
+    formatMessages: (planJson) => [
+      { role: 'system', content: actorPrompt.trim() },
+      { role: 'user', content: planJson },
+    ],
+  },
+  kimi: {
+    key: 'kimi',
+    label: 'Kimi K2',
+    description: 'Actor prompt for Kimi-k2:1t.',
+    defaultModel: 'kimi-k2:1t',
     capabilities: { channels: ['commentary'], supportsTools: true },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
