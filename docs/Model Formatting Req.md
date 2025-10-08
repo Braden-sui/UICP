@@ -1,9 +1,12 @@
-Formatting conversations for Ollama’s cloud models
+Prompt formatting for DeepSeek, Qwen, and Kimi (Ollama Cloud and local)
 
-Purpose of this document – Ollama Cloud gives you access to very large open‑weight models like gpt‑oss‑20b‑cloud, gpt‑oss‑120b‑cloud, qwen3‑coder‑480b‑cloud and deepseek‑v3.1‑cloud. These models are exposed through chat‑style APIs and each expects a specific prompt format. Providing the right structure allows the model to understand your instructions, to return intermediate reasoning when available, and to call functions. This document summarises formatting guidelines and includes code examples for each model.
+This guide replaces legacy GPT-OSS/Harmony guidance. It describes how to format requests and outputs for the current stack.
 
-Important: The instructions below refer to the cloud models hosted by Ollama. Models served locally via the ollama CLI may use different chat templates and should not be confused with the cloud endpoints.
-
+Scope and endpoints
+- Cloud host: https://ollama.com
+- Local daemon (OpenAI-compatible): http://127.0.0.1:11434/v1
+- Cloud auth: Authorization: Bearer <api-key>
+- Model IDs: use colon-tag IDs (e.g., deepseek-v3.1:671b, qwen3-coder:480b, kimi-k2:1t). Do not use -cloud suffixes.
 Authentication: All Ollama Cloud requests use `Authorization: Bearer <api-key>` as documented at https://docs.ollama.com/cloud.
 
 Model naming: Cloud endpoints expect hyphen-delimited tags (e.g., `gpt-oss-120b-cloud`); the local Ollama CLI retains colon tags (e.g., `gpt-oss:120b`). The bridge normalizes automatically.

@@ -1,5 +1,7 @@
 # Harmony Samples (Synthetic)
 
+Deprecated: Harmony support has been removed from the current runtime. This file is retained for historical reference and potential parser tests only. Do not implement Harmony in production flows.
+
 These are spec-accurate, synthetic Harmony traces for GPT-OSS. They are not recordings from a live model. Use them to bring up your stream parser. Later, replace or augment with real captures to catch provider quirks.
 
 ## How to use

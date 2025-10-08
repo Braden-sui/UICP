@@ -14,7 +14,7 @@ This document explains how our stack talks to Ollama in both local and cloud mod
 | Host | `http://localhost:11434` | `https://ollama.com` |
 | Primary endpoints | `/api/*`, `/v1/*` | `/api/*`, `/v1/*` |
 | Auth | None | Bearer token |
-| Model tags | No suffix | `-cloud` suffix |
+| Model tags | Colon-tag IDs | Colon-tag IDs |
 | Hardware | Your machine | Managed GPU cluster |
 
 ## Cloud model catalog (current)
@@ -43,7 +43,7 @@ curl https://ollama.com/api/chat \
   -H "Authorization: Bearer <API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-oss:120b",
+    "model": "qwen3-coder:480b",
     "messages": [
       {"role": "user", "content": "Why is the sky blue?"}
     ],
@@ -64,7 +64,11 @@ client = Client(
 
 messages = [{"role": "user", "content": "Why is the sky blue?"}]
 
-for part in client.chat("gpt-oss-120b-cloud", messages=messages, stream=True):
+for part in client.chat(
+    "qwen3-coder:480b",
+    messages=messages,
+    stream=True
+):
     print(part["message"]["content"], end="", flush=True)
 ```
 
@@ -79,7 +83,7 @@ const ollama = new Ollama({
 });
 
 const response = await ollama.chat({
-  model: "gpt-oss-120b-cloud",
+  model: "qwen3-coder:480b",
   messages: [{ role: "user", content: "Why is the sky blue?" }],
   stream: true,
 });

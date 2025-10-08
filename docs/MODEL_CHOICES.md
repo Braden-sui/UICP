@@ -4,7 +4,7 @@ Use case / Best default / Why / Notes
 
 - High-level planning, multi-step decomposition → DeepSeek → good at step breakdown and constraint juggling → Planner role.
 - Precise DOM and command emission → Qwen → strong structured output and HTML → Actor role.
-- Long context or code intelligence tasks → GPT-OSS or Alt X → when the context window or repos are huge → behind a stable formatter.
+- Long context or code intelligence tasks → Kimi K2 → large context window and strong code understanding → use as Planner or Actor as needed.
 - Cost sensitive bulk ops → Lite model → for cheap batch jobs → only for non-critical path.
 
 Channel flow (simple)

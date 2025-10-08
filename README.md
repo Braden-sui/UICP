@@ -41,6 +41,7 @@ Open `http://127.0.0.1:1420`.
 
 Environment Snapshot
 - Included by default in planner/actor prompts; no flag required. It lists agent state and open windows (with a trimmed DOM summary) to help models target updates instead of recreating UI.
+- Size budget: target ~16 KB (hard cap 32 KB). Truncation rules are documented in `docs/architecture.md` (drop excess windows; no file contents; deterministic ordering).
 
 ## Agent profiles & settings
 
@@ -60,6 +61,8 @@ Environment Snapshot
 - `src/state/chat.ts` – planner pipeline, plan queueing, STOP lock.
 - `src/lib/uicp` - Zod schemas, DOM adapter, per-window FIFO queue with idempotency and txn.cancel, and documentation.
 - `src/lib/mock.ts` – deterministic planner outputs for common prompts.
+
+- Compute plane: Feature-gated Wasm host (see `docs/compute/README.md`). When a task is not suitable for local compute, external APIs remain first-class and are supported via `api.call`.
 
 ## Testing
 
