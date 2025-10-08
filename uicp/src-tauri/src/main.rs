@@ -85,6 +85,9 @@ struct ChatCompletionRequest {
     messages: Vec<ChatMessageInput>,
     stream: Option<bool>,
     tools: Option<serde_json::Value>,
+    format: Option<serde_json::Value>,
+    #[serde(rename = "response_format")]
+    response_format: Option<serde_json::Value>,
 }
 
 #[tauri::command]
@@ -419,27 +422,32 @@ async fn cancel_chat(state: State<'_, AppState>, request_id: String) -> Result<(
 
 fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     let trimmed = raw.trim();
-    if use_cloud {
-        let core = trimmed.trim_end_matches("-cloud");
-        if core.contains(':') {
-            core.to_string()
-        } else if let Some(idx) = core.rfind('-') {
-            let (prefix, suffix) = core.split_at(idx);
-            let suffix = suffix.trim_start_matches('-');
-            format!("{}:{}", prefix, suffix)
-        } else {
-            core.to_string()
-        }
+    let (base_part, had_cloud_suffix) = if let Some(stripped) = trimmed.strip_suffix("-cloud") {
+        (stripped, true)
     } else {
-        let core = trimmed.trim_end_matches("-cloud");
-        if core.contains(':') {
-            core.to_string()
-        } else if let Some(idx) = core.rfind('-') {
-            let (prefix, suffix) = core.split_at(idx);
+        (trimmed, false)
+    };
+
+    let normalize_base = |input: &str| {
+        if input.contains(':') {
+            input.to_string()
+        } else if let Some(idx) = input.rfind('-') {
+            let (prefix, suffix) = input.split_at(idx);
             let suffix = suffix.trim_start_matches('-');
             format!("{}:{}", prefix, suffix)
         } else {
-            core.to_string()
+            input.to_string()
+        }
+    };
+
+    if use_cloud {
+        normalize_base(base_part)
+    } else {
+        let base = normalize_base(base_part);
+        if had_cloud_suffix {
+            format!("{}-cloud", base)
+        } else {
+            base
         }
     }
 }
@@ -451,7 +459,16 @@ async fn chat_completion(
     request_id: Option<String>,
     request: ChatCompletionRequest,
 ) -> Result<(), String> {
-    if request.messages.is_empty() {
+    let ChatCompletionRequest {
+        model,
+        messages,
+        stream,
+        tools,
+        format,
+        response_format,
+    } = request;
+
+    if messages.is_empty() {
         return Err("messages cannot be empty".into());
     }
 
@@ -462,19 +479,25 @@ async fn chat_completion(
         return Err("No API key configured".into());
     }
 
-    let requested_model = request.model.unwrap_or_else(|| {
+    let requested_model = model.unwrap_or_else(|| {
         // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
         std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
     });
     // Normalize to colon-delimited tags for Cloud and OpenAI-compatible hyphen tags for local daemon.
     let resolved_model = normalize_model_name(&requested_model, use_cloud);
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": resolved_model,
-        "messages": request.messages,
-        "stream": request.stream.unwrap_or(true),
-        "tools": request.tools,
+        "messages": messages,
+        "stream": stream.unwrap_or(true),
+        "tools": tools,
     });
+    if let Some(format_val) = format {
+        body["format"] = format_val;
+    }
+    if let Some(response_format_val) = response_format {
+        body["response_format"] = response_format_val;
+    }
 
     let base = get_ollama_base_url(&state).await?;
 

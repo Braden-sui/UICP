@@ -31,7 +31,8 @@ export function getPlannerClient(): PlannerClient {
       // Profile formatting keeps planner prompts aligned with the selected model contract.
       const messages = profile.formatMessages(intent, { tools: options?.tools });
       const model = options?.model ?? profile.defaultModel;
-      return streamOllamaCompletion(messages, model, options?.tools);
+      // Force JSON-mode responses so downstream schema validation never sees prose.
+      return streamOllamaCompletion(messages, model, options?.tools, { format: 'json' });
     },
   };
 }
@@ -43,7 +44,8 @@ export function getActorClient(): ActorClient {
       // Actor profiles encapsulate templating so downstream consumers get consistent outputs.
       const messages = profile.formatMessages(planJson, { tools: options?.tools });
       const model = options?.model ?? profile.defaultModel;
-      return streamOllamaCompletion(messages, model, options?.tools);
+      // Actor output must be valid JSON; request strict JSON formatting from the provider.
+      return streamOllamaCompletion(messages, model, options?.tools, { format: 'json' });
     },
   };
 }

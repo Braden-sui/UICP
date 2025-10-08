@@ -51,7 +51,8 @@ async function collectJsonFromChannels<T = unknown>(
   options?: { timeoutMs?: number; primaryChannels?: string[]; fallbackChannels?: string[] },
 ): Promise<{ data: T; channelUsed?: string }> {
   const iterator = stream[Symbol.asyncIterator]();
-  const primaryChannels = options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['commentary'];
+  const primaryChannels =
+    options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['commentary', 'json', 'assistant'];
   const fallbackChannels = options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? [];
   const primarySet = new Set(primaryChannels);
   const fallbackSet = new Set(fallbackChannels);
@@ -205,7 +206,12 @@ function augmentPlan(input: Plan): Plan {
     .slice(0, 32) || 'app';
   if (!hasReuseId) risks.push(`gui: reuse window id win-${slug}`);
   if (!hasStatus) risks.push('gui: include small aria-live status region updated via dom.set');
-  return { summary: input.summary, risks, batch: input.batch };
+  return {
+    summary: input.summary,
+    risks,
+    batch: input.batch,
+    actorHints: input.actorHints,
+  };
 }
 
 const CLARIFIER_TOKEN = 'clarifier:structured';

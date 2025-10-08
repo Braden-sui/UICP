@@ -25,9 +25,48 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
   if (!root) return [];
   const out: StreamEvent[] = [];
 
-  const pushContent = (channel: string | undefined, text: unknown) => {
-    if (typeof text !== 'string' || text.trim().length === 0) return;
+  const pushContent = (channel: string | undefined, text: string) => {
+    if (text.trim().length === 0) return;
     out.push({ type: 'content', channel, text });
+  };
+
+  const emitContentValue = (channel: string | undefined, value: unknown) => {
+    if (typeof value === 'string') {
+      pushContent(channel, value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry) => {
+        if (typeof entry === 'string') {
+          pushContent(channel, entry);
+          return;
+        }
+        if (entry && typeof entry === 'object') {
+          const maybeText =
+            typeof (entry as Record<string, unknown>).text === 'string'
+              ? ((entry as Record<string, unknown>).text as string)
+              : typeof (entry as Record<string, unknown>).value === 'string'
+                ? ((entry as Record<string, unknown>).value as string)
+                : undefined;
+          if (maybeText) {
+            pushContent(channel, maybeText);
+          }
+        }
+      });
+      return;
+    }
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      const maybeText =
+        typeof record.text === 'string'
+          ? record.text
+          : typeof record.value === 'string'
+            ? record.value
+            : undefined;
+      if (maybeText) {
+        pushContent(channel, maybeText);
+      }
+    }
   };
 
   const pushToolCall = (call: unknown, indexFallback = 0) => {
@@ -58,11 +97,7 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     const channelValue = deltaRecord.channel;
     const channel: string | undefined = typeof channelValue === 'string' ? channelValue : undefined;
     const contentValue = deltaRecord.content;
-    const content: string | undefined = typeof contentValue === 'string' ? contentValue : undefined;
-
-    if (typeof content === 'string' && content.length > 0) {
-      pushContent(channel, content);
-    }
+    emitContentValue(channel, contentValue);
 
     // OpenAI-style tool calls (can arrive incrementally)
     const deltaToolCalls = Array.isArray(deltaRecord.tool_calls) ? deltaRecord.tool_calls : [];
@@ -82,8 +117,15 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     (root['tool_calls'] as unknown[]).forEach((tc: unknown, index: number) => pushToolCall(tc, index));
   }
 
-  if (typeof root['content'] === 'string') {
-    pushContent(undefined, root['content']);
+  if (root['content'] !== undefined) {
+    emitContentValue(undefined, root['content']);
+  }
+
+  if (root['message'] && typeof root['message'] === 'object') {
+    const msgRecord = root['message'] as Record<string, unknown>;
+    if (msgRecord['content'] !== undefined) {
+      emitContentValue(undefined, msgRecord['content']);
+    }
   }
 
   return out;
@@ -147,11 +189,18 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 }
 
 // Primary streaming function. Returns an async iterator of StreamEvent.
+type StreamRequestOptions = {
+  requestId?: string;
+  signal?: AbortSignal;
+  format?: 'json' | string;
+  responseFormat?: unknown;
+};
+
 export function streamOllamaCompletion(
   messages: ChatMessage[],
   model?: string,
   tools?: ToolSpec[],
-  options?: { requestId?: string; signal?: AbortSignal }
+  options?: StreamRequestOptions,
 ): AsyncIterable<StreamEvent> {
   const queue = new AsyncQueue<StreamEvent>();
   let unlisten: UnlistenFn | null = null;
@@ -204,9 +253,26 @@ export function streamOllamaCompletion(
       const normalizedMessages = messages.map((m) =>
         typeof m?.role === 'string' && m.role.toLowerCase() === 'developer' ? { ...m, role: 'system' } : m,
       );
+      const requestPayload: Record<string, unknown> = {
+        messages: normalizedMessages,
+        stream: true,
+      };
+      if (typeof model === 'string' && model.trim().length > 0) {
+        requestPayload.model = model.trim();
+      }
+      if (tools !== undefined) {
+        requestPayload.tools = tools;
+      }
+      if (options?.format !== undefined) {
+        requestPayload.format = options.format;
+      }
+      if (options?.responseFormat !== undefined) {
+        requestPayload.response_format = options.responseFormat;
+      }
+
       void invoke('chat_completion', {
         requestId,
-        request: { model, messages: normalizedMessages, stream: true, tools },
+        request: requestPayload,
       }).catch((err) => {
         queue.fail(err instanceof Error ? err : new Error(String(err)));
         queue.end();

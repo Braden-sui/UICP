@@ -291,6 +291,11 @@ const PlanEntrySnake = z
 
 const planEntryNormalized = z.union([PlanEntryCamel, PlanEntrySnake]);
 
+const actorHintsSchema = z
+  .array(z.string().min(1))
+  .max(20, 'actor_hints should stay concise (max 20 items)')
+  .optional();
+
 export const planSchema = z
   .object({
     summary: z.string().min(1, 'summary is required'),
@@ -298,14 +303,21 @@ export const planSchema = z
       .union([z.string().min(1), z.array(z.string().min(1))])
       .optional(),
     batch: z.array(planEntryNormalized),
+    actor_hints: actorHintsSchema,
   })
   .strict()
   .transform((v) => {
     // Normalise risks to string[] for a stable surface
     const risks = Array.isArray(v.risks) ? v.risks : v.risks ? [v.risks] : undefined;
+    const actorHints = v.actor_hints?.map((hint) => hint.trim()).filter((hint) => hint.length > 0);
     // Reuse batchSchema to validate and coerce entries into typed envelopes
     const parsedBatch = validateBatch(v.batch, '/batch');
-    return { summary: v.summary, risks, batch: parsedBatch };
+    return {
+      summary: v.summary,
+      risks,
+      batch: parsedBatch,
+      actorHints: actorHints && actorHints.length > 0 ? actorHints : undefined,
+    };
   });
 
 export type Plan = z.infer<typeof planSchema>;

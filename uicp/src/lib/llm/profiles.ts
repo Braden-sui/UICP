@@ -28,6 +28,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     key: 'deepseek',
     label: 'DeepSeek V3.1',
     description: 'Legacy planner prompt tuned for DeepSeek reasoning mode.',
+    defaultModel: 'deepseek-v3.1:671b',
     capabilities: { channels: ['commentary'], supportsTools: true },
     formatMessages: (intent) => [
       { role: 'system', content: plannerPrompt.trim() },
@@ -52,6 +53,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     key: 'qwen',
     label: 'Qwen3-Coder 480B',
     description: 'Legacy actor prompt tuned for Qwen tool calling.',
+    defaultModel: 'qwen3-coder:480b',
     capabilities: { channels: ['commentary'], supportsTools: true },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
