@@ -6,6 +6,7 @@ import { useAppStore, type AgentMode, type AgentPhase } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
 import { streamOllamaCompletion } from '../lib/llm/ollama';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
+import { LiquidGlass } from '@liquidglass/react';
 
 const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'applying'];
 const STATUS_PHASE_LABEL: Record<AgentPhase, string> = {
@@ -142,8 +143,18 @@ export const DockChat = () => {
         chatOpen ? 'translate-y-0' : 'translate-y-[calc(100%_-_32px)]'
       }`}
     >
-      <div className="pointer-events-auto mb-4 flex w-[min(640px,90vw)] flex-col gap-3 rounded-t-3xl border border-slate-200 bg-white/85 p-4 shadow-[0_-20px_60px_rgba(0,0,0,0.15),0_-8px_25px_rgba(0,0,0,0.1)] backdrop-blur">
-        <header className="flex items-center justify-between text-xs font-medium text-slate-600">
+      <LiquidGlass
+        borderRadius={24}
+        blur={0.4}
+        contrast={1.15}
+        brightness={1.08}
+        saturation={1.1}
+        shadowIntensity={0.3}
+        elasticity={0.7}
+        className="pointer-events-auto mb-4 w-[min(640px,90vw)]"
+      >
+        <div className="flex flex-col gap-3 border border-slate-200/50 bg-white/85 p-4 shadow-[0_-20px_60px_rgba(0,0,0,0.15),0_-8px_25px_rgba(0,0,0,0.1)] backdrop-blur">
+          <header className="flex items-center justify-between text-xs font-medium text-slate-600">
           <div className="flex flex-col gap-1 text-left">
             <span>
               {fullControl ? 'Full control enabled' : 'Full control disabled'}
@@ -317,12 +328,13 @@ export const DockChat = () => {
           </div>
         </form>
 
-        <div aria-live="polite" className="visually-hidden">
-          {systemMessages.map((message) => (
-            <span key={`live-${message.id}`}>{message.content}</span>
-          ))}
+          <div aria-live="polite" className="visually-hidden">
+            {systemMessages.map((message) => (
+              <span key={`live-${message.id}`}>{message.content}</span>
+            ))}
+          </div>
         </div>
-      </div>
+      </LiquidGlass>
     </div>
   );
 };

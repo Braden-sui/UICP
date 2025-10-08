@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
 import { resolve } from "node:path";
 
+if (!process.env.ROLLUP_SKIP_NODE_NATIVE) {
+  process.env.ROLLUP_SKIP_NODE_NATIVE = "true";
+}
+
 const includePatterns = ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"];
 
 if (process.env.OLLAMA_LIVE_TEST === "1") {
@@ -20,6 +24,7 @@ export default defineConfig({
     alias: {
       // Map Tauri FS calls to a test stub so adapter logic keeps working in jsdom.
       "@tauri-apps/plugin-fs": resolve(__dirname, "tests/stubs/tauri-fs.ts"),
+      "@liquidglass/react": resolve(__dirname, "tests/stubs/liquidglass-react.tsx"),
     },
   },
 });

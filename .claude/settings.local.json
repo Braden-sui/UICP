@@ -5,7 +5,8 @@
       "Bash(npm run test:*)",
       "Bash(npm run lint)",
       "WebSearch",
-      "WebFetch(domain:medium.com)"
+      "WebFetch(domain:medium.com)",
+      "Bash(npm install:*)"
     ]
   },
   "outputStyle": "default"
