@@ -5,7 +5,7 @@
     "module": "ESNext",
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vite/client", "@tauri-apps/api", "@tauri-apps/plugin-fs"],
+    "types": ["vite/client", "@tauri-apps/api", "@tauri-apps/plugin-fs", "react", "react-dom"],
     "skipLibCheck": true,
 
     /* Bundler mode */

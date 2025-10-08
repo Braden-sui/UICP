@@ -9,6 +9,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      RUN_E2E: ${{ secrets.RUN_E2E || 'false' }}
+      USE_DIRECT_CLOUD_SECRET: ${{ secrets.USE_DIRECT_CLOUD }}
+      PLANNER_MODEL_SECRET: ${{ secrets.PLANNER_MODEL }}
+      ACTOR_MODEL_SECRET: ${{ secrets.ACTOR_MODEL }}
+      OLLAMA_API_KEY_SECRET: ${{ secrets.OLLAMA_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,11 +28,20 @@ jobs:
           E2E="${{ secrets.E2E_ORCHESTRATOR }}"
           VITE="${{ secrets.VITE_MOCK_MODE }}"
           KEY="${{ secrets.OLLAMA_API_KEY }}"
-          # Apply defaults when secrets are unset
+          USE_CLOUD="${USE_DIRECT_CLOUD_SECRET}"
+          PLAN_MODEL="${PLANNER_MODEL_SECRET}"
+          ACT_MODEL="${ACTOR_MODEL_SECRET}"
+          # Apply defaults when secrets are unset so local mock mode works in CI
           if [ -z "$E2E" ]; then E2E="0"; fi
           if [ -z "$VITE" ]; then VITE="true"; fi
+          if [ -z "$USE_CLOUD" ]; then USE_CLOUD="0"; fi
+          if [ -z "$PLAN_MODEL" ]; then PLAN_MODEL="deepseek-v3.1:671b"; fi
+          if [ -z "$ACT_MODEL" ]; then ACT_MODEL="qwen3-coder:480b"; fi
           printf "E2E_ORCHESTRATOR=%s\n" "$E2E" > .env
           printf "VITE_MOCK_MODE=%s\n" "$VITE" >> .env
+          printf "USE_DIRECT_CLOUD=%s\n" "$USE_CLOUD" >> .env
+          printf "PLANNER_MODEL=%s\n" "$PLAN_MODEL" >> .env
+          printf "ACTOR_MODEL=%s\n" "$ACT_MODEL" >> .env
           if [ -n "$KEY" ]; then printf "OLLAMA_API_KEY=%s\n" "$KEY" >> .env; fi
       - name: Install dependencies
         working-directory: uicp
@@ -44,8 +59,10 @@ jobs:
         working-directory: uicp
         run: npm run build
       - name: Install Playwright Browsers
+        if: ${{ env.RUN_E2E == 'true' }}
         working-directory: uicp
         run: npx playwright install --with-deps
       - name: E2E tests
+        if: ${{ env.RUN_E2E == 'true' }}
         working-directory: uicp
         run: npm run test:e2e

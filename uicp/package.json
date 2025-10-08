@@ -37,7 +37,7 @@
                      },
     "devDependencies":  {
                             "@playwright/test":  "^1.48.2",
-                            "@rollup/rollup-win32-x64-msvc":  "^4.52.4",
+                            "rollup":  "^4.52.4",
                             "@tauri-apps/cli":  "^2.8.4",
                             "@tauri-apps/cli-win32-x64-msvc":  "^2.8.4",
                             "@testing-library/jest-dom":  "^6.6.3",
@@ -65,6 +65,7 @@
                             "vitest":  "^3.2.4"
                         },
     "optionalDependencies":  {
-                                 "@tauri-apps/cli-win32-x64-msvc":  "^2.8.4"
+                                 "@tauri-apps/cli-win32-x64-msvc":  "^2.8.4",
+                                 "@rollup/rollup-win32-x64-msvc":  "^4.52.4"
                              }
 }

@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
 import { enqueueBatch, setQueueAppliedListener } from '../uicp/queue';
 import { useAppStore } from '../../state/app';
@@ -17,6 +18,48 @@ export async function initializeTauriBridge() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hasTauri = typeof (window as any).__TAURI__ !== 'undefined';
   if (!hasTauri) return;
+
+  // Dev-only: enable backend debug logs and mirror key events to DevTools
+  if ((import.meta as any)?.env?.DEV) {
+    try {
+      await invoke('set_debug', { enabled: true });
+    } catch {
+      // ignore failures enabling debug
+    }
+
+    // Mirror backend debug events
+    unsubs.push(
+      await listen('debug-log', (event) => {
+        const payload = event.payload as unknown;
+        try {
+          const obj = typeof payload === 'string' ? JSON.parse(payload as string) : (payload as Record<string, unknown>);
+          const ev = (obj as Record<string, unknown>)?.['event'] ?? 'debug-log';
+          // eslint-disable-next-line no-console
+          console.debug(`[tauri:${String(ev)}]`, obj);
+        } catch {
+          // eslint-disable-next-line no-console
+          console.debug('[tauri:debug-log]', payload);
+        }
+      }),
+    );
+
+    // Mirror stream chunk sizes without altering aggregator behaviour
+    unsubs.push(
+      await listen('ollama-completion', (event) => {
+        const payload = event.payload as { done?: boolean; delta?: unknown; kind?: string } | undefined;
+        if (!payload) return;
+        if (payload.done) {
+          // eslint-disable-next-line no-console
+          console.info('[ollama] done');
+        } else if (payload.delta !== undefined) {
+          const isStr = typeof payload.delta === 'string';
+          const len = isStr ? (payload.delta as string).length : JSON.stringify(payload.delta).length;
+          // eslint-disable-next-line no-console
+          console.debug(`[ollama:${payload.kind ?? (isStr ? 'text' : 'json')}] len=${len}`);
+        }
+      }),
+    );
+  }
 
   const aggregator = createOllamaAggregator(async (batch) => {
     const app = useAppStore.getState();
