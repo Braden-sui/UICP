@@ -101,7 +101,7 @@ describe('orchestrator integration', () => {
     expect((phases[1]?.planMs ?? 0)).toBeGreaterThanOrEqual(0);
   });
 
-  it('consumes return events emitted by harmony adapter', async () => {
+  it('consumes return events emitted by the streaming transport', async () => {
     plannerEvents = [
       { type: 'return', channel: 'final', result: { summary: 'Return plan', batch: [] } },
       { type: 'done' },
@@ -115,10 +115,10 @@ describe('orchestrator integration', () => {
       { type: 'done' },
     ];
 
-    const { plan } = await planWithProfile('unused', { profileKey: 'gpt-oss' });
+    const { plan } = await planWithProfile('unused', { profileKey: 'deepseek' });
     expect(plan.summary).toBe('Return plan');
 
-    const { batch } = await actWithProfile(plan, { profileKey: 'gpt-oss' });
+    const { batch } = await actWithProfile(plan, { profileKey: 'qwen' });
     expect(Array.isArray(batch)).toBe(true);
     expect(batch[0]?.params).toMatchObject({ title: 'FromReturn' });
   });

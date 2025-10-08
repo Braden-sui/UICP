@@ -96,7 +96,7 @@ Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider
 
 ### Aggregator
 
-`createOllamaAggregator(onBatch?)` collects Harmony deltas. It accumulates both `commentary` and `final` channel text and, on flush, prefers the `final` channel when present. It attempts a fast parse on each delta; when a valid JSON object/array is detected, it may short-circuit. On stream end it performs a final parse. When a valid batch is found:
+`createOllamaAggregator(onBatch?)` collects streaming deltas from the commentary channel. It accumulates text and, on flush, attempts to parse buffered JSON. When a valid batch is found:
 
 - If `onBatch` is provided, it is called and may decide whether to auto-apply (`enqueueBatch`) or surface a preview (e.g., based on Full Control).
 - If `onBatch` is not provided, the aggregator calls `enqueueBatch(batch)` by default.

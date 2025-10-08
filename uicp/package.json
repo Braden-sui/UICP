@@ -21,7 +21,6 @@
         "test:e2e": "playwright test",
         "tauri:dev": "tauri dev",
         "tauri:build": "tauri build",
-        "test:ollama": "cross-env OLLAMA_LIVE_TEST=1 vitest run tests/live/ollama.gpt-oss.live.test.ts",
         "postinstall": "node scripts/postinstall.cjs"
     },
     "dependencies": {

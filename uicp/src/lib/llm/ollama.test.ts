@@ -7,7 +7,7 @@ describe('extractEventsFromChunk', () => {
       id: 'chatcmpl-123',
       object: 'chat.completion.chunk',
       created: 0,
-      model: 'gpt-oss:120b-cloud',
+      model: 'test-model',
       choices: [
         {
           index: 0,

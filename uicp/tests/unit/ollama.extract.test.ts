@@ -7,7 +7,7 @@ describe('extractEventsFromChunk', () => {
       id: 'chatcmpl-123',
       object: 'chat.completion.chunk',
       created: 0,
-      model: 'gpt-oss:120b-cloud',
+      model: 'test-model',
       choices: [
         {
           index: 0,
@@ -53,64 +53,4 @@ describe('extractEventsFromChunk', () => {
     expect(events).toEqual([]);
   });
 
-  it('parses Harmony delta messages with analysis/commentary channels', () => {
-    const harmonyChunk = {
-      delta: {
-        messages: [
-          {
-            channel: 'analysis',
-            content: [
-              { type: 'output_text', text: 'Thinking about layout options.' },
-            ],
-          },
-          {
-            channel: 'commentary',
-            content: [
-              { type: 'output_text', text: '{ "batch": [ { "op": "window.create" } ] }' },
-            ],
-          },
-        ],
-      },
-    };
-
-    const events = extractEventsFromChunk(harmonyChunk);
-    const analysis = events.find(
-      (event): event is Extract<StreamEvent, { type: 'content' }> => event.type === 'content' && event.channel === 'analysis',
-    );
-    const commentary = events.find(
-      (event): event is Extract<StreamEvent, { type: 'content' }> => event.type === 'content' && event.channel === 'commentary',
-    );
-    expect(analysis).toBeTruthy();
-    expect(analysis?.text).toContain('layout options');
-    expect(commentary).toBeTruthy();
-    expect(commentary?.text).toContain('"batch"');
-  });
-
-  it('extracts tool calls from Harmony content blocks', () => {
-    const chunk = {
-      delta: {
-        messages: [
-          {
-            channel: 'commentary',
-            content: [
-              {
-                type: 'tool_call',
-                tool_call: {
-                  id: 'tool_1',
-                  name: 'create_window',
-                  arguments: '{"title":"Demo"}',
-                },
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    const events = extractEventsFromChunk(chunk);
-    const toolEvent = events.find((event) => event.type === 'tool_call');
-    expect(toolEvent).toBeTruthy();
-    expect(toolEvent && toolEvent.name).toBe('create_window');
-    expect(toolEvent && toolEvent.arguments).toContain('Demo');
-  });
 });

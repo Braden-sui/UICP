@@ -6,127 +6,6 @@ import { createId } from '../utils';
 
 const toJsonSafe = (s: string) => s.replace(/```(json)?/gi, '').trim();
 
-const normaliseHarmonyPayload = (data: unknown): unknown => {
-  const tryParseJsonString = (input: string): unknown | undefined => {
-    const cleaned = toJsonSafe(input);
-    const trimmed = cleaned.trim();
-    if (!trimmed.length) return undefined;
-
-    const attemptParse = (target: string): unknown | undefined => {
-      try {
-        return JSON.parse(target);
-      } catch {
-        const firstBrace = target.indexOf('{');
-        const firstBracket = target.indexOf('[');
-        const first = [firstBrace, firstBracket].filter((idx) => idx >= 0).sort((a, b) => a - b)[0] ?? -1;
-        const lastBrace = target.lastIndexOf('}');
-        const lastBracket = target.lastIndexOf(']');
-        const last = Math.max(lastBrace, lastBracket);
-        if (first >= 0 && last > first) {
-          const slice = target.slice(first, last + 1);
-          try {
-            return JSON.parse(slice);
-          } catch {
-            return undefined;
-          }
-        }
-        return undefined;
-      }
-    };
-
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-      const parsed = attemptParse(trimmed);
-      if (parsed !== undefined) return parsed;
-    }
-
-    return attemptParse(trimmed);
-  };
-
-  const extractTextCandidate = (block: unknown): string | undefined => {
-    if (!block) return undefined;
-    if (typeof block === 'string') return block;
-    if (typeof block !== 'object') return undefined;
-    const record = block as Record<string, unknown>;
-    let direct: string | undefined;
-    const textField = record.text;
-    if (typeof textField === 'string') {
-      direct = textField;
-    } else if (Array.isArray(textField)) {
-      direct = textField.map((entry) => (typeof entry === 'string' ? entry : extractTextCandidate(entry))).filter(Boolean).join('');
-    } else if (typeof record.value === 'string') {
-      direct = record.value as string;
-    } else if (Array.isArray(record.value)) {
-      direct = (record.value as unknown[]).map((entry) => (typeof entry === 'string' ? entry : extractTextCandidate(entry))).filter(Boolean).join('');
-    } else if (typeof record.content === 'string') {
-      direct = record.content as string;
-    } else if (Array.isArray(record.content)) {
-      const combined = (record.content as unknown[]).map((entry) => extractTextCandidate(entry)).filter(Boolean).join('');
-      direct = combined.length > 0 ? combined : undefined;
-    } else if (typeof record.output_text === 'string') {
-      direct = record.output_text as string;
-    } else if (Array.isArray(record.output_text)) {
-      direct = (record.output_text as unknown[]).map((entry) => (typeof entry === 'string' ? entry : extractTextCandidate(entry))).filter(Boolean).join('');
-    } else if (typeof record.data === 'string') {
-      direct = record.data as string;
-    }
-    if (direct && direct.trim().length > 0) return direct;
-    if (Array.isArray(record.content)) {
-      for (const entry of record.content) {
-        const nested = extractTextCandidate(entry);
-        if (nested) return nested;
-      }
-    }
-    if (Array.isArray(record.parts)) {
-      for (const entry of record.parts) {
-        const nested = extractTextCandidate(entry);
-        if (nested) return nested;
-      }
-    }
-    return undefined;
-  };
-
-  const extractFromMessage = (message: unknown): unknown | undefined => {
-    if (!message || typeof message !== 'object') return undefined;
-    const record = message as Record<string, unknown>;
-    const content = record.content;
-    if (typeof content === 'string') {
-      return tryParseJsonString(content);
-    }
-    if (Array.isArray(content)) {
-      for (const entry of content) {
-        const candidate = extractTextCandidate(entry);
-        if (candidate) {
-          const parsed = tryParseJsonString(candidate);
-          if (parsed !== undefined) return parsed;
-        }
-      }
-    }
-    const text = extractTextCandidate(record);
-    if (text) {
-      const parsed = tryParseJsonString(text);
-      if (parsed !== undefined) return parsed;
-    }
-    return undefined;
-  };
-
-  if (!data || typeof data !== 'object') {
-    return data;
-  }
-  const record = data as Record<string, unknown>;
-  if (record.message) {
-    const extracted = extractFromMessage(record.message);
-    if (extracted !== undefined) return extracted;
-  }
-  const choices = record.choices;
-  if (Array.isArray(choices)) {
-    for (const choice of choices) {
-      const extracted = extractFromMessage((choice as Record<string, unknown>).message);
-      if (extracted !== undefined) return extracted;
-    }
-  }
-  return data;
-};
-
 const readEnvMs = (key: string, fallback: number): number => {
   // Vite exposes env via import.meta.env; coerce string → number if valid
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -167,14 +46,9 @@ export type RunIntentResult = {
   failures?: { planner?: string; actor?: string };
 };
 
-type ChannelCollectors = {
-  primaryChannels?: string[];
-  fallbackChannels?: string[];
-};
-
 async function collectJsonFromChannels<T = unknown>(
   stream: AsyncIterable<StreamEvent>,
-  options?: { timeoutMs?: number; preferReturn?: boolean } & ChannelCollectors,
+  options?: { timeoutMs?: number; primaryChannels?: string[]; fallbackChannels?: string[] },
 ): Promise<{ data: T; channelUsed?: string }> {
   const iterator = stream[Symbol.asyncIterator]();
   const primaryChannels = options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['commentary'];
@@ -189,7 +63,6 @@ async function collectJsonFromChannels<T = unknown>(
   let timedOut = false;
   const timeoutMs = options?.timeoutMs ?? 35_000;
   const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
-  const preferReturn = options?.preferReturn ?? false; // Harmony adapters emit typed return events we can short-circuit on.
 
   const parseBuffer = (input: string) => {
     const raw = toJsonSafe(input);
@@ -211,15 +84,14 @@ async function collectJsonFromChannels<T = unknown>(
   };
 
   const consume = (async () => {
-    let parsed: T | undefined;
     try {
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;
         const event = value as StreamEvent;
         if (event.type === 'done') break;
-        if (preferReturn && event.type === 'return') {
-          const channel = (event.channel ?? 'final').toLowerCase();
+        if (event.type === 'return') {
+          const channel = (event.channel ?? 'return').toLowerCase();
           if (typeof iterator.return === 'function') {
             try {
               await iterator.return();
@@ -227,8 +99,7 @@ async function collectJsonFromChannels<T = unknown>(
               // ignore iterator return errors
             }
           }
-          const result = normaliseHarmonyPayload(event.result);
-          return { data: result as T, channelUsed: channel };
+          return { data: event.result as T, channelUsed: channel };
         }
         if (event.type !== 'content') continue;
         const channel = event.channel?.toLowerCase();
@@ -238,8 +109,7 @@ async function collectJsonFromChannels<T = unknown>(
           primaryBuf += event.text;
           primaryChannelUsed = channel ?? primaryChannels[0] ?? 'commentary';
           try {
-            parsed = parseBuffer(primaryBuf);
-            parsed = normaliseHarmonyPayload(parsed) as T;
+            const parsed = parseBuffer(primaryBuf);
             if (typeof iterator.return === 'function') {
               try {
                 await iterator.return();
@@ -257,13 +127,14 @@ async function collectJsonFromChannels<T = unknown>(
         }
       }
       if (primaryBuf.trim().length) {
-        const payload = normaliseHarmonyPayload(parseBuffer(primaryBuf));
-        return { data: payload as T, channelUsed: primaryChannelUsed ?? primaryChannels[0] ?? 'commentary' };
+        return {
+          data: parseBuffer(primaryBuf),
+          channelUsed: primaryChannelUsed ?? primaryChannels[0] ?? 'commentary',
+        };
       }
       if (fallbackBuf.trim().length) {
-        const payload = normaliseHarmonyPayload(parseBuffer(fallbackBuf));
         return {
-          data: payload as T,
+          data: parseBuffer(fallbackBuf),
           channelUsed: fallbackChannelUsed ?? fallbackChannels[0] ?? 'commentary',
         };
       }
@@ -311,9 +182,6 @@ export async function planWithProfile(
       const stream = client.streamIntent(intent, { profileKey: profile.key });
       const { data, channelUsed } = await collectJsonFromChannels(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS,
-        preferReturn: profile.responseMode === 'harmony',
-        primaryChannels: profile.responseMode === 'harmony' ? ['final', 'commentary'] : ['commentary'],
-        fallbackChannels: profile.responseMode === 'harmony' ? ['commentary'] : [],
       });
       return { plan: validatePlan(data), channelUsed };
     } catch (err) {
@@ -377,9 +245,6 @@ export async function actWithProfile(
       const stream = client.streamPlan(planJson, { profileKey: profile.key });
       const { data, channelUsed } = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS,
-        preferReturn: profile.responseMode === 'harmony',
-        primaryChannels: profile.responseMode === 'harmony' ? ['final', 'commentary'] : ['commentary'],
-        fallbackChannels: profile.responseMode === 'harmony' ? ['commentary'] : [],
       });
       const payload = Array.isArray(data) ? data : (data as { batch?: unknown })?.batch;
       return { batch: validateBatch(payload as unknown), channelUsed };

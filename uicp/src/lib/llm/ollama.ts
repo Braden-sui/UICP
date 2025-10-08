@@ -48,72 +48,6 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     out.push({ type: 'tool_call', index, id, name, arguments: args, isDelta: true });
   };
 
-  const stringifyBlock = (block: unknown): string | undefined => {
-    if (typeof block === 'string') return block;
-    if (!block || typeof block !== 'object') return undefined;
-    if (typeof (block as { text?: unknown }).text === 'string') return (block as { text: string }).text;
-    if (typeof (block as { output_text?: unknown }).output_text === 'string') {
-      return (block as { output_text: string }).output_text;
-    }
-    if (typeof (block as { content?: unknown }).content === 'string') return (block as { content: string }).content;
-    return undefined;
-  };
-
-  const extractChannel = (message: unknown): string | undefined => {
-    const record = asRecord(message);
-    if (!record) return undefined;
-    if (typeof record.channel === 'string') return record.channel;
-    const metadata = asRecord(record.metadata);
-    if (typeof metadata?.channel === 'string') return metadata.channel;
-    if (typeof record.role === 'string' && ['analysis', 'commentary', 'final'].includes(record.role)) {
-      return record.role;
-    }
-    return undefined;
-  };
-
-  const handleMessage = (message: unknown) => {
-    const record = asRecord(message);
-    if (!record) return;
-    let channel = extractChannel(record);
-
-    const rawContent = record.content;
-    const rawOutput = (record as { output_text?: unknown }).output_text;
-    const rawThinking = (record as { thinking?: unknown }).thinking;
-    const hasContentText = typeof rawContent === 'string' && rawContent.trim().length > 0;
-    const hasOutputText = typeof rawOutput === 'string' && (rawOutput as string).trim().length > 0;
-    const hasThinkingText = typeof rawThinking === 'string' && (rawThinking as string).trim().length > 0;
-
-    if (!channel && hasThinkingText && !hasContentText && !hasOutputText) {
-      channel = 'analysis';
-    }
-
-    const content = rawContent ?? rawOutput ?? rawThinking;
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        if (block && typeof block === 'object' && 'tool_call' in block) {
-          pushToolCall((block as { tool_call?: unknown }).tool_call);
-          continue;
-        }
-        if (block && typeof block === 'object' && 'toolCall' in block) {
-          pushToolCall((block as { toolCall?: unknown }).toolCall);
-          continue;
-        }
-        const text = stringifyBlock(block);
-        if (text) pushContent(channel, text);
-      }
-    } else {
-      const text = stringifyBlock(content) ?? (typeof content === 'string' ? content : undefined);
-      if (text) pushContent(channel, text);
-    }
-
-    const toolCalls = record.tool_calls ?? record.toolCalls ?? record.tool_call;
-    if (Array.isArray(toolCalls)) {
-      toolCalls.forEach((tc: unknown, index: number) => pushToolCall(tc, index));
-    } else if (toolCalls) {
-      pushToolCall(toolCalls);
-    }
-  };
-
   const choicesRaw = root['choices'];
   const choices = Array.isArray(choicesRaw) ? choicesRaw : [];
   for (const ch of choices) {
@@ -121,10 +55,9 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     const deltaRecord = asRecord(record?.delta) ?? asRecord(record?.message) ?? asRecord(record?.update);
     if (!deltaRecord) continue;
 
-    // Harmony-style channels
     const channelValue = deltaRecord.channel;
     const channel: string | undefined = typeof channelValue === 'string' ? channelValue : undefined;
-    const contentValue = deltaRecord.content ?? deltaRecord.thinking;
+    const contentValue = deltaRecord.content;
     const content: string | undefined = typeof contentValue === 'string' ? contentValue : undefined;
 
     if (typeof content === 'string' && content.length > 0) {
@@ -140,33 +73,6 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     }
   }
 
-  // Harmony Responses: delta.messages / messages arrays
-  const harmonyMessages = (() => {
-    const delta = asRecord(root['delta']);
-    const response = asRecord(root['response']);
-    const message = asRecord(root['message']);
-    if (Array.isArray(delta?.messages)) return delta.messages;
-    if (Array.isArray(root['messages'])) return root['messages'] as unknown[];
-    if (Array.isArray(response?.messages)) return response.messages;
-    if (Array.isArray(message?.content)) return message?.content as unknown[];
-    if (message && (typeof message.content === 'string' || typeof message.thinking === 'string')) {
-      return [message];
-    }
-    return [];
-  })();
-  for (const msg of harmonyMessages) {
-    handleMessage(msg);
-  }
-
-  // Harmony-specific direct text fields
-  const responseRecord = asRecord(root['response']);
-  if (
-    typeof responseRecord?.channel === 'string' &&
-    typeof responseRecord?.output_text === 'string'
-  ) {
-    pushContent(responseRecord.channel, responseRecord.output_text);
-  }
-
   const deltaRecord = asRecord(root['delta']);
   if (Array.isArray(deltaRecord?.tool_calls)) {
     deltaRecord.tool_calls.forEach((tc: unknown, index: number) => pushToolCall(tc, index));
@@ -174,6 +80,10 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
 
   if (Array.isArray(root['tool_calls'])) {
     (root['tool_calls'] as unknown[]).forEach((tc: unknown, index: number) => pushToolCall(tc, index));
+  }
+
+  if (typeof root['content'] === 'string') {
+    pushContent(undefined, root['content']);
   }
 
   return out;
@@ -267,7 +177,7 @@ export function streamOllamaCompletion(
       return;
     }
     if (payload.delta !== undefined) {
-      // Harmony may stream raw text segments; attempt JSON parse but gracefully fall back to text.
+      // Some providers stream raw text segments; attempt JSON parse but gracefully fall back to text.
       let chunk: unknown = payload.delta;
       if (typeof payload.delta === 'string') {
         try {

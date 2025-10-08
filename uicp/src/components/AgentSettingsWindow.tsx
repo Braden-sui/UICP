@@ -52,8 +52,8 @@ const AgentSettingsWindow = () => {
     >
       <div className="flex flex-col gap-4">
         <p className="text-sm text-slate-600">
-          Select which model profiles power the planner (reasoning &amp; plan generation) and actor (batch builder).
-          Harmony-capable GPT-OSS profiles require streaming support that is rolling out now; legacy DeepSeek/Qwen stay available by default.
+          Select which model profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). DeepSeek and
+          Qwen remain the default pairing.
         </p>
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-2 text-sm text-slate-600">
@@ -70,7 +70,9 @@ const AgentSettingsWindow = () => {
               ))}
             </select>
             <span className="text-xs text-slate-500">{plannerProfile.description}</span>
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">Mode: {plannerProfile.responseMode} • Channels: {plannerProfile.capabilities?.channels.join(', ')}</span>
+            <span className="text-[11px] uppercase tracking-wide text-slate-400">
+              Channels: {plannerProfile.capabilities?.channels.join(', ') ?? 'commentary'}
+            </span>
           </label>
           <label className="flex flex-col gap-2 text-sm text-slate-600">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor profile</span>
@@ -86,14 +88,11 @@ const AgentSettingsWindow = () => {
               ))}
             </select>
             <span className="text-xs text-slate-500">{actorProfile.description}</span>
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">Mode: {actorProfile.responseMode} • Channels: {actorProfile.capabilities?.channels.join(', ')}</span>
+            <span className="text-[11px] uppercase tracking-wide text-slate-400">
+              Channels: {actorProfile.capabilities?.channels.join(', ') ?? 'commentary'}
+            </span>
           </label>
         </div>
-        {plannerProfile.responseMode !== actorProfile.responseMode && (
-          <div className="rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
-            Mixed profiles selected (planner: {plannerProfile.responseMode}, actor: {actorProfile.responseMode}). This is supported, but for best results use matching modes (both legacy or both Harmony).
-          </div>
-        )}
         <div className="flex justify-end">
           <button
             type="button"

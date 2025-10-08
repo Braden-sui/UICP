@@ -178,19 +178,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               actorProfileKey: app.actorProfileKey,
             },
           );
-          // Surface channel diagnostics for Harmony: if we parsed from a fallback channel, tell the user.
-          if (result.channels?.planner && result.channels.planner !== 'commentary') {
-            get().pushSystemMessage(
-              `Planner parsed from ${result.channels.planner} channel; commentary not used.`,
-              'planner_channel',
-            );
-          }
-          if (result.channels?.actor && result.channels.actor !== 'commentary') {
-            get().pushSystemMessage(
-              `Actor parsed from ${result.channels.actor} channel; commentary not used.`,
-              'actor_channel',
-            );
-          }
           notice = result.notice;
           const plannerFailure = result.failures?.planner;
           const actorFailure = result.failures?.actor;

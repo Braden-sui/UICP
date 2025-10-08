@@ -74,7 +74,7 @@ struct WindowStatePayload {
 #[serde(rename_all = "camelCase")]
 struct ChatMessageInput {
     role: String,
-    // Accept Harmony developer payloads (objects) and legacy string messages.
+    // Accept structured developer payloads (objects) and legacy string messages.
     content: serde_json::Value,
 }
 
@@ -895,27 +895,27 @@ mod tests {
 
     #[test]
     fn cloud_keeps_colon_tags() {
-        assert_eq!(normalize_model_name("gpt-oss:120b", true), "gpt-oss:120b");
+        assert_eq!(normalize_model_name("llama3:70b", true), "llama3:70b");
     }
 
     #[test]
     fn cloud_strips_trailing_cloud_suffix() {
-        assert_eq!(normalize_model_name("gpt-oss:120b-cloud", true), "gpt-oss:120b");
+        assert_eq!(normalize_model_name("llama3:70b-cloud", true), "llama3:70b");
     }
 
     #[test]
     fn cloud_converts_hyphenated_form() {
-        assert_eq!(normalize_model_name("gpt-oss-20b", true), "gpt-oss:20b");
+        assert_eq!(normalize_model_name("llama3-70b", true), "llama3:70b");
     }
 
     #[test]
     fn local_converts_hyphenated_form_to_colon() {
-        assert_eq!(normalize_model_name("gpt-oss-20b", false), "gpt-oss:20b");
+        assert_eq!(normalize_model_name("llama3-70b", false), "llama3:70b");
     }
 
     #[test]
     fn local_preserves_colon_for_daemon() {
-        assert_eq!(normalize_model_name("gpt-oss:20b", false), "gpt-oss:20b");
+        assert_eq!(normalize_model_name("llama3:70b", false), "llama3:70b");
     }
 }
 
