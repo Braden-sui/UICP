@@ -10,5 +10,9 @@
       "Bash(npm run tauri:build:*)"
     ]
   },
-  "outputStyle": "default"
+  "enabledMcpjsonServers": [
+    "browser-server"
+  ],
+  "outputStyle": "default",
+  "enableAllProjectMcpServers": true
 }

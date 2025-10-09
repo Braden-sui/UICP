@@ -1,6 +1,5 @@
 ﻿import type { Batch, Envelope, OperationParamMap } from "./schemas";
-import { sanitizeHtmlStrict } from "./schemas";
-import { createFrameCoalescer, createId, sanitizeHtml } from "../utils";
+import { createFrameCoalescer, createId } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
@@ -8,7 +7,11 @@ import { tryRecoverJsonFromAttribute } from "./cleanup";
 
 const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
-type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;`r`n`r`n// Safety caps for data-command attributes`r`nconst MAX_DATA_COMMAND_LEN = 32768; // 32KB serialized JSON`r`nconst MAX_TEMPLATE_TOKENS = 16; // maximum {{token}} substitutions per element
+type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;
+
+// Safety caps for data-command attributes
+const MAX_DATA_COMMAND_LEN = 32768; // 32KB serialized JSON
+const MAX_TEMPLATE_TOKENS = 16; // maximum {{token}} substitutions per element
 
 type WindowLifecycleEvent =
   | { type: 'created'; id: string; title: string }
@@ -691,7 +694,7 @@ const ensureRoot = () => {
   return workspaceRoot;
 };
 
-// Friendly title from a stable id like "win-ascii-gallery" â†’ "Ascii Gallery"
+// Friendly title from a stable id like "win-ascii-gallery" -> "Ascii Gallery"
 const titleizeWindowId = (id: string): string => {
   try {
     const raw = id.replace(/^win[-_]?/i, "");
@@ -761,7 +764,7 @@ const executeWindowCreate = (
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.setAttribute("aria-label", "Close window");
-    closeButton.textContent = "Ã—";
+    closeButton.textContent = "Ãƒâ€”";
     closeButton.className = "flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 bg-white text-xs text-slate-500 transition hover:bg-slate-100 hover:text-slate-900";
     const stopPointerPropagation = (event: Event) => {
       event.stopPropagation();
@@ -913,7 +916,7 @@ const executeDomSet = (params: OperationParamMap["dom.set"]): CommandResult<stri
     if (!target) {
       return { success: false, error: `Target ${params.target} missing in window ${params.windowId}` };
     }
-    target.innerHTML = sanitizeHtml(params.html);
+    target.innerHTML = String(params.html);
     return { success: true, value: params.windowId };
   } catch (error) {
     return toFailure(error);
@@ -1310,4 +1313,7 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
     errors,
   };
 };
+
+
+
 

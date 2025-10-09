@@ -8,6 +8,25 @@ export type WindowId = Brand<string, 'WindowId'>;
 export type ComponentId = Brand<string, 'ComponentId'>;
 export type StatePath = Brand<string, 'StatePath'>;
 
+// Budgets and limits
+export const MAX_OPS_PER_BATCH = 64;
+export const MAX_HTML_PER_OP = 64 * 1024; // 64KB
+export const MAX_TOTAL_HTML_PER_BATCH = 128 * 1024; // 128KB
+
+// Brand constructors (guarded rollout)
+export function asWindowId(value: string): WindowId {
+  const v = String(value ?? '').trim();
+  if (!v) throw new Error('window id empty');
+  return v as WindowId;
+}
+
+export function asStatePath(value: string): StatePath {
+  const v = String(value ?? '').trim();
+  if (!v) throw new Error('state path empty');
+  if (v.length > 256) throw new Error('state path too long');
+  return v as StatePath;
+}
+
 // Single strict sanitizer entrypoint used by schemas to gate DOM html
 export function sanitizeHtmlStrict(raw: string): SafeHtml {
   const MAX_HTML_LEN = 64 * 1024; // 64KB
@@ -65,7 +84,7 @@ const DomSetParams = z
   .object({
     windowId: z.string().min(1),
     target: z.string().min(1),
-    html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
+    html: z.string().max(MAX_HTML_PER_OP, 'html too large (max 64KB)'),
     sanitize: z.boolean().optional(),
   })
   .strict();
@@ -74,7 +93,7 @@ const DomReplaceParams = z
   .object({
     windowId: z.string().min(1),
     target: z.string().min(1),
-    html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
+    html: z.string().max(MAX_HTML_PER_OP, 'html too large (max 64KB)'),
     sanitize: z.boolean().optional(),
   })
   .strict();
@@ -249,7 +268,7 @@ export const batchSchema = z
       } as Envelope;
     }),
   )
-  .max(64, 'batch too large (max 64 operations)')
+  .max(MAX_OPS_PER_BATCH, 'batch too large (max 64 operations)')
   .superRefine((batch, ctx) => {
     try {
       let totalHtml = 0;
@@ -259,7 +278,7 @@ export const batchSchema = z
           if (typeof h === 'string') totalHtml += h.length;
         }
       }
-      if (totalHtml > 128 * 1024) {
+      if (totalHtml > MAX_TOTAL_HTML_PER_BATCH) {
         ctx.addIssue({
           code: 'custom',
           message: 'total HTML too large (max 128KB per batch)',

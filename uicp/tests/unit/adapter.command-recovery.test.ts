@@ -43,7 +43,14 @@ describe('adapter data-command recovery', () => {
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     const [batch] = enqueueSpy.mock.calls[0] ?? [];
     expect(Array.isArray(batch)).toBe(true);
-    expect((batch as Batch)[0]?.params?.value).toBe('playing');
+    const env = (batch as Batch)[0];
+    expect(env).toBeTruthy();
+    if (env && env.op === 'state.set') {
+      const p = env.params as import('../../src/lib/uicp/schemas').OperationParamMap['state.set'];
+      expect(p.value).toBe('playing');
+    } else {
+      throw new Error(`expected first op to be state.set, got ${env?.op}`);
+    }
     expect(button.getAttribute('data-command')).toBe(
       '{"batch":[{"op":"state.set","params":{"scope":"workspace","key":"status","value":"playing"}}]}',
     );

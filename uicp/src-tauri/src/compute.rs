@@ -39,8 +39,8 @@ mod with_runtime {
         Arc,
     };
     use wasmtime::{
-        component::{Component, Linker, ResourceTable, TypedFunc},
-        Config, Engine, StoreLimits, StoreLimitsBuilder,
+        component::{Component, Linker, ResourceTable, TypedFunc, Instance},
+        Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
     };
     use wasmtime_wasi::{
         DirPerms, FilePerms, HostOutputStream, StreamError, WasiCtx, WasiCtxBuilder, WasiView,
@@ -281,7 +281,8 @@ mod uicp_bindings {
         Ok(Engine::new(&cfg)?)
     }
 
-    /// Spawn a compute job using Wasmtime (temporarily stubbed while bindgen refactor is in progress).
+    /// Spawn a compute job using Wasmtime: build engine/store, link WASI + host, and instantiate the component world.
+    /// Execution of task exports will be wired in the next milestone; for now we finalize with a pending-wiring message.
     pub(super) fn spawn_job(
         app: AppHandle,
         spec: ComputeJobSpec,
@@ -289,14 +290,156 @@ mod uicp_bindings {
     ) -> JoinHandle<()> {
         tauri_spawn(async move {
             let _permit = permit;
-            finalize_error(
-                &app,
-                &spec,
-                error_codes::RUNTIME_FAULT,
-                "Wasm compute runtime temporarily disabled (bindgen refactor in progress)",
-                Instant::now(),
-            )
-            .await;
+            let started = Instant::now();
+
+            // Register cancel channel for this job
+            let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
+            {
+                let state: tauri::State<'_, crate::AppState> = app.state();
+                state
+                    .compute_cancel
+                    .write()
+                    .await
+                    .insert(spec.job_id.clone(), tx_cancel);
+            }
+
+            // Build engine
+            let engine = match build_engine() {
+                Ok(e) => e,
+                Err(err) => {
+                    let any = anyhow::Error::from(err);
+                    let (code, msg) = map_trap_error(&any);
+                    finalize_error(&app, &spec, code, &msg, started).await;
+                    let state: tauri::State<'_, crate::AppState> = app.state();
+                    state.compute_cancel.write().await.remove(&spec.job_id);
+                    crate::remove_compute_job(&app, &spec.job_id).await;
+                    return;
+                }
+            };
+
+            // Resolve module by task@version
+            let module = match registry::find_module(&app, &spec.task) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    finalize_error(&app, &spec, error_codes::TASK_NOT_FOUND, "Module not found for task", started).await;
+                    let state: tauri::State<'_, crate::AppState> = app.state();
+                    state.compute_cancel.write().await.remove(&spec.job_id);
+                    crate::remove_compute_job(&app, &spec.job_id).await;
+                    return;
+                }
+                Err(err) => {
+                    let any = anyhow::Error::from(err);
+                    let (code, msg) = map_trap_error(&any);
+                    finalize_error(&app, &spec, code, &msg, started).await;
+                    let state: tauri::State<'_, crate::AppState> = app.state();
+                    state.compute_cancel.write().await.remove(&spec.job_id);
+                    crate::remove_compute_job(&app, &spec.job_id).await;
+                    return;
+                }
+            };
+
+            // Create component from file
+            let component = match Component::from_file(&engine, &module.path) {
+                Ok(c) => c,
+                Err(err) => {
+                    let any = anyhow::Error::from(err);
+                    let (code, msg) = map_trap_error(&any);
+                    finalize_error(&app, &spec, code, &msg, started).await;
+                    let state: tauri::State<'_, crate::AppState> = app.state();
+                    state.compute_cancel.write().await.remove(&spec.job_id);
+                    crate::remove_compute_job(&app, &spec.job_id).await;
+                    return;
+                }
+            };
+
+            // Build store context (no preopens by default; FS/NET off). Seed deterministic fields.
+            let ctx = Ctx {
+                wasi: WasiCtxBuilder::new().build(),
+                table: ResourceTable::new(),
+                app: app.clone(),
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                partial_seq: 0,
+                partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                invalid_partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                rng_seed: [7u8; 32],
+                logical_tick: 0,
+                started,
+                deadline_ms: spec.timeout_ms.unwrap_or(30_000) as u32,
+                rng_counter: 0,
+                log_count: 0,
+            };
+            let mut store: Store<Ctx> = Store::new(&engine, ctx);
+
+            // Propagate cancel signal into store context
+            {
+                let cancelled = store.data().cancelled.clone();
+                tokio::spawn(async move {
+                    let _ = rx_cancel.changed().await;
+                    cancelled.store(true, Ordering::Relaxed);
+                });
+            }
+
+            // Link WASI and host imports, then instantiate the world
+            let mut linker: Linker<Ctx> = Linker::new(&engine);
+            if let Err(err) = add_wasi_and_host(&mut linker) {
+                let any = anyhow::Error::from(err);
+                let (code, msg) = map_trap_error(&any);
+                finalize_error(&app, &spec, code, &msg, started).await;
+                let state: tauri::State<'_, crate::AppState> = app.state();
+                state.compute_cancel.write().await.remove(&spec.job_id);
+                crate::remove_compute_job(&app, &spec.job_id).await;
+                return;
+            }
+
+            // Instantiate the world using bindgen types when enabled; else use raw Instance.
+            #[cfg(all(feature = "uicp_bindgen"))]
+            {
+                let inst = uicp_bindings::Command::instantiate(&mut store, &component, &linker).await;
+                match inst {
+                    Ok((_bindings, _instance)) => {
+                        finalize_error(
+                            &app,
+                            &spec,
+                            error_codes::RUNTIME_FAULT,
+                            "Wasm component instantiated (bindgen); execution wiring pending",
+                            started,
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        let any = anyhow::Error::from(err);
+                        let (code, msg) = map_trap_error(&any);
+                        finalize_error(&app, &spec, code, &msg, started).await;
+                    }
+                }
+            }
+
+            #[cfg(not(all(feature = "uicp_bindgen")))]
+            {
+                let inst_res: Result<Instance, _> = Instance::new(&mut store, &component, &linker);
+                match inst_res {
+                    Ok(_instance) => {
+                        // For now we only validate instantiation and finalize with a pending-wiring message.
+                        finalize_error(
+                            &app,
+                            &spec,
+                            error_codes::RUNTIME_FAULT,
+                            "Wasm component instantiated; execution wiring pending",
+                            started,
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        let any = anyhow::Error::from(err);
+                        let (code, msg) = map_trap_error(&any);
+                        finalize_error(&app, &spec, code, &msg, started).await;
+                    }
+                }
+            }
+
+            // Cleanup cancel map and job registry
             let state: tauri::State<'_, crate::AppState> = app.state();
             state.compute_cancel.write().await.remove(&spec.job_id);
             crate::remove_compute_job(&app, &spec.job_id).await;

@@ -134,8 +134,8 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - `window.close`: destroys the window and detaches drag listeners.
 - [x] DOM ops
   - `dom.replace`: routed to `dom.set` internally; reserve for the first population of `#root` after `window.create`.
-  - `dom.set`: sanitized, targeted updates; returns an error if `windowId` or `target` is missing.
-  - `dom.append`: sanitized `insertAdjacentHTML` at end of the target.
+  - `dom.set`: validated HTML at schema/envelope time; apply does not re-sanitize; returns an error if `windowId` or `target` is missing.
+  - `dom.append`: validated HTML via `insertAdjacentHTML` (no double-sanitize) at end of the target.
 - [x] Component ops
   - `component.render`: appends a mock component block with `data-component-id`; basic markup for form/table/modal via `buildComponentMarkup()`.
   - `component.update`: stores `props` on the element for inspection.
@@ -334,6 +334,8 @@ Backlog
   - `uicp/src/lib/uicp/sanitizer.test.ts`: sanitizer removes script/style/on* and javascript:; budgets enforced (per-op 64KB, total 128KB).
   - `uicp/src/lib/uicp/replay.test.ts`: replay de-dup applies identical ops once.
   - `uicp/src/lib/uicp/queue-cancel.test.ts`: txn.cancel short-circuits and applies immediately.
+- Data-command caps: per element serialized length <= 32KB and template tokens <= 16; enforced in `uicp/src/lib/uicp/adapter.ts` data-command handler.
+- DOM apply behavior: dom.set/dom.append accept validated HTML (no double-sanitize at apply); unsafe HTML rejected at validation via `uicp/src/lib/uicp/schemas.ts` envelope guard.
 - Notes:
   - Watcher/component teardown on `window.close` remains minimal (drag cleanup, persisted command removal). Full per-window watcher/component tracking is a follow-up.
   - STOP/cancel path remains wired UI→bridge→host; default chat request timeout remains a follow-up.

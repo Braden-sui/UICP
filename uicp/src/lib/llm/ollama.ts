@@ -207,6 +207,18 @@ export function streamOllamaCompletion(
   let started = false;
   const requestId = options?.requestId ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
   let abortHandler: ((this: AbortSignal, ev: Event) => any) | undefined;
+  const readMs = (key: string, fallback: number): number => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const raw = (import.meta as any)?.env?.[key] as unknown;
+      const n = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : undefined;
+      return Number.isFinite(n) && (n as number) > 0 ? (n as number) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const DEFAULT_CHAT_TIMEOUT_MS = readMs('VITE_CHAT_DEFAULT_TIMEOUT_MS', 35_000);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   // Attach the event listener first to avoid missing early chunks
   void listen('ollama-completion', (event) => {
@@ -214,6 +226,10 @@ export function streamOllamaCompletion(
     if (!payload) return;
     if (payload.done) {
       queue.push({ type: 'done' });
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = undefined;
+      }
       if (unlisten) {
         try {
           unlisten();
@@ -290,6 +306,10 @@ export function streamOllamaCompletion(
         requestId,
         request: requestPayload,
       }).catch((err) => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
         queue.fail(err instanceof Error ? err : new Error(String(err)));
         queue.end();
         // Clear active marker on error as well
@@ -301,6 +321,10 @@ export function streamOllamaCompletion(
     // If caller supplied an AbortSignal, wire it to backend cancel
     if (options?.signal && typeof options.signal.addEventListener === 'function') {
       abortHandler = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
         try {
           void invoke('cancel_chat', { requestId });
         } catch {
@@ -318,7 +342,30 @@ export function streamOllamaCompletion(
       };
       options.signal.addEventListener('abort', abortHandler, { once: true } as AddEventListenerOptions);
     }
+    // Default timeout when no AbortSignal provided: best-effort cancel
+    if (!options?.signal) {
+      timeoutId = setTimeout(() => {
+        try {
+          void invoke('cancel_chat', { requestId });
+        } catch {
+          // ignore
+        }
+        if (unlisten) {
+          try { unlisten(); } catch { /* ignore */ }
+          unlisten = null;
+        }
+        if (activeRequestId === requestId) {
+          activeRequestId = null;
+        }
+        queue.fail(new Error(`LLM timeout after ${DEFAULT_CHAT_TIMEOUT_MS}ms`));
+        queue.end();
+      }, DEFAULT_CHAT_TIMEOUT_MS);
+    }
   }).catch((err) => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
     queue.fail(err instanceof Error ? err : new Error(String(err)));
     queue.end();
   });
@@ -329,6 +376,10 @@ export function streamOllamaCompletion(
       return {
         next: () => queue.next(),
         return: async () => {
+          if (timeoutId) {
+            try { clearTimeout(timeoutId); } catch { /* ignore */ }
+            timeoutId = undefined;
+          }
           if (unlisten) {
             try {
               unlisten();
