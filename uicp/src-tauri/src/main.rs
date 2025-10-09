@@ -8,6 +8,8 @@ use std::{
 };
 
 use anyhow::Context;
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine as _;
 use chrono::Utc;
 use dirs::document_dir;
 use dotenvy::dotenv;
@@ -27,8 +29,6 @@ use tokio::{
     time::{interval, timeout},
 };
 use tokio_stream::StreamExt;
-use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
-use base64::Engine as _;
 
 mod compute;
 mod compute_cache;
@@ -952,6 +952,13 @@ async fn chat_completion(
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_string()));
     let handshake_timeout = Duration::from_secs(60);
+    // Idle timeout for streaming chunks: if no delta arrives within this window, cancel the stream.
+    let idle_timeout = Duration::from_millis(
+        std::env::var("CHAT_IDLE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(35_000),
+    );
     let circuit_open_after = 3u8;
     let circuit_open_for = Duration::from_secs(15);
     let user_agent = format!("{}/tauri {}", APP_NAME, env!("CARGO_PKG_VERSION"));
@@ -1326,16 +1333,18 @@ async fn chat_completion(
 
                     let mut stream = resp.bytes_stream();
                     let mut stream_failed = false;
-                    while let Some(chunk) = stream.next().await {
-                        match chunk {
-                            Err(err) => {
+                    loop {
+                        // Enforce idle timeout between streamed chunks
+                        let next = tokio::time::timeout(idle_timeout, stream.next()).await;
+                        match next {
+                            Err(_) => {
                                 stream_failed = true;
                                 if debug_on {
                                     let ev = serde_json::json!({
                                         "ts": Utc::now().timestamp_millis(),
-                                        "event": "stream_error",
+                                        "event": "stream_idle_timeout",
                                         "requestId": rid_for_task,
-                                        "error": err.to_string(),
+                                        "idleMs": idle_timeout.as_millis() as u64,
                                     });
                                     tokio::spawn(append_trace(ev.clone()));
                                     tokio::spawn(emit_debug(ev));
@@ -1343,57 +1352,114 @@ async fn chat_completion(
                                 emit_problem_detail(
                                     &app_handle,
                                     &rid_for_task,
-                                    502,
-                                    "StreamError",
-                                    "Streaming response terminated unexpectedly",
+                                    408,
+                                    "RequestTimeout",
+                                    "Streaming idle timeout",
                                     None,
                                 );
                                 break;
                             }
-                            Ok(bytes) => {
-                                let text = String::from_utf8_lossy(&bytes);
-                                for raw_line in text.split('\n') {
-                                    let trimmed = raw_line.trim();
-                                    if trimmed.is_empty() {
-                                        continue;
+                            Ok(None) => {
+                                // Stream ended gracefully
+                                if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "stream_eof",
+                                        "requestId": rid_for_task,
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
+                                emit_or_log(
+                                    &app_handle,
+                                    "ollama-completion",
+                                    serde_json::json!({ "done": true }),
+                                );
+                                break;
+                            }
+                            Ok(Some(chunk)) => match chunk {
+                                Err(err) => {
+                                    stream_failed = true;
+                                    if debug_on {
+                                        let ev = serde_json::json!({
+                                            "ts": Utc::now().timestamp_millis(),
+                                            "event": "stream_error",
+                                            "requestId": rid_for_task,
+                                            "error": err.to_string(),
+                                        });
+                                        tokio::spawn(append_trace(ev.clone()));
+                                        tokio::spawn(emit_debug(ev));
                                     }
-
-                                    let payload_str = if trimmed.starts_with("data:") {
-                                        trimmed.trim_start_matches("data:").trim().to_string()
-                                    } else {
-                                        trimmed.to_string()
-                                    };
-
-                                    if payload_str == "[DONE]" {
-                                        if debug_on {
-                                            let ev = serde_json::json!({
-                                                "ts": Utc::now().timestamp_millis(),
-                                                "event": "stream_done",
-                                                "requestId": rid_for_task,
-                                            });
-                                            tokio::spawn(append_trace(ev.clone()));
-                                            tokio::spawn(emit_debug(ev));
+                                    emit_problem_detail(
+                                        &app_handle,
+                                        &rid_for_task,
+                                        502,
+                                        "StreamError",
+                                        "Streaming response terminated unexpectedly",
+                                        None,
+                                    );
+                                    break;
+                                }
+                                Ok(bytes) => {
+                                    let text = String::from_utf8_lossy(&bytes);
+                                    for raw_line in text.split('\n') {
+                                        let trimmed = raw_line.trim();
+                                        if trimmed.is_empty() {
+                                            continue;
                                         }
-                                        emit_or_log(
-                                            &app_handle,
-                                            "ollama-completion",
-                                            serde_json::json!({ "done": true }),
-                                        );
-                                        continue;
-                                    }
-
-                                    match serde_json::from_str::<serde_json::Value>(&payload_str) {
-                                        Ok(val) => {
-                                            if val
-                                                .get("done")
-                                                .and_then(|v| v.as_bool())
-                                                .unwrap_or(false)
-                                            {
+                                        let payload_str = if trimmed.starts_with("data:") {
+                                            trimmed.trim_start_matches("data:").trim().to_string()
+                                        } else {
+                                            trimmed.to_string()
+                                        };
+                                        if payload_str == "[DONE]" {
+                                            if debug_on {
+                                                let ev = serde_json::json!({
+                                                    "ts": Utc::now().timestamp_millis(),
+                                                    "event": "stream_done",
+                                                    "requestId": rid_for_task,
+                                                });
+                                                tokio::spawn(append_trace(ev.clone()));
+                                                tokio::spawn(emit_debug(ev));
+                                            }
+                                            emit_or_log(
+                                                &app_handle,
+                                                "ollama-completion",
+                                                serde_json::json!({ "done": true }),
+                                            );
+                                            continue;
+                                        }
+                                        match serde_json::from_str::<serde_json::Value>(
+                                            &payload_str,
+                                        ) {
+                                            Ok(val) => {
+                                                if val
+                                                    .get("done")
+                                                    .and_then(|v| v.as_bool())
+                                                    .unwrap_or(false)
+                                                {
+                                                    if debug_on {
+                                                        let ev = serde_json::json!({
+                                                            "ts": Utc::now().timestamp_millis(),
+                                                            "event": "delta_done",
+                                                            "requestId": rid_for_task,
+                                                        });
+                                                        tokio::spawn(append_trace(ev.clone()));
+                                                        tokio::spawn(emit_debug(ev));
+                                                    }
+                                                    emit_or_log(
+                                                        &app_handle,
+                                                        "ollama-completion",
+                                                        serde_json::json!({ "done": true }),
+                                                    );
+                                                    continue;
+                                                }
                                                 if debug_on {
                                                     let ev = serde_json::json!({
                                                         "ts": Utc::now().timestamp_millis(),
-                                                        "event": "delta_done",
+                                                        "event": "delta_json",
                                                         "requestId": rid_for_task,
+                                                        "len": payload_str.len(),
                                                     });
                                                     tokio::spawn(append_trace(ev.clone()));
                                                     tokio::spawn(emit_debug(ev));
@@ -1401,46 +1467,30 @@ async fn chat_completion(
                                                 emit_or_log(
                                                     &app_handle,
                                                     "ollama-completion",
-                                                    serde_json::json!({ "done": true }),
+                                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "json" }),
                                                 );
-                                                continue;
                                             }
-                                            if debug_on {
-                                                let ev = serde_json::json!({
-                                                    "ts": Utc::now().timestamp_millis(),
-                                                    "event": "delta_json",
-                                                    "requestId": rid_for_task,
-                                                    "len": payload_str.len(),
-                                                });
-                                                tokio::spawn(append_trace(ev.clone()));
-                                                tokio::spawn(emit_debug(ev));
+                                            Err(_) => {
+                                                if debug_on {
+                                                    let ev = serde_json::json!({
+                                                        "ts": Utc::now().timestamp_millis(),
+                                                        "event": "delta_text",
+                                                        "requestId": rid_for_task,
+                                                        "len": payload_str.len(),
+                                                    });
+                                                    tokio::spawn(append_trace(ev.clone()));
+                                                    tokio::spawn(emit_debug(ev));
+                                                }
+                                                emit_or_log(
+                                                    &app_handle,
+                                                    "ollama-completion",
+                                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "text" }),
+                                                );
                                             }
-                                            emit_or_log(
-                                                &app_handle,
-                                                "ollama-completion",
-                                                serde_json::json!({ "done": false, "delta": payload_str, "kind": "json" }),
-                                            );
-                                        }
-                                        Err(_) => {
-                                            if debug_on {
-                                                let ev = serde_json::json!({
-                                                    "ts": Utc::now().timestamp_millis(),
-                                                    "event": "delta_text",
-                                                    "requestId": rid_for_task,
-                                                    "len": payload_str.len(),
-                                                });
-                                                tokio::spawn(append_trace(ev.clone()));
-                                                tokio::spawn(emit_debug(ev));
-                                            }
-                                            emit_or_log(
-                                                &app_handle,
-                                                "ollama-completion",
-                                                serde_json::json!({ "done": false, "delta": payload_str, "kind": "text" }),
-                                            );
                                         }
                                     }
                                 }
-                            }
+                            },
                         }
                     }
 
@@ -1916,11 +1966,14 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         // Optional signature verification when both signature and public key are present.
         if let (Some(_sig), Some(pk)) = (&entry.signature, pubkey_opt.as_ref()) {
             match crate::registry::verify_entry_signature(entry, pk) {
-                Ok(true) => {}
-                Ok(false) => failures.push(serde_json::json!({
-                    "filename": entry.filename,
-                    "reason": "signature_mismatch",
-                })),
+                Ok(crate::registry::SignatureStatus::Verified) => {}
+                Ok(crate::registry::SignatureStatus::Invalid)
+                | Ok(crate::registry::SignatureStatus::Missing) => {
+                    failures.push(serde_json::json!({
+                        "filename": entry.filename,
+                        "reason": "signature_mismatch",
+                    }))
+                }
                 Err(err) => failures.push(serde_json::json!({
                     "filename": entry.filename,
                     "reason": "signature_error",
@@ -1940,7 +1993,7 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 
 /// Copy a host file into the workspace files directory and return its ws:/ path.
 #[tauri::command]
-async fn copy_into_files(app: tauri::AppHandle, src_path: String) -> Result<String, String> {
+async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<String, String> {
     use std::fs;
     use std::path::{Path, PathBuf};
 

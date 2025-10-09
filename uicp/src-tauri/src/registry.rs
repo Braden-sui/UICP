@@ -1,18 +1,22 @@
 use std::{
+    collections::HashSet,
     fs,
     fs::OpenOptions,
-    io::Write,
-    path::{Path, PathBuf},
+    io::{Read, Write},
+    path::{Component, Path, PathBuf},
+    time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 // Optional signature verification (if caller provides a public key)
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::engine::general_purpose::{
+    STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD,
+};
 use base64::Engine as _;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleEntry {
@@ -42,10 +46,12 @@ fn resolve_modules_dir(app: &AppHandle) -> PathBuf {
     }
     // Fallback: put under the app data dir beside db/logs.
     let state: tauri::State<'_, crate::AppState> = app.state();
-    let mut dir = state.db_path.clone();
-    dir.pop(); // drop data.db
-    dir.push("modules");
-    dir
+    let base = state
+        .db_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| state.db_path.clone());
+    base.join("modules")
 }
 
 /// Public accessor for the resolved modules directory path.
@@ -70,15 +76,23 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
     let _lock = _lock.unwrap();
 
     // Resolve the bundled resources path (tauri bundle resources) if available.
-    let bundled = app.path().resource_dir().map(|dir| dir.join("modules"));
+    // Tauri path API returns Result; convert to Option for ergonomic checks below.
+    let bundled: Option<PathBuf> = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("modules"));
 
     // If target manifest is missing but we have a bundled copy, copy all.
     if !manifest_path.exists() {
-        if let Ok(src) = &bundled {
+        if let Some(src) = &bundled {
             if src.join("manifest.json").exists() {
                 fs::create_dir_all(&target)
                     .with_context(|| format!("mkdir: {}", target.display()))?;
                 copy_dir_all(src, &target)?;
+                if let Err(err) = verify_installed_modules(&target) {
+                    eprintln!("bundled modules verification failed: {err:#}");
+                }
             }
         }
         // Lock guard drops here
@@ -88,13 +102,55 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
     // Otherwise validate listed files exist; copy missing ones from bundle when possible.
     let text = fs::read_to_string(&manifest_path)
         .with_context(|| format!("read manifest: {}", manifest_path.display()))?;
-    let manifest: ModuleManifest = serde_json::from_str(&text).context("parse module manifest")?;
+    let manifest = parse_manifest(&text)?;
     for entry in manifest.entries {
-        let path = target.join(&entry.filename);
-        if path.exists() {
+        if !is_clean_filename(&entry.filename) {
+            eprintln!(
+                "invalid module filename (must be basename only): {}",
+                entry.filename
+            );
             continue;
         }
-        if let Ok(src) = &bundled {
+        let path = target.join(&entry.filename);
+        if path.exists() {
+            match verify_digest(&path, &entry.digest_sha256) {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Some(src) = &bundled {
+                        let candidate = src.join(&entry.filename);
+                        if candidate.exists() {
+                            let tmp = path.with_extension("tmp");
+                            if let Err(err) = fs::copy(&candidate, &tmp) {
+                                eprintln!(
+                                    "modules copy repair failed {} -> {}: {}",
+                                    candidate.display(),
+                                    tmp.display(),
+                                    err
+                                );
+                            } else if let Ok(true) = verify_digest(&tmp, &entry.digest_sha256) {
+                                if let Err(err) = fs::rename(&tmp, &path) {
+                                    eprintln!(
+                                        "modules repair rename failed {} -> {}: {}",
+                                        tmp.display(),
+                                        path.display(),
+                                        err
+                                    );
+                                    let _ = fs::remove_file(&tmp);
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                let _ = fs::remove_file(&tmp);
+                            }
+                        }
+                    }
+                    anyhow::bail!("digest mismatch for pre-existing module {}", entry.filename);
+                }
+                Err(err) => return Err(err.context("verify existing module digest")),
+            }
+            continue;
+        }
+        if let Some(src) = &bundled {
             let candidate = src.join(&entry.filename);
             if candidate.exists() {
                 if let Some(parent) = path.parent() {
@@ -151,6 +207,9 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     for entry in fs::read_dir(src).with_context(|| format!("readdir: {}", src.display()))? {
         let entry = entry?;
         let ty = entry.file_type()?;
+        if ty.is_symlink() {
+            continue;
+        }
         let from = entry.path();
         let to = dst.join(entry.file_name());
         if ty.is_dir() {
@@ -171,8 +230,7 @@ pub fn load_manifest(app: &AppHandle) -> Result<ModuleManifest> {
     }
     let text = fs::read_to_string(&manifest_path)
         .with_context(|| format!("read manifest: {}", manifest_path.display()))?;
-    let manifest: ModuleManifest = serde_json::from_str(&text).context("parse module manifest")?;
-    Ok(manifest)
+    parse_manifest(&text)
 }
 
 pub fn find_module(app: &AppHandle, task_at_version: &str) -> Result<Option<ModuleRef>> {
@@ -180,22 +238,45 @@ pub fn find_module(app: &AppHandle, task_at_version: &str) -> Result<Option<Modu
         .split_once('@')
         .unwrap_or((task_at_version, ""));
     let manifest = load_manifest(app)?;
-    if let Some(entry) = manifest
-        .entries
-        .into_iter()
-        .find(|e| e.task == task && (version.is_empty() || e.version == version))
-    {
-        let dir = resolve_modules_dir(app);
-        let path = dir.join(&entry.filename);
-        return Ok(Some(ModuleRef { entry, path }));
+    let selected = select_manifest_entry(&manifest.entries, task, version)?;
+    let Some(entry) = selected else {
+        return Ok(None);
+    };
+    if !is_clean_filename(&entry.filename) {
+        anyhow::bail!(
+            "manifest entry contains invalid filename: {}",
+            entry.filename
+        );
     }
-    Ok(None)
+    let dir = resolve_modules_dir(app);
+    let path = dir.join(&entry.filename);
+    match verify_digest(&path, &entry.digest_sha256) {
+        Ok(true) => Ok(Some(ModuleRef {
+            entry: entry.clone(),
+            path,
+        })),
+        Ok(false) => anyhow::bail!("digest mismatch for {}", entry.filename),
+        Err(err) => Err(err.context("verify module digest")),
+    }
 }
 
 pub fn verify_digest(path: &Path, expected_hex: &str) -> Result<bool> {
-    let bytes = fs::read(path).with_context(|| format!("read module: {}", path.display()))?;
+    let meta = fs::symlink_metadata(path)
+        .with_context(|| format!("stat module for digest: {}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("refusing to hash symlink: {}", path.display());
+    }
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("open module for digest: {}", path.display()))?;
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
     let got = hex::encode(hasher.finalize());
     Ok(expected_hex.eq_ignore_ascii_case(&got))
 }
@@ -203,28 +284,47 @@ pub fn verify_digest(path: &Path, expected_hex: &str) -> Result<bool> {
 /// Verify an entry's Ed25519 signature against the expected digest.
 /// - `pubkey_bytes` must be the 32-byte Ed25519 public key.
 /// - `entry.signature` may be base64 or hex encoded.
-/// The message that is signed is the raw bytes of the hex-decoded sha256 digest.
-pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Result<bool> {
+/// The message that is signed uses domain separation to bind metadata alongside the digest.
+pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Result<SignatureStatus> {
     let Some(sig_str) = &entry.signature else {
-        return Ok(false);
+        return Ok(SignatureStatus::Missing);
     }; // no signature provided
     if pubkey_bytes.len() != 32 {
         anyhow::bail!("pubkey must be 32 bytes (Ed25519)");
     }
 
     // Decode signature (try base64, then hex)
-    let sig_bytes = match BASE64_ENGINE.decode(sig_str.as_bytes()) {
-        Ok(b) => b,
-        Err(_) => hex::decode(sig_str).context("decode signature hex")?,
-    };
+    let sig_bytes = BASE64_STANDARD
+        .decode(sig_str.as_bytes())
+        .or_else(|_| BASE64_URL_SAFE_NO_PAD.decode(sig_str.as_bytes()))
+        .or_else(|_| hex::decode(sig_str).context("decode signature hex"))?;
     let sig = Signature::try_from(sig_bytes.as_slice()).context("ed25519 signature parse")?;
 
-    // Message is the digest bytes
-    let msg = hex::decode(&entry.digest_sha256).context("decode digest hex")?;
+    ensure!(
+        is_valid_digest_hex(&entry.digest_sha256),
+        "digest must be 64 hex chars"
+    );
+    let digest_bytes = hex::decode(&entry.digest_sha256)
+        .context("decode digest hex for signature verification")?;
+    let mut message = Vec::with_capacity(
+        b"UICP-MODULE".len() + entry.task.len() + entry.version.len() + digest_bytes.len() + 12,
+    );
+    message.extend_from_slice(b"UICP-MODULE\x00");
+    message.extend_from_slice(b"task=");
+    message.extend_from_slice(entry.task.as_bytes());
+    message.push(0);
+    message.extend_from_slice(b"version=");
+    message.extend_from_slice(entry.version.as_bytes());
+    message.push(0);
+    message.extend_from_slice(b"sha256=");
+    message.extend_from_slice(&digest_bytes);
 
     let vk = VerifyingKey::from_bytes(pubkey_bytes.try_into().expect("len checked"))
         .context("verifying key parse")?;
-    Ok(vk.verify(&msg, &sig).is_ok())
+    match vk.verify(&message, &sig) {
+        Ok(_) => Ok(SignatureStatus::Verified),
+        Err(_) => Ok(SignatureStatus::Invalid),
+    }
 }
 
 /// Acquire a best-effort exclusive install lock in `dir` using a lock file.
@@ -232,17 +332,23 @@ pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Resul
 fn acquire_install_lock(dir: &Path) -> Option<FileLock> {
     let _ = fs::create_dir_all(dir);
     let path = dir.join(".install.lock");
-    match OpenOptions::new().create_new(true).write(true).open(&path) {
-        Ok(mut f) => {
-            let _ = writeln!(
-                f,
-                "pid={}, ts={}",
-                std::process::id(),
-                chrono::Utc::now().timestamp()
-            );
-            Some(FileLock { path })
+    match try_create_lock_file(&path) {
+        Some(lock) => Some(lock),
+        None => {
+            const STALE_LOCK_TTL: Duration = Duration::from_secs(300);
+            if let Ok(meta) = fs::metadata(&path) {
+                if let Ok(modified) = meta.modified() {
+                    if modified
+                        .elapsed()
+                        .map(|age| age >= STALE_LOCK_TTL)
+                        .unwrap_or(false)
+                    {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+            try_create_lock_file(&path)
         }
-        Err(_) => None,
     }
 }
 
@@ -254,6 +360,152 @@ impl Drop for FileLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
+}
+
+fn try_create_lock_file(path: &Path) -> Option<FileLock> {
+    OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .ok()
+        .map(|mut file| {
+            let _ = writeln!(
+                file,
+                "pid={}, ts={}",
+                std::process::id(),
+                chrono::Utc::now().timestamp()
+            );
+            FileLock {
+                path: path.to_path_buf(),
+            }
+        })
+}
+
+fn verify_installed_modules(target: &Path) -> Result<()> {
+    let manifest_path = target.join("manifest.json");
+    let text = fs::read_to_string(&manifest_path).with_context(|| {
+        format!(
+            "read manifest for verification: {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest = parse_manifest(&text)?;
+    for entry in manifest.entries {
+        if !is_clean_filename(&entry.filename) {
+            eprintln!(
+                "skipping digest check for invalid filename {}",
+                entry.filename
+            );
+            continue;
+        }
+        let path = target.join(&entry.filename);
+        match verify_digest(&path, &entry.digest_sha256) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!(
+                    "removing module {} due to digest mismatch after install",
+                    entry.filename
+                );
+                let _ = fs::remove_file(&path);
+            }
+            Err(err) => {
+                eprintln!("failed verifying digest for {}: {err:#}", entry.filename);
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_clean_filename(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
+
+fn is_valid_digest_hex(digest: &str) -> bool {
+    digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn parse_manifest(text: &str) -> Result<ModuleManifest> {
+    let manifest: ModuleManifest = serde_json::from_str(text).context("parse module manifest")?;
+    for entry in &manifest.entries {
+        validate_manifest_entry(entry)?;
+    }
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for entry in &manifest.entries {
+        let key = (entry.task.clone(), entry.version.clone());
+        ensure!(
+            seen.insert(key),
+            "duplicate manifest entry for {}@{}",
+            entry.task,
+            entry.version
+        );
+    }
+    Ok(manifest)
+}
+
+fn validate_manifest_entry(entry: &ModuleEntry) -> Result<()> {
+    ensure!(
+        !entry.task.trim().is_empty(),
+        "manifest entry missing task identifier"
+    );
+    ensure!(
+        !entry.task.contains('@'),
+        "manifest entry task must not contain '@'"
+    );
+    ensure!(
+        !entry.version.trim().is_empty(),
+        "manifest entry missing version"
+    );
+    ensure!(
+        is_clean_filename(&entry.filename),
+        "manifest entry filename must be a basename"
+    );
+    ensure!(
+        is_valid_digest_hex(&entry.digest_sha256),
+        "manifest digest must be 64 hex chars"
+    );
+    Ok(())
+}
+
+fn select_manifest_entry<'a>(
+    entries: &'a [ModuleEntry],
+    task: &str,
+    version: &str,
+) -> Result<Option<&'a ModuleEntry>> {
+    let filtered: Vec<&ModuleEntry> = entries.iter().filter(|e| e.task == task).collect();
+    if version.is_empty() {
+        let mut parsed: Vec<(&ModuleEntry, semver::Version)> = Vec::new();
+        for entry in &filtered {
+            match semver::Version::parse(&entry.version) {
+                Ok(v) => parsed.push((*entry, v)),
+                Err(err) => {
+                    eprintln!(
+                        "skipping module {} due to invalid semver {}: {err}",
+                        entry.task, entry.version
+                    );
+                }
+            }
+        }
+        parsed.sort_by(|a, b| b.1.cmp(&a.1));
+        if parsed.is_empty() && filtered.is_empty() {
+            return Ok(None);
+        }
+        if parsed.is_empty() {
+            anyhow::bail!("no valid semver entries for task {}", task);
+        }
+        Ok(parsed.first().map(|(entry, _)| *entry))
+    } else {
+        Ok(filtered.into_iter().find(|e| e.version == version))
+    }
+}
+
+/// Tri-state signature verification outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureStatus {
+    Missing,
+    Verified,
+    Invalid,
 }
 
 #[cfg(test)]
@@ -288,10 +540,16 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(b"hello");
         let digest_hex = hex::encode(hasher.finalize());
-        let msg = hex::decode(&digest_hex).unwrap();
+        let digest_bytes = hex::decode(&digest_hex).unwrap();
+        let mut canonical_message = Vec::new();
+        canonical_message.extend_from_slice(b"UICP-MODULE\x00");
+        canonical_message.extend_from_slice(b"task=demo\x00");
+        canonical_message.extend_from_slice(b"version=1.0.0\x00");
+        canonical_message.extend_from_slice(b"sha256=");
+        canonical_message.extend_from_slice(&digest_bytes);
 
-        let sig = sk.sign(&msg);
-        let sig_b64 = BASE64_ENGINE.encode(sig.to_bytes());
+        let sig = sk.sign(&canonical_message);
+        let sig_b64 = BASE64_STANDARD.encode(sig.to_bytes());
 
         let entry = ModuleEntry {
             task: "demo".into(),
@@ -302,12 +560,165 @@ mod tests {
         };
 
         let ok = verify_entry_signature(&entry, vk.as_bytes()).unwrap();
-        assert!(ok, "signature should verify");
+        assert_eq!(ok, SignatureStatus::Verified, "signature should verify");
 
         // Tamper digest
         let mut bad_entry = entry.clone();
         bad_entry.digest_sha256 = "00".repeat(32);
         let not_ok = verify_entry_signature(&bad_entry, vk.as_bytes()).unwrap();
-        assert!(!not_ok, "signature must fail after tamper");
+        assert_eq!(
+            not_ok,
+            SignatureStatus::Invalid,
+            "signature must fail after tamper"
+        );
+    }
+
+    #[test]
+    fn clean_filename_validation() {
+        assert!(is_clean_filename("module.wasm"));
+        assert!(!is_clean_filename("a/module.wasm"));
+        assert!(!is_clean_filename("../module.wasm"));
+        assert!(!is_clean_filename("module/../evil.wasm"));
+    }
+
+    #[test]
+    fn manifest_entry_validation_enforces_required_fields() {
+        let mut entry = ModuleEntry {
+            task: "task".into(),
+            version: "1.2.3".into(),
+            filename: "module.wasm".into(),
+            digest_sha256: "ab".repeat(32),
+            signature: None,
+        };
+        assert!(validate_manifest_entry(&entry).is_ok());
+
+        entry.task = "".into();
+        assert!(validate_manifest_entry(&entry).is_err());
+
+        entry.task = "bad@task".into();
+        assert!(validate_manifest_entry(&entry).is_err());
+    }
+
+    #[test]
+    fn select_entry_prefers_highest_semver() {
+        let entries = vec![
+            ModuleEntry {
+                task: "task".into(),
+                version: "1.0.0".into(),
+                filename: "task@1.0.0.wasm".into(),
+                digest_sha256: "aa".repeat(32),
+                signature: None,
+            },
+            ModuleEntry {
+                task: "task".into(),
+                version: "1.2.0".into(),
+                filename: "task@1.2.0.wasm".into(),
+                digest_sha256: "bb".repeat(32),
+                signature: None,
+            },
+            ModuleEntry {
+                task: "task".into(),
+                version: "1.1.9".into(),
+                filename: "task@1.1.9.wasm".into(),
+                digest_sha256: "cc".repeat(32),
+                signature: None,
+            },
+        ];
+
+        let selected = select_manifest_entry(&entries, "task", "")
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.version, "1.2.0");
+
+        let pinned = select_manifest_entry(&entries, "task", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(pinned.version, "1.0.0");
+    }
+
+    #[test]
+    fn select_entry_errors_when_only_invalid_semver() {
+        let entries = vec![ModuleEntry {
+            task: "task".into(),
+            version: "not-semver".into(),
+            filename: "task@latest.wasm".into(),
+            digest_sha256: "aa".repeat(32),
+            signature: None,
+        }];
+
+        let err = select_manifest_entry(&entries, "task", "").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no valid semver entries for task task"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_manifest_rejects_duplicates() {
+        let manifest = ModuleManifest {
+            entries: vec![
+                ModuleEntry {
+                    task: "task".into(),
+                    version: "1.0.0".into(),
+                    filename: "task@1.0.0.wasm".into(),
+                    digest_sha256: "aa".repeat(32),
+                    signature: None,
+                },
+                ModuleEntry {
+                    task: "task".into(),
+                    version: "1.0.0".into(),
+                    filename: "task@1.0.0b.wasm".into(),
+                    digest_sha256: "bb".repeat(32),
+                    signature: None,
+                },
+            ],
+        };
+        let text = serde_json::to_string(&manifest).unwrap();
+        let err = parse_manifest(&text).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("duplicate manifest entry for task@1.0.0"),
+            "unexpected error {err}"
+        );
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn copy_dir_all_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        let file_path = src.join("file.txt");
+        fs::write(&file_path, b"hello").unwrap();
+        let symlink_path = src.join("link");
+        symlink(&file_path, &symlink_path).unwrap();
+
+        copy_dir_all(&src, &dst).unwrap();
+
+        assert!(dst.join("file.txt").exists());
+        assert!(!dst.join("link").exists());
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn verify_digest_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("modules");
+        fs::create_dir_all(&target_dir).unwrap();
+        let real = target_dir.join("real.wasm");
+        fs::write(&real, b"wasm").unwrap();
+        let link = target_dir.join("link.wasm");
+        symlink(&real, &link).unwrap();
+
+        let err = verify_digest(&link, "00").unwrap_err();
+        assert!(
+            err.to_string().contains("refusing to hash symlink"),
+            "unexpected error: {err}"
+        );
     }
 }

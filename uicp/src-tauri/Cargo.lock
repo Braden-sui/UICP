@@ -5684,6 +5684,7 @@ dependencies = [
  "once_cell",
  "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

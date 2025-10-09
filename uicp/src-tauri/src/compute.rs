@@ -4,9 +4,14 @@
 //! - when enabled, it embeds Wasmtime with typed hostcalls and module registry.
 //! - when disabled, it surfaces a structured error so callers know the runtime is unavailable.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+#[cfg(feature = "wasm_compute")]
+use std::time::Instant;
+
+#[cfg(feature = "wasm_compute")]
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+#[cfg(feature = "wasm_compute")]
 use base64::Engine;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
@@ -39,13 +44,18 @@ mod with_runtime {
         Arc,
     };
     use wasmtime::{
-        component::{Component, Linker, ResourceTable, TypedFunc, Instance},
+        component::{Component, Instance, Linker, ResourceTable, TypedFunc},
         Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
     };
     use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
     // Bring base64::Engine trait methods (encode/decode) into scope within this module.
     use base64::Engine as _;
 
+    const DEFAULT_FUEL: u64 = 1_000_000;
+    const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
+    const EPOCH_TICK_INTERVAL_MS: u64 = 10;
+
+    #[allow(dead_code)]
     fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
         let obj = input
             .as_object()
@@ -63,16 +73,17 @@ mod with_runtime {
         Ok((source, has_header))
     }
 
-// Optional bindgen scaffold for component interfaces (disabled by default until refactor completes)
-#[cfg(all(feature = "wasm_compute", feature = "uicp_bindgen"))]
-mod uicp_bindings {
-    wasmtime::component::bindgen!({
-        path: "wit",
-        world: "command",
-        async: true,
-    });
-}
+    // Optional bindgen scaffold for component interfaces (disabled by default until refactor completes)
+    #[cfg(all(feature = "wasm_compute", feature = "uicp_bindgen"))]
+    mod uicp_bindings {
+        wasmtime::component::bindgen!({
+            path: "wit",
+            world: "command",
+            async: true,
+        });
+    }
 
+    #[allow(dead_code)]
     fn is_typed_only() -> bool {
         match std::env::var("UICP_COMPUTE_TYPED_ONLY") {
             // Explicit opt-out
@@ -82,6 +93,7 @@ mod uicp_bindings {
         }
     }
 
+    #[allow(dead_code)]
     fn extract_table_query_input(
         input: &serde_json::Value,
     ) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), String> {
@@ -203,7 +215,11 @@ mod uicp_bindings {
         if rel.is_empty() {
             return Err("path missing trailing file segment".into());
         }
-        let mut buf = PathBuf::from(crate::files_dir_path());
+        let base = crate::files_dir_path();
+        let base_canonical = base
+            .canonicalize()
+            .map_err(|err| format!("files directory unavailable: {err}"))?;
+        let mut buf = PathBuf::from(base);
         for seg in rel.split('/') {
             if seg.is_empty() || seg == "." {
                 continue;
@@ -216,7 +232,26 @@ mod uicp_bindings {
             }
             buf.push(seg);
         }
-        Ok(buf)
+        let candidate = buf;
+        match candidate.canonicalize() {
+            Ok(canonical) => {
+                if !canonical.starts_with(&base_canonical) {
+                    return Err("path escapes workspace files directory".into());
+                }
+                Ok(candidate)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = candidate.parent() {
+                    if let Ok(parent_canon) = parent.canonicalize() {
+                        if !parent_canon.starts_with(&base_canonical) {
+                            return Err("path escapes workspace files directory".into());
+                        }
+                    }
+                }
+                Ok(candidate)
+            }
+            Err(err) => Err(format!("canonicalize failed: {err}")),
+        }
     }
 
     /// Capability check: ensure a ws:/ path is allowed by fs_read caps (supports /** suffix glob).
@@ -257,6 +292,7 @@ mod uicp_bindings {
         deadline_ms: u32,
         rng_counter: u64,
         log_count: u32,
+        limits: StoreLimits,
     }
 
     impl WasiView for Ctx {
@@ -319,7 +355,14 @@ mod uicp_bindings {
             let module = match registry::find_module(&app, &spec.task) {
                 Ok(Some(m)) => m,
                 Ok(None) => {
-                    finalize_error(&app, &spec, error_codes::TASK_NOT_FOUND, "Module not found for task", started).await;
+                    finalize_error(
+                        &app,
+                        &spec,
+                        error_codes::TASK_NOT_FOUND,
+                        "Module not found for task",
+                        started,
+                    )
+                    .await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -351,6 +394,20 @@ mod uicp_bindings {
             };
 
             // Build store context (no preopens by default; FS/NET off). Seed deterministic fields.
+            let mem_limit_mb = spec
+                .mem_limit_mb
+                .filter(|mb| *mb > 0)
+                .unwrap_or(DEFAULT_MEMORY_LIMIT_MB);
+            let mem_limit_bytes = mem_limit_mb
+                .saturating_mul(1_048_576)
+                .min(usize::MAX as u64) as usize;
+            let limits = StoreLimitsBuilder::new()
+                .instances(1)
+                .tables(32)
+                .memory_size(mem_limit_bytes)
+                .build();
+            let deadline_ms = spec.timeout_ms.unwrap_or(30_000).min(u32::MAX as u64);
+
             let ctx = Ctx {
                 wasi: WasiCtxBuilder::new().build(),
                 table: ResourceTable::new(),
@@ -364,11 +421,47 @@ mod uicp_bindings {
                 rng_seed: [7u8; 32],
                 logical_tick: 0,
                 started,
-                deadline_ms: spec.timeout_ms.unwrap_or(30_000) as u32,
+                deadline_ms: deadline_ms as u32,
                 rng_counter: 0,
                 log_count: 0,
+                limits,
             };
             let mut store: Store<Ctx> = Store::new(&engine, ctx);
+            store.limiter(|ctx| &mut ctx.limits);
+
+            // Configure fuel and epoch deadline enforcement.
+            let mut epoch_pump: Option<JoinHandle<()>> = None;
+            let mut abort_epoch = || {
+                if let Some(handle) = epoch_pump.take() {
+                    handle.abort();
+                }
+            };
+            let fuel = spec.fuel.filter(|f| *f > 0).unwrap_or(DEFAULT_FUEL);
+            if let Err(err) = store.add_fuel(fuel) {
+                abort_epoch();
+                let any = anyhow::Error::from(err);
+                let (code, msg) = map_trap_error(&any);
+                finalize_error(&app, &spec, code, &msg, started).await;
+                let state: tauri::State<'_, crate::AppState> = app.state();
+                state.compute_cancel.write().await.remove(&spec.job_id);
+                crate::remove_compute_job(&app, &spec.job_id).await;
+                return;
+            }
+            let mut deadline_ticks =
+                deadline_ms.saturating_add(EPOCH_TICK_INTERVAL_MS - 1) / EPOCH_TICK_INTERVAL_MS;
+            if deadline_ticks == 0 {
+                deadline_ticks = 1;
+            }
+            store.set_epoch_deadline(deadline_ticks);
+            let eng = engine.clone();
+            let tick_interval = Duration::from_millis(EPOCH_TICK_INTERVAL_MS);
+            let ticks = deadline_ticks;
+            epoch_pump = Some(tauri_spawn(async move {
+                for _ in 0..ticks {
+                    tokio::time::sleep(tick_interval).await;
+                    eng.increment_epoch();
+                }
+            }));
 
             // Propagate cancel signal into store context
             {
@@ -382,6 +475,7 @@ mod uicp_bindings {
             // Link WASI and host imports, then instantiate the world
             let mut linker: Linker<Ctx> = Linker::new(&engine);
             if let Err(err) = add_wasi_and_host(&mut linker) {
+                abort_epoch();
                 let any = anyhow::Error::from(err);
                 let (code, msg) = map_trap_error(&any);
                 finalize_error(&app, &spec, code, &msg, started).await;
@@ -394,7 +488,8 @@ mod uicp_bindings {
             // Instantiate the world using bindgen types when enabled; else use raw Instance.
             #[cfg(all(feature = "uicp_bindgen"))]
             {
-                let inst = uicp_bindings::Command::instantiate(&mut store, &component, &linker).await;
+                let inst =
+                    uicp_bindings::Command::instantiate(&mut store, &component, &linker).await;
                 match inst {
                     Ok((_bindings, _instance)) => {
                         finalize_error(
@@ -405,11 +500,13 @@ mod uicp_bindings {
                             started,
                         )
                         .await;
+                        abort_epoch();
                     }
                     Err(err) => {
                         let any = anyhow::Error::from(err);
                         let (code, msg) = map_trap_error(&any);
                         finalize_error(&app, &spec, code, &msg, started).await;
+                        abort_epoch();
                     }
                 }
             }
@@ -428,14 +525,18 @@ mod uicp_bindings {
                             started,
                         )
                         .await;
+                        abort_epoch();
                     }
                     Err(err) => {
                         let any = anyhow::Error::from(err);
                         let (code, msg) = map_trap_error(&any);
                         finalize_error(&app, &spec, code, &msg, started).await;
+                        abort_epoch();
                     }
                 }
             }
+
+            abort_epoch();
 
             // Cleanup cancel map and job registry
             let state: tauri::State<'_, crate::AppState> = app.state();
@@ -454,7 +555,9 @@ mod uicp_bindings {
 
     #[cfg(not(feature = "uicp_wasi_enable"))]
     fn add_wasi_and_host(_linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
-        Ok(())
+        Err(anyhow::anyhow!(
+            "WASI imports disabled; rebuild with `--features uicp_wasi_enable` to enable WASI host imports"
+        ))
     }
 
     /// Map a Wasmtime/linker error into a compute taxonomy code and message.
@@ -667,11 +770,42 @@ mod uicp_bindings {
         #[test]
         fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {
             let base = crate::files_dir_path().to_path_buf();
+            std::fs::create_dir_all(&base).expect("create files dir");
             let ok = sanitize_ws_files_path("ws:/files/sub/dir/file.csv").expect("ok path");
             assert!(ok.starts_with(&base));
             assert!(ok.ends_with(std::path::Path::new("sub/dir/file.csv")));
             assert!(sanitize_ws_files_path("ws:/files/..//secret").is_err());
             assert!(sanitize_ws_files_path("ws:/other/file.txt").is_err());
+            let _ = std::fs::remove_dir_all(base.join("sub"));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn sanitize_ws_files_path_rejects_symlink_escape() {
+            use std::os::unix::fs::symlink;
+            let base = crate::files_dir_path().to_path_buf();
+            std::fs::create_dir_all(&base).expect("create files dir");
+
+            let outside_root = base.parent().unwrap().join("symlink-escape-outside");
+            std::fs::create_dir_all(&outside_root).expect("create outside dir");
+            let outside_file = outside_root.join("secret.txt");
+            std::fs::write(&outside_file, "nope").expect("write outside");
+
+            let link_dir = base.join("symlink-escape-link");
+            let _ = std::fs::remove_file(&link_dir);
+            let _ = std::fs::remove_dir(&link_dir);
+            symlink(&outside_root, &link_dir).expect("create symlink");
+
+            let err =
+                sanitize_ws_files_path("ws:/files/symlink-escape-link/secret.txt").unwrap_err();
+            assert!(
+                err.contains("escapes workspace"),
+                "unexpected error message: {err}"
+            );
+
+            let _ = std::fs::remove_file(&outside_file);
+            let _ = std::fs::remove_dir_all(&outside_root);
+            let _ = std::fs::remove_file(&link_dir);
         }
 
         #[test]
@@ -707,14 +841,14 @@ mod uicp_bindings {
         #[test]
         fn trap_mapping_matches_timeouts_and_limits_and_perms() {
             let (code, _msg) = map_trap_error(&anyhow::anyhow!("epoch deadline exceeded"));
-            assert_eq!(code, "Compute.Timeout");
+            assert_eq!(code, error_codes::TIMEOUT);
 
             let (code, _msg) =
                 map_trap_error(&anyhow::anyhow!("out of memory while growing memory"));
-            assert_eq!(code, "Compute.Resource.Limit");
+            assert_eq!(code, error_codes::RESOURCE_LIMIT);
 
             let (code, _msg) = map_trap_error(&anyhow::anyhow!("permission denied opening file"));
-            assert_eq!(code, "Compute.CapabilityDenied");
+            assert_eq!(code, error_codes::CAPABILITY_DENIED);
         }
 
         #[test]
@@ -783,7 +917,7 @@ mod uicp_bindings {
                 ..spec_ok.clone()
             };
             let err = resolve_csv_source(&spec_denied, ws_path).expect_err("cap denied");
-            assert_eq!(err.0, "CapabilityDenied");
+            assert_eq!(err.0, error_codes::CAPABILITY_DENIED);
 
             let invalid =
                 resolve_csv_source(&spec_ok, "ws:/files/../secret.csv").expect_err("invalid path");

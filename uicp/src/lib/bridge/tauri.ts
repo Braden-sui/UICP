@@ -37,7 +37,20 @@ export async function initializeTauriBridge() {
         const payload = event.payload as unknown;
         try {
           const obj = typeof payload === 'string' ? JSON.parse(payload as string) : (payload as Record<string, unknown>);
-          const ev = (obj as Record<string, unknown>)?.['event'] ?? 'debug-log';
+          const rec = obj as Record<string, unknown>;
+          const ev = (rec?.['event'] as string) ?? 'debug-log';
+          // Rate-limit backoff status toast (dev visibility): retry countdown and "retrying now"
+          if (ev === 'retry_backoff') {
+            const waitMs = Number(rec['waitMs'] ?? 0) || 0;
+            const rid = typeof rec['requestId'] === 'string' ? ` req=${rec['requestId'] as string}` : '';
+            const secs = Math.ceil(waitMs / 1000);
+            useAppStore.getState().pushToast({ variant: 'info', message: `[Rate limit] Retrying in ${secs}s${rid}` });
+            if (waitMs > 0) {
+              setTimeout(() => {
+                useAppStore.getState().pushToast({ variant: 'info', message: `[Rate limit] Retrying now${rid}` });
+              }, Math.min(waitMs, 15000));
+            }
+          }
           // eslint-disable-next-line no-console
           console.debug(`[tauri:${String(ev)}]`, obj);
         } catch {
@@ -77,6 +90,31 @@ export async function initializeTauriBridge() {
     appState.pushToast({ variant: 'error', message: `Streaming apply failed: ${message}` });
     const suffix = currentTraceId ? ` (trace: ${currentTraceId})` : '';
     useChatStore.getState().pushSystemMessage(`Failed to apply streaming batch: ${message}${suffix}`, 'ollama_stream_error');
+  };
+
+  // Map backend error payloads into a consistent toast format.
+  const formatOllamaErrorToast = (
+    err: { status?: number; code?: string; detail?: string; requestId?: string; retryAfterMs?: number },
+    traceId?: string | null,
+  ): { variant: 'error' | 'info' | 'success'; message: string } => {
+    const code = err.code ?? (err.status ? String(err.status) : 'Error');
+    const rid = err.requestId ? ` req=${err.requestId}` : '';
+    const tid = traceId ? ` trace=${traceId}` : '';
+    const retry = err.retryAfterMs ? ` retryIn=${Math.round(err.retryAfterMs)}ms` : '';
+    const label =
+      code === 'RequestTimeout'
+        ? '[Timeout]'
+        : code === 'CircuitOpen'
+          ? '[Unavailable]'
+          : code === 'TransportError'
+            ? '[Network]'
+            : code === 'UpstreamFailure'
+              ? '[Upstream]'
+              : code === 'StreamError'
+                ? '[Stream]'
+                : `[${code}]`;
+    const detail = err.detail ?? 'Request failed';
+    return { variant: 'error', message: `${label} ${detail}${rid}${tid}${retry}` };
   };
 
   const aggregator = createOllamaAggregator(async (batch) => {
@@ -151,6 +189,30 @@ export async function initializeTauriBridge() {
       const payload = event.payload as { done?: boolean; delta?: unknown } | undefined;
       if (!payload) return;
       if (payload.done) {
+        const maybeErr = (event.payload as any)?.error as
+          | { status?: number; code?: string; detail?: string; requestId?: string; retryAfterMs?: number }
+          | undefined;
+        if (maybeErr) {
+          const toast = formatOllamaErrorToast(maybeErr, currentTraceId);
+          useAppStore.getState().pushToast(toast);
+          useChatStore
+            .getState()
+            .pushSystemMessage(`Chat error ${toast.message}`, 'ollama_stream_error');
+          const waitMs = typeof (maybeErr as any).retryAfterMs === 'number' ? Number((maybeErr as any).retryAfterMs) : 0;
+          if (waitMs > 0) {
+            const secs = Math.ceil(waitMs / 1000);
+            const rid = maybeErr.requestId ? ` req=${maybeErr.requestId}` : '';
+            const tid = currentTraceId ? ` trace=${currentTraceId}` : '';
+            useAppStore
+              .getState()
+              .pushToast({ variant: 'info', message: `[Rate limit] Try again in ${secs}s${rid}${tid}` });
+            setTimeout(() => {
+              useAppStore
+                .getState()
+                .pushToast({ variant: 'info', message: `[Rate limit] You can try again now${rid}${tid}` });
+            }, Math.min(waitMs, 15000));
+          }
+        }
         try {
           await aggregator.flush();
         } catch (error) {
@@ -258,8 +320,14 @@ export async function initializeTauriBridge() {
       const final = parsed.data;
       const entry = pendingBinds.get(final.jobId);
       if (!final.ok) {
-        // Surface error feedback; bindings are ignored.
-        useAppStore.getState().pushToast({ variant: 'error', message: `${final.task}: ${final.code}` });
+        // Surface enriched error feedback; bindings are ignored.
+        const errMsg = (payload as any)?.message as string | undefined;
+        const detail = errMsg ? ` - ${errMsg}` : '';
+        const message = `[Compute] ${final.task} failed: ${final.code}${detail} (job ${final.jobId})`;
+        useAppStore.getState().pushToast({ variant: 'error', message });
+        useChatStore
+          .getState()
+          .pushSystemMessage(message, 'compute_final_error');
         useComputeStore.getState().markFinal(final.jobId, false, undefined, final.code);
         pendingBinds.delete(final.jobId);
         return;
