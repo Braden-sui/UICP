@@ -5,6 +5,7 @@ import { useChatStore } from '../state/chat';
 import { useAppStore, type AgentMode, type AgentPhase } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
+import { strings } from '../strings';
 import { LiquidGlass } from '@liquidglass/react';
 
 const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'applying'];
@@ -255,13 +256,14 @@ export const DockChat = () => {
             <div className="relative flex-1">
               <textarea
                 data-dock-chat-input
+                data-testid="dockchat-input"
                 ref={inputRef}
                 value={value}
                 onChange={(event) => setValue(event.target.value)}
                 onFocus={onFocus}
                 onBlur={onBlur}
                 onKeyDown={handleKeyDown}
-                placeholder="Describe what you want to build..."
+                placeholder={strings.chatInputPlaceholder}
                 className="h-20 w-full resize-none rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 text-sm text-slate-800 shadow-inner transition-all duration-200 focus:border-slate-400"
               />
             </div>

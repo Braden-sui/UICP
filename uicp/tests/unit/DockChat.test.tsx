@@ -87,7 +87,7 @@ describe("<DockChat /> hotkeys", () => {
 
   it("opens the dock and focuses the textarea when '/' is pressed", async () => {
     render(<DockChat />);
-    const input = screen.getByPlaceholderText("Describe what you want to build...") as HTMLTextAreaElement;
+    const input = screen.getByTestId('dockchat-input') as HTMLTextAreaElement;
 
     expect(useAppStore.getState().chatOpen).toBe(false);
     expect(document.activeElement).not.toBe(input);
@@ -103,7 +103,7 @@ describe("<DockChat /> hotkeys", () => {
   it("re-focuses the textarea when '/' is pressed while the dock is already open", async () => {
     useAppStore.setState({ chatOpen: true });
     render(<DockChat />);
-    const input = screen.getByPlaceholderText("Describe what you want to build...") as HTMLTextAreaElement;
+    const input = screen.getByTestId('dockchat-input') as HTMLTextAreaElement;
 
     await waitFor(() => {
       expect(document.activeElement).toBe(input);

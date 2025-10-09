@@ -69,7 +69,6 @@ fn run_task(component_bytes: &[u8], job: &JobSpec) -> Result<TaskResult> {
   unimplemented!()
 }
 
-// Placeholder types reflecting docs/src/compute/types.ts until unified via codegen.
+// Example types mirroring docs/src/compute/types.ts for illustration only.
 struct JobSpec { fuel: Option<u64> }
 struct TaskResult;
-

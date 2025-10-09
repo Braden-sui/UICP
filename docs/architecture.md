@@ -100,7 +100,7 @@ Hard rules for models:
 - `test_api_key`: validates credentials against `https://ollama.com/api/tags` with an `Authorization: Bearer <api-key>` header.
 - `load_workspace` / `save_workspace`: persist draggable window layout to SQLite.
 - `chat_completion`: streams Ollama Cloud responses (`ollama-completion` events). The HTTP client has no hard timeout; STOP cancels via `cancel_chat`.
-- `enqueue_command`: placeholder for the tool queue.
+- `enqueue_command`: persists agent-generated commands to the SQLite queue (`tool_call` table) so the desktop can replay them deterministically.
 - `spawn_autosave`: emits save indicator when state changes.
 
 ### Frontend (`uicp/src`)

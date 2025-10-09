@@ -34,13 +34,17 @@ ed25519-dalek = "2.1"
   # Default-enabled in this repo via the "wasm_compute" feature to exercise compute paths.
   # Opt out at build time with `--no-default-features` (disables "wasm_compute").
   wasmtime = { version = "22", default-features = false, features = ["cranelift", "component-model"], optional = true }
-  wasmtime-wasi = { version = "22", features = ["component-model"], optional = true }
+  wasmtime-wasi = { version = "22", optional = true }
 
   [build-dependencies]
   tauri-build = { version = "2.4.1", features = [] }
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[[bin]]
+name = "harness"
+path = "src/bin/harness.rs"
 
 [profile.dev]
 split-debuginfo = "unpacked"

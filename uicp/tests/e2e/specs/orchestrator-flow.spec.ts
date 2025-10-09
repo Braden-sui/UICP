@@ -17,7 +17,7 @@ const enabled = !!process.env.E2E_ORCHESTRATOR;
 
   // Reveal chat, send intent
   await page.keyboard.press('/');
-  const input = page.locator('textarea[placeholder="Describe what you want to build..."]');
+  const input = page.locator('[data-testid="dockchat-input"]');
   await expect(input).toBeVisible();
 
   await input.fill('make a notepad');
@@ -27,4 +27,3 @@ const enabled = !!process.env.E2E_ORCHESTRATOR;
   const workspaceWindows = page.locator('.workspace-window');
   await expect(workspaceWindows).toHaveCount(1, { timeout: 30000 });
 });
-

@@ -8,7 +8,7 @@ test("mock planner notepad flow", async ({ page }) => {
 
   // Reveal chat so Dock header and controls are visible
   await page.keyboard.press("/");
-  const input = page.locator('textarea[placeholder="Describe what you want to build..."]');
+  const input = page.locator('[data-testid="dockchat-input"]');
   await expect(input).toBeVisible();
 
   // Enable Full Control if needed

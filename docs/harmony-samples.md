@@ -166,5 +166,5 @@ urn|>
 Notes:
 
 * Markers `<<<CHUNK>>>` are only for tests that want to simulate streaming boundaries. Your extractor can split on that token. Do not include the marker in production traces.
-* The `analysis` content is placeholder. Do not train on real user chain of thought. Keep it minimal.
+* The `analysis` content is illustrative only. Do not train on real user chain of thought. Keep it minimal.
 * If your provider emits extra whitespace around headers, your parser should accept it. For strict tests, we use the canonical form above.

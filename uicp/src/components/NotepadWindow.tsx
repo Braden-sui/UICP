@@ -2,6 +2,7 @@ import { type ChangeEvent, useCallback, useMemo } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useNotepadStore } from '../state/notepad';
 import { useAppStore } from '../state/app';
+import { strings } from '../strings';
 
 const formatTimestamp = (value?: number) => {
   if (!value) return 'Never saved';
@@ -97,7 +98,7 @@ const NotepadWindow = () => {
               value={title}
               onChange={handleTitleChange}
               className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-              placeholder="Meeting notes"
+              placeholder={strings.notepadTitlePlaceholder}
             />
           </label>
           <div className="flex flex-col items-end gap-2 text-right text-xs text-slate-500">
@@ -118,7 +119,7 @@ const NotepadWindow = () => {
             value={content}
             onChange={handleContentChange}
             className="min-h-[220px] flex-1 resize-none rounded border border-slate-300 bg-white/90 px-3 py-3 text-sm leading-relaxed text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-            placeholder="Start typing..."
+            placeholder={strings.notepadBodyPlaceholder}
             aria-label="Notepad body"
           />
         </label>
