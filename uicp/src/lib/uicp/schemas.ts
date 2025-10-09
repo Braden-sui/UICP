@@ -1,6 +1,24 @@
 import { z } from 'zod';
 import { sanitizeHtml } from '../utils';
 
+// Type brands for stronger invariants at compile time
+type Brand<T, B extends string> = T & { readonly __brand?: B };
+export type SafeHtml = Brand<string, 'SafeHtml'>;
+export type WindowId = Brand<string, 'WindowId'>;
+export type ComponentId = Brand<string, 'ComponentId'>;
+export type StatePath = Brand<string, 'StatePath'>;
+
+// Single strict sanitizer entrypoint used by schemas to gate DOM html
+export function sanitizeHtmlStrict(raw: string): SafeHtml {
+  const MAX_HTML_LEN = 64 * 1024; // 64KB
+  const src = String(raw ?? '');
+  if (src.length > MAX_HTML_LEN) {
+    throw new Error('html too large (max 64KB)');
+  }
+  const cleaned = sanitizeHtml(src);
+  return cleaned as SafeHtml;
+}
+
 // Centralised schema map so planner results and streamed events (via Tauri) are validated consistently before touching the DOM.
 export const OperationName = z.enum([
   'window.create',
@@ -43,19 +61,23 @@ const WindowUpdateParams = z.object({
 
 const WindowCloseParams = z.object({ id: z.string() }).strict();
 
-const DomSetParams = z.object({
-  windowId: z.string().min(1),
-  target: z.string().min(1),
-  html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
-  sanitize: z.boolean().optional(),
-}).strict();
+const DomSetParams = z
+  .object({
+    windowId: z.string().min(1),
+    target: z.string().min(1),
+    html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
+    sanitize: z.boolean().optional(),
+  })
+  .strict();
 
-const DomReplaceParams = z.object({
-  windowId: z.string().min(1),
-  target: z.string().min(1),
-  html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
-  sanitize: z.boolean().optional(),
-}).strict();
+const DomReplaceParams = z
+  .object({
+    windowId: z.string().min(1),
+    target: z.string().min(1),
+    html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
+    sanitize: z.boolean().optional(),
+  })
+  .strict();
 
 const DomAppendParams = DomReplaceParams;
 

@@ -16,6 +16,20 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::registry;
 use crate::{ComputeFinalErr, ComputeJobSpec};
 
+/// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
+pub mod error_codes {
+    pub const TIMEOUT: &str = "Compute.Timeout";
+    pub const CANCELLED: &str = "Compute.Cancelled";
+    pub const CAPABILITY_DENIED: &str = "Compute.CapabilityDenied";
+    pub const INPUT_INVALID: &str = "Compute.Input.Invalid";
+    pub const TASK_NOT_FOUND: &str = "Task.NotFound";
+    pub const RUNTIME_FAULT: &str = "Runtime.Fault";
+    pub const RESOURCE_LIMIT: &str = "Compute.Resource.Limit";
+    pub const IO_DENIED: &str = "IO.Denied";
+    pub const NONDETERMINISTIC: &str = "Nondeterministic";
+    pub const MODULE_SIGNATURE_INVALID: &str = "Module.SignatureInvalid";
+}
+
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
@@ -167,17 +181,17 @@ mod uicp_bindings {
         }
         if !fs_read_allowed(spec, source) {
             return Err((
-                "Compute.CapabilityDenied",
+                error_codes::CAPABILITY_DENIED,
                 "fs_read does not allow this path".into(),
             ));
         }
-        let host_path = sanitize_ws_files_path(source).map_err(|e| ("IO.Denied", e))?;
+        let host_path = sanitize_ws_files_path(source).map_err(|e| (error_codes::IO_DENIED, e))?;
         match std::fs::read(host_path) {
             Ok(bytes) => Ok(format!(
                 "data:text/csv;base64,{}",
                 BASE64_ENGINE.encode(bytes)
             )),
-            Err(err) => Err(("IO.Denied", format!("read failed: {err}"))),
+            Err(err) => Err((error_codes::IO_DENIED, format!("read failed: {err}"))),
         }
     }
 
@@ -278,7 +292,7 @@ mod uicp_bindings {
             finalize_error(
                 &app,
                 &spec,
-                "Runtime.Fault",
+                error_codes::RUNTIME_FAULT,
                 "Wasm compute runtime temporarily disabled (bindgen refactor in progress)",
                 Instant::now(),
             )
@@ -553,13 +567,13 @@ mod uicp_bindings {
             || acc.contains("interrupt")
             || acc.contains("deadline exceeded")
         {
-            return ("Compute.Timeout", String::new());
+            return (error_codes::TIMEOUT, String::new());
         }
         // CPU fuel exhaustion (if enabled)
         if acc.contains("fuel")
             && (acc.contains("exhaust") || acc.contains("consum") || acc.contains("out of"))
         {
-            return ("Compute.Resource.Limit", String::new());
+            return (error_codes::RESOURCE_LIMIT, String::new());
         }
         // Memory / resource limits
         if acc.contains("out of memory")
@@ -571,19 +585,19 @@ mod uicp_bindings {
             || acc.contains("resource limit")
             || acc.contains("limit exceeded")
         {
-            return ("Compute.Resource.Limit", String::new());
+            return (error_codes::RESOURCE_LIMIT, String::new());
         }
         // Missing exports / bad linkage
         if (acc.contains("export") && (acc.contains("not found") || acc.contains("unknown")))
             || (acc.contains("instantiate") && acc.contains("missing"))
         {
-            return ("Task.NotFound", String::new());
+            return (error_codes::TASK_NOT_FOUND, String::new());
         }
         // Capability denial (FS/HTTP off by default in V1)
         if acc.contains("permission") || acc.contains("denied") {
-            return ("Compute.CapabilityDenied", String::new());
+            return (error_codes::CAPABILITY_DENIED, String::new());
         }
-        ("Runtime.Fault", String::new())
+        (error_codes::RUNTIME_FAULT, String::new())
     }
 
     async fn finalize_error(
@@ -900,7 +914,7 @@ mod no_runtime {
 
             tokio::select! {
                 _ = rx_cancel.changed() => {
-                    let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: "Compute.Cancelled".into(), message: "Job cancelled by user".into() };
+                    let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: error_codes::CANCELLED.into(), message: "Job cancelled by user".into() };
                     let _ = app.emit("compute.result.final", payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
@@ -908,7 +922,7 @@ mod no_runtime {
                         ok: false,
                         job_id: spec.job_id.clone(),
                         task: spec.task.clone(),
-                        code: "Runtime.Fault".into(),
+                        code: error_codes::RUNTIME_FAULT.into(),
                         message: "Wasm compute runtime disabled in this build; recompile with feature wasm_compute".into(),
                     };
                     let _ = app.emit("debug-log", serde_json::json!({

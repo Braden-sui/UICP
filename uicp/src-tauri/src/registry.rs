@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 // Optional signature verification (if caller provides a public key)
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine as _;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleEntry {
@@ -211,7 +213,7 @@ pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Resul
     }
 
     // Decode signature (try base64, then hex)
-    let sig_bytes = match base64::decode(sig_str) {
+    let sig_bytes = match BASE64_ENGINE.decode(sig_str.as_bytes()) {
         Ok(b) => b,
         Err(_) => hex::decode(sig_str).context("decode signature hex")?,
     };
@@ -289,7 +291,7 @@ mod tests {
         let msg = hex::decode(&digest_hex).unwrap();
 
         let sig = sk.sign(&msg);
-        let sig_b64 = base64::encode(sig.to_bytes());
+        let sig_b64 = BASE64_ENGINE.encode(sig.to_bytes());
 
         let entry = ModuleEntry {
             task: "demo".into(),

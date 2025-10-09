@@ -59,3 +59,5 @@ strip = true
 [features]
 default = []
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]
+uicp_wasi_enable = []
+uicp_bindgen = []

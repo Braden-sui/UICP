@@ -27,6 +27,8 @@ use tokio::{
     time::{interval, timeout},
 };
 use tokio_stream::StreamExt;
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine as _;
 
 mod compute;
 mod compute_cache;
@@ -290,7 +292,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "CapabilityDenied".into(),
+            code: "Compute.CapabilityDenied".into(),
             message: "timeoutMs outside allowed range (1000-120000)".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -301,7 +303,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "CapabilityDenied".into(),
+            code: "Compute.CapabilityDenied".into(),
             message: "timeoutMs>30000 requires capabilities.longRun".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -315,7 +317,7 @@ async fn compute_call(
                 ok: false,
                 job_id: spec.job_id.clone(),
                 task: spec.task.clone(),
-                code: "CapabilityDenied".into(),
+                code: "Compute.CapabilityDenied".into(),
                 message: "memLimitMb outside allowed range (64-1024)".into(),
             };
             emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -326,7 +328,7 @@ async fn compute_call(
                 ok: false,
                 job_id: spec.job_id.clone(),
                 task: spec.task.clone(),
-                code: "CapabilityDenied".into(),
+                code: "Compute.CapabilityDenied".into(),
                 message: "memLimitMb>256 requires capabilities.memHigh".into(),
             };
             emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -340,7 +342,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "CapabilityDenied".into(),
+            code: "Compute.CapabilityDenied".into(),
             message: "Network is disabled by policy (cap.net required)".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -359,7 +361,7 @@ async fn compute_call(
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
-            code: "CapabilityDenied".into(),
+            code: "Compute.CapabilityDenied".into(),
             message: "Filesystem paths must be workspace-scoped (ws:/...)".into(),
         };
         emit_or_log(&app_handle, "compute.result.final", &payload);
@@ -1858,7 +1860,7 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 
     // Optional Ed25519 signature verification public key (32-byte). Accept hex or base64.
     let pubkey_opt: Option<[u8; 32]> = std::env::var("UICP_MODULES_PUBKEY").ok().and_then(|s| {
-        let b64 = base64::decode(&s).ok();
+        let b64 = BASE64_ENGINE.decode(s.as_bytes()).ok();
         let hexed = if b64.is_none() {
             hex::decode(&s).ok()
         } else {
@@ -1912,7 +1914,7 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         }
 
         // Optional signature verification when both signature and public key are present.
-        if let (Some(sig), Some(pk)) = (&entry.signature, pubkey_opt.as_ref()) {
+        if let (Some(_sig), Some(pk)) = (&entry.signature, pubkey_opt.as_ref()) {
             match crate::registry::verify_entry_signature(entry, pk) {
                 Ok(true) => {}
                 Ok(false) => failures.push(serde_json::json!({

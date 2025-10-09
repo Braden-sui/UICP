@@ -28,6 +28,9 @@ Update log - 2025-10-05
 - Tests: added unit tests for sanitizer, batch budgets, and `txn.cancel` fast-path in queue.
 - Error taxonomy: unified across TS/Rust. Codes use namespaced values: `Compute.Timeout`, `Compute.Cancelled`, `Compute.CapabilityDenied`, `Compute.Resource.Limit`, `Runtime.Fault`, `Task.NotFound`, `IO.Denied`, `Nondeterministic`.
 - Cancellation: compute cancel path returns `Compute.Cancelled` on user abort; STOP continues to enqueue `txn.cancel` and lock Full Control.
+ - Wasm compute: build fixed by temporarily stubbing `spawn_job()` while refactor proceeds. Added feature flags `uicp_wasi_enable` and `uicp_bindgen` to gate WASI linker wiring and bindgen usage. Introduced WIT world at `uicp/src-tauri/wit/command.wit` and a gated `bindgen!` scaffold inside `uicp/src-tauri/src/compute.rs`.
+ - Base64: modernized Rust usage to Engine API (decode/encode) in `src-tauri/src/main.rs` and `src-tauri/src/registry.rs` to remove deprecation warnings.
+ - Tests: unit suite is green (`npm run test`) across 32 files / 78 tests.
 
 ## Architecture Summary
 - Platform: Tauri desktop application (Windows MVP; Linux post-MVP)
@@ -219,7 +222,6 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [ ] Qwen3-Coder:480b usage docs.
 - [ ] UICP Core README (`uicp/src/lib/uicp/README.md`).
 - [ ] Playwright docs for auto-install and preview usage.
-
 ## Notes
 - Planner validation failures raise typed errors; actor ensures batch safety.
 - Full Control OFF by default; STOP disables auto-apply until re-consented.
