@@ -325,6 +325,36 @@ mod with_runtime {
                 return;
             }
 
+            // Optional: enforce Ed25519 signature verification when a public key is configured.
+            if let Ok(pk_str) = std::env::var("UICP_MODULES_PUBKEY") {
+                // Accept base64 (preferred) or hex-encoded 32-byte Ed25519 public key
+                let pk_bytes = BASE64_ENGINE
+                    .decode(pk_str.as_bytes())
+                    .or_else(|_| hex::decode(&pk_str))
+                    .unwrap_or_default();
+                let enforce_fail = |message: String| async {
+                    finalize_error(&app, &spec, "Module.SignatureInvalid", &message, Instant::now()).await;
+                    let state: tauri::State<'_, crate::AppState> = app.state();
+                    state.compute_cancel.write().await.remove(&spec.job_id);
+                    crate::remove_compute_job(&app, &spec.job_id).await;
+                };
+                if pk_bytes.len() != 32 {
+                    enforce_fail("Invalid UICP_MODULES_PUBKEY (must be 32-byte Ed25519 key in base64 or hex)".into()).await;
+                    return;
+                }
+                match crate::registry::verify_entry_signature(&module_ref.entry, &pk_bytes) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        enforce_fail("Module signature did not verify against configured public key".into()).await;
+                        return;
+                    }
+                    Err(err) => {
+                        enforce_fail(format!("Signature verification error: {err}")) .await;
+                        return;
+                    }
+                }
+            }
+
             let component = match Component::from_file(&engine, &module_ref.path) {
                 Ok(comp) => comp,
                 Err(err) => {

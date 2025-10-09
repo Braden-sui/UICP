@@ -264,7 +264,7 @@ async fn compute_call(
     let cache_mode = spec.cache.clone();
     if cache_mode == "readwrite" || cache_mode == "readOnly" {
         let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
-        if let Ok(Some(mut cached)) = compute_cache::lookup(&app_handle, &key).await {
+        if let Ok(Some(mut cached)) = compute_cache::lookup(&app_handle, "default", &key).await {
             // Mark cache hit in metrics if possible
             if let Some(obj) = cached.as_object_mut() {
                 let metrics = obj.entry("metrics").or_insert_with(|| serde_json::json!({}));
@@ -282,7 +282,7 @@ async fn compute_call(
                 job_id: spec.job_id.clone(),
                 task: spec.task.clone(),
                 code: "Runtime.Fault".into(),
-                message: "Cache miss under readOnly cache policy".into(),
+                message: "Cache miss under ReadOnly cache policy".into(),
             };
             emit_or_log(&app_handle, "compute.result.final", &payload);
             return Ok(());
@@ -292,6 +292,7 @@ async fn compute_call(
     // Spawn the job via compute host (feature-gated implementation), respecting concurrency cap.
     let permit = state.compute_sem.clone().acquire_owned().await.map_err(|e| e.to_string())?;
     let join = compute::spawn_job(app_handle, spec.clone(), Some(permit));
+    // Bookkeeping: track the running job so we can cancel/cleanup later.
     state.compute_ongoing.write().await.insert(spec.job_id.clone(), join);
     Ok(())
 }

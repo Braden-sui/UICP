@@ -29,13 +29,12 @@ describe('AgentSettingsWindow error handling', () => {
       expect(toasts.some((t) => /Failed to load modules info/.test(t.message))).toBe(true);
     });
 
-    // Clicking Open Folder should also surface an error toast
-    const btn = await screen.findByRole('button', { name: /Open Folder/i });
+    // Clicking Copy Path should also surface an error toast (clipboard not available in test)
+    const btn = await screen.findByRole('button', { name: /Copy Path/i });
     fireEvent.click(btn);
     await waitFor(() => {
       const toasts = useAppStore.getState().toasts;
-      expect(toasts.some((t) => /Open folder failed/.test(t.message))).toBe(true);
+      expect(toasts.some((t) => /Copy failed/.test(t.message))).toBe(true);
     });
   });
 });
-

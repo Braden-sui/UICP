@@ -136,12 +136,21 @@ export async function initializeTauriBridge() {
   unsubs.push(
     await listen('api-key-status', (event) => {
       const payload = event.payload as { valid: boolean; message?: string } | undefined;
-      const msg = payload.message ?? (payload.valid ? 'API key OK' : 'API key invalid');
-      useAppStore.getState().pushToast({ variant: payload.valid ? 'success' : 'error', message: msg });
+      const msg = payload?.message ?? (payload?.valid ? 'API key OK' : 'API key invalid');
+      useAppStore.getState().pushToast({ variant: payload?.valid ? 'success' : 'error', message: msg });
     }),
   );
 
   unsubs.push(
+    await listen('ollama-completion', async (event) => {
+      const payload = event.payload as { done?: boolean; delta?: unknown } | undefined;
+      if (!payload) return;
+      if (payload.done) {
+        try {
+          if (typeof (aggregator as any).flush === 'function') {
+            await (aggregator as any).flush();
+          }
+        } catch (error) {
           handleAggregatorError(error);
         }
         useAppStore.getState().setStreaming(false);

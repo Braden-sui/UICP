@@ -104,16 +104,17 @@ fn db_path(app: &AppHandle) -> PathBuf {
     state.db_path.clone()
 }
 
-/// Fetch cached final event payload by key.
-pub async fn lookup(app: &AppHandle, key: &str) -> anyhow::Result<Option<Value>> {
+/// Fetch cached final event payload by key, scoped to a workspace.
+pub async fn lookup(app: &AppHandle, workspace_id: &str, key: &str) -> anyhow::Result<Option<Value>> {
     let path = db_path(app);
     let key = key.to_string();
+    let ws = workspace_id.to_string();
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = Connection::open(path).context("open sqlite for compute_cache lookup")?;
         let mut stmt = conn
-            .prepare("SELECT value_json FROM compute_cache WHERE key = ?1")
+            .prepare("SELECT value_json FROM compute_cache WHERE key = ?1 AND workspace_id = ?2")
             .context("prepare cache select")?;
-        let mut rows = stmt.query(params![key]).context("exec cache select")?;
+        let mut rows = stmt.query(params![key, ws]).context("exec cache select")?;
         if let Some(row) = rows.next()? {
             let json_str: String = row.get(0)?;
             let val: Value = serde_json::from_str(&json_str).context("parse cached value")?;
