@@ -9,6 +9,7 @@ import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
 import { createId } from '../../lib/utils';
 import { ComputeError } from '../compute/errors';
+import { asStatePath } from '../uicp/schemas';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -65,15 +66,17 @@ export async function initializeTauriBridge() {
   }
 
   let aggregatorFailed = false;
+  let currentTraceId: string | null = null;
   const handleAggregatorError = (error: unknown) => {
     if (aggregatorFailed) return;
     aggregatorFailed = true;
     const message = error instanceof Error ? error.message : String(error);
-    console.error('ollama aggregator failed', { error: message });
+    console.error('ollama aggregator failed', { error: message, traceId: currentTraceId ?? undefined });
     const appState = useAppStore.getState();
     appState.setStreaming(false);
     appState.pushToast({ variant: 'error', message: `Streaming apply failed: ${message}` });
-    useChatStore.getState().pushSystemMessage(`Failed to apply streaming batch: ${message}`, 'ollama_stream_error');
+    const suffix = currentTraceId ? ` (trace: ${currentTraceId})` : '';
+    useChatStore.getState().pushSystemMessage(`Failed to apply streaming batch: ${message}${suffix}`, 'ollama_stream_error');
   };
 
   const aggregator = createOllamaAggregator(async (batch) => {
@@ -155,6 +158,11 @@ export async function initializeTauriBridge() {
         }
         useAppStore.getState().setStreaming(false);
         aggregatorFailed = false;
+        if (currentTraceId) {
+          // eslint-disable-next-line no-console
+          console.info('[ollama] stream finished', { traceId: currentTraceId });
+          currentTraceId = null;
+        }
         return;
       }
       if (payload.delta !== undefined) {
@@ -163,11 +171,17 @@ export async function initializeTauriBridge() {
           // Reset failure latch when a new stream starts so future runs can surface their own errors.
           if (!useAppStore.getState().streaming) {
             aggregatorFailed = false;
+            currentTraceId = createId('trace');
+            // eslint-disable-next-line no-console
+            console.info('[ollama] stream started', { traceId: currentTraceId });
           }
           await aggregator.processDelta(text);
           useAppStore.getState().setStreaming(true);
         } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
           handleAggregatorError(error);
+          // eslint-disable-next-line no-console
+          console.error('[ollama] stream error', { traceId: currentTraceId, error: msg });
         }
       }
     }),
@@ -180,7 +194,6 @@ export async function initializeTauriBridge() {
       if (!payload) return;
       const jobId = String(payload.jobId ?? '');
       const ev = String(payload.event ?? '');
-      if (!jobId) return;
       if (ev === 'cancel_aborted_after_grace') {
         // Mark terminal cancelled so UI does not leak a running job
         useComputeStore.getState().markFinal(jobId, false, undefined, ComputeError.Cancelled);
@@ -257,7 +270,7 @@ export async function initializeTauriBridge() {
           op: 'state.set',
           params: {
             scope: 'workspace',
-            key: b.toStatePath,
+            key: asStatePath(b.toStatePath),
             value: final.output,
           },
         } as const));

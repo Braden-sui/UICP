@@ -1,11 +1,11 @@
 package uicp:task
 
 // Shared row type used by csv and table tasks
-alias rows = list<list<string>>
+type rows = list<list<string>>;
 
 interface csv {
   /// Parse CSV source into rows. `source` may be a data: URL or resolved ws:/ path.
-  run: func(job_id: string, source: string, has_header: bool) -> result<rows, string>
+  run: func(job_id: string, source: string, has_header: bool) -> result<rows, string>;
 }
 
 interface table {
@@ -13,11 +13,11 @@ interface table {
   record filter { col: u32, needle: string }
 
   /// Select columns from rows and optionally filter by contains
-  run: func(job_id: string, rows: rows, select: list<u32>, where_contains: option<filter>) -> result<rows, string>
+  run: func(job_id: string, rows: rows, select: list<u32>, where_contains: option<filter>) -> result<rows, string>;
 }
 
 world command {
   // A component implements one of these interfaces; the host will bind to the appropriate export.
-  export csv: interface csv
-  export table: interface table
+  export csv: interface csv;
+  export table: interface table;
 }

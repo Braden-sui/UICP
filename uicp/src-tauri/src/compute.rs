@@ -42,10 +42,7 @@ mod with_runtime {
         component::{Component, Linker, ResourceTable, TypedFunc, Instance},
         Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
     };
-    use wasmtime_wasi::{
-        DirPerms, FilePerms, HostOutputStream, StreamError, WasiCtx, WasiCtxBuilder, WasiView,
-    };
-    use wasmtime_wasi::bindings;
+    use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
     // Bring base64::Engine trait methods (encode/decode) into scope within this module.
     use base64::Engine as _;
 
@@ -275,6 +272,7 @@ mod uicp_bindings {
     fn build_engine() -> anyhow::Result<Engine> {
         let mut cfg = Config::new();
         cfg.wasm_component_model(true)
+            .async_support(true)
             .consume_fuel(true)
             .epoch_interruption(true)
             .wasm_memory64(false);
@@ -446,246 +444,11 @@ mod uicp_bindings {
         })
     }
 
-    /// Wire core WASI Preview 2 imports and uicp:host control stubs.
+    /// Wire core WASI Preview 2 imports only (host shims deferred to M2+).
     #[cfg(feature = "uicp_wasi_enable")]
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
-        // WASI Preview 2 imports: streams (+ filesystem wiring for future preopens)
-        bindings::io::streams::add_to_linker(linker, |ctx| ctx)?;
-        // Default policy is FS OFF; preopens (if any) are configured in the WasiCtx.
-        // Linking here is safe without preopens; guest open attempts will fail.
-        bindings::filesystem::types::add_to_linker(linker, |ctx| ctx)?;
-
-        // uicp:host/logger.log(level, msg) with truncation and rate limit
-        linker.func_wrap(
-            "uicp:host/logger",
-            "log",
-            |mut caller: wasmtime::StoreContextMut<'_, Ctx>, level: u32, msg: &str| {
-                const MAX_LEN: usize = 4096;
-                const MAX_COUNT: u32 = 200;
-                if caller.data().log_count >= MAX_COUNT {
-                    return;
-                }
-                let truncated = if msg.len() > MAX_LEN {
-                    &msg[..MAX_LEN]
-                } else {
-                    msg
-                };
-                let lvl = match level {
-                    0 => "trace",
-                    1 => "debug",
-                    2 => "info",
-                    3 => "warn",
-                    4 => "error",
-                    _ => "info",
-                };
-                let payload = serde_json::json!({
-                    "jobId": caller.data().job_id,
-                    "task": caller.data().task,
-                    "level": lvl,
-                    "msg": truncated,
-                });
-                let _ = caller.data().app.emit("compute.host.log", payload);
-                caller.data_mut().log_count = caller.data().log_count.saturating_add(1);
-            },
-        )?;
-
-        // uicp:host/control.should-cancel(job-id) -> bool
-        linker.func_wrap(
-            "uicp:host/control",
-            "should-cancel",
-            |caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> bool {
-                // Treat zero remaining as cancel signal; future: also check a shared cancel flag.
-                if caller.data().cancelled.load(Ordering::Relaxed) {
-                    return true;
-                }
-                let elapsed = caller.data().started.elapsed().as_millis() as u64;
-                let rem = caller.data().deadline_ms as i64 - elapsed as i64;
-                rem <= 0
-            },
-        )?;
-
-        // uicp:host/control.deadline-ms(job-id) -> u32
-        linker.func_wrap(
-            "uicp:host/control",
-            "deadline-ms",
-            |caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> u32 {
-                caller.data().deadline_ms
-            },
-        )?;
-
-        // uicp:host/control.remaining-ms(job-id) -> u32
-        linker.func_wrap(
-            "uicp:host/control",
-            "remaining-ms",
-            |caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> u32 {
-                let elapsed = caller.data().started.elapsed().as_millis() as u64;
-                let d = caller.data().deadline_ms as i64 - elapsed as i64;
-                if d <= 0 {
-                    0
-                } else {
-                    d as u32
-                }
-            },
-        )?;
-
-        // uicp:host/control.open-partial-sink(job-id) -> streams.output-stream
-        // Returns a host-backed output stream that forwards bytes as partial events.
-        linker.func_wrap(
-            "uicp:host/control",
-            "open-partial-sink",
-            |mut caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> anyhow::Result<u32> {
-                // Define a host output stream that emits partial events on each write.
-                struct PartialSink {
-                    app: AppHandle,
-                    job_id: String,
-                    task: String,
-                    seq: u64,
-                    frames_counter: Arc<std::sync::atomic::AtomicU64>,
-                    invalid_counter: Arc<std::sync::atomic::AtomicU64>,
-                }
-
-                impl HostOutputStream for PartialSink {
-                    fn write(&mut self, bytes: bytes::Bytes) -> wasmtime_wasi::StreamResult<()> {
-                        let chunk = bytes.as_ref();
-                        // Enforce frame size cap 64KiB (truncate beyond); drop frames beyond max count
-                        if chunk.is_empty() { return Ok(Ok(())); }
-                        // Drop frames after 1000 to avoid unbounded streams (policy)
-                        if self.seq >= 1000 {
-                            // Accept as written (no trap), but do not emit.
-                            return Ok(Ok(()));
-                        }
-                        if chunk.len() > 65536 { return Ok(Ok(())); }
-                        // Validate CBOR envelope (best effort). Expect map with integer keys 1,2,3 minimally present.
-                        let mut valid = false;
-                        if let Ok(val) = ciborium::de::from_reader::<ciborium::value::Value, _>(
-                            std::io::Cursor::new(chunk),
-                        ) {
-                            if let ciborium::value::Value::Map(entries) = val {
-                                let mut have_t = false;
-                                let mut have_s = false;
-                                let mut have_ts = false;
-                                for (k, _v) in &entries {
-                                    if let ciborium::value::Value::Integer(i) = k {
-                                        let x = i128::from(*i);
-                                        if x == 1 {
-                                            have_t = true;
-                                        }
-                                        if x == 2 {
-                                            have_s = true;
-                                        }
-                                        if x == 3 {
-                                            have_ts = true;
-                                        }
-                                    }
-                                }
-                                valid = have_t && have_s && have_ts;
-                            }
-                        }
-                        if !valid {
-                            // Drop invalid frames; emit a host log entry for observability and count
-                            self.invalid_counter
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let _ = self.app.emit(
-                                "compute.host.log",
-                                serde_json::json!({
-                                    "jobId": self.job_id,
-                                    "task": self.task,
-                                    "level": "warn",
-                                    "msg": "dropped invalid partial frame (CBOR validation failed)",
-                                }),
-                            );
-                            return Ok(Ok(()));
-                        }
-                        // Max frames policy: 1000
-                        // Note: we can’t read caller.data() here; track per-sink seq and let host drop after policy if wired.
-                        let payload = crate::ComputePartialEvent {
-                            job_id: self.job_id.clone(),
-                            task: self.task.clone(),
-                            seq: self.seq,
-                            payload_b64: BASE64_ENGINE.encode(chunk),
-                        };
-                        let _ = self.app.emit("compute.result.partial", payload);
-                        self.seq = self.seq.saturating_add(1);
-                        self.frames_counter
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        Ok(Ok(()))
-                    }
-                    fn flush(&mut self) -> wasmtime_wasi::StreamResult<()> { Ok(Ok(())) }
-                    fn check_write(&mut self) -> wasmtime_wasi::StreamResult<usize> {
-                        // Offer a reasonable chunk window to the guest
-                        Ok(Ok(64 * 1024))
-                    }
-                }
-
-                // Push the stream into the table and return its handle.
-                let handle = caller
-                    .data_mut()
-                    .table
-                    .push_output_stream(Box::new(PartialSink {
-                        app: caller.data().app.clone(),
-                        job_id: caller.data().job_id.clone(),
-                        task: caller.data().task.clone(),
-                        seq: caller.data().partial_seq,
-                        frames_counter: caller.data().partial_frames.clone(),
-                        invalid_counter: caller.data().invalid_partial_frames.clone(),
-                    }))?;
-                // Return the resource index as u32
-                Ok(handle)
-            },
-        )?;
-
-        // Deterministic RNG: uicp:host/rng.next-u64(job) -> u64
-        linker.func_wrap(
-            "uicp:host/rng",
-            "next-u64",
-            |mut caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> u64 {
-                use sha2::{Digest, Sha256};
-                let ctr = caller.data().rng_counter;
-                caller.data_mut().rng_counter = ctr.saturating_add(1);
-                let mut hasher = Sha256::new();
-                hasher.update(&caller.data().rng_seed);
-                hasher.update(&ctr.to_le_bytes());
-                let out = hasher.finalize();
-                let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&out[0..8]);
-                u64::from_le_bytes(bytes)
-            },
-        )?;
-
-        // Deterministic RNG: uicp:host/rng.fill(job, len) -> list<u8>
-        linker.func_wrap(
-            "uicp:host/rng",
-            "fill",
-            |mut caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str, len: u32| -> Vec<u8> {
-                let mut out = Vec::with_capacity(len as usize);
-                while (out.len() as u32) < len {
-                    let v = {
-                        use sha2::{Digest, Sha256};
-                        let ctr = caller.data().rng_counter;
-                        caller.data_mut().rng_counter = ctr.saturating_add(1);
-                        let mut hasher = Sha256::new();
-                        hasher.update(&caller.data().rng_seed);
-                        hasher.update(&ctr.to_le_bytes());
-                        hasher.finalize()
-                    };
-                    out.extend_from_slice(&v);
-                }
-                out.truncate(len as usize);
-                out
-            },
-        )?;
-
-        // Logical clock: uicp:host/clock.now-ms(job) -> u64 (deterministic logical time)
-        linker.func_wrap(
-            "uicp:host/clock",
-            "now-ms",
-            |mut caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> u64 {
-                let t = caller.data().logical_tick;
-                caller.data_mut().logical_tick = t.saturating_add(1);
-                t
-            },
-        )?;
-
+        // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
+        wasmtime_wasi::add_to_linker_async(linker)?;
         Ok(())
     }
 
