@@ -1,0 +1,11 @@
+patterns:
+  - path: "docs/**"
+    default_tier: 0
+  - path: "uicp/src/**"
+    default_tier: 1
+  - path: "uicp/src-tauri/migrations/**"
+    default_tier: 2
+  - path: "uicp/src-tauri/infra/**"
+    default_tier: 3
+  - path: "scripts/purge/**"
+    default_tier: 4

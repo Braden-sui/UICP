@@ -136,20 +136,12 @@ export async function initializeTauriBridge() {
   unsubs.push(
     await listen('api-key-status', (event) => {
       const payload = event.payload as { valid: boolean; message?: string } | undefined;
-      if (!payload) return;
       const msg = payload.message ?? (payload.valid ? 'API key OK' : 'API key invalid');
       useAppStore.getState().pushToast({ variant: payload.valid ? 'success' : 'error', message: msg });
     }),
   );
 
   unsubs.push(
-    await listen('ollama-completion', async (event) => {
-      const payload = event.payload as { done?: boolean; delta?: unknown } | undefined;
-      if (!payload) return;
-      if (payload.done) {
-        try {
-          await aggregator.flush();
-        } catch (error) {
           handleAggregatorError(error);
         }
         useAppStore.getState().setStreaming(false);
@@ -168,6 +160,21 @@ export async function initializeTauriBridge() {
         } catch (error) {
           handleAggregatorError(error);
         }
+      }
+    }),
+  );
+
+  // Compute plane: debug telemetry for cancellations/timeouts
+  unsubs.push(
+    await listen('compute.debug', (event) => {
+      const payload = event.payload as { jobId?: string; event?: string } | undefined;
+      if (!payload) return;
+      const jobId = String(payload.jobId ?? '');
+      const ev = String(payload.event ?? '');
+      if (!jobId) return;
+      if (ev === 'cancel_aborted_after_grace') {
+        // Mark terminal cancelled so UI does not leak a running job
+        useComputeStore.getState().markFinal(jobId, false, undefined, 'Cancelled');
       }
     }),
   );

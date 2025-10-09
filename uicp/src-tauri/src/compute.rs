@@ -2,7 +2,7 @@
 //!
 //! This module selects implementation based on the `wasm_compute` feature:
 //! - when enabled, it embeds Wasmtime with typed hostcalls and module registry.
-//! - when disabled, it emits deterministic placeholder events for adapter wiring.
+//! - when disabled, it surfaces a structured error so callers know the runtime is unavailable.
 
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,7 @@ mod with_runtime {
     use super::*;
     use wasmtime::{component::{Linker, Component, TypedFunc}, Config, Engine, StoreLimits, StoreLimitsBuilder};
     use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView, Table};
+    use wasmtime_wasi::preview2::{Dir, DirPerms, FilePerms, ambient_authority};
     use wasmtime_wasi::bindings;
     #[allow(unused_imports)]
     use wasmtime_wasi::bindings::wasi::io::streams::{HostOutputStream, StreamError};
@@ -93,6 +94,55 @@ mod with_runtime {
         true
     }
 
+    /// Resolve csv.parse source string, enforcing workspace policy when using `ws:/files/...`.
+    fn resolve_csv_source(spec: &ComputeJobSpec, source: &str) -> Result<String, (&'static str, String)> {
+        if !source.starts_with("ws:/files/") {
+            return Ok(source.to_string());
+        }
+        if !fs_read_allowed(spec, source) {
+            return Err(("CapabilityDenied", "fs_read does not allow this path".into()));
+        }
+        let host_path = sanitize_ws_files_path(source).map_err(|e| ("IO.Denied", e))?;
+        match std::fs::read(host_path) {
+            Ok(bytes) => Ok(format!("data:text/csv;base64,{}", BASE64_ENGINE.encode(bytes))),
+            Err(err) => Err(("IO.Denied", format!("read failed: {err}"))),
+        }
+    }
+
+    /// Validate and map a `ws:/files/...` path to a host path under FILES_DIR.
+    /// Rules: must start with ws:/files/, no absolute, no `..` segments, normalize separators.
+    fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, String> {
+        let prefix = "ws:/files/";
+        if !ws_path.starts_with(prefix) {
+            return Err("path must start with ws:/files/".into());
+        }
+        let rel = &ws_path[prefix.len()..];
+        if rel.is_empty() {
+            return Err("path missing trailing file segment".into());
+        }
+        let mut buf = PathBuf::from(crate::files_dir_path());
+        for seg in rel.split('/') {
+            if seg.is_empty() || seg == "." { continue; }
+            if seg == ".." { return Err("parent traversal not allowed".into()); }
+            if seg.contains('\\') { return Err("invalid separator in path".into()); }
+            buf.push(seg);
+        }
+        Ok(buf)
+    }
+
+    /// Capability check: ensure a ws:/ path is allowed by fs_read caps (supports /** suffix glob).
+    fn fs_read_allowed(spec: &ComputeJobSpec, ws_path: &str) -> bool {
+        if spec.capabilities.fs_read.is_empty() { return false; }
+        for pat in spec.capabilities.fs_read.iter() {
+            let p = pat.as_str();
+            if p.ends_with("/**") {
+                let base = &p[..p.len()-3];
+                if ws_path.starts_with(base) { return true; }
+            } else if p == ws_path { return true; }
+        }
+        false
+    }
+
     /// Execution context for a single job store.
     struct Ctx {
         wasi: WasiCtx,
@@ -104,7 +154,7 @@ mod with_runtime {
         partial_frames: Arc<std::sync::atomic::AtomicU64>,
         invalid_partial_frames: Arc<std::sync::atomic::AtomicU64>,
         cancelled: Arc<AtomicBool>,
-        // Determinism scaffolding (seeded RNG and logical clock placeholders)
+        // Determinism scaffolding (seeded RNG and logical clock) keeps telemetry repeatable
         rng_seed: [u8; 32],
         logical_tick: u64,
         // Host policy and telemetry
@@ -152,7 +202,17 @@ mod with_runtime {
                 }
             };
 
-            let wasi = WasiCtxBuilder::new().build();
+            // Build WASI context with a read-only preopen of the workspace files directory at "/files".
+            let mut wasi_builder = WasiCtxBuilder::new();
+            if let Ok(dir) = Dir::open_ambient_dir(crate::files_dir_path(), ambient_authority()) {
+                wasi_builder = wasi_builder.preopened_dir_with_capabilities(
+                    dir,
+                    "/files",
+                    DirPerms::DATA_SYNC | DirPerms::READ | DirPerms::STAT,
+                    FilePerms::READ | FilePerms::STAT,
+                );
+            }
+            let wasi = wasi_builder.build();
             let table = Table::new();
             let mut seed_bytes = [0u8; 32];
             {
@@ -296,6 +356,14 @@ mod with_runtime {
                         return;
                     }
                 };
+                let resolved_source = match resolve_csv_source(&spec, &source) {
+                    Ok(resolved) => resolved,
+                    Err((code, message)) => {
+                        finalize_error(&app, &spec, code, &message, Instant::now()).await;
+                        cleanup_job(&app, &spec.job_id).await;
+                        return;
+                    }
+                };
                 match instance.get_typed_func::<(String, (String, bool)), Result<Vec<Vec<String>>, String>>(&mut store, "task#run") {
                     Err(err) => {
                         if is_typed_only() {
@@ -306,7 +374,7 @@ mod with_runtime {
                         }
                     }
                     Ok(run_typed) => {
-                        match run_typed.call(&mut store, (spec.job_id.clone(), (source, has_header))) {
+                        match run_typed.call(&mut store, (spec.job_id.clone(), (resolved_source, has_header))) {
                             Err(err) => {
                                 let (code, msg) = map_trap_error(&err);
                                 let message = if msg.is_empty() { format!("Invocation failed: {err}") } else { msg };
@@ -803,13 +871,115 @@ mod with_runtime {
         }
         metrics
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {
+            let base = crate::files_dir_path().to_path_buf();
+            let ok = sanitize_ws_files_path("ws:/files/sub/dir/file.csv").expect("ok path");
+            assert!(ok.starts_with(&base));
+            assert!(ok.ends_with(std::path::Path::new("sub/dir/file.csv")));
+            assert!(sanitize_ws_files_path("ws:/files/..//secret").is_err());
+            assert!(sanitize_ws_files_path("ws:/other/file.txt").is_err());
+        }
+
+        #[test]
+        fn fs_read_allowed_supports_exact_and_glob() {
+            let mut spec = ComputeJobSpec {
+                job_id: "00000000-0000-4000-8000-000000000000".into(),
+                task: "csv.parse@1.2.0".into(),
+                input: serde_json::json!({}),
+                timeout_ms: Some(30_000), fuel: None, mem_limit_mb: None,
+                bind: vec![], cache: "readwrite".into(),
+                capabilities: crate::ComputeCapabilitiesSpec { fs_read: vec!["ws:/files/**".into()], fs_write: vec![], net: vec![], long_run: false, mem_high: false },
+                replayable: true,
+                provenance: crate::ComputeProvenanceSpec { env_hash: "dev".into(), agent_trace_id: None },
+            };
+            assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
+            spec.capabilities.fs_read = vec!["ws:/files/sub/file.txt".into()];
+            assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
+            assert!(!fs_read_allowed(&spec, "ws:/files/other/file.txt"));
+        }
+
+        #[test]
+        fn trap_mapping_matches_timeouts_and_limits_and_perms() {
+            let (code, _msg) = map_trap_error(&anyhow::anyhow!("epoch deadline exceeded"));
+            assert_eq!(code, "Timeout");
+
+            let (code, _msg) = map_trap_error(&anyhow::anyhow!("out of memory while growing memory"));
+            assert_eq!(code, "Resource.Limit");
+
+            let (code, _msg) = map_trap_error(&anyhow::anyhow!("permission denied opening file"));
+            assert_eq!(code, "CapabilityDenied");
+        }
+
+        #[test]
+        fn resolve_csv_source_passes_through_non_workspace_values() {
+            let spec = ComputeJobSpec {
+                job_id: "00000000-0000-4000-8000-000000000000".into(),
+                task: "csv.parse@1.2.0".into(),
+                input: serde_json::json!({}),
+                timeout_ms: Some(30_000), fuel: None, mem_limit_mb: None,
+                bind: vec![], cache: "readwrite".into(),
+                capabilities: crate::ComputeCapabilitiesSpec::default(),
+                replayable: true,
+                provenance: crate::ComputeProvenanceSpec { env_hash: "dev".into(), agent_trace_id: None },
+            };
+            let original = "data:text/csv,foo,bar";
+            let resolved = resolve_csv_source(&spec, original).expect("passthrough");
+            assert_eq!(resolved, original);
+        }
+
+        #[test]
+        fn resolve_csv_source_requires_capability_and_reads_file() {
+            use std::io::Write;
+            let base = crate::files_dir_path().join("tests");
+            std::fs::create_dir_all(&base).expect("create test dir");
+            let file_path = base.join("resolve_csv_source.csv");
+            {
+                let mut f = std::fs::File::create(&file_path).expect("create file");
+                writeln!(f, "name,qty").unwrap();
+                writeln!(f, "alpha,1").unwrap();
+            }
+            let spec_ok = ComputeJobSpec {
+                job_id: "00000000-0000-4000-8000-000000000000".into(),
+                task: "csv.parse@1.2.0".into(),
+                input: serde_json::json!({}),
+                timeout_ms: Some(30_000), fuel: None, mem_limit_mb: None,
+                bind: vec![], cache: "readwrite".into(),
+                capabilities: crate::ComputeCapabilitiesSpec { fs_read: vec!["ws:/files/**".into()], ..Default::default() },
+                replayable: true,
+                provenance: crate::ComputeProvenanceSpec { env_hash: "dev".into(), agent_trace_id: None },
+            };
+            let ws_path = "ws:/files/tests/resolve_csv_source.csv";
+            let resolved = resolve_csv_source(&spec_ok, ws_path).expect("resolves");
+            assert!(resolved.starts_with("data:text/csv;base64,"));
+            let b64 = resolved.trim_start_matches("data:text/csv;base64,");
+            let decoded = BASE64_ENGINE.decode(b64).expect("decode b64");
+            let text = String::from_utf8(decoded).expect("utf8");
+            assert!(text.contains("alpha,1"));
+
+            let spec_denied = ComputeJobSpec { capabilities: crate::ComputeCapabilitiesSpec::default(), ..spec_ok.clone() };
+            let err = resolve_csv_source(&spec_denied, ws_path).expect_err("cap denied");
+            assert_eq!(err.0, "CapabilityDenied");
+
+            let invalid = resolve_csv_source(&spec_ok, "ws:/files/../secret.csv").expect_err("invalid path");
+            assert_eq!(invalid.0, "IO.Denied");
+
+            let _ = std::fs::remove_file(&file_path);
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
 }
 
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {
     use super::*;
 
-    /// Spawn a placeholder compute job (no Wasm runtime compiled).
+    /// Spawn a stub compute job that fails immediately when the Wasm runtime is not compiled in.
     pub(super) fn spawn_job(app: AppHandle, spec: ComputeJobSpec, permit: Option<OwnedSemaphorePermit>) -> JoinHandle<()> {
         tauri_spawn(async move {
             let _permit = permit;
@@ -820,17 +990,24 @@ mod no_runtime {
                 state.compute_cancel.write().await.insert(spec.job_id.clone(), tx_cancel);
             }
 
-            // Emit a stub partial to exercise the event path.
-            let partial = crate::ComputePartialEvent { job_id: spec.job_id.clone(), task: spec.task.clone(), seq: 0, payload_b64: BASE64_ENGINE.encode("stub-partial") };
-            let _ = app.emit("compute.result.partial", partial);
-
             tokio::select! {
                 _ = rx_cancel.changed() => {
                     let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: "Cancelled".into(), message: "Job cancelled by user".into() };
                     let _ = app.emit("compute.result.final", payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                    let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: "Task.NotFound".into(), message: "Wasm runtime not enabled (feature wasm_compute)".into() };
+                    let payload = ComputeFinalErr {
+                        ok: false,
+                        job_id: spec.job_id.clone(),
+                        task: spec.task.clone(),
+                        code: "Runtime.Fault".into(),
+                        message: "Wasm compute runtime disabled in this build; recompile with feature wasm_compute".into(),
+                    };
+                    let _ = app.emit("debug-log", serde_json::json!({
+                        "event": "compute_disabled",
+                        "jobId": spec.job_id,
+                        "task": spec.task,
+                    }));
                     let _ = app.emit("compute.result.final", payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
                         let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);

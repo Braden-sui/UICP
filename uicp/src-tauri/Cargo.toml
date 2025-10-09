@@ -24,20 +24,20 @@ base64 = "0.22"
 bytes = "1.7"
 tauri = { version = "2.4.1", features = [] }
 tauri-plugin-fs = "2.4"
-thiserror = "1.0"
 time = "0.3"
-tokio = { version = "1.39", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 ciborium = "0.2"
+ed25519-dalek = "2.1"
 
-# Optional Wasm runtime (Preview 2) for compute plane
-# Enabled via `--features wasm_compute`; off by default to avoid toolchain churn.
-wasmtime = { version = "22", default-features = false, features = ["cranelift", "component-model"], optional = true }
-wasmtime-wasi = { version = "22", features = ["component-model"], optional = true }
+  # Optional Wasm runtime (WASI Preview 2) for the compute plane.
+  # Default-enabled in this repo via the "wasm_compute" feature to exercise compute paths.
+  # Opt out at build time with `--no-default-features` (disables "wasm_compute").
+  wasmtime = { version = "22", default-features = false, features = ["cranelift", "component-model"], optional = true }
+  wasmtime-wasi = { version = "22", features = ["component-model"], optional = true }
 
-[build-dependencies]
-tauri-build = { version = "2.4.1", features = [] }
+  [build-dependencies]
+  tauri-build = { version = "2.4.1", features = [] }
 
 [dev-dependencies]
 tempfile = "3.10"
@@ -53,5 +53,4 @@ strip = true
 
 [features]
 default = ["wasm_compute"]
-# Enable Wasm-only compute host runtime (Wasmtime + WASI Preview 2)
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]

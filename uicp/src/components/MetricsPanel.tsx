@@ -44,8 +44,14 @@ const MetricsPanel = () => {
     const error = jobs.filter((j) => j.status === 'error').length;
     const cacheHits = jobs.filter((j) => j.cacheHit).length;
     const durations = jobs.map((j) => j.durationMs ?? 0).filter((n) => n > 0).sort((a, b) => a - b);
-    const p50 = durations.length ? durations[Math.floor(0.5 * (durations.length - 1))] : 0;
-    const p95 = durations.length ? durations[Math.floor(0.95 * (durations.length - 1))] : 0;
+    const percentile = (p: number) => {
+      if (!durations.length) return 0;
+      const rank = Math.ceil(p * durations.length); // Nearest-rank method
+      const idx = Math.min(durations.length - 1, Math.max(0, rank - 1));
+      return durations[idx];
+    };
+    const p50 = percentile(0.5);
+    const p95 = percentile(0.95);
     const cacheRatio = done > 0 ? Math.round((cacheHits / done) * 100) : 0;
     const recent = jobs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 8);
     return { total: jobs.length, running, done, timeout, cancelled, error, cacheHits, cacheRatio, p50, p95, recent };
@@ -84,7 +90,12 @@ const MetricsPanel = () => {
               <span className="rounded bg-amber-100 px-2 py-0.5 text-[10px]">timeout: {computeSummary.timeout}</span>
               <span className="rounded bg-slate-200 px-2 py-0.5 text-[10px]">cancelled: {computeSummary.cancelled}</span>
               <span className="rounded bg-red-100 px-2 py-0.5 text-[10px]">error: {computeSummary.error}</span>
-              <span className="rounded bg-cyan-100 px-2 py-0.5 text-[10px]">cache hits: {computeSummary.cacheHits} ({computeSummary.cacheRatio}%)</span>
+              <span
+                className="rounded bg-cyan-100 px-2 py-0.5 text-[10px]"
+                title="Percentage of completed jobs that were served from cache"
+              >
+                cache hits: {computeSummary.cacheHits} ({computeSummary.cacheRatio}%)
+              </span>
               <span className="rounded bg-white px-2 py-0.5 text-[10px]">p50: {computeSummary.p50} ms</span>
               <span className="rounded bg-white px-2 py-0.5 text-[10px]">p95: {computeSummary.p95} ms</span>
               <button

@@ -16,6 +16,7 @@ use tauri::{
     Emitter, Manager, State,
 };
 use tokio::{io::AsyncWriteExt, sync::{RwLock, Semaphore}, time::interval};
+use sha2::{Digest, Sha256};
 use tokio_stream::StreamExt;
 
 mod compute;
@@ -297,13 +298,19 @@ async fn compute_call(
 
 #[tauri::command]
 async fn compute_cancel(state: State<'_, AppState>, job_id: String, window: tauri::Window) -> Result<(), String> {
+    // Emit telemetry: cancel requested
+    let app_handle = window.app_handle().clone();
+    let _ = app_handle.emit(
+        "compute.debug",
+        serde_json::json!({ "jobId": job_id, "event": "cancel_requested" }),
+    );
+
     // Signal cancellation to the job if it registered a cancel channel
     if let Some(tx) = state.compute_cancel.read().await.get(&job_id).cloned() {
         let _ = tx.send(true);
     }
 
     // Give 250ms grace, then hard abort if still running
-    let app_handle = window.app_handle().clone();
     let jid = job_id.clone();
     spawn(async move {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -319,10 +326,16 @@ async fn compute_cancel(state: State<'_, AppState>, job_id: String, window: taur
         };
 
         if aborted {
+            // Emit telemetry and clean up maps to avoid leaks when the host did not finalize
             let _ = app_handle.emit(
                 "compute.debug",
                 serde_json::json!({ "jobId": jid, "event": "cancel_aborted_after_grace" }),
             );
+            {
+                let state: State<'_, AppState> = app_handle.state();
+                state.compute_cancel.write().await.remove(&jid);
+                state.compute_ongoing.write().await.remove(&jid);
+            }
         }
     });
     Ok(())
@@ -1474,32 +1487,80 @@ fn main() {
 /// Verify that all module entries listed in the manifest exist and match their digests.
 #[tauri::command]
 async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    use crate::registry::{load_manifest, modules_dir, verify_digest};
+    use crate::registry::{load_manifest, modules_dir};
     let dir = modules_dir(&app);
     let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
+
+    // Optional Ed25519 signature verification public key (32-byte). Accept hex or base64.
+    let pubkey_opt: Option<[u8; 32]> = std::env::var("UICP_MODULES_PUBKEY")
+        .ok()
+        .and_then(|s| {
+            let b64 = base64::decode(&s).ok();
+            let hexed = if b64.is_none() { hex::decode(&s).ok() } else { None };
+            b64.or(hexed).and_then(|v| v.try_into().ok())
+        });
+
     let mut failures: Vec<serde_json::Value> = Vec::new();
     for entry in manifest.entries.iter() {
         let path = dir.join(&entry.filename);
-        if !path.exists() {
+        // Async existence check via metadata
+        let exists = tokio::fs::metadata(&path).await.is_ok();
+        if !exists {
             failures.push(serde_json::json!({
                 "filename": entry.filename,
                 "reason": "missing",
             }));
             continue;
         }
-        match verify_digest(&path, &entry.digest_sha256) {
-            Ok(true) => {}
-            Ok(false) => failures.push(serde_json::json!({
+
+        // Async read file, then hash on a blocking thread to avoid starving the runtime.
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(err) => {
+                failures.push(serde_json::json!({
+                    "filename": entry.filename,
+                    "reason": "io_error",
+                    "message": err.to_string(),
+                }));
+                continue;
+            }
+        };
+
+        let calc_hex = tokio::task::spawn_blocking(move || {
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            hex::encode(hasher.finalize())
+        })
+        .await
+        .map_err(|e| format!("hash join error: {e}"))?;
+
+        if !entry.digest_sha256.eq_ignore_ascii_case(&calc_hex) {
+            failures.push(serde_json::json!({
                 "filename": entry.filename,
                 "reason": "digest_mismatch",
-            })),
-            Err(err) => failures.push(serde_json::json!({
-                "filename": entry.filename,
-                "reason": "io_error",
-                "message": err.to_string(),
-            })),
+                "expected": entry.digest_sha256,
+                "actual": calc_hex,
+            }));
+            continue;
+        }
+
+        // Optional signature verification when both signature and public key are present.
+        if let (Some(sig), Some(pk)) = (&entry.signature, pubkey_opt.as_ref()) {
+            match crate::registry::verify_entry_signature(entry, pk) {
+                Ok(true) => {}
+                Ok(false) => failures.push(serde_json::json!({
+                    "filename": entry.filename,
+                    "reason": "signature_mismatch",
+                })),
+                Err(err) => failures.push(serde_json::json!({
+                    "filename": entry.filename,
+                    "reason": "signature_error",
+                    "message": err.to_string(),
+                })),
+            }
         }
     }
+
     Ok(serde_json::json!({
         "ok": failures.is_empty(),
         "dir": dir.display().to_string(),
@@ -1677,9 +1738,66 @@ async fn determinism_probe(app: tauri::AppHandle, n: u32, recomputed_hash: Optio
 
 #[tauri::command]
 async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
-    // Placeholder: log the requested action; a real implementation would perform restore/rollback/reset.
-    let _ = app.emit("replay-issue", serde_json::json!({ "event": "recovery_action", "kind": kind }));
-    Ok(())
+    let emit = |app: &tauri::AppHandle, action: &str, outcome: &str, payload: serde_json::Value| {
+        let _ = app.emit("replay-issue", serde_json::json!({
+            "event": "recovery_action",
+            "action": action,
+            "outcome": outcome,
+            "details": payload,
+        }));
+    };
+
+    match kind.as_str() {
+        "reindex" => {
+            match reindex_and_integrity(&app).await.map_err(|e| format!("reindex: {e:?}"))? {
+                true => {
+                    emit(&app, "reindex", "ok", serde_json::json!({}));
+                    emit_replay_telemetry(&app, "manual_reindex", None, 0).await;
+                    Ok(())
+                }
+                false => {
+                    emit(&app, "reindex", "failed", serde_json::json!({ "reason": "integrity_check_failed" }));
+                    emit_replay_telemetry(&app, "manual_reindex_failed", Some("integrity_check_failed"), 0).await;
+                    Err("Integrity check failed after reindex".into())
+                }
+            }
+        }
+        "compact_log" => {
+            let deleted = compact_log_after_last_checkpoint(&app).await.map_err(|e| format!("compact_log: {e:?}"))?;
+            let ok = reindex_and_integrity(&app).await.map_err(|e| format!("reindex: {e:?}"))?;
+            if ok {
+                emit(&app, "compact_log", "ok", serde_json::json!({ "deleted": deleted }));
+                emit_replay_telemetry(&app, "manual_compact", None, 0).await;
+                Ok(())
+            } else {
+                emit(&app, "compact_log", "failed", serde_json::json!({ "deleted": deleted, "reason": "integrity_check_failed" }));
+                emit_replay_telemetry(&app, "manual_compact_failed", Some("integrity_check_failed"), 0).await;
+                Err("Integrity check failed after compacting log".into())
+            }
+        }
+        "rollback_checkpoint" => {
+            let truncated = rollback_to_last_checkpoint(&app).await.map_err(|e| format!("rollback_checkpoint: {e:?}"))?;
+            emit(&app, "rollback_checkpoint", "ok", serde_json::json!({ "truncated": truncated }));
+            emit_replay_telemetry(&app, "manual_rollback", None, 0).await;
+            Ok(())
+        }
+        "auto" => {
+            let summary = recovery_auto(app.clone()).await?;
+            emit(&app, "auto", "ok", summary);
+            Ok(())
+        }
+        "export" => {
+            let bundle = recovery_export(app.clone()).await?;
+            emit(&app, "export", "ok", bundle);
+            Ok(())
+        }
+        "clear_cache" => {
+            clear_compute_cache(app.clone(), Some("default".into())).await?;
+            emit(&app, "clear_cache", "ok", serde_json::json!({}));
+            Ok(())
+        }
+        other => Err(format!("Unknown recovery action: {other}")),
+    }
 }
 
 #[tauri::command]

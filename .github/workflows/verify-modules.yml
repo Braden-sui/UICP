@@ -17,8 +17,6 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    env:
-      STRICT_MODULES_VERIFY: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,10 +24,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Verify modules (non-strict)
-        run: |
-          node uicp/scripts/verify-modules.mjs --manifest uicp/src-tauri/modules/manifest.json --dir uicp/src-tauri/modules || true
-      - name: Verify modules (strict)
-        if: ${{ env.STRICT_MODULES_VERIFY == '1' }}
+      - name: Verify modules
         run: |
           node uicp/scripts/verify-modules.mjs --manifest uicp/src-tauri/modules/manifest.json --dir uicp/src-tauri/modules

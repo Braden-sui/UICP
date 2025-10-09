@@ -16,6 +16,7 @@ const ComputeDemoWindow = () => {
   const [lastJobId, setLastJobId] = useState<string | null>(null);
   const jobs = useComputeStore((s) => s.jobs);
   const lastJob = lastJobId ? jobs[lastJobId] : undefined;
+  const [wsPath, setWsPath] = useState('ws:/files/demo.csv');
 
   const canRun = useMemo(() => !busy, [busy]);
 
@@ -90,6 +91,47 @@ const ComputeDemoWindow = () => {
     }
   }, [canRun, pushToast]);
 
+  const runCsvParseFromWs = useCallback(async () => {
+    if (!canRun) return;
+    setBusy(true);
+    setLast(null);
+    try {
+      const anyWin = window as any;
+      if (typeof anyWin.uicpComputeCall !== 'function') {
+        pushToast({ variant: 'error', message: 'Tauri bridge not ready' });
+        setLast({ ok: false, message: 'Bridge unavailable' });
+        return;
+      }
+      const jobId = createId('job');
+      setLastJobId(jobId);
+      await anyWin.uicpComputeCall({
+        jobId,
+        task: 'csv.parse@1.2.0',
+        input: { source: wsPath, hasHeader: true },
+        bind: [{ toStatePath: '/tables/demoCsv' }],
+        timeoutMs: 30000,
+        capabilities: { fsRead: ['ws:/files/**'] },
+        replayable: true,
+        cache: 'readwrite',
+        provenance: { envHash: 'dev' },
+      });
+      setLast({ ok: true, message: `Submitted csv.parse from ${wsPath}` });
+    } catch (err) {
+      setLast({ ok: false, message: (err as Error)?.message ?? String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }, [canRun, pushToast, wsPath]);
+
+  const openFilesFolder = useCallback(async () => {
+    try {
+      const info = (await invoke('get_paths')) as { filesDir?: string };
+      if (info?.filesDir) await invoke('open_path', { path: info.filesDir });
+    } catch {
+      // ignore
+    }
+  }, []);
+
   return (
     <DesktopWindow
       id="compute-demo"
@@ -118,6 +160,30 @@ const ComputeDemoWindow = () => {
             disabled={!canRun}
           >
             Run table.query
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={wsPath}
+            onChange={(e) => setWsPath(e.target.value)}
+            className="min-w-[220px] flex-1 rounded border border-slate-300 bg-white/90 px-2 py-1 text-xs text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+            placeholder="ws:/files/demo.csv"
+            aria-label="Workspace file path"
+          />
+          <button
+            type="button"
+            className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+            onClick={openFilesFolder}
+          >
+            Open Files Folder
+          </button>
+          <button
+            type="button"
+            className="rounded bg-slate-900 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white shadow hover:bg-slate-700 disabled:opacity-50"
+            onClick={runCsvParseFromWs}
+            disabled={!canRun}
+          >
+            Run csv.parse (ws:/files)
           </button>
         </div>
         {lastJob && (

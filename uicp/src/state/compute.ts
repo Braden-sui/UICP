@@ -28,6 +28,22 @@ type ComputeState = {
   reset: () => void;
 };
 
+// LRU policy for terminal jobs
+const MAX_TERMINAL_JOBS = 100;
+
+function pruneJobs(jobs: Record<string, ComputeJob>, maxTerminal = MAX_TERMINAL_JOBS): Record<string, ComputeJob> {
+  const list = Object.values(jobs);
+  const active = list.filter((j) => j.status === 'running' || j.status === 'partial');
+  const terminal = list
+    .filter((j) => j.status !== 'running' && j.status !== 'partial')
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const budget = Math.max(0, maxTerminal - active.length);
+  const keep = [...active, ...terminal.slice(0, budget)];
+  const next: Record<string, ComputeJob> = {};
+  for (const j of keep) next[j.jobId] = jobs[j.jobId];
+  return next;
+}
+
 export const useComputeStore = create<ComputeState>((set) => ({
   jobs: {},
   upsertJob: (job) =>
@@ -48,22 +64,36 @@ export const useComputeStore = create<ComputeState>((set) => ({
             fuelUsed: job.fuelUsed,
             lastError: job.lastError,
           };
-      return { jobs: { ...state.jobs, [job.jobId]: next } };
+      const merged = { ...state.jobs, [job.jobId]: next } as Record<string, ComputeJob>;
+      const pruned = pruneJobs(merged);
+      return { jobs: pruned };
     }),
   markPartial: (jobId) =>
     set((state) => {
       const existing = state.jobs[jobId];
       if (!existing) return { jobs: state.jobs };
       const next = { ...existing, status: 'partial' as const, partials: existing.partials + 1, updatedAt: Date.now() };
-      return { jobs: { ...state.jobs, [jobId]: next } };
+      const merged = { ...state.jobs, [jobId]: next } as Record<string, ComputeJob>;
+      const pruned = pruneJobs(merged);
+      return { jobs: pruned };
     }),
   markFinal: (jobId, ok, meta, errMsg) =>
     set((state) => {
       const existing = state.jobs[jobId];
       if (!existing) return { jobs: state.jobs };
-      const status: ComputeStatus = ok ? 'done' : errMsg === 'Compute.Cancelled' ? 'cancelled' : errMsg === 'Compute.Timeout' ? 'timeout' : 'error';
+      // Normalize backend codes (e.g., "Timeout", "Cancelled") and also support legacy "Compute.*" prefixes.
+      const normalized = String(errMsg ?? '')?.replace(/^Compute\./, '');
+      const status: ComputeStatus = ok
+        ? 'done'
+        : normalized === 'Cancelled'
+          ? 'cancelled'
+          : normalized === 'Timeout'
+            ? 'timeout'
+            : 'error';
       const next = { ...existing, status, updatedAt: Date.now(), ...meta, lastError: ok ? undefined : errMsg };
-      return { jobs: { ...state.jobs, [jobId]: next } };
+      const merged = { ...state.jobs, [jobId]: next } as Record<string, ComputeJob>;
+      const pruned = pruneJobs(merged);
+      return { jobs: pruned };
     }),
   reset: () => set({ jobs: {} }),
 }));
