@@ -49,6 +49,7 @@ const DevtoolsAnalyticsListener = () => {
         metricsOpen: store.metricsOpen,
         notepadOpen: store.notepadOpen,
         agentSettingsOpen: store.agentSettingsOpen,
+        computeDemoOpen: (store as any).computeDemoOpen ?? false,
         workspaceWindows: Object.keys(store.workspaceWindows).length,
         devMode: store.devMode,
         agentMode: store.agentMode,

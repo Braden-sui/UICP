@@ -127,6 +127,7 @@ export type AppState = {
   // Keep a dedicated flag for the built-in Notepad utility window so local UI can toggle it.
   notepadOpen: boolean;
   agentSettingsOpen: boolean;
+  computeDemoOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
@@ -403,7 +404,7 @@ export const useAppStore = create<AppState>()(
         plannerProfileKey: state.plannerProfileKey,
         actorProfileKey: state.actorProfileKey,
         agentSettingsOpen: state.agentSettingsOpen,
-        computeDemoOpen: (state as any).computeDemoOpen,
+        computeDemoOpen: state.computeDemoOpen,
       }),
     },
   ),

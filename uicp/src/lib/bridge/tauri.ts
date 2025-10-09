@@ -102,7 +102,7 @@ export async function initializeTauriBridge() {
   });
 
   setQueueAppliedListener(({ windowId, applied, ms }) => {
-    const tag = windowId && windowId !== '__global__' ? ` • ${windowId}` : '';
+    const tag = windowId && windowId !== '__global__' ? ` [${windowId}]` : '';
     useAppStore.getState().pushToast({ variant: 'success', message: `Applied ${applied} commands in ${Math.round(ms)} ms${tag}` });
   });
 
@@ -136,8 +136,9 @@ export async function initializeTauriBridge() {
   unsubs.push(
     await listen('api-key-status', (event) => {
       const payload = event.payload as { valid: boolean; message?: string } | undefined;
-      const msg = payload?.message ?? (payload?.valid ? 'API key OK' : 'API key invalid');
-      useAppStore.getState().pushToast({ variant: payload?.valid ? 'success' : 'error', message: msg });
+      if (!payload) return;
+      const msg = payload.message ?? (payload.valid ? 'API key OK' : 'API key invalid');
+      useAppStore.getState().pushToast({ variant: payload.valid ? 'success' : 'error', message: msg });
     }),
   );
 
@@ -147,9 +148,7 @@ export async function initializeTauriBridge() {
       if (!payload) return;
       if (payload.done) {
         try {
-          if (typeof (aggregator as any).flush === 'function') {
-            await (aggregator as any).flush();
-          }
+          await aggregator.flush();
         } catch (error) {
           handleAggregatorError(error);
         }
@@ -209,7 +208,7 @@ export async function initializeTauriBridge() {
     await listen('compute.result.partial', (event) => {
       const payload = event.payload as { jobId?: string; task?: string; seq?: number; payloadB64?: string } | undefined;
       if (!payload) return;
-      // Best-effort dev log; adapter doesn’t apply partials to state yet.
+      // Best-effort dev log; adapter doesn't apply partials to state yet.
       try {
         const jobId = String(payload.jobId ?? '');
         const task = String(payload.task ?? '');

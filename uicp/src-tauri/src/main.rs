@@ -1435,6 +1435,7 @@ fn main() {
     tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Ensure base data directories exist
             if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) { eprintln!("create data dir failed: {e:?}"); }

@@ -1,5 +1,5 @@
+/// <reference types="vitest/globals" />
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import React from 'react';
 import AgentSettingsWindow from '../../src/components/AgentSettingsWindow';
 import { useAppStore } from '../../src/state/app';
 

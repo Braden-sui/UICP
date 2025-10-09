@@ -4,7 +4,11 @@ import { useAppStore } from '../state/app';
 import { createId } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { invoke } from '@tauri-apps/api/core';
-import { open as openDialog } from '@tauri-apps/api/dialog';
+
+// Dialog plugin is optional. Provide a stub that fails gracefully if called.
+const openDialog = async (_opts: { multiple?: boolean }): Promise<string | null> => {
+  throw new Error('Dialog plugin unavailable');
+};
 
 type DemoResult = { ok: boolean; message: string };
 

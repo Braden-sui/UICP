@@ -11,7 +11,7 @@
     "scripts": {
         "dev": "vite",
         "build": "node scripts/run-with-rollup-env.mjs npm run build:bundle",
-        "build:bundle": "tsc && vite build",
+        "build:bundle": "tsc -p tsconfig.build.json && vite build",
         "preview": "vite preview",
         "typecheck": "tsc --noEmit",
         "lint": "eslint \"src/**/*.{ts,tsx}\"",
