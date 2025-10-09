@@ -53,8 +53,8 @@ const AgentSettingsWindow = () => {
         const obj = info as { dir?: string; entries?: number };
         setModulesDir(obj.dir ?? '');
         setModulesCount(obj.entries ?? 0);
-      } catch {
-        // ignore
+      } catch (err) {
+        useAppStore.getState().pushToast({ variant: 'error', message: `Failed to load modules info: ${(err as Error)?.message ?? String(err)}` });
       }
     })();
     return () => {
@@ -64,16 +64,16 @@ const AgentSettingsWindow = () => {
   const handleCopyModulesPath = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(modulesDir);
-    } catch {
-      // ignore
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Copy failed: ${(err as Error)?.message ?? String(err)}` });
     }
   }, [modulesDir]);
   const handleOpenModulesFolder = useCallback(async () => {
     try {
       if (!modulesDir) return;
       await invoke('open_path', { path: modulesDir });
-    } catch {
-      // ignore
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Open folder failed: ${(err as Error)?.message ?? String(err)}` });
     }
   }, [modulesDir]);
 

@@ -4,6 +4,7 @@ import { useAppStore } from '../state/app';
 import { createId } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/api/dialog';
 
 type DemoResult = { ok: boolean; message: string };
 
@@ -127,10 +128,22 @@ const ComputeDemoWindow = () => {
     try {
       const info = (await invoke('get_paths')) as { filesDir?: string };
       if (info?.filesDir) await invoke('open_path', { path: info.filesDir });
-    } catch {
-      // ignore
+    } catch (err) {
+      pushToast({ variant: 'error', message: `Open folder failed: ${(err as Error)?.message ?? String(err)}` });
     }
   }, []);
+
+  const importFileIntoWorkspace = useCallback(async () => {
+    try {
+      const selected = await openDialog({ multiple: false });
+      if (!selected || Array.isArray(selected)) return;
+      const ws = (await invoke('copy_into_files', { srcPath: selected })) as string;
+      setWsPath(ws);
+      pushToast({ variant: 'success', message: `Imported to ${ws}` });
+    } catch (err) {
+      pushToast({ variant: 'error', message: `Import failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [pushToast]);
 
   return (
     <DesktopWindow
@@ -170,6 +183,13 @@ const ComputeDemoWindow = () => {
             placeholder="ws:/files/demo.csv"
             aria-label="Workspace file path"
           />
+          <button
+            type="button"
+            className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+            onClick={importFileIntoWorkspace}
+          >
+            Import File…
+          </button>
           <button
             type="button"
             className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:opacity-50"

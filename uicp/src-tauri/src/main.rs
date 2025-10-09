@@ -1455,6 +1455,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_paths,
+            copy_into_files,
             get_modules_info,
             verify_modules,
             open_path,
@@ -1567,6 +1568,41 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         "failures": failures,
         "count": manifest.entries.len(),
     }))
+}
+
+/// Copy a host file into the workspace files directory and return its ws:/ path.
+#[tauri::command]
+async fn copy_into_files(app: tauri::AppHandle, src_path: String) -> Result<String, String> {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    let p = Path::new(&src_path);
+    if !p.exists() {
+        return Err(format!("Source path does not exist: {}", src_path));
+    }
+
+    // Sanitize filename (no directory traversal, keep base name)
+    let fname = p
+        .file_name()
+        .ok_or_else(|| "Invalid source file name".to_string())?
+        .to_string_lossy()
+        .to_string();
+    if fname.trim().is_empty() {
+        return Err("Empty file name".into());
+    }
+
+    // Map to workspace files dir
+    let dest_dir = crate::files_dir_path();
+    if let Err(e) = fs::create_dir_all(dest_dir) {
+        return Err(format!("Failed to create files dir: {e}"));
+    }
+    let dest: PathBuf = dest_dir.join(&fname);
+
+    // Copy, overwriting if exists
+    fs::copy(&p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
+
+    // Return ws:/ path for use with compute tasks
+    Ok(format!("ws:/files/{}", fname))
 }
 
 #[tauri::command]

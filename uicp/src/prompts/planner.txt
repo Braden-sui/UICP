@@ -23,6 +23,7 @@ Output constraints:
 - Target ~16,000 tokens total output (you have a 32,768 token budget). This allows comprehensive plans while staying under the limit.
 - Use compact single-line HTML where possible
 - HTML must be safe: no <script>, no <style>, no on* handlers, no javascript: URLs
+- Do not use the literal word "placeholder" in any visible text; provide meaningful copy instead (HTML input placeholder attributes are allowed)
 
 ## Available Operations
 

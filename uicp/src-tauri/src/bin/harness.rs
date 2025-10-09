@@ -156,7 +156,7 @@ fn cmd_compact_log(db: &PathBuf) -> anyhow::Result<i32> {
 }
 
 fn usage() -> ! {
-    eprintln!("Usage:\n  harness init-db <db_path>\n  harness persist <db_path> <id> <tool> <args_json>\n  harness log-hash <db_path>\n  harness save-checkpoint <db_path> <hash>\n  harness compact-log <db_path>");
+    eprintln!("Usage:\n  harness init-db <db_path>\n  harness persist <db_path> <id> <tool> <args_json>\n  harness log-hash <db_path>\n  harness save-checkpoint <db_path> <hash>\n  harness compact-log <db_path>\n  harness materialize <db_path> <key>\n  harness count-missing <db_path>\n  harness quick-check <db_path>\n  harness fk-check <db_path>");
     std::process::exit(2)
 }
 
@@ -179,6 +179,23 @@ fn main() {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
             cmd_log_hash(&db)
         }
+        "materialize" => {
+            let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
+            let key = args.next().unwrap_or_else(|| usage());
+            cmd_materialize(&db, &key)
+        }
+        "count-missing" => {
+            let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
+            cmd_count_missing(&db)
+        }
+        "quick-check" => {
+            let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
+            cmd_quick_check(&db)
+        }
+        "fk-check" => {
+            let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
+            cmd_fk_check(&db)
+        }
         "save-checkpoint" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
             let hash = args.next().unwrap_or_else(|| usage());
@@ -199,3 +216,55 @@ fn main() {
     }
 }
 
+fn cmd_materialize(db: &PathBuf, key: &str) -> anyhow::Result<i32> {
+    init_database(db)?;
+    let conn = Connection::open(db)?;
+    // last-write-wins for state.set by created_at and id
+    let mut stmt = conn.prepare(
+        "SELECT json_extract(args_json, '$.value') FROM tool_call \
+         WHERE tool = 'state.set' AND json_extract(args_json, '$.key') = ?1 \
+         ORDER BY created_at DESC, id DESC LIMIT 1",
+    )?;
+    let value: Option<String> = stmt.query_row([key], |r| r.get(0)).optional()?;
+    if let Some(v) = value {
+        println!("{}", v);
+    }
+    Ok(0)
+}
+
+fn cmd_count_missing(db: &PathBuf) -> anyhow::Result<i32> {
+    init_database(db)?;
+    let conn = Connection::open(db)?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tool_call WHERE result_json IS NULL OR TRIM(result_json) = ''",
+        [],
+        |r| r.get(0),
+    )?;
+    println!("{}", count);
+    Ok(0)
+}
+
+fn cmd_quick_check(db: &PathBuf) -> anyhow::Result<i32> {
+    init_database(db)?;
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare("PRAGMA quick_check")?;
+    let mut rows = stmt.query([])?;
+    let mut ok = false;
+    while let Some(row) = rows.next()? {
+        let s: String = row.get(0)?;
+        if s.to_lowercase().contains("ok") { ok = true; }
+    }
+    println!("{}", if ok { "ok" } else { "not_ok" });
+    Ok(if ok { 0 } else { 1 })
+}
+
+fn cmd_fk_check(db: &PathBuf) -> anyhow::Result<i32> {
+    init_database(db)?;
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+    let mut rows = stmt.query([])?;
+    let mut violations = 0u64;
+    while let Some(_row) = rows.next()? { violations += 1; }
+    println!("{}", violations);
+    Ok(if violations == 0 { 0 } else { 1 })
+}

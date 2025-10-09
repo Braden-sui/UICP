@@ -915,8 +915,12 @@ const buildComponentMarkup = (params: OperationParamMap["component.render"]): st
       : "Modal";
     return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${title}</h2><p class="text-sm text-slate-600">Mock modal content.</p></div>`;
   }
-  return '<div class="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">Component placeholder</div>';
+  // Default mock shell when type is unknown; avoid placeholder language in visible text.
+  return '<div class="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">Prototype component</div>';
 };
+
+// Test hook: expose markup builder for targeted unit tests without altering runtime API.
+export const buildComponentMarkupForTest = buildComponentMarkup;
 
 const updateComponent = (params: OperationParamMap["component.update"]) => {
   const record = components.get(params.id);
