@@ -1,5 +1,8 @@
 UICP Wasm Compute (Docs Index)
 
+Master Checklist
+- See `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md` for the authoritative list of what’s done and what remains (host, UI, modules, CI, docs).
+
 - RFC: docs/rfcs/0001-wasm-only-compute-plane.md
 - WIT: docs/wit/uicp-host@1.0.0.wit
 - Task example WIT: docs/wit/tasks/uicp-task-csv-parse@1.2.0.wit

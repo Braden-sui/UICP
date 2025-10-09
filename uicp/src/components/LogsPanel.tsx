@@ -24,17 +24,37 @@ export const LogsPanel = () => {
   const setMetricsOpen = useAppStore((s) => s.setMetricsOpen);
   const telemetry = useAppStore((s) => s.telemetry);
   const metrics = telemetry.slice(0, 3);
-  const [debugEntries, setDebugEntries] = useState<Array<{ ts: number; event: string; requestId?: string; status?: number; len?: number; count?: number }>>([]);
+  type DebugEntry = {
+    ts: number;
+    event: string;
+    requestId?: string;
+    status?: number;
+    len?: number;
+    count?: number;
+    // UI debug extras
+    gen?: number;
+    traceId?: string;
+    windowId?: string;
+    applied?: number;
+    ms?: number;
+    jobId?: string;
+    ageMs?: number;
+    message?: string;
+    inFlight?: number;
+  };
+  const [debugEntries, setDebugEntries] = useState<Array<DebugEntry>>([]);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    let unlistenTauri: (() => void) | null = null;
+    let unlistenUi: (() => void) | null = null;
     const sub = async () => {
       try {
+        // Backend debug logs
         const off = await listen('debug-log', (e) => {
           const payload = e.payload as Record<string, unknown>;
           const ts = Number(payload.ts ?? Date.now());
           const event = String(payload.event ?? 'unknown');
-          const entry = {
+          const entry: DebugEntry = {
             ts,
             event,
             requestId: typeof payload.requestId === 'string' ? (payload.requestId as string) : undefined,
@@ -42,7 +62,6 @@ export const LogsPanel = () => {
             len: typeof payload.len === 'number' ? (payload.len as number) : undefined,
           };
           setDebugEntries((prev) => {
-            // Streaming deltas can fire hundreds of times; collapse them per request to avoid flooding the log.
             if (event === 'delta_json') {
               const matchIdx = prev.findIndex((item) => item.event === event && item.requestId === entry.requestId);
               const chunkLen = entry.len ?? 0;
@@ -53,30 +72,53 @@ export const LogsPanel = () => {
                   ts,
                   len: (existing.len ?? 0) + chunkLen,
                   count: (existing.count ?? 1) + 1,
-                };
-                const reordered = [updated, ...prev.slice(0, matchIdx), ...prev.slice(matchIdx + 1)];
-                return reordered.slice(0, 200);
+                } as DebugEntry;
+                const reorder = [updated, ...prev.slice(0, matchIdx), ...prev.slice(matchIdx + 1)];
+                return reorder.slice(0, 200);
               }
-              return [{ ...entry, count: 1, len: chunkLen }, ...prev].slice(0, 200);
+              return [{ ...entry, count: 1, len: chunkLen } as DebugEntry, ...prev].slice(0, 200);
             }
-
             return [entry, ...prev].slice(0, 200);
           });
         });
-        unlisten = off;
+        unlistenTauri = off;
       } catch {
         // ignore
       }
+
+      // UI-side debug logs
+      const onUiDebug = (evt: Event) => {
+        const detail = (evt as CustomEvent<Record<string, unknown>>).detail;
+        if (!detail || typeof detail !== 'object') return;
+        const ts = Number(detail.ts ?? Date.now());
+        const event = String(detail.event ?? 'ui-debug-log');
+        const entry: DebugEntry = {
+          ts,
+          event,
+          traceId: typeof detail.traceId === 'string' ? (detail.traceId as string) : undefined,
+          gen: typeof detail.gen === 'number' ? (detail.gen as number) : undefined,
+          windowId: typeof detail.windowId === 'string' ? (detail.windowId as string) : undefined,
+          applied: typeof detail.applied === 'number' ? (detail.applied as number) : undefined,
+          ms: typeof detail.ms === 'number' ? (detail.ms as number) : undefined,
+          jobId: typeof detail.jobId === 'string' ? (detail.jobId as string) : undefined,
+          ageMs: typeof detail.ageMs === 'number' ? (detail.ageMs as number) : undefined,
+          message: typeof detail.message === 'string' ? (detail.message as string) : undefined,
+          inFlight: typeof detail.inFlight === 'number' ? (detail.inFlight as number) : undefined,
+        };
+        setDebugEntries((prev) => [entry, ...prev].slice(0, 200));
+      };
+      window.addEventListener('ui-debug-log', onUiDebug);
+      unlistenUi = () => window.removeEventListener('ui-debug-log', onUiDebug);
     };
     void sub();
     return () => {
-      if (unlisten) unlisten();
+      if (unlistenTauri) unlistenTauri();
+      if (unlistenUi) unlistenUi();
     };
   }, []);
 
   return (
     <>
-      {/* Logs live inside a movable DesktopWindow so they respect the new OS-style chrome. */}
       <DesktopWindow
         id="logs"
         title="Logs"
@@ -152,8 +194,14 @@ export const LogsPanel = () => {
                       {d.count && d.count > 1 ? ` x${d.count}` : ''}
                       {d.status != null ? ` ${d.status}` : ''}
                       {d.len != null ? ` len=${d.len}` : ''}
+                      {d.applied != null ? ` applied=${d.applied}` : ''}
+                      {d.ms != null ? ` ms=${d.ms}` : ''}
+                      {d.inFlight != null ? ` inFlight=${d.inFlight}` : ''}
+                      {d.gen != null ? ` gen=${d.gen}` : ''}
                     </span>
-                    {d.requestId && <span className="font-mono text-[10px] text-amber-600">{d.requestId}</span>}
+                    <span className="font-mono text-[10px] text-amber-600">
+                      {d.requestId ?? d.traceId ?? d.windowId ?? d.jobId ?? ''}
+                    </span>
                   </li>
                 ))}
               </ul>

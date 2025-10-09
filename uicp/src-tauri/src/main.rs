@@ -51,6 +51,12 @@ pub(crate) fn files_dir_path() -> &'static std::path::Path {
     &*FILES_DIR
 }
 
+/// Remove a chat request handle from the ongoing map (helper for consistent cleanup).
+pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
+    let state: State<'_, AppState> = app_handle.state();
+    state.ongoing.write().await.remove(request_id);
+}
+
 #[derive(Default)]
 struct CircuitState {
     consecutive_failures: u8,
@@ -73,15 +79,28 @@ async fn circuit_is_open(
     circuits: &Arc<RwLock<HashMap<String, CircuitState>>>,
     host: &str,
 ) -> Option<Instant> {
+    // Fast-path read to avoid serializing callers under load.
+    let now = Instant::now();
+    {
+        let guard = circuits.read().await;
+        if let Some(state) = guard.get(host) {
+            if let Some(until) = state.opened_until {
+                if now < until {
+                    return Some(until);
+                }
+            }
+        }
+    }
+    // Upgrade to write only to clear expired state.
     let mut guard = circuits.write().await;
     if let Some(state) = guard.get_mut(host) {
         if let Some(until) = state.opened_until {
-            if Instant::now() < until {
+            if now >= until {
+                state.opened_until = None;
+                state.consecutive_failures = 0;
+            } else {
                 return Some(until);
             }
-            // Circuit expired; allow a half-open attempt.
-            state.opened_until = None;
-            state.consecutive_failures = 0;
         }
     }
     None
@@ -368,9 +387,9 @@ async fn compute_call(
         return Ok(());
     }
 
-    // Content-addressed cache lookup when enabled
-    let cache_mode = spec.cache.clone();
-    if cache_mode == "readwrite" || cache_mode == "readOnly" {
+    // Content-addressed cache lookup when enabled (normalize policy casing)
+    let cache_mode = spec.cache.to_lowercase();
+    if cache_mode == "readwrite" || cache_mode == "readonly" {
         let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
         if let Ok(Some(mut cached)) =
             compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
@@ -391,7 +410,7 @@ async fn compute_call(
             }
             emit_or_log(&app_handle, "compute.result.final", cached);
             return Ok(());
-        } else if cache_mode == "readOnly" {
+        } else if cache_mode == "readonly" {
             let payload = ComputeFinalErr {
                 ok: false,
                 job_id: spec.job_id.clone(),
@@ -411,7 +430,10 @@ async fn compute_call(
         .acquire_owned()
         .await
         .map_err(|e| e.to_string())?;
-    let join = compute::spawn_job(app_handle, spec.clone(), Some(permit));
+    // Pass a normalized cache policy down to the host
+    let mut spec_norm = spec.clone();
+    spec_norm.cache = cache_mode;
+    let join = compute::spawn_job(app_handle, spec_norm, Some(permit));
     // Bookkeeping: track the running job so we can cancel/cleanup later.
     state
         .compute_ongoing
@@ -575,30 +597,28 @@ async fn test_api_key(
     let result = req.send().await.map_err(|e| format!("HTTP error: {e}"))?;
 
     if result.status().is_success() {
-        window
-            .emit(
-                "api-key-status",
-                ApiKeyStatus {
-                    valid: true,
-                    message: Some("API key validated against Ollama Cloud".into()),
-                },
-            )
-            .map_err(|e| format!("Failed to emit api-key-status: {e}"))?;
+        emit_or_log(
+            &window.app_handle(),
+            "api-key-status",
+            ApiKeyStatus {
+                valid: true,
+                message: Some("API key validated against Ollama Cloud".into()),
+            },
+        );
         Ok(ApiKeyStatus {
             valid: true,
             message: Some("API key validated against Ollama Cloud".into()),
         })
     } else {
         let msg = format!("Ollama responded with status {}", result.status());
-        window
-            .emit(
-                "api-key-status",
-                ApiKeyStatus {
-                    valid: false,
-                    message: Some(msg.clone()),
-                },
-            )
-            .map_err(|e| format!("Failed to emit api-key-status: {e}"))?;
+        emit_or_log(
+            &window.app_handle(),
+            "api-key-status",
+            ApiKeyStatus {
+                valid: false,
+                message: Some(msg.clone()),
+            },
+        );
         Ok(ApiKeyStatus {
             valid: false,
             message: Some(msg),
@@ -691,20 +711,49 @@ async fn delete_window_commands(
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite delete window commands")?;
         configure_sqlite(&conn).context("configure sqlite delete window commands")?;
-        // Delete commands where:
-        // 1. tool = "window.create" AND args.id = window_id
-        // 2. OR args.windowId = window_id (for dom.*, component.*, etc.)
-        conn.execute(
-            "DELETE FROM tool_call
+        // Try JSON1-powered delete; fallback to manual filter if JSON1 is unavailable.
+        let sql = "DELETE FROM tool_call
              WHERE workspace_id = ?1
              AND (
                  (tool = 'window.create' AND json_extract(args_json, '$.id') = ?2)
                  OR json_extract(args_json, '$.windowId') = ?2
-             )",
-            params!["default", window_id],
-        )
-        .context("delete window commands")?;
-        Ok(())
+             )";
+        match conn.execute(sql, params!["default", window_id.clone()]) {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such function: json_extract") => {
+                // Fallback: fetch and filter in Rust.
+                let mut stmt = conn
+                    .prepare("SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1")
+                    .context("prepare select for manual delete")?;
+                let rows = stmt
+                    .query_map(params!["default"], |row| {
+                        let id: String = row.get(0)?;
+                        let tool: String = row.get(1)?;
+                        let args_json: String = row.get(2)?;
+                        Ok((id, tool, args_json))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut to_delete: Vec<String> = Vec::new();
+                for (id, tool, args_json) in rows.into_iter() {
+                    let parsed: serde_json::Value = serde_json::from_str(&args_json).unwrap_or(serde_json::json!({}));
+                    let id_match = if tool == "window.create" {
+                        parsed.get("id").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
+                    } else {
+                        parsed.get("windowId").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
+                    };
+                    if id_match { to_delete.push(id); }
+                }
+                if !to_delete.is_empty() {
+                    let tx = conn.transaction()?;
+                    for id in to_delete {
+                        tx.execute("DELETE FROM tool_call WHERE id = ?1", params![id])?;
+                    }
+                    tx.commit()?;
+                }
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     })
     .await
     .map_err(|e| format!("Join error: {e}"))?
@@ -816,28 +865,20 @@ async fn save_workspace(
     match save_res {
         Ok(_) => {
             *state.last_save_ok.write().await = true;
-            window
-                .emit(
-                    "save-indicator",
-                    SaveIndicatorPayload {
-                        ok: true,
-                        timestamp: Utc::now().timestamp(),
-                    },
-                )
-                .map_err(|e| format!("Failed to emit save-indicator: {e}"))?;
+            emit_or_log(
+                &window.app_handle(),
+                "save-indicator",
+                SaveIndicatorPayload { ok: true, timestamp: Utc::now().timestamp() },
+            );
             Ok(())
         }
         Err(err) => {
             *state.last_save_ok.write().await = false;
-            window
-                .emit(
-                    "save-indicator",
-                    SaveIndicatorPayload {
-                        ok: false,
-                        timestamp: Utc::now().timestamp(),
-                    },
-                )
-                .map_err(|e| format!("Failed to emit save-indicator: {e}"))?;
+            emit_or_log(
+                &window.app_handle(),
+                "save-indicator",
+                SaveIndicatorPayload { ok: false, timestamp: Utc::now().timestamp() },
+            );
             Err(format!("DB error: {err:?}"))
         }
     }
@@ -914,7 +955,8 @@ async fn chat_completion(
         // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
         std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
     });
-    // Normalize to colon-delimited tags for Cloud and OpenAI-compatible hyphen tags for local daemon.
+    // Normalize to colon-delimited tags for both Cloud and local.
+    // If the input had a "-cloud" suffix, preserve it on local to aid routing.
     let resolved_model = normalize_model_name(&requested_model, use_cloud);
 
     let mut body = serde_json::json!({
@@ -1333,6 +1375,84 @@ async fn chat_completion(
 
                     let mut stream = resp.bytes_stream();
                     let mut stream_failed = false;
+                    // SSE assembly state
+                    let mut carry = String::new();
+                    let mut event_buf = String::new();
+
+                    // Helper to process a complete SSE payload line (assembled in event_buf)
+                    let mut process_payload = |
+                        payload_str: &str,
+                        app_handle: &tauri::AppHandle,
+                        rid: &str,
+                    | {
+                        if payload_str == "[DONE]" {
+                            if debug_on {
+                                let ev = serde_json::json!({
+                                    "ts": Utc::now().timestamp_millis(),
+                                    "event": "stream_done",
+                                    "requestId": rid,
+                                });
+                                tokio::spawn(append_trace(ev.clone()));
+                                tokio::spawn(emit_debug(ev));
+                            }
+                            emit_or_log(app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                            return;
+                        }
+                        match serde_json::from_str::<serde_json::Value>(payload_str) {
+                            Ok(val) => {
+                                if val
+                                    .get("done")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                                {
+                                    if debug_on {
+                                        let ev = serde_json::json!({
+                                            "ts": Utc::now().timestamp_millis(),
+                                            "event": "delta_done",
+                                            "requestId": rid,
+                                        });
+                                        tokio::spawn(append_trace(ev.clone()));
+                                        tokio::spawn(emit_debug(ev));
+                                    }
+                                    emit_or_log(app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                                    return;
+                                }
+                                if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "delta_json",
+                                        "requestId": rid,
+                                        "len": payload_str.len(),
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
+                                emit_or_log(
+                                    app_handle,
+                                    "ollama-completion",
+                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "json" }),
+                                );
+                            }
+                            Err(_) => {
+                                if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "delta_text",
+                                        "requestId": rid,
+                                        "len": payload_str.len(),
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
+                                emit_or_log(
+                                    app_handle,
+                                    "ollama-completion",
+                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "text" }),
+                                );
+                            }
+                        }
+                    };
+
                     loop {
                         // Enforce idle timeout between streamed chunks
                         let next = tokio::time::timeout(idle_timeout, stream.next()).await;
@@ -1370,6 +1490,11 @@ async fn chat_completion(
                                     tokio::spawn(append_trace(ev.clone()));
                                     tokio::spawn(emit_debug(ev));
                                 }
+                                // Process any trailing payload still buffered
+                                if !event_buf.trim().is_empty() {
+                                    process_payload(&event_buf, &app_handle, &rid_for_task);
+                                    event_buf.clear();
+                                }
                                 emit_or_log(
                                     &app_handle,
                                     "ollama-completion",
@@ -1401,92 +1526,41 @@ async fn chat_completion(
                                     break;
                                 }
                                 Ok(bytes) => {
-                                    let text = String::from_utf8_lossy(&bytes);
-                                    for raw_line in text.split('\n') {
-                                        let trimmed = raw_line.trim();
-                                        if trimmed.is_empty() {
-                                            continue;
-                                        }
-                                        let payload_str = if trimmed.starts_with("data:") {
-                                            trimmed.trim_start_matches("data:").trim().to_string()
-                                        } else {
-                                            trimmed.to_string()
-                                        };
-                                        if payload_str == "[DONE]" {
-                                            if debug_on {
-                                                let ev = serde_json::json!({
-                                                    "ts": Utc::now().timestamp_millis(),
-                                                    "event": "stream_done",
-                                                    "requestId": rid_for_task,
-                                                });
-                                                tokio::spawn(append_trace(ev.clone()));
-                                                tokio::spawn(emit_debug(ev));
+                                    // Append chunk and process complete lines only; keep remainder in carry.
+                                    carry.push_str(&String::from_utf8_lossy(&bytes));
+                                    loop {
+                                        if let Some(idx) = carry.find('\n') {
+                                            let mut line = carry[..idx].to_string();
+                                            // drain including newline
+                                            carry.drain(..=idx);
+                                            // handle CRLF
+                                            if line.ends_with('\r') {
+                                                line.pop();
                                             }
-                                            emit_or_log(
-                                                &app_handle,
-                                                "ollama-completion",
-                                                serde_json::json!({ "done": true }),
-                                            );
-                                            continue;
-                                        }
-                                        match serde_json::from_str::<serde_json::Value>(
-                                            &payload_str,
-                                        ) {
-                                            Ok(val) => {
-                                                if val
-                                                    .get("done")
-                                                    .and_then(|v| v.as_bool())
-                                                    .unwrap_or(false)
-                                                {
-                                                    if debug_on {
-                                                        let ev = serde_json::json!({
-                                                            "ts": Utc::now().timestamp_millis(),
-                                                            "event": "delta_done",
-                                                            "requestId": rid_for_task,
-                                                        });
-                                                        tokio::spawn(append_trace(ev.clone()));
-                                                        tokio::spawn(emit_debug(ev));
-                                                    }
-                                                    emit_or_log(
-                                                        &app_handle,
-                                                        "ollama-completion",
-                                                        serde_json::json!({ "done": true }),
-                                                    );
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() {
+                                                // blank line terminates one SSE event
+                                                if !event_buf.is_empty() {
+                                                    let payload = std::mem::take(&mut event_buf);
+                                                    process_payload(&payload, &app_handle, &rid_for_task);
+                                                }
+                                                continue;
+                                            }
+                                            if trimmed.starts_with("data:") {
+                                                let content = trimmed[5..].trim();
+                                                if content == "[DONE]" {
+                                                    process_payload("[DONE]", &app_handle, &rid_for_task);
+                                                    // reset event buffer
+                                                    event_buf.clear();
                                                     continue;
                                                 }
-                                                if debug_on {
-                                                    let ev = serde_json::json!({
-                                                        "ts": Utc::now().timestamp_millis(),
-                                                        "event": "delta_json",
-                                                        "requestId": rid_for_task,
-                                                        "len": payload_str.len(),
-                                                    });
-                                                    tokio::spawn(append_trace(ev.clone()));
-                                                    tokio::spawn(emit_debug(ev));
-                                                }
-                                                emit_or_log(
-                                                    &app_handle,
-                                                    "ollama-completion",
-                                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "json" }),
-                                                );
+                                                event_buf.push_str(content);
+                                                continue;
                                             }
-                                            Err(_) => {
-                                                if debug_on {
-                                                    let ev = serde_json::json!({
-                                                        "ts": Utc::now().timestamp_millis(),
-                                                        "event": "delta_text",
-                                                        "requestId": rid_for_task,
-                                                        "len": payload_str.len(),
-                                                    });
-                                                    tokio::spawn(append_trace(ev.clone()));
-                                                    tokio::spawn(emit_debug(ev));
-                                                }
-                                                emit_or_log(
-                                                    &app_handle,
-                                                    "ollama-completion",
-                                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "text" }),
-                                                );
-                                            }
+                                            // Fallback: treat line as payload content (non-SSE providers)
+                                            event_buf.push_str(trimmed);
+                                        } else {
+                                            break;
                                         }
                                     }
                                 }
@@ -1529,6 +1603,9 @@ async fn chat_completion(
                 }
             }
         }
+
+        // Ensure we always cleanup the request handle on any terminal exit of the outer loop.
+        remove_chat_request(&app_handle, &rid_for_task).await;
     });
 
     state.ongoing.write().await.insert(rid.clone(), join);
@@ -2002,6 +2079,12 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
         return Err(format!("Source path does not exist: {}", src_path));
     }
 
+    // Only allow regular files; reject symlinks and directories.
+    let meta = fs::symlink_metadata(&p).map_err(|e| format!("stat failed: {e}"))?;
+    if !meta.file_type().is_file() {
+        return Err("Source must be a regular file".into());
+    }
+
     // Sanitize filename (no directory traversal, keep base name)
     let fname = p
         .file_name()
@@ -2017,13 +2100,26 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
     if let Err(e) = fs::create_dir_all(dest_dir) {
         return Err(format!("Failed to create files dir: {e}"));
     }
-    let dest: PathBuf = dest_dir.join(&fname);
+    let mut dest: PathBuf = dest_dir.join(&fname);
+    if dest.exists() {
+        let stem = dest
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ts = chrono::Utc::now().timestamp();
+        let new_name = if ext.is_empty() {
+            format!("{}-{}", stem, ts)
+        } else {
+            format!("{}-{}.{}", stem, ts, ext)
+        };
+        dest = dest_dir.join(new_name);
+    }
 
-    // Copy, overwriting if exists
     fs::copy(&p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
 
     // Return ws:/ path for use with compute tasks
-    Ok(format!("ws:/files/{}", fname))
+    Ok(format!("ws:/files/{}", dest.file_name().and_then(|s| s.to_str()).unwrap_or(&fname)))
 }
 
 #[tauri::command]

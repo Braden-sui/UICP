@@ -81,6 +81,8 @@ Enforced by schemas.ts validation:
 - HTML validation: unsafe content (script, style, on* handlers, javascript: URLs) is rejected at validation time
 - No JavaScript, no event APIs, no inline handlers allowed
 
+Additionally: Do not use the literal word "placeholder" in any visible text.
+
 ## Interactivity via data-command
 
 Wire functionality using data-command attributes on clickable elements (buttons, forms). The adapter evaluates these at event time:

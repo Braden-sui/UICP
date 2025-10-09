@@ -22,6 +22,7 @@ use crate::registry;
 use crate::{ComputeFinalErr, ComputeJobSpec};
 
 /// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
+#[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
 pub mod error_codes {
     pub const TIMEOUT: &str = "Compute.Timeout";
     pub const CANCELLED: &str = "Compute.Cancelled";

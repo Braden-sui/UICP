@@ -12,11 +12,21 @@ const GLOBAL_KEY = '__global__';
 const IDEMPOTENCY_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const CLEANUP_THRESHOLD = 1000; // Cleanup when map exceeds this size
 
-let onApplied: ((summary: { windowId: string; applied: number; ms: number }) => void) | null = null;
-export const setQueueAppliedListener = (
-  handler: (summary: { windowId: string; applied: number; ms: number }) => void,
-) => {
-  onApplied = handler;
+type AppliedSummary = { windowId: string; applied: number; ms: number };
+const appliedListeners = new Set<(summary: AppliedSummary) => void>();
+
+// Back-compat: overwrite with a single listener
+export const setQueueAppliedListener = (handler: (summary: AppliedSummary) => void) => {
+  appliedListeners.clear();
+  appliedListeners.add(handler);
+};
+
+// New API: allow multiple listeners and return unlisten
+export const addQueueAppliedListener = (handler: (summary: AppliedSummary) => void): (() => void) => {
+  appliedListeners.add(handler);
+  return () => {
+    appliedListeners.delete(handler);
+  };
 };
 
 // Tracks seen idempotency keys with timestamps for TTL-based expiration.
@@ -94,7 +104,7 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
     const t0 = performance.now();
     const outcome = await applyBatch(batch);
     const ms = Math.max(0, performance.now() - t0);
-    onApplied?.({ windowId: GLOBAL_KEY, applied: outcome.applied, ms });
+    for (const fn of appliedListeners) fn({ windowId: GLOBAL_KEY, applied: outcome.applied, ms });
     return outcome;
   }
 
@@ -112,7 +122,7 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
       const outcome = await applyBatch(group);
       const ms = Math.max(0, performance.now() - t0);
       if (outcome.success) {
-        onApplied?.({ windowId, applied: outcome.applied, ms });
+        for (const fn of appliedListeners) fn({ windowId, applied: outcome.applied, ms });
       }
       return outcome;
     };

@@ -77,6 +77,8 @@ Enforced by schemas.ts validation:
 
 6. **No event APIs**: NEVER emit operations like "event.addListener" or any event.* operations. These do not exist in the OperationName enum. Use declarative data-command attributes only.
 
+7. Never leave `html` undefined or placeholder text.
+
 ## Interactivity via data-command
 
 Wire functionality by embedding JSON batches in data-command attributes on clickable elements:

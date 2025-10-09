@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fs,
     fs::OpenOptions,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -33,6 +33,7 @@ pub struct ModuleManifest {
     pub entries: Vec<ModuleEntry>,
 }
 
+#[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct ModuleRef {
     pub entry: ModuleEntry,
@@ -76,12 +77,7 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
     let _lock = _lock.unwrap();
 
     // Resolve the bundled resources path (tauri bundle resources) if available.
-    // Tauri path API returns Result; convert to Option for ergonomic checks below.
-    let bundled: Option<PathBuf> = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|dir| dir.join("modules"));
+    let bundled = bundled_modules_path(app);
 
     // If target manifest is missing but we have a bundled copy, copy all.
     if !manifest_path.exists() {
@@ -118,6 +114,9 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
                 Ok(false) => {
                     if let Some(src) = &bundled {
                         let candidate = src.join(&entry.filename);
+                        if candidate.exists() && !is_regular_file(&candidate) {
+                            continue;
+                        }
                         if candidate.exists() {
                             let tmp = path.with_extension("tmp");
                             if let Err(err) = fs::copy(&candidate, &tmp) {
@@ -128,9 +127,9 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
                                     err
                                 );
                             } else if let Ok(true) = verify_digest(&tmp, &entry.digest_sha256) {
-                                if let Err(err) = fs::rename(&tmp, &path) {
+                                if let Err(err) = replace_file(&tmp, &path) {
                                     eprintln!(
-                                        "modules repair rename failed {} -> {}: {}",
+                                        "modules repair replace failed {} -> {}: {}",
                                         tmp.display(),
                                         path.display(),
                                         err
@@ -152,6 +151,9 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
         }
         if let Some(src) = &bundled {
             let candidate = src.join(&entry.filename);
+            if candidate.exists() && !is_regular_file(&candidate) {
+                continue;
+            }
             if candidate.exists() {
                 if let Some(parent) = path.parent() {
                     if let Err(e) = fs::create_dir_all(parent) {
@@ -163,7 +165,7 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
                 match fs::copy(&candidate, &tmp) {
                     Ok(_) => match verify_digest(&tmp, &entry.digest_sha256) {
                         Ok(true) => {
-                            if let Err(e) = fs::rename(&tmp, &path) {
+                            if let Err(e) = replace_file(&tmp, &path) {
                                 eprintln!(
                                     "modules rename failed {} -> {}: {}",
                                     tmp.display(),
@@ -233,6 +235,7 @@ pub fn load_manifest(app: &AppHandle) -> Result<ModuleManifest> {
     parse_manifest(&text)
 }
 
+#[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
 pub fn find_module(app: &AppHandle, task_at_version: &str) -> Result<Option<ModuleRef>> {
     let (task, version) = task_at_version
         .split_once('@')
@@ -381,6 +384,19 @@ fn try_create_lock_file(path: &Path) -> Option<FileLock> {
         })
 }
 
+#[cfg(feature = "tauri2")]
+fn bundled_modules_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("modules"))
+}
+
+#[cfg(not(feature = "tauri2"))]
+fn bundled_modules_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().resource_dir().map(|dir| dir.join("modules"))
+}
+
 fn verify_installed_modules(target: &Path) -> Result<()> {
     let manifest_path = target.join("manifest.json");
     let text = fs::read_to_string(&manifest_path).with_context(|| {
@@ -468,6 +484,7 @@ fn validate_manifest_entry(entry: &ModuleEntry) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
 fn select_manifest_entry<'a>(
     entries: &'a [ModuleEntry],
     task: &str,
@@ -498,6 +515,41 @@ fn select_manifest_entry<'a>(
     } else {
         Ok(filtered.into_iter().find(|e| e.version == version))
     }
+}
+
+fn is_regular_file(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() => true,
+        Ok(_) => {
+            eprintln!("skip non-regular candidate: {}", path.display());
+            false
+        }
+        Err(err) => {
+            eprintln!(
+                "skip candidate {} due to metadata error: {}",
+                path.display(),
+                err
+            );
+            false
+        }
+    }
+}
+
+#[cfg(windows)]
+fn replace_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
+    if dest.exists() {
+        match fs::remove_file(dest) {
+            Ok(_) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    fs::rename(tmp, dest)
+}
+
+#[cfg(not(windows))]
+fn replace_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
+    fs::rename(tmp, dest)
 }
 
 /// Tri-state signature verification outcome.
@@ -579,6 +631,12 @@ mod tests {
         assert!(!is_clean_filename("a/module.wasm"));
         assert!(!is_clean_filename("../module.wasm"));
         assert!(!is_clean_filename("module/../evil.wasm"));
+    }
+
+    #[cfg(target_family = "windows")]
+    #[test]
+    fn clean_filename_rejects_backslash() {
+        assert!(!is_clean_filename("dir\\module.wasm"));
     }
 
     #[test]

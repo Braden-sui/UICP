@@ -58,7 +58,8 @@ lto = true
 strip = true
 
 [features]
-default = []
+default = ["tauri2"]
+tauri2 = []
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]
 uicp_wasi_enable = []
 uicp_bindgen = []

@@ -2,7 +2,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
-import { enqueueBatch, setQueueAppliedListener } from '../uicp/queue';
+import { enqueueBatch, addQueueAppliedListener } from '../uicp/queue';
 import { finalEventSchema, type JobSpec } from '../../compute/types';
 import { useComputeStore } from '../../state/compute';
 import { useAppStore } from '../../state/app';
@@ -16,12 +16,12 @@ let unsubs: UnlistenFn[] = [];
 
 export async function initializeTauriBridge() {
   if (started) return;
-  started = true;
 
   // If not running inside Tauri, no-op gracefully.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hasTauri = typeof (window as any).__TAURI__ !== 'undefined';
   if (!hasTauri) return;
+  started = true;
 
   // Dev-only: enable backend debug logs and mirror key events to DevTools
   if ((import.meta as any)?.env?.DEV) {
@@ -36,9 +36,9 @@ export async function initializeTauriBridge() {
       await listen('debug-log', (event) => {
         const payload = event.payload as unknown;
         try {
-          const obj = typeof payload === 'string' ? JSON.parse(payload as string) : (payload as Record<string, unknown>);
-          const rec = obj as Record<string, unknown>;
-          const ev = (rec?.['event'] as string) ?? 'debug-log';
+          const obj = typeof payload === 'string' ? JSON.parse(payload as string) : payload;
+          const rec = obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : {};
+          const ev = typeof rec['event'] === 'string' ? (rec['event'] as string) : 'debug-log';
           // Rate-limit backoff status toast (dev visibility): retry countdown and "retrying now"
           if (ev === 'retry_backoff') {
             const waitMs = Number(rec['waitMs'] ?? 0) || 0;
@@ -80,6 +80,9 @@ export async function initializeTauriBridge() {
 
   let aggregatorFailed = false;
   let currentTraceId: string | null = null;
+  // Concurrency guard for overlapping streams
+  let streamGen = 0;
+  let activeStream = 0;
   const handleAggregatorError = (error: unknown) => {
     if (aggregatorFailed) return;
     aggregatorFailed = true;
@@ -91,6 +94,34 @@ export async function initializeTauriBridge() {
     const suffix = currentTraceId ? ` (trace: ${currentTraceId})` : '';
     useChatStore.getState().pushSystemMessage(`Failed to apply streaming batch: ${message}${suffix}`, 'ollama_stream_error');
   };
+
+  // Factory to create a new aggregator that respects Full Control and preview gating.
+  const applyAggregatedBatch = async (batch: unknown) => {
+    const app = useAppStore.getState();
+    // If an orchestrator-managed run is in flight, avoid duplicate apply/preview.
+    if (app.suppressAutoApply) return;
+
+    const canAutoApply = app.fullControl && !app.fullControlLocked;
+    if (canAutoApply) {
+      const outcome = await enqueueBatch(batch as any);
+      if (!outcome.success) {
+        throw new Error(outcome.errors.join('; ') || 'enqueueBatch failed');
+      }
+      return outcome;
+    }
+    const chat = useChatStore.getState();
+    if (!chat.pendingPlan) {
+      useChatStore.setState({
+        pendingPlan: {
+          id: createId('plan'),
+          summary: 'Generated plan',
+          batch: batch as any,
+        },
+      });
+    }
+  };
+
+  const makeAggregator = () => createOllamaAggregator(applyAggregatedBatch);
 
   // Map backend error payloads into a consistent toast format.
   const formatOllamaErrorToast = (
@@ -117,36 +148,69 @@ export async function initializeTauriBridge() {
     return { variant: 'error', message: `${label} ${detail}${rid}${tid}${retry}` };
   };
 
-  const aggregator = createOllamaAggregator(async (batch) => {
-    const app = useAppStore.getState();
-    // If an orchestrator-managed run is in flight, avoid duplicate apply/preview.
-    // Orchestrator code will surface plan/act results into chat state and apply as needed.
-    if (app.suppressAutoApply) return;
+  // Compute error toast formatter: labels by code + concise metrics summary.
+  const formatComputeErrorToast = (
+    final: { jobId: string; task: string; code: string; message?: string; metrics?: Record<string, unknown> },
+  ): { variant: 'error' | 'info' | 'success'; message: string } => {
+    const code = final.code;
+    const label =
+      code === 'Compute.Timeout'
+        ? '[Timeout]'
+        : code === 'Compute.Cancelled'
+          ? '[Cancelled]'
+          : code === 'Compute.CapabilityDenied'
+            ? '[Denied]'
+            : code === 'Compute.Resource.Limit'
+              ? '[Resource]'
+              : code === 'Runtime.Fault'
+                ? '[Runtime]'
+                : code === 'Task.NotFound'
+                  ? '[NotFound]'
+                  : code === 'IO.Denied'
+                    ? '[IO]'
+                    : code === 'Compute.Input.Invalid'
+                      ? '[Input]'
+                      : code === 'Nondeterministic'
+                        ? '[Nondet]'
+                        : `[${code}]`;
+    const m = (final as any).metrics as
+      | { durationMs?: number; fuelUsed?: number; memPeakMb?: number; cacheHit?: boolean }
+      | undefined;
+    const parts: string[] = [];
+    if (typeof m?.durationMs === 'number') parts.push(`dur=${Math.round(m.durationMs)}ms`);
+    if (typeof m?.fuelUsed === 'number') parts.push(`fuel=${m.fuelUsed}`);
+    if (typeof m?.memPeakMb === 'number') parts.push(`mem=${m.memPeakMb}MB`);
+    if (typeof m?.cacheHit === 'boolean') parts.push(`cache=${m.cacheHit ? 'hit' : 'miss'}`);
+    const metrics = parts.length ? ` ${parts.join(' ')}` : '';
+    const detail = final.message ? ` - ${final.message}` : '';
+    const msg = `${label} ${final.task} ${final.code}${detail} (job ${final.jobId})${metrics}`;
+    return { variant: 'error', message: msg };
+  };
 
-    const canAutoApply = app.fullControl && !app.fullControlLocked;
-    if (canAutoApply) {
-      const outcome = await enqueueBatch(batch);
-      if (!outcome.success) {
-        throw new Error(outcome.errors.join('; ') || 'enqueueBatch failed');
-      }
-      return;
-    }
-    const chat = useChatStore.getState();
-    if (!chat.pendingPlan) {
-      useChatStore.setState({
-        pendingPlan: {
-          id: createId('plan'),
-          summary: 'Generated plan',
-          batch,
-        },
-      });
-    }
-  });
+  // Per-stream aggregators keyed by generation
+  const aggregators = new Map<number, ReturnType<typeof createOllamaAggregator>>();
+  // Ensure cleanup on teardown
+  unsubs.push(() => aggregators.clear());
 
-  setQueueAppliedListener(({ windowId, applied, ms }) => {
+  // Frontend debug event emitter for LogsPanel
+  const emitUiDebug = (event: string, extra?: Record<string, unknown>) => {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('ui-debug-log', {
+          detail: { ts: Date.now(), event, ...(extra || {}) },
+        }),
+      );
+    } catch {
+      // ignore
+    }
+  };
+
+  const offApplied = addQueueAppliedListener(({ windowId, applied, ms }) => {
     const tag = windowId && windowId !== '__global__' ? ` [${windowId}]` : '';
     useAppStore.getState().pushToast({ variant: 'success', message: `Applied ${applied} commands in ${Math.round(ms)} ms${tag}` });
+    emitUiDebug('queue_applied', { windowId, applied, ms: Math.round(ms) });
   });
+  unsubs.push(offApplied);
 
   unsubs.push(
     await listen('save-indicator', (event) => {
@@ -189,6 +253,10 @@ export async function initializeTauriBridge() {
       const payload = event.payload as { done?: boolean; delta?: unknown } | undefined;
       if (!payload) return;
       if (payload.done) {
+        // Ignore stale completions from a superseded stream
+        if (activeStream !== streamGen) return;
+        const agg = aggregators.get(activeStream);
+        if (!agg) return;
         const maybeErr = (event.payload as any)?.error as
           | { status?: number; code?: string; detail?: string; requestId?: string; retryAfterMs?: number }
           | undefined;
@@ -213,18 +281,24 @@ export async function initializeTauriBridge() {
             }, Math.min(waitMs, 15000));
           }
         }
+        let flushed = false;
         try {
-          await aggregator.flush();
+          await agg.flush();
+          flushed = true;
         } catch (error) {
           handleAggregatorError(error);
         }
         useAppStore.getState().setStreaming(false);
-        aggregatorFailed = false;
+        if (flushed) {
+          aggregatorFailed = false;
+        }
         if (currentTraceId) {
           // eslint-disable-next-line no-console
-          console.info('[ollama] stream finished', { traceId: currentTraceId });
+          console.info('[ollama] stream finished', { traceId: currentTraceId, gen: activeStream });
+          emitUiDebug('stream_finished', { traceId: currentTraceId, gen: activeStream, flushed });
           currentTraceId = null;
         }
+        aggregators.delete(activeStream);
         return;
       }
       if (payload.delta !== undefined) {
@@ -232,18 +306,26 @@ export async function initializeTauriBridge() {
         try {
           // Reset failure latch when a new stream starts so future runs can surface their own errors.
           if (!useAppStore.getState().streaming) {
+            activeStream = ++streamGen;
             aggregatorFailed = false;
             currentTraceId = createId('trace');
             // eslint-disable-next-line no-console
-            console.info('[ollama] stream started', { traceId: currentTraceId });
+            console.info('[ollama] stream started', { traceId: currentTraceId, gen: activeStream });
+            emitUiDebug('stream_started', { traceId: currentTraceId, gen: activeStream });
+            aggregators.set(activeStream, makeAggregator());
           }
-          await aggregator.processDelta(text);
+          // Ignore stale deltas from a superseded stream
+          if (activeStream !== streamGen) return;
+          const agg = aggregators.get(activeStream);
+          if (!agg) return;
+          await agg.processDelta(text);
           useAppStore.getState().setStreaming(true);
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           handleAggregatorError(error);
           // eslint-disable-next-line no-console
           console.error('[ollama] stream error', { traceId: currentTraceId, error: msg });
+          emitUiDebug('stream_error', { traceId: currentTraceId ?? undefined, message: msg });
         }
       }
     }),
@@ -258,25 +340,45 @@ export async function initializeTauriBridge() {
       const ev = String(payload.event ?? '');
       if (ev === 'cancel_aborted_after_grace') {
         // Mark terminal cancelled so UI does not leak a running job
-        useComputeStore.getState().markFinal(jobId, false, undefined, ComputeError.Cancelled);
+        useComputeStore.getState().markFinal(jobId, false, undefined, undefined, ComputeError.Cancelled);
       }
     }),
   );
 
   // Compute plane: partials + finals
-  const pendingBinds = new Map<string, { task: string; binds: { toStatePath: string }[] }>();
+  const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+  let lastPendingPrune = 0;
+  const pendingBinds = new Map<string, { task: string; binds: { toStatePath: string }[]; ts: number }>();
+  const prunePending = () => {
+    const now = Date.now();
+    // Avoid frequent scans
+    if (now - lastPendingPrune < 60_000) return; // 1 minute
+    lastPendingPrune = now;
+    for (const [id, rec] of pendingBinds.entries()) {
+      if (now - rec.ts > PENDING_TTL_MS) {
+        const ageMs = now - rec.ts;
+        if ((import.meta as any)?.env?.DEV) {
+          // eslint-disable-next-line no-console
+          console.debug('[compute.pending] pruning orphan', { jobId: id, ageMs });
+        }
+        emitUiDebug('compute_pending_prune', { jobId: id, ageMs });
+        pendingBinds.delete(id);
+      }
+    }
+  };
 
   // Expose a helper for callers to submit jobs and remember bindings.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).uicpComputeCall = async (spec: JobSpec) => {
     try {
-      pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [] });
+      pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
+      prunePending();
       useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
       const finalSpec = { ...spec, workspaceId: (spec as any).workspaceId ?? 'default' } as JobSpec;
       await invoke('compute_call', { spec: finalSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
-      useComputeStore.getState().markFinal(spec.jobId, false, undefined, ComputeError.CapabilityDenied);
+      useComputeStore.getState().markFinal(spec.jobId, false, undefined, undefined, ComputeError.CapabilityDenied);
       throw error;
     }
   };
@@ -303,6 +405,7 @@ export async function initializeTauriBridge() {
         if (jobId) useComputeStore.getState().markPartial(jobId);
         // eslint-disable-next-line no-console
         console.debug(`[compute.partial] job=${jobId} task=${task} seq=${seq}`);
+        prunePending();
       } catch {
         // ignore
       }
@@ -321,14 +424,10 @@ export async function initializeTauriBridge() {
       const entry = pendingBinds.get(final.jobId);
       if (!final.ok) {
         // Surface enriched error feedback; bindings are ignored.
-        const errMsg = (payload as any)?.message as string | undefined;
-        const detail = errMsg ? ` - ${errMsg}` : '';
-        const message = `[Compute] ${final.task} failed: ${final.code}${detail} (job ${final.jobId})`;
-        useAppStore.getState().pushToast({ variant: 'error', message });
-        useChatStore
-          .getState()
-          .pushSystemMessage(message, 'compute_final_error');
-        useComputeStore.getState().markFinal(final.jobId, false, undefined, final.code);
+        const toast = formatComputeErrorToast(final as any);
+        useAppStore.getState().pushToast(toast);
+        useChatStore.getState().pushSystemMessage(toast.message, 'compute_final_error');
+        useComputeStore.getState().markFinal(final.jobId, false, undefined, final.message, final.code);
         pendingBinds.delete(final.jobId);
         return;
       }
@@ -413,4 +512,9 @@ export function teardownTauriBridge() {
   }
   unsubs = [];
   started = false;
+  // Clear globals to avoid accidental reuse after teardown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).uicpComputeCall = undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).uicpComputeCancel = undefined;
 }
