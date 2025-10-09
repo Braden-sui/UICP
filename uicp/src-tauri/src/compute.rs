@@ -19,12 +19,12 @@ use crate::registry;
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
-    use wasmtime::{component::{Linker, Component, TypedFunc}, Config, Engine, StoreLimits, StoreLimitsBuilder};
-    use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView, Table};
-    use wasmtime_wasi::preview2::{Dir, DirPerms, FilePerms, ambient_authority};
-    use wasmtime_wasi::bindings;
+    use std::path::PathBuf;
+    use wasmtime::{component::{Linker, Component, TypedFunc, ResourceTable}, Config, Engine, StoreLimits, StoreLimitsBuilder};
+    use wasmtime_wasi::preview2::{WasiCtx, WasiCtxBuilder, WasiView, Dir, DirPerms, FilePerms, ambient_authority};
+    use wasmtime_wasi::preview2::bindings;
     #[allow(unused_imports)]
-    use wasmtime_wasi::bindings::wasi::io::streams::{HostOutputStream, StreamError};
+    use wasmtime_wasi::preview2::bindings::io::streams::{HostOutputStream, StreamError};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
     fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
@@ -146,7 +146,7 @@ mod with_runtime {
     /// Execution context for a single job store.
     struct Ctx {
         wasi: WasiCtx,
-        table: Table,
+        table: ResourceTable,
         app: AppHandle,
         job_id: String,
         task: String,
@@ -165,10 +165,8 @@ mod with_runtime {
     }
 
     impl WasiView for Ctx {
-        fn table(&self) -> &Table { &self.table }
-        fn table_mut(&mut self) -> &mut Table { &mut self.table }
-        fn ctx(&self) -> &WasiCtx { &self.wasi }
-        fn ctx_mut(&mut self) -> &mut WasiCtx { &mut self.wasi }
+        fn table(&mut self) -> &mut ResourceTable { &mut self.table }
+        fn ctx(&mut self) -> &mut WasiCtx { &mut self.wasi }
     }
 
     /// Build a Wasmtime engine configured for the Component Model and limits.
@@ -213,7 +211,7 @@ mod with_runtime {
                 );
             }
             let wasi = wasi_builder.build();
-            let table = Table::new();
+            let table = ResourceTable::new();
             let mut seed_bytes = [0u8; 32];
             {
                 use sha2::{Digest, Sha256};
@@ -545,10 +543,10 @@ mod with_runtime {
     /// Wire core WASI Preview 2 imports and uicp:host control stubs.
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // WASI Preview 2 imports: streams (+ filesystem wiring for future preopens)
-        bindings::wasi::io::streams::add_to_linker(linker, |ctx| ctx)?;
+        bindings::io::streams::add_to_linker(linker, |ctx| ctx)?;
         // Default policy is FS OFF; preopens (if any) are configured in the WasiCtx.
         // Linking here is safe without preopens; guest open attempts will fail.
-        bindings::wasi::filesystem::types::add_to_linker(linker, |ctx| ctx)?;
+        bindings::filesystem::types::add_to_linker(linker, |ctx| ctx)?;
 
         // uicp:host/logger.log(level, msg) with truncation and rate limit
         linker.func_wrap(

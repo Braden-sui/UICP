@@ -24,12 +24,12 @@ base64 = "0.22"
 bytes = "1.7"
 tauri = { version = "2.4.1", features = [] }
 tauri-plugin-fs = "2.4"
-tauri-plugin-dialog = "2.4"
 time = "0.3"
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 ciborium = "0.2"
 ed25519-dalek = "2.1"
+tokio = { version = "1", features = ["full"] }
 
   # Optional Wasm runtime (WASI Preview 2) for the compute plane.
   # Default-enabled in this repo via the "wasm_compute" feature to exercise compute paths.
