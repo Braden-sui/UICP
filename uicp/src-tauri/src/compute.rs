@@ -446,8 +446,11 @@ mod with_runtime {
 
     /// Wire core WASI Preview 2 imports and uicp:host control stubs.
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
-        // WASI Preview 2: streams only (no ambient clocks/random in V1)
+        // WASI Preview 2 imports: streams (+ filesystem wiring for future preopens)
         bindings::wasi::io::streams::add_to_linker(linker, |ctx| ctx)?;
+        // Default policy is FS OFF; preopens (if any) are configured in the WasiCtx.
+        // Linking here is safe without preopens; guest open attempts will fail.
+        bindings::wasi::filesystem::types::add_to_linker(linker, |ctx| ctx)?;
 
         // uicp:host/logger.log(level, msg) with truncation and rate limit
         linker.func_wrap(
@@ -699,6 +702,17 @@ mod with_runtime {
             code: code.into(),
             message: message.into(),
         };
+        // Surface a debug-log entry for observability with a unique error code per event
+        let _ = app.emit(
+            "debug-log",
+            serde_json::json!({
+                "event": "compute_error",
+                "jobId": spec.job_id,
+                "task": spec.task,
+                "code": code,
+                "ts": chrono::Utc::now().timestamp_millis(),
+            }),
+        );
         let _ = app.emit("compute.result.final", payload.clone());
         if spec.replayable && spec.cache == "readwrite" {
             let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);

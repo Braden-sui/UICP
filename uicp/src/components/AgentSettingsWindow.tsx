@@ -77,6 +77,20 @@ const AgentSettingsWindow = () => {
     }
   }, [modulesDir]);
 
+  const handleVerifyModules = useCallback(async () => {
+    try {
+      const res = (await invoke('verify_modules')) as { ok?: boolean; failures?: Array<{ filename?: string; reason?: string }>; count?: number };
+      if (res?.ok) {
+        useAppStore.getState().pushToast({ variant: 'success', message: `Modules OK (${res.count ?? 0} entries)` });
+      } else {
+        const n = res?.failures?.length ?? 0;
+        useAppStore.getState().pushToast({ variant: 'error', message: `Module verification failed (${n})` });
+      }
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Verify failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, []);
+
   return (
     <DesktopWindow
       id="agent-settings"
@@ -148,6 +162,14 @@ const AgentSettingsWindow = () => {
               className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
             >
               Open Folder
+            </button>
+            <button
+              type="button"
+              onClick={handleVerifyModules}
+              className="rounded border border-emerald-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 hover:bg-emerald-50"
+              title="Runs modules:verify"
+            >
+              Verify Modules
             </button>
           </div>
         </div>

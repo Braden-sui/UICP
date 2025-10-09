@@ -32,6 +32,12 @@ static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
 static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
 static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
 static LOGS_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("logs"));
+static FILES_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("files"));
+
+// Expose workspace files directory for host runtimes (e.g., WASI preopens)
+pub(crate) fn files_dir_path() -> &'static std::path::Path {
+    &*FILES_DIR
+}
 
 pub struct AppState {
     db_path: PathBuf,
@@ -362,6 +368,7 @@ async fn get_paths() -> Result<serde_json::Value, String> {
         "dataDir": DATA_DIR.display().to_string(),
         "dbPath": DB_PATH.display().to_string(),
         "envPath": ENV_PATH.display().to_string(),
+        "filesDir": FILES_DIR.display().to_string(),
     }))
 }
 
@@ -1415,6 +1422,10 @@ fn main() {
         .manage(state)
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            // Ensure base data directories exist
+            if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) { eprintln!("create data dir failed: {e:?}"); }
+            if let Err(e) = std::fs::create_dir_all(&*LOGS_DIR) { eprintln!("create logs dir failed: {e:?}"); }
+            if let Err(e) = std::fs::create_dir_all(&*FILES_DIR) { eprintln!("create files dir failed: {e:?}"); }
             // Ensure bundled compute modules are installed into the user modules dir
             if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
                 eprintln!("module install failed: {err:?}");
@@ -1432,6 +1443,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_paths,
             get_modules_info,
+            verify_modules,
             open_path,
             load_api_key,
             save_api_key,
@@ -1457,6 +1469,43 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Verify that all module entries listed in the manifest exist and match their digests.
+#[tauri::command]
+async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use crate::registry::{load_manifest, modules_dir, verify_digest};
+    let dir = modules_dir(&app);
+    let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
+    let mut failures: Vec<serde_json::Value> = Vec::new();
+    for entry in manifest.entries.iter() {
+        let path = dir.join(&entry.filename);
+        if !path.exists() {
+            failures.push(serde_json::json!({
+                "filename": entry.filename,
+                "reason": "missing",
+            }));
+            continue;
+        }
+        match verify_digest(&path, &entry.digest_sha256) {
+            Ok(true) => {}
+            Ok(false) => failures.push(serde_json::json!({
+                "filename": entry.filename,
+                "reason": "digest_mismatch",
+            })),
+            Err(err) => failures.push(serde_json::json!({
+                "filename": entry.filename,
+                "reason": "io_error",
+                "message": err.to_string(),
+            })),
+        }
+    }
+    Ok(serde_json::json!({
+        "ok": failures.is_empty(),
+        "dir": dir.display().to_string(),
+        "failures": failures,
+        "count": manifest.entries.len(),
+    }))
 }
 
 #[tauri::command]

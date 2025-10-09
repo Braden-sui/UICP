@@ -240,12 +240,27 @@ export async function initializeTauriBridge() {
           useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
         }
       }
-      const meta = (final as any).metrics as { durationMs?: number; fuelUsed?: number; memPeakMb?: number; cacheHit?: boolean } | undefined;
+      const meta = (final as any).metrics as {
+        durationMs?: number;
+        fuelUsed?: number;
+        memPeakMb?: number;
+        cacheHit?: boolean;
+        deadlineMs?: number;
+        remainingMsAtFinish?: number;
+        logCount?: number;
+        partialFrames?: number;
+        invalidPartialsDropped?: number;
+      } | undefined;
       useComputeStore.getState().markFinal(final.jobId, true, {
         durationMs: meta?.durationMs,
         fuelUsed: meta?.fuelUsed,
         memPeakMb: meta?.memPeakMb,
         cacheHit: meta?.cacheHit,
+        deadlineMs: meta?.deadlineMs,
+        remainingMsAtFinish: meta?.remainingMsAtFinish,
+        logCount: meta?.logCount,
+        partialFrames: meta?.partialFrames,
+        invalidPartialsDropped: meta?.invalidPartialsDropped,
       });
       pendingBinds.delete(final.jobId);
     }),

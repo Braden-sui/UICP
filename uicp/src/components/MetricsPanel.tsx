@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppStore, type DevtoolsAnalyticsEvent, type IntentTelemetry } from '../state/app';
+import { useComputeStore } from '../state/compute';
 
 const formatDuration = (value: number | null) => {
   if (value == null) return '—';
@@ -30,9 +31,25 @@ const MetricsPanel = () => {
   const setMetricsOpen = useAppStore((state) => state.setMetricsOpen);
   const telemetry = useAppStore((state) => state.telemetry);
   const devtoolsEvents = useAppStore((state) => state.devtoolsAnalytics);
+  const computeJobs = useComputeStore((s) => s.jobs);
 
   const rows = useMemo(() => telemetry.slice(0, 12), [telemetry]);
   const devtoolsRows = useMemo(() => devtoolsEvents.slice(0, 12), [devtoolsEvents]);
+  const computeSummary = useMemo(() => {
+    const jobs = Object.values(computeJobs);
+    const running = jobs.filter((j) => j.status === 'running' || j.status === 'partial').length;
+    const done = jobs.filter((j) => j.status === 'done').length;
+    const timeout = jobs.filter((j) => j.status === 'timeout').length;
+    const cancelled = jobs.filter((j) => j.status === 'cancelled').length;
+    const error = jobs.filter((j) => j.status === 'error').length;
+    const cacheHits = jobs.filter((j) => j.cacheHit).length;
+    const durations = jobs.map((j) => j.durationMs ?? 0).filter((n) => n > 0).sort((a, b) => a - b);
+    const p50 = durations.length ? durations[Math.floor(0.5 * (durations.length - 1))] : 0;
+    const p95 = durations.length ? durations[Math.floor(0.95 * (durations.length - 1))] : 0;
+    const cacheRatio = done > 0 ? Math.round((cacheHits / done) * 100) : 0;
+    const recent = jobs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 8);
+    return { total: jobs.length, running, done, timeout, cancelled, error, cacheHits, cacheRatio, p50, p95, recent };
+  }, [computeJobs]);
 
   const formatDirection = (direction: DevtoolsAnalyticsEvent['direction']) => {
     if (direction === 'open') return 'Opened';
@@ -51,6 +68,86 @@ const MetricsPanel = () => {
       minHeight={280}
     >
       <div className="flex flex-col gap-3 text-xs text-slate-600">
+        <section className="rounded border border-emerald-200 bg-emerald-50 p-3 text-emerald-800">
+          <header className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide">
+            <span>Compute health</span>
+            <span className="text-[10px] font-mono lowercase text-emerald-700">{computeSummary.total} job(s)</span>
+          </header>
+          {computeSummary.total === 0 ? (
+            <p className="rounded border border-dashed border-emerald-300 bg-white/80 p-3 text-center text-emerald-400">
+              No compute jobs yet. Use the Compute Demo to run a sample.
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px]">running: {computeSummary.running}</span>
+              <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px]">done: {computeSummary.done}</span>
+              <span className="rounded bg-amber-100 px-2 py-0.5 text-[10px]">timeout: {computeSummary.timeout}</span>
+              <span className="rounded bg-slate-200 px-2 py-0.5 text-[10px]">cancelled: {computeSummary.cancelled}</span>
+              <span className="rounded bg-red-100 px-2 py-0.5 text-[10px]">error: {computeSummary.error}</span>
+              <span className="rounded bg-cyan-100 px-2 py-0.5 text-[10px]">cache hits: {computeSummary.cacheHits} ({computeSummary.cacheRatio}%)</span>
+              <span className="rounded bg-white px-2 py-0.5 text-[10px]">p50: {computeSummary.p50} ms</span>
+              <span className="rounded bg-white px-2 py-0.5 text-[10px]">p95: {computeSummary.p95} ms</span>
+              <button
+                type="button"
+                className="ml-auto rounded border border-slate-300 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-white"
+                onClick={() => {
+                  try {
+                    const blob = new Blob([JSON.stringify(computeJobs, null, 2)], { type: 'application/json' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `compute-jobs-${Date.now()}.json`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                  } catch {
+                    // ignore
+                  }
+                }}
+                title="Export compute job telemetry"
+              >
+                Export JSON
+              </button>
+            </div>
+          )}
+        </section>
+        {computeSummary.recent && computeSummary.recent.length > 0 && (
+          <section className="rounded border border-slate-200 bg-white/90 p-3 text-[11px] text-slate-700">
+            <header className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500">
+              <span>Recent jobs</span>
+              <span className="text-[10px] font-mono lowercase text-slate-400">{computeSummary.recent.length} shown</span>
+            </header>
+            <ul className="space-y-1">
+              {computeSummary.recent.map((j) => (
+                <li key={j.jobId} className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-[10px] text-slate-500">{j.jobId}</span>
+                  <span>• {j.task}</span>
+                  <span>
+                    •
+                    <span
+                      className={`ml-1 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                        j.status === 'done'
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : j.status === 'error'
+                            ? 'bg-red-50 text-red-600'
+                            : j.status === 'timeout'
+                              ? 'bg-amber-100 text-amber-700'
+                              : j.status === 'cancelled'
+                                ? 'bg-slate-100 text-slate-600'
+                                : 'bg-sky-50 text-sky-700'
+                      }`}
+                    >
+                      {j.status}
+                    </span>
+                  </span>
+                  {typeof j.durationMs === 'number' && <span>• {j.durationMs} ms</span>}
+                  {j.cacheHit && <span className="rounded bg-cyan-50 px-2 py-0.5 text-cyan-700">cache</span>}
+                  {j.lastError && <span className="rounded bg-red-50 px-2 py-0.5 text-red-600">{j.lastError}</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         <header className="flex items-center justify-between text-[11px] uppercase tracking-wide text-slate-500">
           <span>Recent traces</span>
           <span className="text-[10px] font-mono lowercase text-slate-400">{rows.length} entries</span>

@@ -70,6 +70,12 @@ export const finalOkSchema = z.object({
       fuelUsed: z.number().int().nonnegative().optional(),
       memPeakMb: z.number().int().nonnegative().optional(),
       cacheHit: z.boolean().optional(),
+      deadlineMs: z.number().int().nonnegative().optional(),
+      remainingMsAtFinish: z.number().int().nonnegative().optional(),
+      logCount: z.number().int().nonnegative().optional(),
+      partialFrames: z.number().int().nonnegative().optional(),
+      invalidPartialsDropped: z.number().int().nonnegative().optional(),
+      outputHash: z.string().optional(),
     })
     .optional(),
 });

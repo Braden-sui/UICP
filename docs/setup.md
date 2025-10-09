@@ -98,6 +98,7 @@ npm run dev:wasm
 Notes
 - The runtime resolves modules from the app data dir by default: `~/Documents/UICP/modules`. During dev we override with `UICP_MODULES_DIR=src-tauri/modules`.
 - To switch back to the non-Wasm placeholder path without removing the feature, set `UICP_COMPUTE_TYPED_ONLY=0`.
+- Agent Settings shows the resolved modules directory and provides buttons to copy the path or open the folder.
 
 ## Tests
 

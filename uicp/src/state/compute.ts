@@ -11,6 +11,11 @@ export type ComputeJob = {
   durationMs?: number;
   memPeakMb?: number;
   fuelUsed?: number;
+  deadlineMs?: number;
+  remainingMsAtFinish?: number;
+  logCount?: number;
+  partialFrames?: number;
+  invalidPartialsDropped?: number;
   lastError?: string;
   updatedAt: number;
 };
@@ -62,4 +67,3 @@ export const useComputeStore = create<ComputeState>((set) => ({
     }),
   reset: () => set({ jobs: {} }),
 }));
-

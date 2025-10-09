@@ -34,6 +34,7 @@ Registry (Phase 0 scaffold)
 
 - On submit, the host looks up `task@version`, verifies SHA-256 digest matches, and only then executes.
 - In v1, a digest mismatch yields `Task.NotFound` and the module is not executed.
+- Bundled modules in release builds are copied into the per-user modules directory on first run if missing.
 
 Invariants (enforced)
 
@@ -91,6 +92,10 @@ New dev helpers (repo scripts)
 - Run desktop with local modules dir:
   - `cd uicp && npm run dev:wasm`
 
+CI: module verification
+- A GitHub Actions workflow runs a non-strict verify on pushes/PRs that touch modules.
+- To enforce strict verification in CI, set `STRICT_MODULES_VERIFY=1` in the workflow or environment.
+
 UI demo
 - Open the Desktop and click “Compute Demo” to submit sample jobs:
   - csv.parse@1.2.0 → binds to `/tables/demoCsv`
@@ -102,3 +107,20 @@ Metrics (final Ok)
 - logCount, partialFrames, invalidPartialsDropped
 - fuelUsed (when > 0)
 - outputHash (sha256 over canonicalized JSON output)
+
+Filesystem preopens (policy)
+
+- The host preps a workspace-scoped readonly mount for the guest: `ws:/files/**` maps to the per-user files directory reported by `get_paths().filesDir`.
+- In V1, the WASI FS is kept OFF by default; modules use `data:` URIs. The preopen is scaffolded for V2 and will be enabled together with typed file access.
+- Rules:
+  - Readonly only; writes are denied.
+  - Paths must be workspace-scoped (start with `ws:/`). Joins are sanitized to prevent escaping the mount.
+
+HTTP allowlist (scaffold)
+
+- Default deny. The host does not link `wasi:http` unless a future capability gate is satisfied.
+- The allowlist shape will mirror `capabilities.net` (hostnames or origins). See RFC 0001 for V2 plan.
+
+Troubleshooting
+
+- See docs/compute/troubleshooting.md for common errors such as `Task.NotFound`, digest mismatches, and `CapabilityDenied`.
