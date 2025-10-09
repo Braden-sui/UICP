@@ -8,6 +8,7 @@ import { useComputeStore } from '../../state/compute';
 import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
 import { createId } from '../../lib/utils';
+import { ComputeError } from '../compute/errors';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -182,7 +183,7 @@ export async function initializeTauriBridge() {
       if (!jobId) return;
       if (ev === 'cancel_aborted_after_grace') {
         // Mark terminal cancelled so UI does not leak a running job
-        useComputeStore.getState().markFinal(jobId, false, undefined, 'Cancelled');
+        useComputeStore.getState().markFinal(jobId, false, undefined, ComputeError.Cancelled);
       }
     }),
   );
@@ -200,7 +201,7 @@ export async function initializeTauriBridge() {
       await invoke('compute_call', { spec: finalSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
-      useComputeStore.getState().markFinal(spec.jobId, false, undefined, 'Compute.CapabilityDenied');
+      useComputeStore.getState().markFinal(spec.jobId, false, undefined, ComputeError.CapabilityDenied);
       throw error;
     }
   };

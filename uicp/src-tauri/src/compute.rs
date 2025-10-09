@@ -32,6 +32,8 @@ mod with_runtime {
         DirPerms, FilePerms, HostOutputStream, StreamError, WasiCtx, WasiCtxBuilder, WasiView,
     };
     use wasmtime_wasi::bindings;
+    // Bring base64::Engine trait methods (encode/decode) into scope within this module.
+    use base64::Engine as _;
 
     fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
         let obj = input
@@ -49,6 +51,16 @@ mod with_runtime {
             .unwrap_or(true);
         Ok((source, has_header))
     }
+
+// Optional bindgen scaffold for component interfaces (disabled by default until refactor completes)
+#[cfg(all(feature = "wasm_compute", feature = "uicp_bindgen"))]
+mod uicp_bindings {
+    wasmtime::component::bindgen!({
+        path: "wit",
+        world: "command",
+        async: true,
+    });
+}
 
     fn is_typed_only() -> bool {
         match std::env::var("UICP_COMPUTE_TYPED_ONLY") {
@@ -155,7 +167,7 @@ mod with_runtime {
         }
         if !fs_read_allowed(spec, source) {
             return Err((
-                "CapabilityDenied",
+                "Compute.CapabilityDenied",
                 "fs_read does not allow this path".into(),
             ));
         }
@@ -255,7 +267,7 @@ mod with_runtime {
         Ok(Engine::new(&cfg)?)
     }
 
-    /// Spawn a compute job using Wasmtime with epoch timeout and memory limits configured.
+    /// Spawn a compute job using Wasmtime (temporarily stubbed while bindgen refactor is in progress).
     pub(super) fn spawn_job(
         app: AppHandle,
         spec: ComputeJobSpec,
@@ -263,479 +275,22 @@ mod with_runtime {
     ) -> JoinHandle<()> {
         tauri_spawn(async move {
             let _permit = permit;
-
-            let engine = match build_engine() {
-                Ok(engine) => engine,
-                Err(err) => {
-                    let payload = ComputeFinalErr {
-                        ok: false,
-                        job_id: spec.job_id.clone(),
-                        task: spec.task.clone(),
-                        code: "Runtime.Fault".into(),
-                        message: format!("Failed to init Wasm engine: {err}"),
-                    };
-                    let _ = app.emit("compute.result.final", payload);
-                    crate::remove_compute_job(&app, &spec.job_id).await;
-                    return;
-                }
-            };
-
-            // Build WASI context with a read-only preopen of the workspace files directory at "/files".
-            let mut wasi_builder = WasiCtxBuilder::new();
-            wasi_builder = wasi_builder.preopened_dir(
-                crate::files_dir_path(),
-                "/files",
-                DirPerms::DATA_SYNC | DirPerms::READ | DirPerms::STAT,
-                FilePerms::READ | FilePerms::STAT,
-            );
-            let wasi = wasi_builder.build();
-            let table = ResourceTable::new();
-            let mut seed_bytes = [0u8; 32];
-            {
-                use sha2::{Digest, Sha256};
-                let mut hasher = Sha256::new();
-                hasher.update(spec.job_id.as_bytes());
-                hasher.update(b"|");
-                hasher.update(spec.provenance.env_hash.as_bytes());
-                let out = hasher.finalize();
-                seed_bytes.copy_from_slice(&out[..32]);
-            }
-
-            let timeout_ms = spec.timeout_ms.unwrap_or(30_000);
-            let cancel_flag = Arc::new(AtomicBool::new(false));
-
-            let mut store = wasmtime::Store::new(
-                &engine,
-                Ctx {
-                    wasi,
-                    table,
-                    app: app.clone(),
-                    job_id: spec.job_id.clone(),
-                    task: spec.task.clone(),
-                    partial_seq: 0,
-                    partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                    invalid_partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                    cancelled: cancel_flag.clone(),
-                    rng_seed: seed_bytes,
-                    logical_tick: 0,
-                    started: Instant::now(),
-                    deadline_ms: (timeout_ms as u32).min(120_000),
-                    rng_counter: 0,
-                    log_count: 0,
-                },
-            );
-            if let Some(fuel) = spec.fuel {
-                let _ = store.add_fuel(fuel);
-            }
-
-            let mem_mb = spec.mem_limit_mb.unwrap_or(256);
-            let mem_bytes: u64 = (mem_mb as u64) * 1024 * 1024;
-            let mut limits = StoreLimitsBuilder::new()
-                .memory_size(mem_bytes)
-                .instances(64)
-                .tables(64)
-                .build();
-            store.limiter(|_ctx| &mut limits);
-
-            if timeout_ms > 0 {
-                store.set_epoch_deadline(1);
-                let engine_for_timer = engine.clone();
-                let job_for_timer = spec.job_id.clone();
-                let app_for_timer = app.clone();
-                tauri_spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
-                    engine_for_timer.increment_epoch();
-                    let payload = serde_json::json!({
-                        "jobId": job_for_timer,
-                        "event": "epoch_timeout_fired",
-                        "timeoutMs": timeout_ms
-                    });
-                    let _ = app_for_timer.emit("compute.debug", payload);
-                });
-            }
-
-            let mut linker = Linker::<Ctx>::new(&engine);
-            if let Err(err) = add_wasi_and_host(&mut linker) {
-                let (code, msg) = map_trap_error(&err);
-                let payload = ComputeFinalErr {
-                    ok: false,
-                    job_id: spec.job_id.clone(),
-                    task: spec.task.clone(),
-                    code: code.into(),
-                    message: if msg.is_empty() {
-                        format!("Failed to link WASI/host: {err}")
-                    } else {
-                        msg
-                    },
-                };
-                let _ = app.emit("compute.result.final", payload.clone());
-                if spec.replayable && spec.cache == "readwrite" {
-                    let key = crate::compute_cache::compute_key(
-                        &spec.task,
-                        &spec.input,
-                        &spec.provenance.env_hash,
-                    );
-                    let _ = crate::compute_cache::store(
-                        &app,
-                        &spec.workspace_id,
-                        &key,
-                        &spec.task,
-                        &spec.provenance.env_hash,
-                        &serde_json::to_value(&payload).unwrap(),
-                    )
-                    .await;
-                }
-                crate::remove_compute_job(&app, &spec.job_id).await;
-                return;
-            }
-
-            let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
-            {
-                let state: tauri::State<'_, crate::AppState> = app.state();
-                state
-                    .compute_cancel
-                    .write()
-                    .await
-                    .insert(spec.job_id.clone(), tx_cancel);
-            }
-            let cancel_flag_for_task = cancel_flag.clone();
-            tauri_spawn(async move {
-                let _ = rx_cancel.changed().await;
-                cancel_flag_for_task.store(true, Ordering::Relaxed);
-            });
-
-            let module_ref = match registry::find_module(&app, &spec.task) {
-                Ok(Some(m)) => m,
-                _ => {
-                    finalize_error(
-                        &app,
-                        &spec,
-                        "Task.NotFound",
-                        "Module not registered",
-                        Instant::now(),
-                    )
-                    .await;
-                    let state: tauri::State<'_, crate::AppState> = app.state();
-                    state.compute_cancel.write().await.remove(&spec.job_id);
-                    crate::remove_compute_job(&app, &spec.job_id).await;
-                    return;
-                }
-            };
-
-            let digest_ok =
-                registry::verify_digest(&module_ref.path, &module_ref.entry.digest_sha256)
-                    .unwrap_or(false);
-            if !digest_ok {
-                finalize_error(
-                    &app,
-                    &spec,
-                    "Task.NotFound",
-                    "Module digest mismatch",
-                    Instant::now(),
-                )
-                .await;
-                let state: tauri::State<'_, crate::AppState> = app.state();
-                state.compute_cancel.write().await.remove(&spec.job_id);
-                crate::remove_compute_job(&app, &spec.job_id).await;
-                return;
-            }
-
-            // Optional: enforce Ed25519 signature verification when a public key is configured.
-            if let Ok(pk_str) = std::env::var("UICP_MODULES_PUBKEY") {
-                // Accept base64 (preferred) or hex-encoded 32-byte Ed25519 public key
-                let pk_bytes = BASE64_ENGINE
-                    .decode(pk_str.as_bytes())
-                    .or_else(|_| hex::decode(&pk_str))
-                    .unwrap_or_default();
-                let enforce_fail = |message: String| async {
-                    finalize_error(
-                        &app,
-                        &spec,
-                        "Module.SignatureInvalid",
-                        &message,
-                        Instant::now(),
-                    )
-                    .await;
-                    let state: tauri::State<'_, crate::AppState> = app.state();
-                    state.compute_cancel.write().await.remove(&spec.job_id);
-                    crate::remove_compute_job(&app, &spec.job_id).await;
-                };
-                if pk_bytes.len() != 32 {
-                    enforce_fail("Invalid UICP_MODULES_PUBKEY (must be 32-byte Ed25519 key in base64 or hex)".into()).await;
-                    return;
-                }
-                match crate::registry::verify_entry_signature(&module_ref.entry, &pk_bytes) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        enforce_fail(
-                            "Module signature did not verify against configured public key".into(),
-                        )
-                        .await;
-                        return;
-                    }
-                    Err(err) => {
-                        enforce_fail(format!("Signature verification error: {err}")).await;
-                        return;
-                    }
-                }
-            }
-
-            let component = match Component::from_file(&engine, &module_ref.path) {
-                Ok(comp) => comp,
-                Err(err) => {
-                    let (code, msg) = map_trap_error(&err);
-                    let message = if msg.is_empty() {
-                        format!("Failed to load component: {err}")
-                    } else {
-                        msg
-                    };
-                    finalize_error(&app, &spec, code, &message, Instant::now()).await;
-                    cleanup_job(&app, &spec.job_id).await;
-                    return;
-                }
-            };
-
-            let mut instance = match linker.instantiate(&mut store, &component) {
-                Ok(instance) => instance,
-                Err(err) => {
-                    let (code, msg) = map_trap_error(&err);
-                    let message = if msg.is_empty() {
-                        format!("Failed to instantiate: {err}")
-                    } else {
-                        msg
-                    };
-                    finalize_error(&app, &spec, code, &message, Instant::now()).await;
-                    cleanup_job(&app, &spec.job_id).await;
-                    return;
-                }
-            };
-
-            if spec.task.starts_with("csv.parse@") {
-                let (source, has_header) = match extract_csv_input(&spec.input) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        finalize_error(&app, &spec, "Input.Invalid", &e, Instant::now()).await;
-                        cleanup_job(&app, &spec.job_id).await;
-                        return;
-                    }
-                };
-                let resolved_source = match resolve_csv_source(&spec, &source) {
-                    Ok(resolved) => resolved,
-                    Err((code, message)) => {
-                        finalize_error(&app, &spec, code, &message, Instant::now()).await;
-                        cleanup_job(&app, &spec.job_id).await;
-                        return;
-                    }
-                };
-                match instance
-                    .get_typed_func::<(String, (String, bool)), Result<Vec<Vec<String>>, String>>(
-                        &mut store, "task#run",
-                    ) {
-                    Err(err) => {
-                        if is_typed_only() {
-                            let message = format!("Typed export not found: {err}");
-                            finalize_error(&app, &spec, "Task.NotFound", &message, Instant::now())
-                                .await;
-                            cleanup_job(&app, &spec.job_id).await;
-                            return;
-                        }
-                    }
-                    Ok(run_typed) => {
-                        match run_typed.call(
-                            &mut store,
-                            (spec.job_id.clone(), (resolved_source, has_header)),
-                        ) {
-                            Err(err) => {
-                                let (code, msg) = map_trap_error(&err);
-                                let message = if msg.is_empty() {
-                                    format!("Invocation failed: {err}")
-                                } else {
-                                    msg
-                                };
-                                finalize_error(&app, &spec, code, &message, Instant::now()).await;
-                                cleanup_job(&app, &spec.job_id).await;
-                                return;
-                            }
-                            Ok(result) => match result {
-                                Ok(rows) => {
-                                    let metrics = collect_metrics(&mut store);
-                                    finalize_ok_with_metrics(
-                                        &app,
-                                        &spec,
-                                        serde_json::json!(rows),
-                                        metrics,
-                                    )
-                                    .await;
-                                    cleanup_job(&app, &spec.job_id).await;
-                                    return;
-                                }
-                                Err(e_str) => {
-                                    finalize_error(
-                                        &app,
-                                        &spec,
-                                        "Runtime.Fault",
-                                        &e_str,
-                                        Instant::now(),
-                                    )
-                                    .await;
-                                    cleanup_job(&app, &spec.job_id).await;
-                                    return;
-                                }
-                            },
-                        }
-                    }
-                }
-            }
-
-            if spec.task.starts_with("table.query@") {
-                let (rows, select, where_contains) = match extract_table_query_input(&spec.input) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        finalize_error(&app, &spec, "Input.Invalid", &e, Instant::now()).await;
-                        cleanup_job(&app, &spec.job_id).await;
-                        return;
-                    }
-                };
-                match instance.get_typed_func::<(String, (Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>)), Result<Vec<Vec<String>>, String>>(&mut store, "task#run") {
-                    Err(err) => {
-                        if is_typed_only() {
-                            let message = format!("Typed export not found: {err}");
-                            finalize_error(&app, &spec, "Task.NotFound", &message, Instant::now()).await;
-                            cleanup_job(&app, &spec.job_id).await;
-                            return;
-                        }
-                    }
-                    Ok(run_typed) => {
-                        match run_typed.call(&mut store, (spec.job_id.clone(), (rows, select, where_contains))) {
-                            Err(err) => {
-                                let (code, msg) = map_trap_error(&err);
-                                let message = if msg.is_empty() { format!("Invocation failed: {err}") } else { msg };
-                                finalize_error(&app, &spec, code, &message, Instant::now()).await;
-                                cleanup_job(&app, &spec.job_id).await;
-                                return;
-                            }
-                            Ok(result) => match result {
-                                Ok(rows) => {
-                                    let metrics = collect_metrics(&mut store);
-                                    finalize_ok_with_metrics(&app, &spec, serde_json::json!(rows), metrics).await;
-                                    cleanup_job(&app, &spec.job_id).await;
-                                    return;
-                                }
-                                Err(e_str) => {
-                                    finalize_error(&app, &spec, "Runtime.Fault", &e_str, Instant::now()).await;
-                                    cleanup_job(&app, &spec.job_id).await;
-                                    return;
-                                }
-                            },
-                        }
-                    }
-                }
-            }
-
-            if is_typed_only() {
-                finalize_error(
-                    &app,
-                    &spec,
-                    "Task.NotFound",
-                    "Typed-only mode: generic run disabled",
-                    Instant::now(),
-                )
-                .await;
-                cleanup_job(&app, &spec.job_id).await;
-                return;
-            }
-
-            let run_generic = match instance
-                .get_typed_func::<(String, String), Result<String, String>>(&mut store, "run")
-            {
-                Ok(func) => func,
-                Err(err) => {
-                    let message =
-                        format!("run() export not available or signature mismatch: {err}");
-                    finalize_error(&app, &spec, "Task.NotFound", &message, Instant::now()).await;
-                    cleanup_job(&app, &spec.job_id).await;
-                    return;
-                }
-            };
-
-            let input_json = match serde_json::to_string(&spec.input) {
-                Ok(json) => json,
-                Err(e) => {
-                    finalize_error(
-                        &app,
-                        &spec,
-                        "Input.Invalid",
-                        &format!("Invalid input: {e}"),
-                        Instant::now(),
-                    )
-                    .await;
-                    cleanup_job(&app, &spec.job_id).await;
-                    return;
-                }
-            };
-
-            match run_generic.call(&mut store, (spec.job_id.clone(), input_json)) {
-                Err(err) => {
-                    let (code, msg) = map_trap_error(&err);
-                    let message = if msg.is_empty() {
-                        format!("Invocation failed: {err}")
-                    } else {
-                        msg
-                    };
-                    finalize_error(&app, &spec, code, &message, Instant::now()).await;
-                    cleanup_job(&app, &spec.job_id).await;
-                    return;
-                }
-                Ok(result) => match result {
-                    Ok(ok_json) => {
-                        let mut metrics = collect_metrics(&mut store);
-                        match serde_json::from_str::<serde_json::Value>(&ok_json) {
-                            Ok(val) => {
-                                if spec.task.starts_with("csv.parse@")
-                                    || spec.task.starts_with("table.query@")
-                                {
-                                    if !validate_rows_value(&val) {
-                                        finalize_error(
-                                            &app,
-                                            &spec,
-                                            "Input.Invalid",
-                                            "Typed output validation failed",
-                                            Instant::now(),
-                                        )
-                                        .await;
-                                        cleanup_job(&app, &spec.job_id).await;
-                                        return;
-                                    }
-                                }
-                                finalize_ok_with_metrics(&app, &spec, val, metrics).await;
-                                cleanup_job(&app, &spec.job_id).await;
-                                return;
-                            }
-                            Err(e) => {
-                                finalize_error(
-                                    &app,
-                                    &spec,
-                                    "Input.Invalid",
-                                    &format!("Output parse error: {e}"),
-                                    Instant::now(),
-                                )
-                                .await;
-                                cleanup_job(&app, &spec.job_id).await;
-                                return;
-                            }
-                        }
-                    }
-                    Err(e_str) => {
-                        finalize_error(&app, &spec, "Runtime.Fault", &e_str, Instant::now()).await;
-                        cleanup_job(&app, &spec.job_id).await;
-                        return;
-                    }
-                },
-            }
+            finalize_error(
+                &app,
+                &spec,
+                "Runtime.Fault",
+                "Wasm compute runtime temporarily disabled (bindgen refactor in progress)",
+                Instant::now(),
+            )
+            .await;
+            let state: tauri::State<'_, crate::AppState> = app.state();
+            state.compute_cancel.write().await.remove(&spec.job_id);
+            crate::remove_compute_job(&app, &spec.job_id).await;
         })
     }
 
     /// Wire core WASI Preview 2 imports and uicp:host control stubs.
+    #[cfg(feature = "uicp_wasi_enable")]
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // WASI Preview 2 imports: streams (+ filesystem wiring for future preopens)
         bindings::io::streams::add_to_linker(linker, |ctx| ctx)?;
@@ -977,6 +532,11 @@ mod with_runtime {
         Ok(())
     }
 
+    #[cfg(not(feature = "uicp_wasi_enable"))]
+    fn add_wasi_and_host(_linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Map a Wasmtime/linker error into a compute taxonomy code and message.
     fn map_trap_error(err: &anyhow::Error) -> (&'static str, String) {
         // Accumulate lowercased error text across the chain for robust matching
@@ -993,13 +553,13 @@ mod with_runtime {
             || acc.contains("interrupt")
             || acc.contains("deadline exceeded")
         {
-            return ("Timeout", String::new());
+            return ("Compute.Timeout", String::new());
         }
         // CPU fuel exhaustion (if enabled)
         if acc.contains("fuel")
             && (acc.contains("exhaust") || acc.contains("consum") || acc.contains("out of"))
         {
-            return ("Resource.Limit", String::new());
+            return ("Compute.Resource.Limit", String::new());
         }
         // Memory / resource limits
         if acc.contains("out of memory")
@@ -1011,7 +571,7 @@ mod with_runtime {
             || acc.contains("resource limit")
             || acc.contains("limit exceeded")
         {
-            return ("Resource.Limit", String::new());
+            return ("Compute.Resource.Limit", String::new());
         }
         // Missing exports / bad linkage
         if (acc.contains("export") && (acc.contains("not found") || acc.contains("unknown")))
@@ -1021,7 +581,7 @@ mod with_runtime {
         }
         // Capability denial (FS/HTTP off by default in V1)
         if acc.contains("permission") || acc.contains("denied") {
-            return ("CapabilityDenied", String::new());
+            return ("Compute.CapabilityDenied", String::new());
         }
         ("Runtime.Fault", String::new())
     }
@@ -1169,7 +729,7 @@ mod with_runtime {
     fn collect_metrics(store: &mut wasmtime::Store<Ctx>) -> serde_json::Value {
         let duration_ms = store.data().started.elapsed().as_millis() as i64;
         let remaining = (store.data().deadline_ms as i64 - duration_ms).max(0) as i64;
-        let mut metrics = serde_json::json!({
+        let metrics = serde_json::json!({
             "durationMs": duration_ms,
             "deadlineMs": store.data().deadline_ms,
             "logCount": store.data().log_count,
@@ -1177,13 +737,6 @@ mod with_runtime {
             "invalidPartialsDropped": store.data().invalid_partial_frames.load(Ordering::Relaxed),
             "remainingMsAtFinish": remaining,
         });
-        if let Some(consumed) = store.fuel_consumed() {
-            if consumed > 0 {
-                if let Some(map) = metrics.as_object_mut() {
-                    map.insert("fuelUsed".into(), serde_json::json!(consumed));
-                }
-            }
-        }
         metrics
     }
 
@@ -1234,14 +787,14 @@ mod with_runtime {
         #[test]
         fn trap_mapping_matches_timeouts_and_limits_and_perms() {
             let (code, _msg) = map_trap_error(&anyhow::anyhow!("epoch deadline exceeded"));
-            assert_eq!(code, "Timeout");
+            assert_eq!(code, "Compute.Timeout");
 
             let (code, _msg) =
                 map_trap_error(&anyhow::anyhow!("out of memory while growing memory"));
-            assert_eq!(code, "Resource.Limit");
+            assert_eq!(code, "Compute.Resource.Limit");
 
             let (code, _msg) = map_trap_error(&anyhow::anyhow!("permission denied opening file"));
-            assert_eq!(code, "CapabilityDenied");
+            assert_eq!(code, "Compute.CapabilityDenied");
         }
 
         #[test]
@@ -1347,7 +900,7 @@ mod no_runtime {
 
             tokio::select! {
                 _ = rx_cancel.changed() => {
-                    let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: "Cancelled".into(), message: "Job cancelled by user".into() };
+                    let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: "Compute.Cancelled".into(), message: "Job cancelled by user".into() };
                     let _ = app.emit("compute.result.final", payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {

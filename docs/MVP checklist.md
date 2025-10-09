@@ -1,4 +1,4 @@
-﻿# UICP MVP - Local-First Desktop App
+# UICP MVP - Local-First Desktop App
 
 Update log - 2025-10-05
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
@@ -21,6 +21,13 @@ Update log - 2025-10-05
 - Actor prompt explicitly forbids event APIs (no `event.addListener`, no inline JS); interactivity is declared via `data-command` only. All `dom.*` and `component.render` ops must include a valid `windowId`.
 - Replay preserves original command order (no hoisting of `window.create`).
 - Adapter auto-creates a shell window when targeted by `window.update`, `dom.set`, `dom.replace`, `dom.append`, or `component.render` and missing at apply time; persists the synthetic `window.create` to keep replay consistent.
+
+## Recent adjustments (2025-10-09)
+- Replay: added per-replay de-dup in `replayWorkspace()` using stable op-hash (tool+args) to avoid duplicate apply on recovery.
+- Budgets: `validateBatch()` enforces `.max(64)` ops and total HTML budget 128KB; tests added.
+- Tests: added unit tests for sanitizer, batch budgets, and `txn.cancel` fast-path in queue.
+- Error taxonomy: unified across TS/Rust. Codes use namespaced values: `Compute.Timeout`, `Compute.Cancelled`, `Compute.CapabilityDenied`, `Compute.Resource.Limit`, `Runtime.Fault`, `Task.NotFound`, `IO.Denied`, `Nondeterministic`.
+- Cancellation: compute cancel path returns `Compute.Cancelled` on user abort; STOP continues to enqueue `txn.cancel` and lock Full Control.
 
 ## Architecture Summary
 - Platform: Tauri desktop application (Windows MVP; Linux post-MVP)
@@ -175,6 +182,9 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - [x] Orchestrator fallback (planner invalid twice -> actor-only).
   - [x] STOP cancels txn + locks auto-apply.
   - [x] Streaming parser extracts content/tool_calls from SSE chunks.
+  - [x] Batch budgets (op count and total HTML) enforced.
+  - [x] Sanitizer edge cases (script/style/iframe/svg foreignObject, javascript: variants).
+  - [x] Queue `txn.cancel` short-circuit and apply path.
 - E2E (Playwright):
   - [x] DockChat proximity reveal & collapse timing.
   - [x] "Make a notepad" in MOCK mode, Full Control ON -> window within 500 ms.
@@ -305,3 +315,23 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 Backlog
 - See BACKLOG.md for follow-ups and V2 scope
+
+## Update 2025-10-09 - Security & Replay Hardening
+
+- Replay de-dup: `replayWorkspace()` now skips duplicate tool+args during a single replay session using a stable op-hash (sorted-key JSON). See `uicp/src/lib/uicp/adapter.ts`.
+- Budgets enforced by schema:
+  - Batch op count capped at 64 (`batchSchema.max(64)`).
+  - Per-op HTML length capped at 64KB (`Dom*Params.html.max(64 * 1024)`).
+  - Total HTML per batch capped at 128KB via `batchSchema.superRefine`.
+  - See `uicp/src/lib/uicp/schemas.ts`.
+- Error taxonomy alignment (TS/Rust):
+  - Rust emits `Compute.Timeout`, `Compute.Resource.Limit`, `Compute.CapabilityDenied`, `Compute.Cancelled`; `Runtime.Fault` and `Task.NotFound` remain unprefixed.
+  - TS mirrors codes in `uicp/src/compute/types.ts` and `uicp/src/lib/compute/errors.ts`.
+  - Bridge validates final events with the updated enum.
+- Tests added (Vitest):
+  - `uicp/src/lib/uicp/sanitizer.test.ts`: sanitizer removes script/style/on* and javascript:; budgets enforced (per-op 64KB, total 128KB).
+  - `uicp/src/lib/uicp/replay.test.ts`: replay de-dup applies identical ops once.
+  - `uicp/src/lib/uicp/queue-cancel.test.ts`: txn.cancel short-circuits and applies immediately.
+- Notes:
+  - Watcher/component teardown on `window.close` remains minimal (drag cleanup, persisted command removal). Full per-window watcher/component tracking is a follow-up.
+  - STOP/cancel path remains wired UI→bridge→host; default chat request timeout remains a follow-up.

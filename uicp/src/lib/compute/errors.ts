@@ -2,8 +2,8 @@
 // Keep codes exactly matching Rust constants in src-tauri/src/compute.rs.
 
 export const ComputeError = {
-  Timeout: 'Timeout',
-  Cancelled: 'Cancelled',
+  Timeout: 'Compute.Timeout',
+  Cancelled: 'Compute.Cancelled',
   CapabilityDenied: 'Compute.CapabilityDenied',
   ResourceLimit: 'Compute.Resource.Limit',
   RuntimeFault: 'Runtime.Fault',

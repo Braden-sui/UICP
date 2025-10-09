@@ -2,13 +2,13 @@ import { z } from "zod";
 
 // Error taxonomy for terminal results
 export const computeErrorCode = z.enum([
-  "Timeout",
-  "Cancelled",
-  "CapabilityDenied",
-  "Input.Invalid",
+  "Compute.Timeout",
+  "Compute.Cancelled",
+  "Compute.CapabilityDenied",
+  "Compute.Input.Invalid",
   "Task.NotFound",
   "Runtime.Fault",
-  "Resource.Limit",
+  "Compute.Resource.Limit",
   "IO.Denied",
   "Nondeterministic",
 ]);
