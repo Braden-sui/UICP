@@ -205,6 +205,16 @@ export async function initializeTauriBridge() {
     }
   };
 
+  // Expose a helper to cancel a running compute job by id.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).uicpComputeCancel = async (jobId: string) => {
+    try {
+      await invoke('compute_cancel', { jobId });
+    } catch {
+      // ignore cancellation errors
+    }
+  };
+
   unsubs.push(
     await listen('compute.result.partial', (event) => {
       const payload = event.payload as { jobId?: string; task?: string; seq?: number; payloadB64?: string } | undefined;

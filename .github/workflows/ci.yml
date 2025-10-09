@@ -1,23 +1,39 @@
-# CI workflow enforces lint, tests, e2e, and build gates.
+# CI workflow enforces lint, tests, security scans, and build gates.
 name: CI
 
 on:
   push:
-    branches: ["main", "feature/**"]
+    branches:
+      - main
+      - feature/**
   pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Web Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     env:
       RUN_E2E: false
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Setup Node
+        uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: uicp/package-lock.json
+
       - name: Create .env for tests
         working-directory: uicp
         run: |
@@ -26,42 +42,91 @@ jobs:
           printf "USE_DIRECT_CLOUD=0\n" >> .env
           printf "PLANNER_MODEL=deepseek-v3.1:671b\n" >> .env
           printf "ACTOR_MODEL=qwen3-coder:480b\n" >> .env
-      - name: Install dependencies
+
+      - name: Install dependencies (no scripts)
         working-directory: uicp
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Postinstall (whitelisted)
+        working-directory: uicp
+        run: npm run postinstall
+
       - name: Lint
         working-directory: uicp
         run: npm run lint
+
       - name: Typecheck
         working-directory: uicp
         run: npm run typecheck
+
       - name: Unit tests
         working-directory: uicp
         run: npm run test
+
       - name: Build
         working-directory: uicp
         run: npm run build
-      - name: Install Playwright Browsers
+
+      - name: Install Playwright browsers
         if: ${{ env.RUN_E2E == 'true' }}
         working-directory: uicp
         run: npx playwright install --with-deps
+
       - name: E2E tests
         if: ${{ env.RUN_E2E == 'true' }}
         working-directory: uicp
         run: npm run test:e2e
 
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@24b0d5238516480139aa8bc6f92eeb7b54a9eb0a
+        with:
+          path: .
+          format: cyclonedx-json
+          artifact-name: sbom-cyclonedx
+
+      - name: Trivy scan (filesystem)
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8
+        with:
+          scan-type: fs
+          scan-ref: .
+          vuln-type: 'os,library'
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Secrets scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        with:
+          args: detect --redact --no-git -v
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+        with:
+          name: uicp-build
+          path: |
+            uicp/dist
+
   rust-tests:
+    name: Rust Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@5d458579430fc14a04a08a1e7d3694f545e91ce6
+        with:
+          toolchain: stable
+
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@7939da402645ba29a2df566723491a2c856e8f8a
         with:
           workspaces: |
             uicp/src-tauri
+
       - name: Run Rust tests (integration + harness)
         working-directory: uicp/src-tauri
-        run: |
-          cargo test --all-targets --locked --verbose
+        run: cargo test --all-targets --locked --verbose

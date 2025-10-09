@@ -1,17 +1,19 @@
 use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
-    if let Some(parent) = db_path.parent() { std::fs::create_dir_all(parent)?; }
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let conn = Connection::open(db_path)?;
+    configure_sqlite(&conn)?;
     conn.execute_batch(
         r#"
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS workspace (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -67,8 +69,17 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn configure_sqlite(conn: &Connection) -> rusqlite::Result<()> {
+    conn.busy_timeout(Duration::from_millis(5_000))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
 fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
     let conn = Connection::open(db_path)?;
+    configure_sqlite(&conn)?;
     let now = Utc::now().timestamp();
     conn.execute(
         "INSERT OR IGNORE INTO workspace (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
@@ -87,6 +98,7 @@ fn cmd_persist(db: &PathBuf, id: &str, tool: &str, args_json: &str) -> anyhow::R
     init_database(db)?; // idempotent
     ensure_default_workspace(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     let now = Utc::now().timestamp();
     conn.execute(
         "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
@@ -98,6 +110,7 @@ fn cmd_persist(db: &PathBuf, id: &str, tool: &str, args_json: &str) -> anyhow::R
 fn cmd_log_hash(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, tool, COALESCE(args_json, ''), COALESCE(result_json, ''), created_at FROM tool_call ORDER BY created_at ASC, id ASC",
     )?;
@@ -127,7 +140,9 @@ fn cmd_log_hash(db: &PathBuf) -> anyhow::Result<i32> {
 
 fn last_checkpoint_ts(conn: &Connection) -> anyhow::Result<Option<i64>> {
     let ts: Option<i64> = conn
-        .query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0))
+        .query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| {
+            r.get(0)
+        })
         .optional()?;
     Ok(ts)
 }
@@ -135,6 +150,7 @@ fn last_checkpoint_ts(conn: &Connection) -> anyhow::Result<Option<i64>> {
 fn cmd_save_checkpoint(db: &PathBuf, hash: &str) -> anyhow::Result<i32> {
     init_database(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     let now = Utc::now().timestamp();
     conn.execute(
         "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
@@ -146,6 +162,7 @@ fn cmd_save_checkpoint(db: &PathBuf, hash: &str) -> anyhow::Result<i32> {
 fn cmd_compact_log(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     let since = last_checkpoint_ts(&conn)?.unwrap_or(0);
     let deleted = conn.execute(
         "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
@@ -205,7 +222,7 @@ fn main() {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
             cmd_compact_log(&db)
         }
-        _ => { usage() }
+        _ => usage(),
     };
     match code {
         Ok(_) => {}
@@ -219,6 +236,7 @@ fn main() {
 fn cmd_materialize(db: &PathBuf, key: &str) -> anyhow::Result<i32> {
     init_database(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     // last-write-wins for state.set by created_at and id
     let mut stmt = conn.prepare(
         "SELECT json_extract(args_json, '$.value') FROM tool_call \
@@ -235,6 +253,7 @@ fn cmd_materialize(db: &PathBuf, key: &str) -> anyhow::Result<i32> {
 fn cmd_count_missing(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tool_call WHERE result_json IS NULL OR TRIM(result_json) = ''",
         [],
@@ -247,12 +266,15 @@ fn cmd_count_missing(db: &PathBuf) -> anyhow::Result<i32> {
 fn cmd_quick_check(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     let mut stmt = conn.prepare("PRAGMA quick_check")?;
     let mut rows = stmt.query([])?;
     let mut ok = false;
     while let Some(row) = rows.next()? {
         let s: String = row.get(0)?;
-        if s.to_lowercase().contains("ok") { ok = true; }
+        if s.to_lowercase().contains("ok") {
+            ok = true;
+        }
     }
     println!("{}", if ok { "ok" } else { "not_ok" });
     Ok(if ok { 0 } else { 1 })
@@ -261,10 +283,13 @@ fn cmd_quick_check(db: &PathBuf) -> anyhow::Result<i32> {
 fn cmd_fk_check(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db)?;
     let conn = Connection::open(db)?;
+    configure_sqlite(&conn)?;
     let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
     let mut rows = stmt.query([])?;
     let mut violations = 0u64;
-    while let Some(_row) = rows.next()? { violations += 1; }
+    while let Some(_row) = rows.next()? {
+        violations += 1;
+    }
     println!("{}", violations);
     Ok(if violations == 0 { 0 } else { 1 })
 }

@@ -5,13 +5,17 @@ UICP Wasm Compute (Docs Index)
 - Task example WIT: docs/wit/tasks/uicp-task-csv-parse@1.2.0.wit
 - Error taxonomy: docs/compute/error-taxonomy.md
 - Host runtime (implemented): uicp/src-tauri/src/compute.rs
+- Cache module (implemented): uicp/src-tauri/src/compute_cache.rs
 
-Next steps (Phase 0 targets)
+Current status (V1)
 
-- Add TypeScript `JobSpec` and result envelope types alongside Zod schemas.
-- Introduce Tauri commands (compute.call, compute.cancel) backed by a stubbed in-memory queue.
-- Add Wasmtime + WASI P2 behind a feature flag (host not wired to app yet).
-- Build a tiny dashboard view under the devtools panel to list jobs and last errors.
+- TypeScript `JobSpec` + envelopes ship in `uicp/src/compute/types.ts` (Zod schemas and types).
+- Tauri commands implemented in `uicp/src-tauri/src/main.rs`:
+  - `compute_call(spec: ComputeJobSpec)`
+  - `compute_cancel(job_id)`
+- Wasmtime + WASI Preview 2 host is feature-gated (`wasm_compute`) in `uicp/src-tauri/src/compute.rs`.
+- Workspace-scoped cache implemented in `uicp/src-tauri/src/compute_cache.rs`.
+- Clear Compute Cache UI is available in `uicp/src/components/AgentSettingsWindow.tsx` (invokes `clear_compute_cache`).
 
 Registry (Phase 0 scaffold)
 
@@ -52,21 +56,21 @@ Telemetry (replay + recovery)
 
 Usage (Phase 0 adapter shim)
 
-- Submit a compute job from a batch using `api.call` with an internal scheme:
+- Submit a compute job via the Tauri bridge helper (defined in `uicp/src/lib/bridge/tauri.ts`):
 
 ```
-{ "op": "api.call", "params": {
-  "method": "POST",
-  "url": "uicp://compute.call",
-  "body": {
-    "jobId": "<uuid>",
-    "task": "csv.parse@1.2.0",
-    "input": { "source": "ws:/files/sales.csv", "hasHeader": true },
-    "bind": [{ "toStatePath": "/tables/sales" }],
-    "timeoutMs": 30000,
-    "capabilities": {}
-  }
-}}
+// window.uicpComputeCall(JobSpec)
+await (window as any).uicpComputeCall({
+  jobId: '<uuid>',
+  task: 'csv.parse@1.2.0',
+  input: { source: 'ws:/files/sales.csv', hasHeader: true },
+  bind: [{ toStatePath: '/tables/sales' }],
+  timeoutMs: 30000,
+  capabilities: {},
+  cache: 'readwrite',
+  workspaceId: 'default',
+  provenance: { envHash: 'dev' }
+});
 ```
 
 - The bridge listens for `compute.result.partial` and `compute.result.final`.
@@ -120,6 +124,20 @@ HTTP allowlist (scaffold)
 
 - Default deny. The host does not link `wasi:http` unless a future capability gate is satisfied.
 - The allowlist shape will mirror `capabilities.net` (hostnames or origins). See RFC 0001 for V2 plan.
+
+Cache semantics (workspace-scoped)
+
+- `JobSpec.workspaceId` scopes all cache reads and writes. Default is `"default"` when omitted.
+- Policies:
+  - `readwrite`: check cache, execute on miss, then write final envelope
+  - `readOnly`: serve only if present; miss returns `Runtime.Fault` terminal envelope
+  - `bypass`: do not read or write cache
+- Backend code paths:
+  - Reads: `uicp/src-tauri/src/main.rs` in `compute_call()` via `compute_cache::lookup(app, workspace_id, key)`
+  - Writes: `uicp/src-tauri/src/compute.rs` via `compute_cache::store(app, workspace_id, key, ...)`
+- Clearing cache:
+  - Command: `clear_compute_cache(workspace_id?: String)` in `uicp/src-tauri/src/main.rs`
+  - UI: Agent Settings → "Clear Cache" (clears for `default` workspace)
 
 Troubleshooting
 

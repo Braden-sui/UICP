@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 import { sanitizeHtml } from '../utils';
 
 // Centralised schema map so planner results and streamed events (via Tauri) are validated consistently before touching the DOM.
@@ -29,7 +29,7 @@ const WindowCreateParams = z.object({
   height: z.number().min(120).optional(),
   zIndex: z.number().int().optional(),
   size: z.enum(['xs', 'sm', 'md', 'lg', 'xl']).optional(),
-});
+}).strict();
 
 const WindowUpdateParams = z.object({
   id: z.string(),
@@ -39,23 +39,23 @@ const WindowUpdateParams = z.object({
   width: z.number().min(120).optional(),
   height: z.number().min(120).optional(),
   zIndex: z.number().int().optional(),
-});
+}).strict();
 
-const WindowCloseParams = z.object({ id: z.string() });
+const WindowCloseParams = z.object({ id: z.string() }).strict();
 
 const DomSetParams = z.object({
   windowId: z.string().min(1),
   target: z.string().min(1),
-  html: z.string(),
+  html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
   sanitize: z.boolean().optional(),
-});
+}).strict();
 
 const DomReplaceParams = z.object({
   windowId: z.string().min(1),
   target: z.string().min(1),
-  html: z.string(),
+  html: z.string().max(64 * 1024, 'html too large (max 64KB)'),
   sanitize: z.boolean().optional(),
-});
+}).strict();
 
 const DomAppendParams = DomReplaceParams;
 
@@ -65,14 +65,14 @@ const ComponentRenderParams = z.object({
   target: z.string().min(1),
   type: z.string().min(1),
   props: z.unknown().optional(),
-});
+}).strict();
 
 const ComponentUpdateParams = z.object({
   id: z.string(),
   props: z.unknown(),
-});
+}).strict();
 
-const ComponentDestroyParams = z.object({ id: z.string() });
+const ComponentDestroyParams = z.object({ id: z.string() }).strict();
 
 const scopeEnum = z.enum(['window', 'workspace', 'global']);
 
@@ -82,13 +82,13 @@ const StateSetParams = z.object({
   value: z.unknown(),
   windowId: z.string().min(1).optional(),
   ttlMs: z.number().int().positive().optional(),
-});
+}).strict();
 
 const StateGetParams = z.object({
   scope: scopeEnum,
   key: z.string(),
   windowId: z.string().min(1).optional(),
-});
+}).strict();
 
 const StateWatchParams = StateGetParams;
 const StateUnwatchParams = StateGetParams;
@@ -99,9 +99,9 @@ const ApiCallParams = z.object({
   headers: z.record(z.string()).optional(),
   body: z.unknown().optional(),
   idempotencyKey: z.string().optional(),
-});
+}).strict();
 
-const TxnCancelParams = z.object({ id: z.string().optional() });
+const TxnCancelParams = z.object({ id: z.string().optional() }).strict();
 
 export const operationSchemas = {
   'window.create': WindowCreateParams,
@@ -203,29 +203,51 @@ export const envelopeSchema = EnvelopeBase.superRefine((value, ctx) => {
   }
 });
 
-export const batchSchema = z.array(
-  envelopeSchema.transform((value) => {
-    const schema = operationSchemas[value.op];
-    const parseResult = schema.safeParse(value.params ?? {});
-    if (!parseResult.success) {
-      throw new UICPValidationError(
-        `Invalid params for ${value.op}`,
-        '/params',
-        parseResult.error.issues,
-      );
-    }
+export const batchSchema = z
+  .array(
+    envelopeSchema.transform((value) => {
+      const schema = operationSchemas[value.op];
+      const parseResult = schema.safeParse(value.params ?? {});
+      if (!parseResult.success) {
+        throw new UICPValidationError(
+          `Invalid params for ${value.op}`,
+          '/params',
+          parseResult.error.issues,
+        );
+      }
 
-    return {
-      id: value.id,
-      idempotencyKey: value.idempotencyKey,
-      traceId: value.traceId,
-      txnId: value.txnId,
-      windowId: value.windowId ?? (parseResult.data as { windowId?: string }).windowId,
-      op: value.op,
-      params: parseResult.data,
-    } as Envelope;
-  }),
-);
+      return {
+        id: value.id,
+        idempotencyKey: value.idempotencyKey,
+        traceId: value.traceId,
+        txnId: value.txnId,
+        windowId: value.windowId ?? (parseResult.data as { windowId?: string }).windowId,
+        op: value.op,
+        params: parseResult.data,
+      } as Envelope;
+    }),
+  )
+  .max(64, 'batch too large (max 64 operations)')
+  .superRefine((batch, ctx) => {
+    try {
+      let totalHtml = 0;
+      for (const env of batch) {
+        if (env.op === 'dom.set' || env.op === 'dom.replace' || env.op === 'dom.append') {
+          const h = (env.params as any)?.html;
+          if (typeof h === 'string') totalHtml += h.length;
+        }
+      }
+      if (totalHtml > 128 * 1024) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'total HTML too large (max 128KB per batch)',
+          path: [...ctx.path, 'batch'],
+        });
+      }
+    } catch {
+      // best-effort; do not throw from refine
+    }
+  });
 
 export type Batch = z.infer<typeof batchSchema>;
 

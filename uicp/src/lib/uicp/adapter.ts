@@ -38,6 +38,33 @@ type WindowRecord = {
   titleText: HTMLElement;
 };
 
+// Deterministic stringify (sorted object keys; preserves array order) for stable op-hash.
+const stableStringify = (input: unknown): string => {
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown): unknown => {
+    if (value === null) return null;
+    const t = typeof value;
+    if (t === 'undefined' || t === 'function' || t === 'symbol') return null;
+    if (t !== 'object') return value;
+    const obj = value as Record<string, unknown>;
+    if (seen.has(obj)) return null;
+    seen.add(obj);
+    if (Array.isArray(obj)) {
+      return obj.map((v) => walk(v));
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) {
+      out[key] = walk(obj[key]);
+    }
+    return out;
+  };
+  try {
+    return JSON.stringify(walk(input));
+  } catch {
+    try { return String(input); } catch { return '[unstringifiable]'; }
+  }
+};
+
 type ComponentRecord = {
   id: string;
   element: HTMLElement;
@@ -554,7 +581,7 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
     console.error('Failed to clear workspace commands', error);
   });
   // Clear compute cache entries for this workspace
-  void invoke('clear_compute_cache', { workspaceId: 'default' }).catch((error) => {
+  void invoke('clear_compute_cache', { workspace_id: 'default' }).catch((error) => {
     console.error('Failed to clear compute cache', error);
   });
   if (options?.deleteFiles) {
@@ -569,6 +596,7 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
     const commands = await invoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
     const errors: string[] = [];
     let applied = 0;
+    const dedup = new Set<string>();
     // Discard transient in-memory state before replay so replayed ops fully define the state.
     for (const scope of stateStore.values()) scope.clear();
 
@@ -580,6 +608,13 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
     // fail loud on any invalid sequence.
     for (const cmd of commands) {
       try {
+        // Skip exact duplicate tool+args pairs within this replay session.
+        // This mitigates double-persistence or accidental duplicate rows without risking reordering.
+        const key = `${cmd.tool}:${stableStringify(cmd.args)}`;
+        if (dedup.has(key)) {
+          continue;
+        }
+        dedup.add(key);
         const envelope: Envelope = {
           op: cmd.tool as Envelope['op'],
           params: cmd.args as OperationParamMap[Envelope['op']],

@@ -7,6 +7,7 @@ import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 import { strings } from '../strings';
 import { LiquidGlass } from '@liquidglass/react';
+import { cancelActiveChat } from '../lib/llm/ollama';
 
 const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'applying'];
 const STATUS_PHASE_LABEL: Record<AgentPhase, string> = {
@@ -243,7 +244,6 @@ export const DockChat = () => {
             </div>
           )}
         </div>
-
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <button
@@ -278,7 +278,7 @@ export const DockChat = () => {
             {streaming && (
               <button
                 type="button"
-                onClick={cancelStreaming}
+                onClick={() => { cancelActiveChat(); cancelStreaming(); }}
                 className="flex h-9 items-center gap-1 rounded-full border border-red-400 bg-red-50 px-3 text-xs font-semibold text-red-700 transition-all duration-200 hover:bg-red-100 hover:scale-105 active:scale-95"
               >
                 <StopIcon className="h-4 w-4" />
@@ -290,19 +290,14 @@ export const DockChat = () => {
             Press / to focus - Ctrl/Cmd + Enter to send - Esc collapses when idle
           </div>
         </form>
-
-          <div aria-live="polite" className="visually-hidden">
-            {systemMessages.map((message) => (
-              <span key={`live-${message.id}`}>{message.content}</span>
-            ))}
-          </div>
+        <div aria-live="polite" className="visually-hidden">
+          {systemMessages.map((message) => (
+            <span key={`live-${message.id}`}>{message.content}</span>
+          ))}
         </div>
-      </LiquidGlass>
-    </div>
+      </div>
+    </LiquidGlass>
+  </div>
   );
 };
-
 export default DockChat;
-
-
-

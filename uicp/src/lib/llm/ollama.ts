@@ -206,6 +206,7 @@ export function streamOllamaCompletion(
   let unlisten: UnlistenFn | null = null;
   let started = false;
   const requestId = options?.requestId ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+  let abortHandler: ((this: AbortSignal, ev: Event) => any) | undefined;
 
   // Attach the event listener first to avoid missing early chunks
   void listen('ollama-completion', (event) => {
@@ -221,6 +222,10 @@ export function streamOllamaCompletion(
           void err;
         }
         unlisten = null;
+      }
+      // Clear active request marker on normal completion
+      if (activeRequestId === requestId) {
+        activeRequestId = null;
       }
       queue.end();
       return;
@@ -278,13 +283,40 @@ export function streamOllamaCompletion(
         requestPayload.response_format = options.responseFormat;
       }
 
+      // Mark this requestId as the active in-flight chat stream
+      activeRequestId = requestId;
+
       void invoke('chat_completion', {
         requestId,
         request: requestPayload,
       }).catch((err) => {
         queue.fail(err instanceof Error ? err : new Error(String(err)));
         queue.end();
+        // Clear active marker on error as well
+        if (activeRequestId === requestId) {
+          activeRequestId = null;
+        }
       });
+    }
+    // If caller supplied an AbortSignal, wire it to backend cancel
+    if (options?.signal && typeof options.signal.addEventListener === 'function') {
+      abortHandler = () => {
+        try {
+          void invoke('cancel_chat', { requestId });
+        } catch {
+          // ignore
+        }
+        if (unlisten) {
+          try { unlisten(); } catch { /* ignore */ }
+          unlisten = null;
+        }
+        // Clear active marker when aborted
+        if (activeRequestId === requestId) {
+          activeRequestId = null;
+        }
+        queue.end();
+      };
+      options.signal.addEventListener('abort', abortHandler, { once: true } as AddEventListenerOptions);
     }
   }).catch((err) => {
     queue.fail(err instanceof Error ? err : new Error(String(err)));
@@ -312,6 +344,13 @@ export function streamOllamaCompletion(
           } catch {
             // ignore
           }
+          // Clear active marker on consumer return
+          if (activeRequestId === requestId) {
+            activeRequestId = null;
+          }
+          if (options?.signal && abortHandler && typeof options.signal.removeEventListener === 'function') {
+            try { options.signal.removeEventListener('abort', abortHandler as any); } catch { /* ignore */ }
+          }
           queue.end();
           return { value: undefined as unknown as StreamEvent, done: true };
         },
@@ -320,4 +359,17 @@ export function streamOllamaCompletion(
   };
 
   return iterable;
+}
+
+// Track the most recent in-flight chat request id so STOP can cancel promptly.
+let activeRequestId: string | null = null;
+
+export async function cancelActiveChat(): Promise<void> {
+  const rid = activeRequestId;
+  if (!rid) return;
+  try {
+    await invoke('cancel_chat', { requestId: rid });
+  } catch {
+    // ignore
+  }
 }

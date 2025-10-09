@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /uicp
+    schedule:
+      interval: weekly
+    versioning-strategy: increase
+  - package-ecosystem: cargo
+    directory: /uicp/src-tauri
+    schedule:
+      interval: weekly

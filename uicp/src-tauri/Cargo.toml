@@ -57,5 +57,5 @@ lto = true
 strip = true
 
 [features]
-default = ["wasm_compute"]
+default = []
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]

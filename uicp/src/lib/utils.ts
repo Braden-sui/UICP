@@ -1,4 +1,4 @@
-﻿// Utility helpers keep DOM access predictable and testable across the adapter and planner bridge.
+// Utility helpers keep DOM access predictable and testable across the adapter and planner bridge.
 export const createId = (prefix = 'id') => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -45,7 +45,26 @@ export const sanitizeHtml = (input: string) =>
     // Neutralise inline event handlers like onclick=, oninput=
     .replace(/\son[a-z]+\s*=/gi, ' data-attr=')
     // Disallow javascript: URLs
-    .replace(/javascript:/gi, '');
+    .replace(/javascript:/gi, '')
+    // Forbid dangerous container elements outright (conservative)
+    .replace(/<\s*(iframe|object|embed|math|link|meta|base)\b[\s\S]*?>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    // Remove standalone self-closing forms too
+    .replace(/<\s*(iframe|object|embed|math|link|meta|base)\b[\s\S]*?\/?>/gi, '')
+    // Block SVG foreignObject content, keep empty svg wrapper
+    .replace(/<\s*svg[\s\S]*?<\s*foreignObject[\s\S]*?<\s*\/\s*svg\s*>/gi, '<svg></svg>')
+    // Allowlist URL-bearing attributes; neutralize disallowed schemes
+    .replace(/\s(href|src|action)\s*=\s*(["'])\s*([^"'>\s]+)\2/gi, (_m, attr, quote, url) => {
+      try {
+        const u = String(url).trim();
+        const lower = u.toLowerCase();
+        const ok = lower.startsWith('https:')
+          || lower.startsWith('http:')
+          || lower.startsWith('data:image/');
+        return ok ? ` ${attr}=${quote}${u}${quote}` : ` ${attr}=${quote}#${quote}`;
+      } catch {
+        return ` ${attr}=${quote}#${quote}`;
+      }
+    });
 
 export const isTouchDevice = () =>
   typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);

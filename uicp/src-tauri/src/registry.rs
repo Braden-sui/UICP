@@ -35,7 +35,9 @@ pub struct ModuleRef {
 
 fn resolve_modules_dir(app: &AppHandle) -> PathBuf {
     // Allow override via env for dev; else, place near app data dir under \"modules\".
-    if let Ok(dir) = std::env::var("UICP_MODULES_DIR") { return PathBuf::from(dir); }
+    if let Ok(dir) = std::env::var("UICP_MODULES_DIR") {
+        return PathBuf::from(dir);
+    }
     // Fallback: put under the app data dir beside db/logs.
     let state: tauri::State<'_, crate::AppState> = app.state();
     let mut dir = state.db_path.clone();
@@ -45,7 +47,9 @@ fn resolve_modules_dir(app: &AppHandle) -> PathBuf {
 }
 
 /// Public accessor for the resolved modules directory path.
-pub fn modules_dir(app: &AppHandle) -> PathBuf { resolve_modules_dir(app) }
+pub fn modules_dir(app: &AppHandle) -> PathBuf {
+    resolve_modules_dir(app)
+}
 
 /// Best-effort installer that ensures the modules directory exists and contains
 /// files referenced by the manifest. If the user's modules directory is empty
@@ -64,16 +68,14 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
     let _lock = _lock.unwrap();
 
     // Resolve the bundled resources path (tauri bundle resources) if available.
-    let bundled = app
-        .path()
-        .resource_dir()
-        .map(|dir| dir.join("modules"));
+    let bundled = app.path().resource_dir().map(|dir| dir.join("modules"));
 
     // If target manifest is missing but we have a bundled copy, copy all.
     if !manifest_path.exists() {
-        if let Some(src) = &bundled {
+        if let Ok(src) = &bundled {
             if src.join("manifest.json").exists() {
-                fs::create_dir_all(&target).with_context(|| format!("mkdir: {}", target.display()))?;
+                fs::create_dir_all(&target)
+                    .with_context(|| format!("mkdir: {}", target.display()))?;
                 copy_dir_all(src, &target)?;
             }
         }
@@ -87,39 +89,53 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
     let manifest: ModuleManifest = serde_json::from_str(&text).context("parse module manifest")?;
     for entry in manifest.entries {
         let path = target.join(&entry.filename);
-        if path.exists() { continue; }
-        if let Some(src) = &bundled {
+        if path.exists() {
+            continue;
+        }
+        if let Ok(src) = &bundled {
             let candidate = src.join(&entry.filename);
             if candidate.exists() {
                 if let Some(parent) = path.parent() {
-                    if let Err(e) = fs::create_dir_all(parent) { eprintln!("modules mkdir failed: {e}"); }
+                    if let Err(e) = fs::create_dir_all(parent) {
+                        eprintln!("modules mkdir failed: {e}");
+                    }
                 }
                 // Atomic copy-then-rename with digest verification before publish
                 let tmp = path.with_extension("tmp");
                 match fs::copy(&candidate, &tmp) {
-                    Ok(_) => {
-                        match verify_digest(&tmp, &entry.digest_sha256) {
-                            Ok(true) => {
-                                if let Err(e) = fs::rename(&tmp, &path) {
-                                    eprintln!("modules rename failed {} -> {}: {}", tmp.display(), path.display(), e);
-                                    let _ = fs::remove_file(&tmp);
-                                }
-                            }
-                            Ok(false) => {
+                    Ok(_) => match verify_digest(&tmp, &entry.digest_sha256) {
+                        Ok(true) => {
+                            if let Err(e) = fs::rename(&tmp, &path) {
                                 eprintln!(
-                                    "bundled digest mismatch for {} (expected {}, tmp at {})",
-                                    entry.filename, entry.digest_sha256, tmp.display()
+                                    "modules rename failed {} -> {}: {}",
+                                    tmp.display(),
+                                    path.display(),
+                                    e
                                 );
                                 let _ = fs::remove_file(&tmp);
                             }
-                            Err(err) => {
-                                eprintln!("digest verify error for {}: {}", entry.filename, err);
-                                let _ = fs::remove_file(&tmp);
-                            }
                         }
-                    }
+                        Ok(false) => {
+                            eprintln!(
+                                "bundled digest mismatch for {} (expected {}, tmp at {})",
+                                entry.filename,
+                                entry.digest_sha256,
+                                tmp.display()
+                            );
+                            let _ = fs::remove_file(&tmp);
+                        }
+                        Err(err) => {
+                            eprintln!("digest verify error for {}: {}", entry.filename, err);
+                            let _ = fs::remove_file(&tmp);
+                        }
+                    },
                     Err(e) => {
-                        eprintln!("modules copy failed {} -> {}: {}", candidate.display(), tmp.display(), e);
+                        eprintln!(
+                            "modules copy failed {} -> {}: {}",
+                            candidate.display(),
+                            tmp.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -138,7 +154,8 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
         if ty.is_dir() {
             copy_dir_all(&from, &to)?;
         } else if ty.is_file() {
-            fs::copy(&from, &to).with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+            fs::copy(&from, &to)
+                .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
         }
     }
     Ok(())
@@ -150,7 +167,8 @@ pub fn load_manifest(app: &AppHandle) -> Result<ModuleManifest> {
     if !manifest_path.exists() {
         return Ok(ModuleManifest::default());
     }
-    let text = fs::read_to_string(&manifest_path).with_context(|| format!("read manifest: {}", manifest_path.display()))?;
+    let text = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("read manifest: {}", manifest_path.display()))?;
     let manifest: ModuleManifest = serde_json::from_str(&text).context("parse module manifest")?;
     Ok(manifest)
 }
@@ -185,7 +203,9 @@ pub fn verify_digest(path: &Path, expected_hex: &str) -> Result<bool> {
 /// - `entry.signature` may be base64 or hex encoded.
 /// The message that is signed is the raw bytes of the hex-decoded sha256 digest.
 pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Result<bool> {
-    let Some(sig_str) = &entry.signature else { return Ok(false) }; // no signature provided
+    let Some(sig_str) = &entry.signature else {
+        return Ok(false);
+    }; // no signature provided
     if pubkey_bytes.len() != 32 {
         anyhow::bail!("pubkey must be 32 bytes (Ed25519)");
     }
@@ -237,10 +257,10 @@ impl Drop for FileLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest as _, Sha256};
     use std::io::Write;
     use tempfile::NamedTempFile;
-    use sha2::{Digest as _, Sha256};
-    use ed25519_dalek::{SigningKey, Signer};
 
     #[test]
     fn digest_verification_detects_mismatch_and_match() {

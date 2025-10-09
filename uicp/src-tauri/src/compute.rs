@@ -12,23 +12,31 @@ use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::OwnedSemaphorePermit;
 
-use crate::{ComputeFinalErr, ComputeJobSpec};
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
+use crate::{ComputeFinalErr, ComputeJobSpec};
 
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
     use std::path::PathBuf;
-    use wasmtime::{component::{Linker, Component, TypedFunc, ResourceTable}, Config, Engine, StoreLimits, StoreLimitsBuilder};
-    use wasmtime_wasi::preview2::{WasiCtx, WasiCtxBuilder, WasiView, Dir, DirPerms, FilePerms, ambient_authority};
-    use wasmtime_wasi::preview2::bindings;
-    #[allow(unused_imports)]
-    use wasmtime_wasi::preview2::bindings::io::streams::{HostOutputStream, StreamError};
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use wasmtime::{
+        component::{Component, Linker, ResourceTable, TypedFunc},
+        Config, Engine, StoreLimits, StoreLimitsBuilder,
+    };
+    use wasmtime_wasi::{
+        DirPerms, FilePerms, HostOutputStream, StreamError, WasiCtx, WasiCtxBuilder, WasiView,
+    };
+    use wasmtime_wasi::bindings;
 
     fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
-        let obj = input.as_object().ok_or_else(|| "input must be an object".to_string())?;
+        let obj = input
+            .as_object()
+            .ok_or_else(|| "input must be an object".to_string())?;
         let source = obj
             .get("source")
             .and_then(|v| v.as_str())
@@ -51,60 +59,112 @@ mod with_runtime {
         }
     }
 
-    fn extract_table_query_input(input: &serde_json::Value) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), String> {
-        let obj = input.as_object().ok_or_else(|| "input must be an object".to_string())?;
+    fn extract_table_query_input(
+        input: &serde_json::Value,
+    ) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), String> {
+        let obj = input
+            .as_object()
+            .ok_or_else(|| "input must be an object".to_string())?;
         // rows: list<list<string>>
-        let rows_val = obj.get("rows").ok_or_else(|| "input.rows required".to_string())?;
-        let rows = rows_val.as_array().ok_or_else(|| "input.rows must be an array".to_string())?
+        let rows_val = obj
+            .get("rows")
+            .ok_or_else(|| "input.rows required".to_string())?;
+        let rows = rows_val
+            .as_array()
+            .ok_or_else(|| "input.rows must be an array".to_string())?
             .iter()
             .map(|row| {
-                let arr = row.as_array().ok_or_else(|| "row must be an array".to_string())?;
-                Ok(arr.iter().map(|cell| cell.as_str().unwrap_or("").to_string()).collect::<Vec<String>>())
+                let arr = row
+                    .as_array()
+                    .ok_or_else(|| "row must be an array".to_string())?;
+                Ok(arr
+                    .iter()
+                    .map(|cell| cell.as_str().unwrap_or("").to_string())
+                    .collect::<Vec<String>>())
             })
             .collect::<Result<Vec<Vec<String>>, String>>()?;
 
         // select: list<u32>
-        let select_val = obj.get("select").ok_or_else(|| "input.select required".to_string())?;
-        let select = select_val.as_array().ok_or_else(|| "input.select must be an array".to_string())?
+        let select_val = obj
+            .get("select")
+            .ok_or_else(|| "input.select required".to_string())?;
+        let select = select_val
+            .as_array()
+            .ok_or_else(|| "input.select must be an array".to_string())?
             .iter()
-            .map(|v| v.as_u64().ok_or_else(|| "select entries must be non-negative integers".to_string()).map(|u| u as u32))
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| "select entries must be non-negative integers".to_string())
+                    .map(|u| u as u32)
+            })
             .collect::<Result<Vec<u32>, String>>()?;
 
         // where_contains: option<record { col: u32, needle: string }>
         let where_opt = if let Some(w) = obj.get("where_contains") {
-            if w.is_null() { None } else {
-                let wobj = w.as_object().ok_or_else(|| "where_contains must be an object".to_string())?;
-                let col = wobj.get("col").and_then(|v| v.as_u64()).ok_or_else(|| "where_contains.col must be u32".to_string())? as u32;
-                let needle = wobj.get("needle").and_then(|v| v.as_str()).ok_or_else(|| "where_contains.needle must be string".to_string())?.to_string();
+            if w.is_null() {
+                None
+            } else {
+                let wobj = w
+                    .as_object()
+                    .ok_or_else(|| "where_contains must be an object".to_string())?;
+                let col = wobj
+                    .get("col")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| "where_contains.col must be u32".to_string())?
+                    as u32;
+                let needle = wobj
+                    .get("needle")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "where_contains.needle must be string".to_string())?
+                    .to_string();
                 Some((col, needle))
             }
-        } else { None };
+        } else {
+            None
+        };
 
         Ok((rows, select, where_opt))
     }
 
     fn validate_rows_value(val: &serde_json::Value) -> bool {
-        let arr = match val.as_array() { Some(a) => a, None => return false };
+        let arr = match val.as_array() {
+            Some(a) => a,
+            None => return false,
+        };
         for row in arr.iter() {
-            let r = match row.as_array() { Some(r) => r, None => return false };
+            let r = match row.as_array() {
+                Some(r) => r,
+                None => return false,
+            };
             for cell in r.iter() {
-                if !cell.is_string() { return false; }
+                if !cell.is_string() {
+                    return false;
+                }
             }
         }
         true
     }
 
     /// Resolve csv.parse source string, enforcing workspace policy when using `ws:/files/...`.
-    fn resolve_csv_source(spec: &ComputeJobSpec, source: &str) -> Result<String, (&'static str, String)> {
+    fn resolve_csv_source(
+        spec: &ComputeJobSpec,
+        source: &str,
+    ) -> Result<String, (&'static str, String)> {
         if !source.starts_with("ws:/files/") {
             return Ok(source.to_string());
         }
         if !fs_read_allowed(spec, source) {
-            return Err(("CapabilityDenied", "fs_read does not allow this path".into()));
+            return Err((
+                "CapabilityDenied",
+                "fs_read does not allow this path".into(),
+            ));
         }
         let host_path = sanitize_ws_files_path(source).map_err(|e| ("IO.Denied", e))?;
         match std::fs::read(host_path) {
-            Ok(bytes) => Ok(format!("data:text/csv;base64,{}", BASE64_ENGINE.encode(bytes))),
+            Ok(bytes) => Ok(format!(
+                "data:text/csv;base64,{}",
+                BASE64_ENGINE.encode(bytes)
+            )),
             Err(err) => Err(("IO.Denied", format!("read failed: {err}"))),
         }
     }
@@ -122,9 +182,15 @@ mod with_runtime {
         }
         let mut buf = PathBuf::from(crate::files_dir_path());
         for seg in rel.split('/') {
-            if seg.is_empty() || seg == "." { continue; }
-            if seg == ".." { return Err("parent traversal not allowed".into()); }
-            if seg.contains('\\') { return Err("invalid separator in path".into()); }
+            if seg.is_empty() || seg == "." {
+                continue;
+            }
+            if seg == ".." {
+                return Err("parent traversal not allowed".into());
+            }
+            if seg.contains('\\') {
+                return Err("invalid separator in path".into());
+            }
             buf.push(seg);
         }
         Ok(buf)
@@ -132,13 +198,19 @@ mod with_runtime {
 
     /// Capability check: ensure a ws:/ path is allowed by fs_read caps (supports /** suffix glob).
     fn fs_read_allowed(spec: &ComputeJobSpec, ws_path: &str) -> bool {
-        if spec.capabilities.fs_read.is_empty() { return false; }
+        if spec.capabilities.fs_read.is_empty() {
+            return false;
+        }
         for pat in spec.capabilities.fs_read.iter() {
             let p = pat.as_str();
             if p.ends_with("/**") {
-                let base = &p[..p.len()-3];
-                if ws_path.starts_with(base) { return true; }
-            } else if p == ws_path { return true; }
+                let base = &p[..p.len() - 3];
+                if ws_path.starts_with(base) {
+                    return true;
+                }
+            } else if p == ws_path {
+                return true;
+            }
         }
         false
     }
@@ -165,8 +237,12 @@ mod with_runtime {
     }
 
     impl WasiView for Ctx {
-        fn table(&mut self) -> &mut ResourceTable { &mut self.table }
-        fn ctx(&mut self) -> &mut WasiCtx { &mut self.wasi }
+        fn table(&mut self) -> &mut ResourceTable {
+            &mut self.table
+        }
+        fn ctx(&mut self) -> &mut WasiCtx {
+            &mut self.wasi
+        }
     }
 
     /// Build a Wasmtime engine configured for the Component Model and limits.
@@ -180,7 +256,11 @@ mod with_runtime {
     }
 
     /// Spawn a compute job using Wasmtime with epoch timeout and memory limits configured.
-    pub(super) fn spawn_job(app: AppHandle, spec: ComputeJobSpec, permit: Option<OwnedSemaphorePermit>) -> JoinHandle<()> {
+    pub(super) fn spawn_job(
+        app: AppHandle,
+        spec: ComputeJobSpec,
+        permit: Option<OwnedSemaphorePermit>,
+    ) -> JoinHandle<()> {
         tauri_spawn(async move {
             let _permit = permit;
 
@@ -202,14 +282,12 @@ mod with_runtime {
 
             // Build WASI context with a read-only preopen of the workspace files directory at "/files".
             let mut wasi_builder = WasiCtxBuilder::new();
-            if let Ok(dir) = Dir::open_ambient_dir(crate::files_dir_path(), ambient_authority()) {
-                wasi_builder = wasi_builder.preopened_dir_with_capabilities(
-                    dir,
-                    "/files",
-                    DirPerms::DATA_SYNC | DirPerms::READ | DirPerms::STAT,
-                    FilePerms::READ | FilePerms::STAT,
-                );
-            }
+            wasi_builder = wasi_builder.preopened_dir(
+                crate::files_dir_path(),
+                "/files",
+                DirPerms::DATA_SYNC | DirPerms::READ | DirPerms::STAT,
+                FilePerms::READ | FilePerms::STAT,
+            );
             let wasi = wasi_builder.build();
             let table = ResourceTable::new();
             let mut seed_bytes = [0u8; 32];
@@ -226,23 +304,26 @@ mod with_runtime {
             let timeout_ms = spec.timeout_ms.unwrap_or(30_000);
             let cancel_flag = Arc::new(AtomicBool::new(false));
 
-            let mut store = wasmtime::Store::new(&engine, Ctx {
-                wasi,
-                table,
-                app: app.clone(),
-                job_id: spec.job_id.clone(),
-                task: spec.task.clone(),
-                partial_seq: 0,
-                partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                invalid_partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                cancelled: cancel_flag.clone(),
-                rng_seed: seed_bytes,
-                logical_tick: 0,
-                started: Instant::now(),
-                deadline_ms: (timeout_ms as u32).min(120_000),
-                rng_counter: 0,
-                log_count: 0,
-            });
+            let mut store = wasmtime::Store::new(
+                &engine,
+                Ctx {
+                    wasi,
+                    table,
+                    app: app.clone(),
+                    job_id: spec.job_id.clone(),
+                    task: spec.task.clone(),
+                    partial_seq: 0,
+                    partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    invalid_partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    cancelled: cancel_flag.clone(),
+                    rng_seed: seed_bytes,
+                    logical_tick: 0,
+                    started: Instant::now(),
+                    deadline_ms: (timeout_ms as u32).min(120_000),
+                    rng_counter: 0,
+                    log_count: 0,
+                },
+            );
             if let Some(fuel) = spec.fuel {
                 let _ = store.add_fuel(fuel);
             }
@@ -281,12 +362,28 @@ mod with_runtime {
                     job_id: spec.job_id.clone(),
                     task: spec.task.clone(),
                     code: code.into(),
-                    message: if msg.is_empty() { format!("Failed to link WASI/host: {err}") } else { msg },
+                    message: if msg.is_empty() {
+                        format!("Failed to link WASI/host: {err}")
+                    } else {
+                        msg
+                    },
                 };
                 let _ = app.emit("compute.result.final", payload.clone());
                 if spec.replayable && spec.cache == "readwrite" {
-                    let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
-                    let _ = crate::compute_cache::store(&app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &serde_json::to_value(&payload).unwrap()).await;
+                    let key = crate::compute_cache::compute_key(
+                        &spec.task,
+                        &spec.input,
+                        &spec.provenance.env_hash,
+                    );
+                    let _ = crate::compute_cache::store(
+                        &app,
+                        &spec.workspace_id,
+                        &key,
+                        &spec.task,
+                        &spec.provenance.env_hash,
+                        &serde_json::to_value(&payload).unwrap(),
+                    )
+                    .await;
                 }
                 crate::remove_compute_job(&app, &spec.job_id).await;
                 return;
@@ -295,7 +392,11 @@ mod with_runtime {
             let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
             {
                 let state: tauri::State<'_, crate::AppState> = app.state();
-                state.compute_cancel.write().await.insert(spec.job_id.clone(), tx_cancel);
+                state
+                    .compute_cancel
+                    .write()
+                    .await
+                    .insert(spec.job_id.clone(), tx_cancel);
             }
             let cancel_flag_for_task = cancel_flag.clone();
             tauri_spawn(async move {
@@ -306,7 +407,14 @@ mod with_runtime {
             let module_ref = match registry::find_module(&app, &spec.task) {
                 Ok(Some(m)) => m,
                 _ => {
-                    finalize_error(&app, &spec, "Task.NotFound", "Module not registered", Instant::now()).await;
+                    finalize_error(
+                        &app,
+                        &spec,
+                        "Task.NotFound",
+                        "Module not registered",
+                        Instant::now(),
+                    )
+                    .await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -314,9 +422,18 @@ mod with_runtime {
                 }
             };
 
-            let digest_ok = registry::verify_digest(&module_ref.path, &module_ref.entry.digest_sha256).unwrap_or(false);
+            let digest_ok =
+                registry::verify_digest(&module_ref.path, &module_ref.entry.digest_sha256)
+                    .unwrap_or(false);
             if !digest_ok {
-                finalize_error(&app, &spec, "Task.NotFound", "Module digest mismatch", Instant::now()).await;
+                finalize_error(
+                    &app,
+                    &spec,
+                    "Task.NotFound",
+                    "Module digest mismatch",
+                    Instant::now(),
+                )
+                .await;
                 let state: tauri::State<'_, crate::AppState> = app.state();
                 state.compute_cancel.write().await.remove(&spec.job_id);
                 crate::remove_compute_job(&app, &spec.job_id).await;
@@ -331,7 +448,14 @@ mod with_runtime {
                     .or_else(|_| hex::decode(&pk_str))
                     .unwrap_or_default();
                 let enforce_fail = |message: String| async {
-                    finalize_error(&app, &spec, "Module.SignatureInvalid", &message, Instant::now()).await;
+                    finalize_error(
+                        &app,
+                        &spec,
+                        "Module.SignatureInvalid",
+                        &message,
+                        Instant::now(),
+                    )
+                    .await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -343,11 +467,14 @@ mod with_runtime {
                 match crate::registry::verify_entry_signature(&module_ref.entry, &pk_bytes) {
                     Ok(true) => {}
                     Ok(false) => {
-                        enforce_fail("Module signature did not verify against configured public key".into()).await;
+                        enforce_fail(
+                            "Module signature did not verify against configured public key".into(),
+                        )
+                        .await;
                         return;
                     }
                     Err(err) => {
-                        enforce_fail(format!("Signature verification error: {err}")) .await;
+                        enforce_fail(format!("Signature verification error: {err}")).await;
                         return;
                     }
                 }
@@ -357,7 +484,11 @@ mod with_runtime {
                 Ok(comp) => comp,
                 Err(err) => {
                     let (code, msg) = map_trap_error(&err);
-                    let message = if msg.is_empty() { format!("Failed to load component: {err}") } else { msg };
+                    let message = if msg.is_empty() {
+                        format!("Failed to load component: {err}")
+                    } else {
+                        msg
+                    };
                     finalize_error(&app, &spec, code, &message, Instant::now()).await;
                     cleanup_job(&app, &spec.job_id).await;
                     return;
@@ -368,7 +499,11 @@ mod with_runtime {
                 Ok(instance) => instance,
                 Err(err) => {
                     let (code, msg) = map_trap_error(&err);
-                    let message = if msg.is_empty() { format!("Failed to instantiate: {err}") } else { msg };
+                    let message = if msg.is_empty() {
+                        format!("Failed to instantiate: {err}")
+                    } else {
+                        msg
+                    };
                     finalize_error(&app, &spec, code, &message, Instant::now()).await;
                     cleanup_job(&app, &spec.job_id).await;
                     return;
@@ -392,20 +527,31 @@ mod with_runtime {
                         return;
                     }
                 };
-                match instance.get_typed_func::<(String, (String, bool)), Result<Vec<Vec<String>>, String>>(&mut store, "task#run") {
+                match instance
+                    .get_typed_func::<(String, (String, bool)), Result<Vec<Vec<String>>, String>>(
+                        &mut store, "task#run",
+                    ) {
                     Err(err) => {
                         if is_typed_only() {
                             let message = format!("Typed export not found: {err}");
-                            finalize_error(&app, &spec, "Task.NotFound", &message, Instant::now()).await;
+                            finalize_error(&app, &spec, "Task.NotFound", &message, Instant::now())
+                                .await;
                             cleanup_job(&app, &spec.job_id).await;
                             return;
                         }
                     }
                     Ok(run_typed) => {
-                        match run_typed.call(&mut store, (spec.job_id.clone(), (resolved_source, has_header))) {
+                        match run_typed.call(
+                            &mut store,
+                            (spec.job_id.clone(), (resolved_source, has_header)),
+                        ) {
                             Err(err) => {
                                 let (code, msg) = map_trap_error(&err);
-                                let message = if msg.is_empty() { format!("Invocation failed: {err}") } else { msg };
+                                let message = if msg.is_empty() {
+                                    format!("Invocation failed: {err}")
+                                } else {
+                                    msg
+                                };
                                 finalize_error(&app, &spec, code, &message, Instant::now()).await;
                                 cleanup_job(&app, &spec.job_id).await;
                                 return;
@@ -413,12 +559,25 @@ mod with_runtime {
                             Ok(result) => match result {
                                 Ok(rows) => {
                                     let metrics = collect_metrics(&mut store);
-                                    finalize_ok_with_metrics(&app, &spec, serde_json::json!(rows), metrics).await;
+                                    finalize_ok_with_metrics(
+                                        &app,
+                                        &spec,
+                                        serde_json::json!(rows),
+                                        metrics,
+                                    )
+                                    .await;
                                     cleanup_job(&app, &spec.job_id).await;
                                     return;
                                 }
                                 Err(e_str) => {
-                                    finalize_error(&app, &spec, "Runtime.Fault", &e_str, Instant::now()).await;
+                                    finalize_error(
+                                        &app,
+                                        &spec,
+                                        "Runtime.Fault",
+                                        &e_str,
+                                        Instant::now(),
+                                    )
+                                    .await;
                                     cleanup_job(&app, &spec.job_id).await;
                                     return;
                                 }
@@ -474,15 +633,25 @@ mod with_runtime {
             }
 
             if is_typed_only() {
-                finalize_error(&app, &spec, "Task.NotFound", "Typed-only mode: generic run disabled", Instant::now()).await;
+                finalize_error(
+                    &app,
+                    &spec,
+                    "Task.NotFound",
+                    "Typed-only mode: generic run disabled",
+                    Instant::now(),
+                )
+                .await;
                 cleanup_job(&app, &spec.job_id).await;
                 return;
             }
 
-            let run_generic = match instance.get_typed_func::<(String, String), Result<String, String>>(&mut store, "run") {
+            let run_generic = match instance
+                .get_typed_func::<(String, String), Result<String, String>>(&mut store, "run")
+            {
                 Ok(func) => func,
                 Err(err) => {
-                    let message = format!("run() export not available or signature mismatch: {err}");
+                    let message =
+                        format!("run() export not available or signature mismatch: {err}");
                     finalize_error(&app, &spec, "Task.NotFound", &message, Instant::now()).await;
                     cleanup_job(&app, &spec.job_id).await;
                     return;
@@ -492,7 +661,14 @@ mod with_runtime {
             let input_json = match serde_json::to_string(&spec.input) {
                 Ok(json) => json,
                 Err(e) => {
-                    finalize_error(&app, &spec, "Input.Invalid", &format!("Invalid input: {e}"), Instant::now()).await;
+                    finalize_error(
+                        &app,
+                        &spec,
+                        "Input.Invalid",
+                        &format!("Invalid input: {e}"),
+                        Instant::now(),
+                    )
+                    .await;
                     cleanup_job(&app, &spec.job_id).await;
                     return;
                 }
@@ -501,7 +677,11 @@ mod with_runtime {
             match run_generic.call(&mut store, (spec.job_id.clone(), input_json)) {
                 Err(err) => {
                     let (code, msg) = map_trap_error(&err);
-                    let message = if msg.is_empty() { format!("Invocation failed: {err}") } else { msg };
+                    let message = if msg.is_empty() {
+                        format!("Invocation failed: {err}")
+                    } else {
+                        msg
+                    };
                     finalize_error(&app, &spec, code, &message, Instant::now()).await;
                     cleanup_job(&app, &spec.job_id).await;
                     return;
@@ -511,9 +691,18 @@ mod with_runtime {
                         let mut metrics = collect_metrics(&mut store);
                         match serde_json::from_str::<serde_json::Value>(&ok_json) {
                             Ok(val) => {
-                                if spec.task.starts_with("csv.parse@") || spec.task.starts_with("table.query@") {
+                                if spec.task.starts_with("csv.parse@")
+                                    || spec.task.starts_with("table.query@")
+                                {
                                     if !validate_rows_value(&val) {
-                                        finalize_error(&app, &spec, "Input.Invalid", "Typed output validation failed", Instant::now()).await;
+                                        finalize_error(
+                                            &app,
+                                            &spec,
+                                            "Input.Invalid",
+                                            "Typed output validation failed",
+                                            Instant::now(),
+                                        )
+                                        .await;
                                         cleanup_job(&app, &spec.job_id).await;
                                         return;
                                     }
@@ -523,7 +712,14 @@ mod with_runtime {
                                 return;
                             }
                             Err(e) => {
-                                finalize_error(&app, &spec, "Input.Invalid", &format!("Output parse error: {e}"), Instant::now()).await;
+                                finalize_error(
+                                    &app,
+                                    &spec,
+                                    "Input.Invalid",
+                                    &format!("Output parse error: {e}"),
+                                    Instant::now(),
+                                )
+                                .await;
                                 cleanup_job(&app, &spec.job_id).await;
                                 return;
                             }
@@ -536,7 +732,6 @@ mod with_runtime {
                     }
                 },
             }
-
         })
     }
 
@@ -555,9 +750,22 @@ mod with_runtime {
             |mut caller: wasmtime::StoreContextMut<'_, Ctx>, level: u32, msg: &str| {
                 const MAX_LEN: usize = 4096;
                 const MAX_COUNT: u32 = 200;
-                if caller.data().log_count >= MAX_COUNT { return; }
-                let truncated = if msg.len() > MAX_LEN { &msg[..MAX_LEN] } else { msg };
-                let lvl = match level { 0 => "trace", 1 => "debug", 2 => "info", 3 => "warn", 4 => "error", _ => "info" };
+                if caller.data().log_count >= MAX_COUNT {
+                    return;
+                }
+                let truncated = if msg.len() > MAX_LEN {
+                    &msg[..MAX_LEN]
+                } else {
+                    msg
+                };
+                let lvl = match level {
+                    0 => "trace",
+                    1 => "debug",
+                    2 => "info",
+                    3 => "warn",
+                    4 => "error",
+                    _ => "info",
+                };
                 let payload = serde_json::json!({
                     "jobId": caller.data().job_id,
                     "task": caller.data().task,
@@ -588,7 +796,9 @@ mod with_runtime {
         linker.func_wrap(
             "uicp:host/control",
             "deadline-ms",
-            |caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> u32 { caller.data().deadline_ms },
+            |caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> u32 {
+                caller.data().deadline_ms
+            },
         )?;
 
         // uicp:host/control.remaining-ms(job-id) -> u32
@@ -598,7 +808,11 @@ mod with_runtime {
             |caller: wasmtime::StoreContextMut<'_, Ctx>, _job: &str| -> u32 {
                 let elapsed = caller.data().started.elapsed().as_millis() as u64;
                 let d = caller.data().deadline_ms as i64 - elapsed as i64;
-                if d <= 0 { 0 } else { d as u32 }
+                if d <= 0 {
+                    0
+                } else {
+                    d as u32
+                }
             },
         )?;
 
@@ -619,27 +833,37 @@ mod with_runtime {
                 }
 
                 impl HostOutputStream for PartialSink {
-                    fn write(&mut self, buf: bytes::Bytes) -> anyhow::Result<Result<usize, StreamError>> {
-                        let chunk = buf.as_ref();
+                    fn write(&mut self, bytes: bytes::Bytes) -> wasmtime_wasi::StreamResult<()> {
+                        let chunk = bytes.as_ref();
                         // Enforce frame size cap 64KiB (truncate beyond); drop frames beyond max count
-                        if chunk.is_empty() { return Ok(Ok(0)); }
+                        if chunk.is_empty() { return Ok(Ok(())); }
                         // Drop frames after 1000 to avoid unbounded streams (policy)
                         if self.seq >= 1000 {
                             // Accept as written (no trap), but do not emit.
-                            return Ok(Ok(chunk.len().min(65536)));
+                            return Ok(Ok(()));
                         }
-                        if chunk.len() > 65536 { return Ok(Ok(65536)); }
+                        if chunk.len() > 65536 { return Ok(Ok(())); }
                         // Validate CBOR envelope (best effort). Expect map with integer keys 1,2,3 minimally present.
                         let mut valid = false;
-                        if let Ok(val) = ciborium::de::from_reader::<ciborium::value::Value, _>(std::io::Cursor::new(chunk)) {
+                        if let Ok(val) = ciborium::de::from_reader::<ciborium::value::Value, _>(
+                            std::io::Cursor::new(chunk),
+                        ) {
                             if let ciborium::value::Value::Map(entries) = val {
-                                let mut have_t = false; let mut have_s = false; let mut have_ts = false;
+                                let mut have_t = false;
+                                let mut have_s = false;
+                                let mut have_ts = false;
                                 for (k, _v) in &entries {
                                     if let ciborium::value::Value::Integer(i) = k {
                                         let x = i128::from(*i);
-                                        if x == 1 { have_t = true; }
-                                        if x == 2 { have_s = true; }
-                                        if x == 3 { have_ts = true; }
+                                        if x == 1 {
+                                            have_t = true;
+                                        }
+                                        if x == 2 {
+                                            have_s = true;
+                                        }
+                                        if x == 3 {
+                                            have_ts = true;
+                                        }
                                     }
                                 }
                                 valid = have_t && have_s && have_ts;
@@ -647,7 +871,8 @@ mod with_runtime {
                         }
                         if !valid {
                             // Drop invalid frames; emit a host log entry for observability and count
-                            self.invalid_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            self.invalid_counter
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let _ = self.app.emit(
                                 "compute.host.log",
                                 serde_json::json!({
@@ -657,7 +882,7 @@ mod with_runtime {
                                     "msg": "dropped invalid partial frame (CBOR validation failed)",
                                 }),
                             );
-                            return Ok(Ok(chunk.len()));
+                            return Ok(Ok(()));
                         }
                         // Max frames policy: 1000
                         // Note: we can’t read caller.data() here; track per-sink seq and let host drop after policy if wired.
@@ -669,27 +894,29 @@ mod with_runtime {
                         };
                         let _ = self.app.emit("compute.result.partial", payload);
                         self.seq = self.seq.saturating_add(1);
-                        self.frames_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        Ok(Ok(chunk.len()))
-                    }
-                    fn flush(&mut self) -> anyhow::Result<Result<(), StreamError>> {
+                        self.frames_counter
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         Ok(Ok(()))
                     }
-                    fn check_write(&mut self) -> anyhow::Result<Result<usize, StreamError>> {
+                    fn flush(&mut self) -> wasmtime_wasi::StreamResult<()> { Ok(Ok(())) }
+                    fn check_write(&mut self) -> wasmtime_wasi::StreamResult<usize> {
                         // Offer a reasonable chunk window to the guest
                         Ok(Ok(64 * 1024))
                     }
                 }
 
                 // Push the stream into the table and return its handle.
-                let handle = caller.data_mut().table.push_output_stream(Box::new(PartialSink {
-                    app: caller.data().app.clone(),
-                    job_id: caller.data().job_id.clone(),
-                    task: caller.data().task.clone(),
-                    seq: caller.data().partial_seq,
-                    frames_counter: caller.data().partial_frames.clone(),
-                    invalid_counter: caller.data().invalid_partial_frames.clone(),
-                }))?;
+                let handle = caller
+                    .data_mut()
+                    .table
+                    .push_output_stream(Box::new(PartialSink {
+                        app: caller.data().app.clone(),
+                        job_id: caller.data().job_id.clone(),
+                        task: caller.data().task.clone(),
+                        seq: caller.data().partial_seq,
+                        frames_counter: caller.data().partial_frames.clone(),
+                        invalid_counter: caller.data().invalid_partial_frames.clone(),
+                    }))?;
                 // Return the resource index as u32
                 Ok(handle)
             },
@@ -761,16 +988,26 @@ mod with_runtime {
         }
 
         // Timeout signals: epoch/interrupt/deadline
-        if acc.contains("epoch") || acc.contains("deadline") || acc.contains("interrupt") || acc.contains("deadline exceeded") {
+        if acc.contains("epoch")
+            || acc.contains("deadline")
+            || acc.contains("interrupt")
+            || acc.contains("deadline exceeded")
+        {
             return ("Timeout", String::new());
         }
         // CPU fuel exhaustion (if enabled)
-        if acc.contains("fuel") && (acc.contains("exhaust") || acc.contains("consum") || acc.contains("out of")) {
+        if acc.contains("fuel")
+            && (acc.contains("exhaust") || acc.contains("consum") || acc.contains("out of"))
+        {
             return ("Resource.Limit", String::new());
         }
         // Memory / resource limits
         if acc.contains("out of memory")
-            || (acc.contains("memory") && (acc.contains("limit") || acc.contains("exceed") || acc.contains("grow") || acc.contains("oom")))
+            || (acc.contains("memory")
+                && (acc.contains("limit")
+                    || acc.contains("exceed")
+                    || acc.contains("grow")
+                    || acc.contains("oom")))
             || acc.contains("resource limit")
             || acc.contains("limit exceeded")
         {
@@ -789,7 +1026,13 @@ mod with_runtime {
         ("Runtime.Fault", String::new())
     }
 
-    async fn finalize_error(app: &AppHandle, spec: &ComputeJobSpec, code: &str, message: &str, started: Instant) {
+    async fn finalize_error(
+        app: &AppHandle,
+        spec: &ComputeJobSpec,
+        code: &str,
+        message: &str,
+        started: Instant,
+    ) {
         let ms = started.elapsed().as_millis() as i64;
         let payload = crate::ComputeFinalErr {
             ok: false,
@@ -811,16 +1054,33 @@ mod with_runtime {
         );
         let _ = app.emit("compute.result.final", payload.clone());
         if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+            let key = crate::compute_cache::compute_key(
+                &spec.task,
+                &spec.input,
+                &spec.provenance.env_hash,
+            );
             let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), serde_json::json!({ "durationMs": ms }));
             }
-            let _ = crate::compute_cache::store(app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
+            let _ = crate::compute_cache::store(
+                app,
+                &spec.workspace_id,
+                &key,
+                &spec.task,
+                &spec.provenance.env_hash,
+                &obj,
+            )
+            .await;
         }
     }
 
-    async fn finalize_ok(app: &AppHandle, spec: &ComputeJobSpec, output: serde_json::Value, started: Instant) {
+    async fn finalize_ok(
+        app: &AppHandle,
+        spec: &ComputeJobSpec,
+        output: serde_json::Value,
+        started: Instant,
+    ) {
         let ms = started.elapsed().as_millis() as i64;
         let payload = crate::ComputeFinalOk {
             ok: true,
@@ -831,12 +1091,27 @@ mod with_runtime {
         };
         let _ = app.emit("compute.result.final", payload);
         if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+            let key = crate::compute_cache::compute_key(
+                &spec.task,
+                &spec.input,
+                &spec.provenance.env_hash,
+            );
             let mut obj = serde_json::json!({ "ok": true, "jobId": spec.job_id, "task": spec.task, "output": output });
             if let Some(map) = obj.as_object_mut() {
-                map.insert("metrics".into(), serde_json::json!({ "durationMs": ms, "cacheHit": false }));
+                map.insert(
+                    "metrics".into(),
+                    serde_json::json!({ "durationMs": ms, "cacheHit": false }),
+                );
             }
-            let _ = crate::compute_cache::store(app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
+            let _ = crate::compute_cache::store(
+                app,
+                &spec.workspace_id,
+                &key,
+                &spec.task,
+                &spec.provenance.env_hash,
+                &obj,
+            )
+            .await;
         }
     }
 
@@ -864,12 +1139,24 @@ mod with_runtime {
         };
         let _ = app.emit("compute.result.final", payload);
         if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+            let key = crate::compute_cache::compute_key(
+                &spec.task,
+                &spec.input,
+                &spec.provenance.env_hash,
+            );
             let mut obj = serde_json::json!({ "ok": true, "jobId": spec.job_id, "task": spec.task, "output": output });
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), metrics);
             }
-            let _ = crate::compute_cache::store(app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
+            let _ = crate::compute_cache::store(
+                app,
+                &spec.workspace_id,
+                &key,
+                &spec.task,
+                &spec.provenance.env_hash,
+                &obj,
+            )
+            .await;
         }
     }
 
@@ -920,11 +1207,23 @@ mod with_runtime {
                 job_id: "00000000-0000-4000-8000-000000000000".into(),
                 task: "csv.parse@1.2.0".into(),
                 input: serde_json::json!({}),
-                timeout_ms: Some(30_000), fuel: None, mem_limit_mb: None,
-                bind: vec![], cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec { fs_read: vec!["ws:/files/**".into()], fs_write: vec![], net: vec![], long_run: false, mem_high: false },
+                timeout_ms: Some(30_000),
+                fuel: None,
+                mem_limit_mb: None,
+                bind: vec![],
+                cache: "readwrite".into(),
+                capabilities: crate::ComputeCapabilitiesSpec {
+                    fs_read: vec!["ws:/files/**".into()],
+                    fs_write: vec![],
+                    net: vec![],
+                    long_run: false,
+                    mem_high: false,
+                },
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec { env_hash: "dev".into(), agent_trace_id: None },
+                provenance: crate::ComputeProvenanceSpec {
+                    env_hash: "dev".into(),
+                    agent_trace_id: None,
+                },
             };
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
             spec.capabilities.fs_read = vec!["ws:/files/sub/file.txt".into()];
@@ -937,7 +1236,8 @@ mod with_runtime {
             let (code, _msg) = map_trap_error(&anyhow::anyhow!("epoch deadline exceeded"));
             assert_eq!(code, "Timeout");
 
-            let (code, _msg) = map_trap_error(&anyhow::anyhow!("out of memory while growing memory"));
+            let (code, _msg) =
+                map_trap_error(&anyhow::anyhow!("out of memory while growing memory"));
             assert_eq!(code, "Resource.Limit");
 
             let (code, _msg) = map_trap_error(&anyhow::anyhow!("permission denied opening file"));
@@ -950,11 +1250,17 @@ mod with_runtime {
                 job_id: "00000000-0000-4000-8000-000000000000".into(),
                 task: "csv.parse@1.2.0".into(),
                 input: serde_json::json!({}),
-                timeout_ms: Some(30_000), fuel: None, mem_limit_mb: None,
-                bind: vec![], cache: "readwrite".into(),
+                timeout_ms: Some(30_000),
+                fuel: None,
+                mem_limit_mb: None,
+                bind: vec![],
+                cache: "readwrite".into(),
                 capabilities: crate::ComputeCapabilitiesSpec::default(),
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec { env_hash: "dev".into(), agent_trace_id: None },
+                provenance: crate::ComputeProvenanceSpec {
+                    env_hash: "dev".into(),
+                    agent_trace_id: None,
+                },
             };
             let original = "data:text/csv,foo,bar";
             let resolved = resolve_csv_source(&spec, original).expect("passthrough");
@@ -976,11 +1282,20 @@ mod with_runtime {
                 job_id: "00000000-0000-4000-8000-000000000000".into(),
                 task: "csv.parse@1.2.0".into(),
                 input: serde_json::json!({}),
-                timeout_ms: Some(30_000), fuel: None, mem_limit_mb: None,
-                bind: vec![], cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec { fs_read: vec!["ws:/files/**".into()], ..Default::default() },
+                timeout_ms: Some(30_000),
+                fuel: None,
+                mem_limit_mb: None,
+                bind: vec![],
+                cache: "readwrite".into(),
+                capabilities: crate::ComputeCapabilitiesSpec {
+                    fs_read: vec!["ws:/files/**".into()],
+                    ..Default::default()
+                },
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec { env_hash: "dev".into(), agent_trace_id: None },
+                provenance: crate::ComputeProvenanceSpec {
+                    env_hash: "dev".into(),
+                    agent_trace_id: None,
+                },
             };
             let ws_path = "ws:/files/tests/resolve_csv_source.csv";
             let resolved = resolve_csv_source(&spec_ok, ws_path).expect("resolves");
@@ -990,11 +1305,15 @@ mod with_runtime {
             let text = String::from_utf8(decoded).expect("utf8");
             assert!(text.contains("alpha,1"));
 
-            let spec_denied = ComputeJobSpec { capabilities: crate::ComputeCapabilitiesSpec::default(), ..spec_ok.clone() };
+            let spec_denied = ComputeJobSpec {
+                capabilities: crate::ComputeCapabilitiesSpec::default(),
+                ..spec_ok.clone()
+            };
             let err = resolve_csv_source(&spec_denied, ws_path).expect_err("cap denied");
             assert_eq!(err.0, "CapabilityDenied");
 
-            let invalid = resolve_csv_source(&spec_ok, "ws:/files/../secret.csv").expect_err("invalid path");
+            let invalid =
+                resolve_csv_source(&spec_ok, "ws:/files/../secret.csv").expect_err("invalid path");
             assert_eq!(invalid.0, "IO.Denied");
 
             let _ = std::fs::remove_file(&file_path);
@@ -1008,14 +1327,22 @@ mod no_runtime {
     use super::*;
 
     /// Spawn a stub compute job that fails immediately when the Wasm runtime is not compiled in.
-    pub(super) fn spawn_job(app: AppHandle, spec: ComputeJobSpec, permit: Option<OwnedSemaphorePermit>) -> JoinHandle<()> {
+    pub(super) fn spawn_job(
+        app: AppHandle,
+        spec: ComputeJobSpec,
+        permit: Option<OwnedSemaphorePermit>,
+    ) -> JoinHandle<()> {
         tauri_spawn(async move {
             let _permit = permit;
             // Register cancel channel
             let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
             {
                 let state: tauri::State<'_, crate::AppState> = app.state();
-                state.compute_cancel.write().await.insert(spec.job_id.clone(), tx_cancel);
+                state
+                    .compute_cancel
+                    .write()
+                    .await
+                    .insert(spec.job_id.clone(), tx_cancel);
             }
 
             tokio::select! {
@@ -1054,7 +1381,11 @@ mod no_runtime {
 }
 
 /// Public shim that selects the correct implementation.
-pub fn spawn_job(app: AppHandle, spec: ComputeJobSpec, permit: Option<OwnedSemaphorePermit>) -> JoinHandle<()> {
+pub fn spawn_job(
+    app: AppHandle,
+    spec: ComputeJobSpec,
+    permit: Option<OwnedSemaphorePermit>,
+) -> JoinHandle<()> {
     #[cfg(feature = "wasm_compute")]
     {
         with_runtime::spawn_job(app, spec, permit)

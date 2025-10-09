@@ -7,13 +7,17 @@ Key runtime guardrails
 - Models must not emit event APIs or inline JS. Interactivity is declared via `data-command` and `data-state-*` attributes only; the adapter executes these declaratively.
 - Adapter auto-creates a shell window if a batch targets a missing `windowId` for `window.update`, `dom.*`, or `component.render`, and persists the synthetic `window.create` to keep replay consistent.
 - Command replay preserves original creation order (no hoisting). Window closure deletes persisted commands for that window; workspace reset clears all.
+- Streaming requests now enforce per-call deadlines, idempotency keys, and a per-host circuit breaker so Cloud latency or quota blips fail fast with surfaced retry hints instead of hanging the desktop.
+- SQLite connections are opened with `journal_mode=WAL`, `synchronous=NORMAL`, and a 5 s busy timeout to keep concurrent replay/persist operations from starving each other.
 
 ## Quickstart
 
 ```bash
 cd uicp
 npm install
-npm run dev
+npm run dev            # Vite dev server (web)
+# or run the desktop shell with Tauri (recommended during integration)
+npm run tauri:dev
 ```
 
 The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When running standalone, open the Vite dev URL (`http://localhost:5173`).
@@ -23,7 +27,9 @@ Open `http://127.0.0.1:1420`.
 ## Commands
 
 - `npm run dev` – start Vite in development mode
+- `npm run tauri:dev` – start the Tauri desktop shell (proxies to Vite on port 1420)
 - `npm run build` – typecheck + bundle for production
+- `npm run tauri:build` – build the desktop app bundle
 - `npm run lint` – ESLint over `src`
 - `npm run typecheck` – strict TS compile
 - `npm run test` – Vitest unit suite (`tests/unit`)
@@ -62,11 +68,14 @@ Environment Snapshot
 - `src/lib/uicp` - Zod schemas, DOM adapter, per-window FIFO queue with idempotency and txn.cancel, and documentation.
 - `src/lib/mock.ts` – deterministic planner outputs for common prompts.
 
-- Compute plane: Feature-gated Wasm host (see `docs/compute/README.md`). When a task is not suitable for local compute, external APIs remain first-class and are supported via `api.call`.
+- - Compute plane: Feature-gated Wasm host (see `docs/compute/README.md`).
+  - Workspace-scoped cache: `JobSpec.workspaceId` (default `"default"`) scopes cache keys and reads.
+  - Clear Cache: Agent Settings window exposes a "Clear Cache" button (clears the `default` workspace by default).
+  - When a task is not suitable for local compute, external APIs remain first-class via `api.call`.
 
 ## Testing
 
 1. `npm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation.
 2. `npm run test:e2e` drives the notepad flow end-to-end in Playwright. The config builds with `VITE_MOCK_MODE=true` and starts preview automatically. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
 
-CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests, e2e, and build on every push/PR.
+CI (`.github/workflows/ci.yml`) now pins every action to a specific commit and runs lint, typecheck, unit tests, (optional) e2e, build, CycloneDX SBOM generation, Trivy vulnerability scans, Gitleaks secret detection, plus a dedicated Rust suite. Dependabot watches GitHub Actions, npm, and Cargo lockfiles weekly.

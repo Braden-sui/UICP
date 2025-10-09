@@ -1,6 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use chrono::Utc;
@@ -8,15 +13,19 @@ use dirs::document_dir;
 use dotenvy::dotenv;
 use keyring::Entry;
 use once_cell::sync::Lazy;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State,
 };
-use tokio::{io::AsyncWriteExt, sync::{RwLock, Semaphore}, time::interval};
-use sha2::{Digest, Sha256};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{RwLock, Semaphore},
+    time::{interval, timeout},
+};
 use tokio_stream::StreamExt;
 
 mod compute;
@@ -40,6 +49,93 @@ pub(crate) fn files_dir_path() -> &'static std::path::Path {
     &*FILES_DIR
 }
 
+#[derive(Default)]
+struct CircuitState {
+    consecutive_failures: u8,
+    opened_until: Option<Instant>,
+}
+
+pub(crate) fn configure_sqlite(conn: &Connection) -> anyhow::Result<()> {
+    conn.busy_timeout(Duration::from_millis(5_000))
+        .context("sqlite busy_timeout 5s")?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .context("sqlite journal_mode=WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .context("sqlite synchronous=NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .context("sqlite foreign_keys=ON")?;
+    Ok(())
+}
+
+async fn circuit_is_open(
+    circuits: &Arc<RwLock<HashMap<String, CircuitState>>>,
+    host: &str,
+) -> Option<Instant> {
+    let mut guard = circuits.write().await;
+    if let Some(state) = guard.get_mut(host) {
+        if let Some(until) = state.opened_until {
+            if Instant::now() < until {
+                return Some(until);
+            }
+            // Circuit expired; allow a half-open attempt.
+            state.opened_until = None;
+            state.consecutive_failures = 0;
+        }
+    }
+    None
+}
+
+async fn circuit_record_success(circuits: &Arc<RwLock<HashMap<String, CircuitState>>>, host: &str) {
+    let mut guard = circuits.write().await;
+    let entry = guard.entry(host.to_string()).or_default();
+    entry.consecutive_failures = 0;
+    entry.opened_until = None;
+}
+
+async fn circuit_record_failure(
+    circuits: &Arc<RwLock<HashMap<String, CircuitState>>>,
+    host: &str,
+    open_after: u8,
+    open_for: Duration,
+) -> Option<Instant> {
+    let mut guard = circuits.write().await;
+    let entry = guard.entry(host.to_string()).or_default();
+    entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+    if entry.consecutive_failures >= open_after {
+        let until = Instant::now() + open_for;
+        entry.opened_until = Some(until);
+        Some(until)
+    } else {
+        None
+    }
+}
+
+fn emit_problem_detail(
+    app_handle: &tauri::AppHandle,
+    request_id: &str,
+    status: u16,
+    code: &str,
+    detail: &str,
+    retry_after_ms: Option<u64>,
+) {
+    let mut error = serde_json::json!({
+        "status": status,
+        "code": code,
+        "detail": detail,
+        "requestId": request_id,
+    });
+    if let Some(ms) = retry_after_ms {
+        if let Some(obj) = error.as_object_mut() {
+            obj.insert("retryAfterMs".into(), serde_json::json!(ms));
+        }
+    }
+    emit_or_log(
+        app_handle,
+        "ollama-completion",
+        serde_json::json!({ "done": true, "error": error }),
+    );
+}
+
 pub struct AppState {
     db_path: PathBuf,
     last_save_ok: RwLock<bool>,
@@ -53,6 +149,7 @@ pub struct AppState {
     compute_cancel: RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>,
     safe_mode: RwLock<bool>,
     safe_reason: RwLock<Option<String>>,
+    circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -95,6 +192,8 @@ struct ComputeCapabilitiesSpec {
     long_run: bool,
     #[serde(default)]
     mem_high: bool,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ComputeProvenanceSpec {
@@ -113,20 +212,26 @@ struct ComputeJobSpec {
     mem_limit_mb: Option<u64>,
     #[serde(default)]
     bind: Vec<ComputeBindSpec>,
-    #[serde(default = "default_cache_mode")] 
+    #[serde(default = "default_cache_mode")]
     cache: String,
     #[serde(default)]
     capabilities: ComputeCapabilitiesSpec,
-    #[serde(default = "default_replayable")] 
+    #[serde(default = "default_replayable")]
     replayable: bool,
-    #[serde(default = "default_workspace_id")] 
+    #[serde(default = "default_workspace_id")]
     workspace_id: String,
     provenance: ComputeProvenanceSpec,
 }
 
-fn default_cache_mode() -> String { "readwrite".into() }
-fn default_replayable() -> bool { true }
-fn default_workspace_id() -> String { "default".into() }
+fn default_cache_mode() -> String {
+    "readwrite".into()
+}
+fn default_replayable() -> bool {
+    true
+}
+fn default_workspace_id() -> String {
+    "default".into()
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -265,12 +370,19 @@ async fn compute_call(
     let cache_mode = spec.cache.clone();
     if cache_mode == "readwrite" || cache_mode == "readOnly" {
         let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
-        if let Ok(Some(mut cached)) = compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await {
+        if let Ok(Some(mut cached)) =
+            compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
+        {
             // Mark cache hit in metrics if possible
             if let Some(obj) = cached.as_object_mut() {
-                let metrics = obj.entry("metrics").or_insert_with(|| serde_json::json!({}));
+                let metrics = obj
+                    .entry("metrics")
+                    .or_insert_with(|| serde_json::json!({}));
                 if metrics.is_object() {
-                    metrics.as_object_mut().unwrap().insert("cacheHit".into(), serde_json::json!(true));
+                    metrics
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("cacheHit".into(), serde_json::json!(true));
                 } else {
                     *metrics = serde_json::json!({ "cacheHit": true });
                 }
@@ -291,15 +403,28 @@ async fn compute_call(
     }
 
     // Spawn the job via compute host (feature-gated implementation), respecting concurrency cap.
-    let permit = state.compute_sem.clone().acquire_owned().await.map_err(|e| e.to_string())?;
+    let permit = state
+        .compute_sem
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| e.to_string())?;
     let join = compute::spawn_job(app_handle, spec.clone(), Some(permit));
     // Bookkeeping: track the running job so we can cancel/cleanup later.
-    state.compute_ongoing.write().await.insert(spec.job_id.clone(), join);
+    state
+        .compute_ongoing
+        .write()
+        .await
+        .insert(spec.job_id.clone(), join);
     Ok(())
 }
 
 #[tauri::command]
-async fn compute_cancel(state: State<'_, AppState>, job_id: String, window: tauri::Window) -> Result<(), String> {
+async fn compute_cancel(
+    state: State<'_, AppState>,
+    job_id: String,
+    window: tauri::Window,
+) -> Result<(), String> {
     // Emit telemetry: cancel requested
     let app_handle = window.app_handle().clone();
     let _ = app_handle.emit(
@@ -408,7 +533,8 @@ async fn save_api_key(state: State<'_, AppState>, key: String) -> Result<(), Str
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let entry = Entry::new("UICP", "ollama_api_key")
             .map_err(|e| format!("Failed to access keyring: {e}"))?;
-        entry.set_password(&key_clone)
+        entry
+            .set_password(&key_clone)
             .map_err(|e| format!("Failed to store key in keyring: {e}"))?;
         Ok(())
     })
@@ -487,6 +613,7 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite persist command")?;
+        configure_sqlite(&conn).context("configure sqlite persist command")?;
         let now = Utc::now().timestamp();
         let args_json = serde_json::to_string(&cmd.args).context("serialize command args")?;
         conn.execute(
@@ -508,6 +635,7 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
     let db_path = state.db_path.clone();
     let commands = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<CommandRequest>> {
         let conn = Connection::open(db_path).context("open sqlite get commands")?;
+        configure_sqlite(&conn).context("configure sqlite get commands")?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, tool, args_json FROM tool_call
@@ -538,6 +666,7 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite clear commands")?;
+        configure_sqlite(&conn).context("configure sqlite clear commands")?;
         conn.execute(
             "DELETE FROM tool_call WHERE workspace_id = ?1",
             params!["default"],
@@ -559,6 +688,7 @@ async fn delete_window_commands(
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite delete window commands")?;
+        configure_sqlite(&conn).context("configure sqlite delete window commands")?;
         // Delete commands where:
         // 1. tool = "window.create" AND args.id = window_id
         // 2. OR args.windowId = window_id (for dom.*, component.*, etc.)
@@ -585,6 +715,7 @@ async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePay
     let db_path = state.db_path.clone();
     let windows = tokio::task::spawn_blocking(move || {
         let conn = Connection::open(db_path).context("open sqlite load workspace")?;
+        configure_sqlite(&conn).context("configure sqlite load workspace")?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
@@ -640,6 +771,7 @@ async fn save_workspace(
     let db_path = state.db_path.clone();
     let save_res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let mut conn = Connection::open(db_path).context("open sqlite save workspace")?;
+        configure_sqlite(&conn).context("configure sqlite save workspace")?;
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM window WHERE workspace_id = ?1",
@@ -809,7 +941,18 @@ async fn chat_completion(
     let api_key_for_task = api_key_opt.clone();
     let logs_dir = LOGS_DIR.clone();
     let rid_for_task = rid.clone();
-    let stream_flag_for_task = body_payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(true);
+    let stream_flag_for_task = body_payload
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let circuit_breakers = Arc::clone(&state.circuit_breakers);
+    let base_host = Url::parse(&base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()));
+    let handshake_timeout = Duration::from_secs(60);
+    let circuit_open_after = 3u8;
+    let circuit_open_for = Duration::from_secs(15);
+    let user_agent = format!("{}/tauri {}", APP_NAME, env!("CARGO_PKG_VERSION"));
 
     let join: JoinHandle<()> = spawn(async move {
         // best-effort logs dir
@@ -841,7 +984,11 @@ async fn chat_completion(
         };
 
         if debug_on {
-            let url = if use_cloud { format!("{}/api/chat", base_url) } else { format!("{}/chat/completions", base_url) };
+            let url = if use_cloud {
+                format!("{}/api/chat", base_url)
+            } else {
+                format!("{}/chat/completions", base_url)
+            };
             let ev = serde_json::json!({
                 "ts": Utc::now().timestamp_millis(),
                 "event": "request_started",
@@ -855,9 +1002,17 @@ async fn chat_completion(
             tokio::spawn(emit_debug(ev));
 
             // request metadata snapshot (no secrets)
-            let messages_len = body_payload.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+            let messages_len = body_payload
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
             let format_present = body_payload.get("format").is_some();
-            let tools_count = body_payload.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+            let tools_count = body_payload
+                .get("tools")
+                .and_then(|t| t.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
             let meta = serde_json::json!({
                 "ts": Utc::now().timestamp_millis(),
                 "event": "request_body_meta",
@@ -869,18 +1024,55 @@ async fn chat_completion(
             tokio::spawn(append_trace(meta.clone()));
             tokio::spawn(emit_debug(meta));
         }
+        let mut request_body = body_payload;
         let mut attempt_local: u8 = 0;
         let mut fallback_tried: bool = false;
         'outer: loop {
             attempt_local += 1;
-            // Endpoint differs between Cloud and Local
             let url = if use_cloud {
                 format!("{}/api/chat", base_url)
             } else {
                 format!("{}/chat/completions", base_url)
             };
 
-            let mut builder = client.post(url).json(&body_payload);
+            let host_for_attempt = Url::parse(&url)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_string()))
+                .or_else(|| base_host.clone());
+
+            if let Some(host) = host_for_attempt.as_deref() {
+                if let Some(until) = circuit_is_open(&circuit_breakers, host).await {
+                    let wait_ms =
+                        until.saturating_duration_since(Instant::now()).as_millis() as u64;
+                    if debug_on {
+                        let ev = serde_json::json!({
+                            "ts": Utc::now().timestamp_millis(),
+                            "event": "circuit_blocked",
+                            "requestId": rid_for_task,
+                            "host": host,
+                            "retryMs": wait_ms,
+                        });
+                        tokio::spawn(append_trace(ev.clone()));
+                        tokio::spawn(emit_debug(ev));
+                    }
+                    emit_problem_detail(
+                        &app_handle,
+                        &rid_for_task,
+                        503,
+                        "CircuitOpen",
+                        "Remote temporarily unavailable",
+                        Some(wait_ms),
+                    );
+                    break;
+                }
+            }
+
+            let mut builder = client
+                .post(&url)
+                .json(&request_body)
+                .header("X-Request-Id", &rid_for_task)
+                .header("Idempotency-Key", &rid_for_task)
+                .header("User-Agent", user_agent.as_str());
 
             if use_cloud {
                 if let Some(key) = &api_key_for_task {
@@ -888,10 +1080,65 @@ async fn chat_completion(
                 }
             }
 
-            if stream_flag_for_task { builder = builder.header("Accept", "text/event-stream"); }
-            let resp_res = builder.send().await;
+            if stream_flag_for_task {
+                builder = builder.header("Accept", "text/event-stream");
+            }
 
-            match resp_res {
+            let resp_res = timeout(handshake_timeout, builder.send()).await;
+
+            let resp = match resp_res {
+                Err(_) => {
+                    if debug_on {
+                        let ev = serde_json::json!({
+                            "ts": Utc::now().timestamp_millis(),
+                            "event": "request_timeout",
+                            "requestId": rid_for_task,
+                            "elapsedMs": handshake_timeout.as_millis() as u64,
+                        });
+                        tokio::spawn(append_trace(ev.clone()));
+                        tokio::spawn(emit_debug(ev));
+                    }
+                    if let Some(host) = host_for_attempt.as_deref() {
+                        if let Some(until) = circuit_record_failure(
+                            &circuit_breakers,
+                            host,
+                            circuit_open_after,
+                            circuit_open_for,
+                        )
+                        .await
+                        {
+                            if debug_on {
+                                let ev = serde_json::json!({
+                                    "ts": Utc::now().timestamp_millis(),
+                                    "event": "circuit_opened",
+                                    "requestId": rid_for_task,
+                                    "host": host,
+                                    "retryMs": until.saturating_duration_since(Instant::now()).as_millis() as u64,
+                                });
+                                tokio::spawn(append_trace(ev.clone()));
+                                tokio::spawn(emit_debug(ev));
+                            }
+                        }
+                    }
+                    if attempt_local < max_attempts {
+                        let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
+                        tokio::time::sleep(Duration::from_millis(backoff_ms.min(5_000))).await;
+                        continue 'outer;
+                    }
+                    emit_problem_detail(
+                        &app_handle,
+                        &rid_for_task,
+                        408,
+                        "RequestTimeout",
+                        "Upstream handshake timed out",
+                        None,
+                    );
+                    break;
+                }
+                Ok(res) => res,
+            };
+
+            match resp {
                 Err(err) => {
                     if debug_on {
                         let ev = serde_json::json!({
@@ -904,16 +1151,41 @@ async fn chat_completion(
                         tokio::spawn(append_trace(ev.clone()));
                         tokio::spawn(emit_debug(ev));
                     }
+                    if let Some(host) = host_for_attempt.as_deref() {
+                        if let Some(until) = circuit_record_failure(
+                            &circuit_breakers,
+                            host,
+                            circuit_open_after,
+                            circuit_open_for,
+                        )
+                        .await
+                        {
+                            if debug_on {
+                                let ev = serde_json::json!({
+                                    "ts": Utc::now().timestamp_millis(),
+                                    "event": "circuit_opened",
+                                    "requestId": rid_for_task,
+                                    "host": host,
+                                    "retryMs": until.saturating_duration_since(Instant::now()).as_millis() as u64,
+                                });
+                                tokio::spawn(append_trace(ev.clone()));
+                                tokio::spawn(emit_debug(ev));
+                            }
+                        }
+                    }
                     let transient = err.is_timeout() || err.is_connect();
                     if transient && attempt_local < max_attempts {
                         let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
-                        tokio::time::sleep(Duration::from_millis(backoff_ms.min(3_000))).await;
+                        tokio::time::sleep(Duration::from_millis(backoff_ms.min(5_000))).await;
                         continue 'outer;
                     }
-                    emit_or_log(
+                    emit_problem_detail(
                         &app_handle,
-                        "ollama-completion",
-                        serde_json::json!({ "done": true }),
+                        &rid_for_task,
+                        503,
+                        "TransportError",
+                        &err.to_string(),
+                        None,
                     );
                     break;
                 }
@@ -929,45 +1201,79 @@ async fn chat_completion(
                         tokio::spawn(append_trace(ev.clone()));
                         tokio::spawn(emit_debug(ev));
                     }
-            if !status.is_success() {
-                if (status.as_u16() == 429 || status.as_u16() == 503)
-                    && attempt_local < max_attempts
-                {
-                            let retry_after_ms = resp
-                                .headers()
-                                .get("retry-after")
-                                .and_then(|h| h.to_str().ok())
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .map(|secs| secs.saturating_mul(1000))
-                                .unwrap_or_else(|| {
-                                    200u64.saturating_mul(1u64 << (attempt_local as u32))
-                                });
-                            tokio::time::sleep(Duration::from_millis(retry_after_ms.min(5_000)))
-                                .await;
-                            continue 'outer;
-                        }
-                        emit_or_log(
-                            &app_handle,
-                            "ollama-completion",
-                            serde_json::json!({ "done": true }),
-                        );
-                        if debug_on {
-                            if let Ok(text) = resp.text().await {
+                    if !status.is_success() {
+                        let retry_after_ms = resp
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|raw| raw.parse::<u64>().ok())
+                            .map(|secs| secs.saturating_mul(1_000));
+
+                        if let Some(host) = host_for_attempt.as_deref() {
+                            let opened = circuit_record_failure(
+                                &circuit_breakers,
+                                host,
+                                circuit_open_after,
+                                circuit_open_for,
+                            )
+                            .await;
+                            if debug_on {
                                 let ev = serde_json::json!({
                                     "ts": Utc::now().timestamp_millis(),
-                                    "event": "response_error_body",
+                                    "event": "response_failure",
                                     "requestId": rid_for_task,
-                                    "body": text,
+                                    "status": status.as_u16(),
+                                    "host": host,
+                                    "retryMs": retry_after_ms,
                                 });
                                 tokio::spawn(append_trace(ev.clone()));
                                 tokio::spawn(emit_debug(ev));
                             }
+                            if let Some(until) = opened {
+                                if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "circuit_opened",
+                                        "requestId": rid_for_task,
+                                        "host": host,
+                                        "retryMs": until.saturating_duration_since(Instant::now()).as_millis() as u64,
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
+                            }
                         }
-                        // Optional Cloud fallback only when explicitly configured via env FALLBACK_CLOUD_MODEL
+
+                        let should_retry = (status.as_u16() == 429 || status.as_u16() == 503)
+                            && attempt_local < max_attempts;
+                        if should_retry {
+                            let fallback_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
+                            let wait_ms = retry_after_ms.unwrap_or(fallback_ms).min(10_000);
+                            if debug_on {
+                                let ev = serde_json::json!({
+                                    "ts": Utc::now().timestamp_millis(),
+                                    "event": "retry_backoff",
+                                    "requestId": rid_for_task,
+                                    "waitMs": wait_ms,
+                                });
+                                tokio::spawn(append_trace(ev.clone()));
+                                tokio::spawn(emit_debug(ev));
+                            }
+                            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                            continue 'outer;
+                        }
+
                         if use_cloud && !fallback_tried {
-                            if let Some(orig_model) = body_payload.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()) {
-                                if let Ok(fallback_model) = std::env::var("FALLBACK_CLOUD_MODEL") {
-                                    if !fallback_model.is_empty() && fallback_model != orig_model {
+                            if let Some(orig_model) = request_body
+                                .get("model")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                            {
+                                match std::env::var("FALLBACK_CLOUD_MODEL") {
+                                    Ok(fallback_model)
+                                        if !fallback_model.is_empty()
+                                            && fallback_model != orig_model =>
+                                    {
                                         if debug_on {
                                             let ev = serde_json::json!({
                                                 "ts": Utc::now().timestamp_millis(),
@@ -979,39 +1285,68 @@ async fn chat_completion(
                                             tokio::spawn(append_trace(ev.clone()));
                                             tokio::spawn(emit_debug(ev));
                                         }
-                                        body["model"] = serde_json::json!(fallback_model);
+                                        request_body["model"] = serde_json::json!(fallback_model);
                                         fallback_tried = true;
                                         continue 'outer;
                                     }
-                                } else if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "no_fallback_configured",
-                                        "requestId": rid_for_task,
-                                        "from": orig_model,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
+                                    Err(_) if debug_on => {
+                                        let ev = serde_json::json!({
+                                            "ts": Utc::now().timestamp_millis(),
+                                            "event": "no_fallback_configured",
+                                            "requestId": rid_for_task,
+                                            "from": orig_model,
+                                        });
+                                        tokio::spawn(append_trace(ev.clone()));
+                                        tokio::spawn(emit_debug(ev));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
+
+                        let detail = match resp.text().await {
+                            Ok(text) if !text.is_empty() => text,
+                            _ => status
+                                .canonical_reason()
+                                .unwrap_or("Upstream failure")
+                                .to_string(),
+                        };
+                        emit_problem_detail(
+                            &app_handle,
+                            &rid_for_task,
+                            status.as_u16(),
+                            "UpstreamFailure",
+                            &detail,
+                            retry_after_ms,
+                        );
                         break;
                     }
 
                     let mut stream = resp.bytes_stream();
+                    let mut stream_failed = false;
                     while let Some(chunk) = stream.next().await {
                         match chunk {
-                            Err(_) => {
+                            Err(err) => {
+                                stream_failed = true;
                                 if debug_on {
                                     let ev = serde_json::json!({
                                         "ts": Utc::now().timestamp_millis(),
                                         "event": "stream_error",
                                         "requestId": rid_for_task,
+                                        "error": err.to_string(),
                                     });
                                     tokio::spawn(append_trace(ev.clone()));
                                     tokio::spawn(emit_debug(ev));
                                 }
-                                break 'outer;
+                                emit_problem_detail(
+                                    &app_handle,
+                                    &rid_for_task,
+                                    502,
+                                    "StreamError",
+                                    "Streaming response terminated unexpectedly",
+                                    None,
+                                );
+                                break;
                             }
                             Ok(bytes) => {
                                 let text = String::from_utf8_lossy(&bytes);
@@ -1021,7 +1356,6 @@ async fn chat_completion(
                                         continue;
                                     }
 
-                                    // Support SSE (data: ...) and JSON Lines
                                     let payload_str = if trimmed.starts_with("data:") {
                                         trimmed.trim_start_matches("data:").trim().to_string()
                                     } else {
@@ -1046,10 +1380,8 @@ async fn chat_completion(
                                         continue;
                                     }
 
-                                    // Try parsing JSON to inspect metadata; we now forward raw chunks so the frontend parser can decide how to interpret harmony / legacy formats.
                                     match serde_json::from_str::<serde_json::Value>(&payload_str) {
                                         Ok(val) => {
-                                            // { done: true }
                                             if val
                                                 .get("done")
                                                 .and_then(|v| v.as_bool())
@@ -1098,7 +1430,6 @@ async fn chat_completion(
                                                 tokio::spawn(append_trace(ev.clone()));
                                                 tokio::spawn(emit_debug(ev));
                                             }
-                                            // Pass through plain text
                                             emit_or_log(
                                                 &app_handle,
                                                 "ollama-completion",
@@ -1109,6 +1440,23 @@ async fn chat_completion(
                                 }
                             }
                         }
+                    }
+
+                    if stream_failed {
+                        if let Some(host) = host_for_attempt.as_deref() {
+                            circuit_record_failure(
+                                &circuit_breakers,
+                                host,
+                                circuit_open_after,
+                                circuit_open_for,
+                            )
+                            .await;
+                        }
+                        break;
+                    }
+
+                    if let Some(host) = host_for_attempt.as_deref() {
+                        circuit_record_success(&circuit_breakers, host).await;
                     }
 
                     if debug_on {
@@ -1138,10 +1486,9 @@ async fn chat_completion(
 fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     std::fs::create_dir_all(&*DATA_DIR).context("create data dir")?;
     let conn = Connection::open(db_path).context("open sqlite")?;
+    configure_sqlite(&conn).context("configure sqlite init")?;
     conn.execute_batch(
         r#"
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS workspace (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -1203,9 +1550,13 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
         Err(err) => return Err(err.into()),
     }
     // Migration: add workspace_id to compute_cache for workspace-scoped cleanup
-    match conn.execute("ALTER TABLE compute_cache ADD COLUMN workspace_id TEXT DEFAULT 'default'", []) {
+    match conn.execute(
+        "ALTER TABLE compute_cache ADD COLUMN workspace_id TEXT DEFAULT 'default'",
+        [],
+    ) {
         Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => {}
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
 
@@ -1214,6 +1565,7 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
 
 fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
     let conn = Connection::open(db_path).context("open sqlite for default workspace")?;
+    configure_sqlite(&conn).context("configure sqlite for default workspace")?;
     let now = Utc::now().timestamp();
     conn.execute(
         "INSERT OR IGNORE INTO workspace (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
@@ -1410,6 +1762,9 @@ fn main() {
         }),
         http: Client::builder()
             // Allow long-lived streaming responses; UI can cancel via cancel_chat.
+            .connect_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Some(Duration::from_secs(30)))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
             .build()
             .expect("Failed to build HTTP client"),
         ongoing: RwLock::new(HashMap::new()),
@@ -1418,6 +1773,7 @@ fn main() {
         compute_cancel: RwLock::new(HashMap::new()),
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),
+        circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
     };
 
     if let Err(err) = init_database(&db_path) {
@@ -1436,12 +1792,17 @@ fn main() {
     tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Ensure base data directories exist
-            if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) { eprintln!("create data dir failed: {e:?}"); }
-            if let Err(e) = std::fs::create_dir_all(&*LOGS_DIR) { eprintln!("create logs dir failed: {e:?}"); }
-            if let Err(e) = std::fs::create_dir_all(&*FILES_DIR) { eprintln!("create files dir failed: {e:?}"); }
+            if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) {
+                eprintln!("create data dir failed: {e:?}");
+            }
+            if let Err(e) = std::fs::create_dir_all(&*LOGS_DIR) {
+                eprintln!("create logs dir failed: {e:?}");
+            }
+            if let Err(e) = std::fs::create_dir_all(&*FILES_DIR) {
+                eprintln!("create files dir failed: {e:?}");
+            }
             // Ensure bundled compute modules are installed into the user modules dir
             if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
                 eprintln!("module install failed: {err:?}");
@@ -1496,13 +1857,15 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
 
     // Optional Ed25519 signature verification public key (32-byte). Accept hex or base64.
-    let pubkey_opt: Option<[u8; 32]> = std::env::var("UICP_MODULES_PUBKEY")
-        .ok()
-        .and_then(|s| {
-            let b64 = base64::decode(&s).ok();
-            let hexed = if b64.is_none() { hex::decode(&s).ok() } else { None };
-            b64.or(hexed).and_then(|v| v.try_into().ok())
-        });
+    let pubkey_opt: Option<[u8; 32]> = std::env::var("UICP_MODULES_PUBKEY").ok().and_then(|s| {
+        let b64 = base64::decode(&s).ok();
+        let hexed = if b64.is_none() {
+            hex::decode(&s).ok()
+        } else {
+            None
+        };
+        b64.or(hexed).and_then(|v| v.try_into().ok())
+    });
 
     let mut failures: Vec<serde_json::Value> = Vec::new();
     for entry in manifest.entries.iter() {
@@ -1684,7 +2047,10 @@ async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<s
     let db_path = state.db_path.clone();
     let status = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         let conn = Connection::open(db_path).context("open sqlite for quick_check")?;
-        let mut stmt = conn.prepare("PRAGMA quick_check").context("prepare quick_check")?;
+        configure_sqlite(&conn).context("configure sqlite for quick_check")?;
+        let mut stmt = conn
+            .prepare("PRAGMA quick_check")
+            .context("prepare quick_check")?;
         let mut rows = stmt.query([]).context("exec quick_check")?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
@@ -1705,13 +2071,20 @@ async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<s
 }
 
 #[tauri::command]
-async fn clear_compute_cache(app: tauri::AppHandle, workspace_id: Option<String>) -> Result<(), String> {
+async fn clear_compute_cache(
+    app: tauri::AppHandle,
+    workspace_id: Option<String>,
+) -> Result<(), String> {
     let ws = workspace_id.unwrap_or_else(|| "default".into());
     let state: State<'_, AppState> = app.state();
     let path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(path).context("open sqlite for clear_compute_cache")?;
-        conn.execute("DELETE FROM compute_cache WHERE workspace_id = ?1", params![ws])?;
+        configure_sqlite(&conn).context("configure sqlite for clear_compute_cache")?;
+        conn.execute(
+            "DELETE FROM compute_cache WHERE workspace_id = ?1",
+            params![ws],
+        )?;
         Ok(())
     })
     .await
@@ -1728,6 +2101,7 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(db_path).context("open sqlite for checkpoint")?;
+        configure_sqlite(&conn).context("configure sqlite for checkpoint")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
             [],
@@ -1745,12 +2119,19 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-async fn determinism_probe(app: tauri::AppHandle, n: u32, recomputed_hash: Option<String>) -> Result<serde_json::Value, String> {
+async fn determinism_probe(
+    app: tauri::AppHandle,
+    n: u32,
+    recomputed_hash: Option<String>,
+) -> Result<serde_json::Value, String> {
     let state: State<'_, AppState> = app.state();
     let db_path = state.db_path.clone();
     let samples = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<String>> {
         let conn = Connection::open(db_path).context("open sqlite for determinism probe")?;
-        let mut stmt = conn.prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1").context("prepare select checkpoints")?;
+        configure_sqlite(&conn).context("configure sqlite for determinism probe")?;
+        let mut stmt = conn
+            .prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")
+            .context("prepare select checkpoints")?;
         let rows = stmt
             .query_map(params![n as i64], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1778,45 +2159,89 @@ async fn determinism_probe(app: tauri::AppHandle, n: u32, recomputed_hash: Optio
 #[tauri::command]
 async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
     let emit = |app: &tauri::AppHandle, action: &str, outcome: &str, payload: serde_json::Value| {
-        let _ = app.emit("replay-issue", serde_json::json!({
-            "event": "recovery_action",
-            "action": action,
-            "outcome": outcome,
-            "details": payload,
-        }));
+        let _ = app.emit(
+            "replay-issue",
+            serde_json::json!({
+                "event": "recovery_action",
+                "action": action,
+                "outcome": outcome,
+                "details": payload,
+            }),
+        );
     };
 
     match kind.as_str() {
         "reindex" => {
-            match reindex_and_integrity(&app).await.map_err(|e| format!("reindex: {e:?}"))? {
+            match reindex_and_integrity(&app)
+                .await
+                .map_err(|e| format!("reindex: {e:?}"))?
+            {
                 true => {
                     emit(&app, "reindex", "ok", serde_json::json!({}));
                     emit_replay_telemetry(&app, "manual_reindex", None, 0).await;
                     Ok(())
                 }
                 false => {
-                    emit(&app, "reindex", "failed", serde_json::json!({ "reason": "integrity_check_failed" }));
-                    emit_replay_telemetry(&app, "manual_reindex_failed", Some("integrity_check_failed"), 0).await;
+                    emit(
+                        &app,
+                        "reindex",
+                        "failed",
+                        serde_json::json!({ "reason": "integrity_check_failed" }),
+                    );
+                    emit_replay_telemetry(
+                        &app,
+                        "manual_reindex_failed",
+                        Some("integrity_check_failed"),
+                        0,
+                    )
+                    .await;
                     Err("Integrity check failed after reindex".into())
                 }
             }
         }
         "compact_log" => {
-            let deleted = compact_log_after_last_checkpoint(&app).await.map_err(|e| format!("compact_log: {e:?}"))?;
-            let ok = reindex_and_integrity(&app).await.map_err(|e| format!("reindex: {e:?}"))?;
+            let deleted = compact_log_after_last_checkpoint(&app)
+                .await
+                .map_err(|e| format!("compact_log: {e:?}"))?;
+            let ok = reindex_and_integrity(&app)
+                .await
+                .map_err(|e| format!("reindex: {e:?}"))?;
             if ok {
-                emit(&app, "compact_log", "ok", serde_json::json!({ "deleted": deleted }));
+                emit(
+                    &app,
+                    "compact_log",
+                    "ok",
+                    serde_json::json!({ "deleted": deleted }),
+                );
                 emit_replay_telemetry(&app, "manual_compact", None, 0).await;
                 Ok(())
             } else {
-                emit(&app, "compact_log", "failed", serde_json::json!({ "deleted": deleted, "reason": "integrity_check_failed" }));
-                emit_replay_telemetry(&app, "manual_compact_failed", Some("integrity_check_failed"), 0).await;
+                emit(
+                    &app,
+                    "compact_log",
+                    "failed",
+                    serde_json::json!({ "deleted": deleted, "reason": "integrity_check_failed" }),
+                );
+                emit_replay_telemetry(
+                    &app,
+                    "manual_compact_failed",
+                    Some("integrity_check_failed"),
+                    0,
+                )
+                .await;
                 Err("Integrity check failed after compacting log".into())
             }
         }
         "rollback_checkpoint" => {
-            let truncated = rollback_to_last_checkpoint(&app).await.map_err(|e| format!("rollback_checkpoint: {e:?}"))?;
-            emit(&app, "rollback_checkpoint", "ok", serde_json::json!({ "truncated": truncated }));
+            let truncated = rollback_to_last_checkpoint(&app)
+                .await
+                .map_err(|e| format!("rollback_checkpoint: {e:?}"))?;
+            emit(
+                &app,
+                "rollback_checkpoint",
+                "ok",
+                serde_json::json!({ "truncated": truncated }),
+            );
             emit_replay_telemetry(&app, "manual_rollback", None, 0).await;
             Ok(())
         }
@@ -1857,7 +2282,8 @@ async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
             }
         }
         Err(e) => {
-            attempts.push(serde_json::json!({"step":"reindex","ok": false, "error": format!("{e:?}")}));
+            attempts
+                .push(serde_json::json!({"step":"reindex","ok": false, "error": format!("{e:?}")}));
             failed_reason = Some(format!("reindex: {e}"));
         }
     }
@@ -1865,16 +2291,21 @@ async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
     // b) Compact log: drop trailing incomplete segment after last checkpoint
     let res_b = compact_log_after_last_checkpoint(&app).await;
     match res_b {
-        Ok(deleted) => attempts.push(serde_json::json!({"step":"compact_log","ok": deleted >= 0, "deleted": deleted })),
-        Err(e) => attempts.push(serde_json::json!({"step":"compact_log","ok": false, "error": format!("{e:?}")})),
+        Ok(deleted) => attempts.push(
+            serde_json::json!({"step":"compact_log","ok": deleted >= 0, "deleted": deleted }),
+        ),
+        Err(e) => attempts
+            .push(serde_json::json!({"step":"compact_log","ok": false, "error": format!("{e:?}")})),
     }
 
     // Re-run integrity_check
-    if let Ok(ok) = reindex_and_integrity(&app).await { if ok {
-        status = "compacted";
-        emit_replay_telemetry(&app, status, None, 0).await;
-        return Ok(serde_json::json!({"attempts": attempts, "resolved": true}))
-    } }
+    if let Ok(ok) = reindex_and_integrity(&app).await {
+        if ok {
+            status = "compacted";
+            emit_replay_telemetry(&app, status, None, 0).await;
+            return Ok(serde_json::json!({"attempts": attempts, "resolved": true}));
+        }
+    }
 
     // c) Roll back to last checkpoint (truncate log beyond checkpoint)
     let res_c = rollback_to_last_checkpoint(&app).await;
@@ -1884,7 +2315,8 @@ async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
     }
 
     // d) Re-enqueue replayable jobs missing terminal results (not tracked yet)
-    attempts.push(serde_json::json!({"step":"reenqueue_missing","ok": true, "note": "no-op in v1" }));
+    attempts
+        .push(serde_json::json!({"step":"reenqueue_missing","ok": true, "note": "no-op in v1" }));
 
     // Still not OK
     failed_reason = failed_reason.or(Some("recovery_failed".into()));
@@ -1900,19 +2332,31 @@ async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, Str
     let integrity = reindex_and_integrity(&app).await.unwrap_or(false);
     let counts = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
         let conn = Connection::open(db_path)?;
+        configure_sqlite(&conn)?;
         let tool_calls: i64 = conn.query_row("SELECT COUNT(*) FROM tool_call", [], |r| r.get(0))?;
-        let cache_rows: i64 = conn.query_row("SELECT COUNT(*) FROM compute_cache", [], |r| r.get(0))?;
+        let cache_rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM compute_cache", [], |r| r.get(0))?;
         Ok(serde_json::json!({"tool_call": tool_calls, "compute_cache": cache_rows}))
-    }).await.map_err(|e| format!("{e}"))?.map_err(|e| format!("{e:?}"))?;
+    })
+    .await
+    .map_err(|e| format!("{e}"))?
+    .map_err(|e| format!("{e:?}"))?;
 
     let bundle = serde_json::json!({
         "integrity_ok": integrity,
         "counts": counts,
         "ts": chrono::Utc::now().timestamp(),
     });
-    let path = logs_dir.join(format!("diagnostics-{}.json", chrono::Utc::now().timestamp()));
-    tokio::fs::create_dir_all(&logs_dir).await.map_err(|e| format!("{e}"))?;
-    tokio::fs::write(&path, serde_json::to_vec_pretty(&bundle).unwrap()).await.map_err(|e| format!("{e}"))?;
+    let path = logs_dir.join(format!(
+        "diagnostics-{}.json",
+        chrono::Utc::now().timestamp()
+    ));
+    tokio::fs::create_dir_all(&logs_dir)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    tokio::fs::write(&path, serde_json::to_vec_pretty(&bundle).unwrap())
+        .await
+        .map_err(|e| format!("{e}"))?;
     Ok(serde_json::json!({"path": path.display().to_string()}))
 }
 
@@ -1921,15 +2365,18 @@ async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
     let db_path = state.db_path.clone();
     let status = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         let conn = Connection::open(db_path)?;
+        configure_sqlite(&conn)?;
         conn.execute("REINDEX", [])?;
         let mut stmt = conn.prepare("PRAGMA integrity_check")?;
         let mut rows = stmt.query([])?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
-            let s: String = row.get(0)?; results.push(s);
+            let s: String = row.get(0)?;
+            results.push(s);
         }
         Ok(results.join(", "))
-    }).await??;
+    })
+    .await??;
     Ok(status.to_lowercase().contains("ok"))
 }
 
@@ -1938,6 +2385,7 @@ async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64
     let db_path = state.db_path.clone();
     let ts = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<i64>> {
         let conn = Connection::open(db_path)?;
+        configure_sqlite(&conn)?;
         conn.execute("CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)", [])?;
         let ts: Option<i64> = conn.query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0)).optional()?;
         Ok(ts)
@@ -1947,12 +2395,15 @@ async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64
 
 async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     let ts_opt = last_checkpoint_ts(app).await?;
-    if ts_opt.is_none() { return Ok(0); }
+    if ts_opt.is_none() {
+        return Ok(0);
+    }
     let since = ts_opt.unwrap();
     let state: State<'_, AppState> = app.state();
     let db_path = state.db_path.clone();
     let deleted = tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
         let conn = Connection::open(db_path)?;
+        configure_sqlite(&conn)?;
         // Drop trailing incomplete rows after the last checkpoint
         let n = conn.execute(
             "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
@@ -1965,20 +2416,32 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
 
 async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     let ts_opt = last_checkpoint_ts(app).await?;
-    if ts_opt.is_none() { return Ok(0); }
+    if ts_opt.is_none() {
+        return Ok(0);
+    }
     let since = ts_opt.unwrap();
     let state: State<'_, AppState> = app.state();
     let db_path = state.db_path.clone();
     let truncated = tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
         let conn = Connection::open(db_path)?;
+        configure_sqlite(&conn)?;
         // Truncate tool_call beyond checkpoint
-        let n = conn.execute("DELETE FROM tool_call WHERE created_at > ?1", params![since])?;
+        let n = conn.execute(
+            "DELETE FROM tool_call WHERE created_at > ?1",
+            params![since],
+        )?;
         Ok(n as i64)
-    }).await??;
+    })
+    .await??;
     Ok(truncated)
 }
 
-async fn emit_replay_telemetry(app: &tauri::AppHandle, replay_status: &str, failed_reason: Option<&str>, rerun_count: i64) {
+async fn emit_replay_telemetry(
+    app: &tauri::AppHandle,
+    replay_status: &str,
+    failed_reason: Option<&str>,
+    rerun_count: i64,
+) {
     let checkpoint_id = last_checkpoint_ts(app).await.ok().flatten();
     let _ = app.emit(
         "replay-telemetry",

@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
-use crate::AppState;
+use crate::{configure_sqlite, AppState};
 
 /// Canonicalize JSON deterministically (keys sorted, stable formatting).
 pub fn canonicalize_input(value: &Value) -> String {
@@ -35,7 +35,11 @@ pub fn canonicalize_input(value: &Value) -> String {
                 out.push('[');
                 let mut first = true;
                 for v in arr {
-                    if !first { out.push(','); } else { first = false; }
+                    if !first {
+                        out.push(',');
+                    } else {
+                        first = false;
+                    }
                     write(v, out);
                 }
                 out.push(']');
@@ -46,7 +50,11 @@ pub fn canonicalize_input(value: &Value) -> String {
                 let mut keys: Vec<_> = map.keys().collect();
                 keys.sort();
                 for k in keys {
-                    if !first { out.push(','); } else { first = false; }
+                    if !first {
+                        out.push(',');
+                    } else {
+                        first = false;
+                    }
                     // key
                     write(&Value::String(k.to_string()), out);
                     out.push(':');
@@ -85,7 +93,10 @@ mod tests {
         let v2 = serde_json::json!({"z":[3,2,1],"a":1,"o":{"x":1,"y":2},"b":2});
         let s1 = canonicalize_input(&v1);
         let s2 = canonicalize_input(&v2);
-        assert_eq!(s1, s2, "canonicalization should be deterministic and order-insensitive for object keys");
+        assert_eq!(
+            s1, s2,
+            "canonicalization should be deterministic and order-insensitive for object keys"
+        );
     }
 
     #[test]
@@ -105,12 +116,17 @@ fn db_path(app: &AppHandle) -> PathBuf {
 }
 
 /// Fetch cached final event payload by key, scoped to a workspace.
-pub async fn lookup(app: &AppHandle, workspace_id: &str, key: &str) -> anyhow::Result<Option<Value>> {
+pub async fn lookup(
+    app: &AppHandle,
+    workspace_id: &str,
+    key: &str,
+) -> anyhow::Result<Option<Value>> {
     let path = db_path(app);
     let key = key.to_string();
     let ws = workspace_id.to_string();
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = Connection::open(path).context("open sqlite for compute_cache lookup")?;
+        configure_sqlite(&conn).context("configure sqlite for compute_cache lookup")?;
         let mut stmt = conn
             .prepare("SELECT value_json FROM compute_cache WHERE key = ?1 AND workspace_id = ?2")
             .context("prepare cache select")?;
@@ -129,10 +145,19 @@ pub async fn lookup(app: &AppHandle, workspace_id: &str, key: &str) -> anyhow::R
 }
 
 /// Store final event payload by key (idempotent upsert).
-pub async fn store(app: &AppHandle, workspace_id: &str, key: &str, task: &str, env_hash: &str, value: &Value) -> anyhow::Result<()> {
+pub async fn store(
+    app: &AppHandle,
+    workspace_id: &str,
+    key: &str,
+    task: &str,
+    env_hash: &str,
+    value: &Value,
+) -> anyhow::Result<()> {
     // Freeze writes to persistence in Safe Mode
     let state: State<'_, AppState> = app.state();
-    if *state.safe_mode.read().await { return Ok(()); }
+    if *state.safe_mode.read().await {
+        return Ok(());
+    }
     let path = db_path(app);
     let key = key.to_string();
     let ws = workspace_id.to_string();
@@ -141,6 +166,7 @@ pub async fn store(app: &AppHandle, workspace_id: &str, key: &str, task: &str, e
     let json = serde_json::to_string(value).context("serialize cache value")?;
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(path).context("open sqlite for compute_cache store")?;
+        configure_sqlite(&conn).context("configure sqlite for compute_cache store")?;
         let now = Utc::now().timestamp();
         conn.execute(
             "INSERT INTO compute_cache (key, task, env_hash, value_json, created_at, workspace_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
