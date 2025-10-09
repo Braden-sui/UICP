@@ -39,6 +39,8 @@ export const jobSpecSchema = z.object({
   cache: z.enum(["readwrite", "readOnly", "bypass"]).default("readwrite"),
   capabilities: capabilitiesSchema.default({}),
   replayable: z.boolean().default(true),
+  // Workspace scoping for cache and bookkeeping on the host.
+  workspaceId: z.string().min(1).default('default'),
   provenance: z.object({
     envHash: z.string().min(1),
     agentTraceId: z.string().optional(),

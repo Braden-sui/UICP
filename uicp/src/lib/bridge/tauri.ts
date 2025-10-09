@@ -196,7 +196,8 @@ export async function initializeTauriBridge() {
     try {
       pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [] });
       useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
-      await invoke('compute_call', { spec });
+      const finalSpec = { ...spec, workspaceId: (spec as any).workspaceId ?? 'default' } as JobSpec;
+      await invoke('compute_call', { spec: finalSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
       useComputeStore.getState().markFinal(spec.jobId, false, undefined, 'Compute.CapabilityDenied');

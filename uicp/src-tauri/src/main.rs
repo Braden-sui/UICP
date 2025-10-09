@@ -95,8 +95,6 @@ struct ComputeCapabilitiesSpec {
     long_run: bool,
     #[serde(default)]
     mem_high: bool,
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ComputeProvenanceSpec {
@@ -121,11 +119,14 @@ struct ComputeJobSpec {
     capabilities: ComputeCapabilitiesSpec,
     #[serde(default = "default_replayable")] 
     replayable: bool,
+    #[serde(default = "default_workspace_id")] 
+    workspace_id: String,
     provenance: ComputeProvenanceSpec,
 }
 
 fn default_cache_mode() -> String { "readwrite".into() }
 fn default_replayable() -> bool { true }
+fn default_workspace_id() -> String { "default".into() }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -264,7 +265,7 @@ async fn compute_call(
     let cache_mode = spec.cache.clone();
     if cache_mode == "readwrite" || cache_mode == "readOnly" {
         let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
-        if let Ok(Some(mut cached)) = compute_cache::lookup(&app_handle, "default", &key).await {
+        if let Ok(Some(mut cached)) = compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await {
             // Mark cache hit in metrics if possible
             if let Some(obj) = cached.as_object_mut() {
                 let metrics = obj.entry("metrics").or_insert_with(|| serde_json::json!({}));

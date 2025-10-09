@@ -91,6 +91,15 @@ const AgentSettingsWindow = () => {
     }
   }, []);
 
+  const handleClearComputeCache = useCallback(async () => {
+    try {
+      await invoke('clear_compute_cache', { workspace_id: 'default' });
+      useAppStore.getState().pushToast({ variant: 'success', message: 'Compute cache cleared for workspace: default' });
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Clear cache failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, []);
+
   return (
     <DesktopWindow
       id="agent-settings"
@@ -170,6 +179,14 @@ const AgentSettingsWindow = () => {
               title="Runs modules:verify"
             >
               Verify Modules
+            </button>
+            <button
+              type="button"
+              onClick={handleClearComputeCache}
+              className="rounded border border-rose-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-700 hover:bg-rose-50"
+              title="Clears workspace-scoped compute cache"
+            >
+              Clear Cache
             </button>
           </div>
         </div>

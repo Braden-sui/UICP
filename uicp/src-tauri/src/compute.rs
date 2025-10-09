@@ -286,7 +286,7 @@ mod with_runtime {
                 let _ = app.emit("compute.result.final", payload.clone());
                 if spec.replayable && spec.cache == "readwrite" {
                     let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
-                    let _ = crate::compute_cache::store(&app, "default", &key, &spec.task, &spec.provenance.env_hash, &serde_json::to_value(&payload).unwrap()).await;
+                    let _ = crate::compute_cache::store(&app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &serde_json::to_value(&payload).unwrap()).await;
                 }
                 crate::remove_compute_job(&app, &spec.job_id).await;
                 return;
@@ -816,7 +816,7 @@ mod with_runtime {
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), serde_json::json!({ "durationMs": ms }));
             }
-            let _ = crate::compute_cache::store(app, "default", &key, &spec.task, &spec.provenance.env_hash, &obj).await;
+            let _ = crate::compute_cache::store(app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
         }
     }
 
@@ -836,7 +836,7 @@ mod with_runtime {
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), serde_json::json!({ "durationMs": ms, "cacheHit": false }));
             }
-            let _ = crate::compute_cache::store(app, "default", &key, &spec.task, &spec.provenance.env_hash, &obj).await;
+            let _ = crate::compute_cache::store(app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
         }
     }
 
@@ -869,7 +869,7 @@ mod with_runtime {
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), metrics);
             }
-            let _ = crate::compute_cache::store(app, "default", &key, &spec.task, &spec.provenance.env_hash, &obj).await;
+            let _ = crate::compute_cache::store(app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
         }
     }
 
@@ -1039,7 +1039,7 @@ mod no_runtime {
                     let _ = app.emit("compute.result.final", payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
                         let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
-                        let _ = crate::compute_cache::store(&app, "default", &key, &spec.task, &spec.provenance.env_hash, &serde_json::to_value(&payload).unwrap()).await;
+                        let _ = crate::compute_cache::store(&app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &serde_json::to_value(&payload).unwrap()).await;
                     }
                 }
             }
