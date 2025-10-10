@@ -174,6 +174,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 ## 6) Mock Mode -- deprecated --- keep stable no enhancements
 ## 7) Observability & Logging
 - [x] Logs panel surfaces planner `risks` as “Planner hints [traceId]: ...” system messages (including any `gui:` lines) for traceable reasoning.
+- [x] Compute log previews: bridge emits `compute_log` UI events and `LogsPanel` renders line-buffered previews for stdout/stderr/logger with truncation badges.
 - [ ] Emit trace_id, plan ms, act ms, apply ms, batch size per intent.
 - [ ] Structured logs redact secrets, include error codes, STOP events.
 - [ ] System toasts + DockChat system messages for any errors/fallbacks.

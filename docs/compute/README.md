@@ -115,6 +115,15 @@ Metrics (final Ok)
 - fuelUsed (when > 0)
 - outputHash (sha256 over canonicalized JSON output)
 
+Guest logs and diagnostics
+-------------------------
+
+- UI now renders compute log previews in the desktop Logs panel.
+  - Source: `uicp/src/components/LogsPanel.tsx` and bridge handler `uicp/src/lib/bridge/tauri.ts`.
+  - Shape (partial event routed to UI): `{ jobId, task, seq, kind: "log", stream: "stdout|stderr|uicp_logger", tick, bytesLen, previewB64, truncated, level? }`.
+  - The UI decodes `previewB64` and shows the first bytes as a line-buffered preview; `truncated` indicates per-job caps were reached.
+- Diagnostics: set `UICP_WASI_DIAG=1` (or `uicp_wasi_diag=1`) to emit a one-time `wasi_diag` event at job start enumerating mounts/imports.
+
 Filesystem preopens (policy)
 
 - The host preps a workspace-scoped readonly mount for the guest: `ws:/files/**` maps to the per-user files directory reported by `get_paths().filesDir`.

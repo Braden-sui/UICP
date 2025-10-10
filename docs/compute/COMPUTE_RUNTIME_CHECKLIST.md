@@ -57,25 +57,26 @@ Legend
 - [x] Telemetry and cache writes
   - Emits `debug-log`, `compute.result.final`; caches deterministic payloads when replayable
 
-  - [~] WASI imports
+  - [x] WASI imports
     - Current state: Preview 2 core wiring lives behind `uicp_wasi_enable`; when disabled, `add_wasi_and_host` returns a guidance error instead of silently missing imports.
-    - TODO (host: `uicp/src-tauri/src/compute.rs`):
-      - [ ] Build the per-workspace readonly preopen using `WasiCtxBuilder::new().preopened_dir(...)` so guests can opt into `ws:/files/**` access while still flowing through `sanitize_ws_files_path()` and `fs_read_allowed()` policy guards.【F:uicp/src-tauri/src/compute.rs†L352-L398】
-      - [ ] Provide deterministic stdio/log bindings: plumb WASI stdout/stderr and the `uicp:host/logger` import into `ComputePartialEvent` emissions and increment the per-job `log_count` counter (`Ctx.log_count`).【F:uicp/src-tauri/src/compute.rs†L252-L264】【F:uicp/src-tauri/src/main.rs†L270-L305】
-      - [ ] Implement host shims for `uicp:host/control`, `uicp:host/rng`, and `uicp:host/clock` so the job-scoped fields (`rng_seed`, `logical_tick`, `deadline_ms`, `remaining_ms`) are observable by guests and captured for replay/metrics.【F:uicp/src-tauri/src/compute.rs†L255-L264】【F:docs/wit/uicp-host@1.0.0.wit†L1-L49】
-      - [ ] Deterministic seed contract - AC: Job has a stable seed, either `JobSpec.jobSeed` or `seed = SHA256(jobId || envHash)`, and it is logged and replayed.
-      - [ ] Backpressure and write quotas - AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, with backpressure (no drops). Defaults: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
-    - Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs.
+    - Implemented (host: `uicp/src-tauri/src/compute.rs`):
+      - [x] Per-workspace readonly preopen via `WasiCtxBuilder::new().preopened_dir(filesDir, "/ws/files", DirPerms::READ, FilePerms::READ)`; enabled only when `capabilities.fs_read|fs_write` includes `ws:/files/**`. Host helpers still enforce `sanitize_ws_files_path()` and `fs_read_allowed()` for host-mediated reads.
+      - [x] Deterministic stdio/log bindings: line-buffered WASI stdout/stderr and `uicp:host/logger.log(level,msg)` emit `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream, tick, bytesLen, previewB64, truncated }`; increments per-job `log_count`.
+      - [x] Host shims for `uicp:host/control` (open-partial-sink, should-cancel, deadline-ms, remaining-ms), `uicp:host/rng` (next-u64, fill), and `uicp:host/clock.now-ms` (deterministic logical tick).【F:uicp/src-tauri/src/compute.rs】【F:docs/wit/uicp-host@1.0.0.wit】
+      - [x] Diagnostics toggle `UICP_WASI_DIAG=1` (also `uicp_wasi_diag`) emits a one-time `wasi_diag` event with mounts/imports.
+      - [ ] Deterministic seed contract - AC: job has a stable seed, either `JobSpec.jobSeed` or `SHA256(jobId||envHash)`, logged and replayed.
+      - [ ] Backpressure and write quotas - AC: per-job quotas on stdout/stderr/logger and partial events with backpressure (no drops). Defaults proposed: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
+    - Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs. (planned)
 
     - [x] Guest export invocation (execution wiring)
     - Host instantiates the component and dispatches `csv#run` / `table#run` via `get_typed_func`, validates inputs, and maps outputs/errors through `finalize_ok_with_metrics()` / `finalize_error()`; see `uicp/src-tauri/src/compute.rs` lines 520-620.【F:uicp/src-tauri/src/compute.rs†L520-L620】
     - Metrics enrichment and partial streaming live in the dedicated checklist items below.
 
-    - [ ] Partial event streaming and guest logs
-    - [ ] Align the host/bridge schema: Rust currently defines `ComputePartialEvent { payload_b64 }` while TypeScript expects a `Uint8Array payload`; choose one encoding and update `uicp/src-tauri/src/main.rs`, `uicp/src/compute/types.ts`, and the bridge listener in `uicp/src/lib/bridge/tauri.ts` together.【F:uicp/src-tauri/src/main.rs†L270-L310】【F:uicp/src/compute/types.ts†L41-L69】【F:uicp/src/lib/bridge/tauri.ts†L364-L414】
-    - Implement the Preview 2 `streams::output-stream` sink returned by `open_partial_sink` so guest writes produce `compute.result.partial` events and increment `partial_frames` / `invalid_partial_frames`; enforce ordering via `Ctx.partial_seq` and validate payload size/type.【F:uicp/components/csv.parse/src/lib.rs†L11-L60】【F:uicp/src-tauri/src/compute.rs†L252-L259】
-    - Capture guest stdout/stderr and the structured logger import, trim payloads, emit `debug-log` telemetry, and bump `invalid_partial_frames` on rejects.
-    - Tests: add fixtures that stream valid and malformed CBOR frames, asserting host behavior and metrics.
+    - [~] Partial event streaming and guest logs
+    - Host schema kept for CBOR partial frames: `ComputePartialEvent { payloadB64 }`. Bridge logs dev info and tolerates this shape.
+    - Implemented `open-partial-sink` using Preview 2 `streams.output-stream`; validates CBOR, enforces sequencing/size, and updates `partial_frames` / `invalid_partial_frames`.
+    - Implemented stdio/logger capture to structured log partials; UI renders log previews in `LogsPanel` via `compute_log` UI debug events.【F:uicp/src/lib/bridge/tauri.ts】【F:uicp/src/components/LogsPanel.tsx】
+    - Tests: add fixtures that stream valid/malformed CBOR and interleaved stdio ordering. (planned)
 
   - [ ] Metrics finishing pass
     - Extend `collect_metrics()` to record `fuelUsed` (via `Store::get_fuel` once metering is enabled) and `memPeakMb` from `StoreLimits`, alongside existing duration/deadline data.【F:uicp/src-tauri/src/compute.rs†L824-L858】
