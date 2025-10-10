@@ -9,6 +9,14 @@ Legend
 
 -------------------------------------------------------------------------------
 
+## Execution cadence and time expectations
+
+- The agent works iteratively until each checklist item is delivered or explicitly descoped; there is no fixed "timebox" after which execution stops automatically.
+- Progress updates will call out blockers, additional context needed, or environment limitations as soon as they are discovered rather than waiting for a deadline.
+- If an explicit calendar deadline is required (for example, to align with a release cut), add it to the relevant checklist item so prioritization and sequencing can be adjusted.
+
+-------------------------------------------------------------------------------
+
 ## 1) Host Runtime (Rust)
 
 - [x] Feature-gated host scaffolding
@@ -46,22 +54,28 @@ Legend
 - [x] Telemetry and cache writes
   - Emits `debug-log`, `compute.result.final`; caches deterministic payloads when replayable
 
-- [~] WASI imports
-  - `add_wasi_and_host` links WASI Preview 2 only when `uicp_wasi_enable` is enabled (`uicp/src-tauri/src/compute.rs:640`); disabled builds surface a guidance error.
-  - TODO: wire explicit read-only preopens, stdout/stderr bindings, and policy-driven caps before exposing guest FS/IO.
+  - [~] WASI imports
+    - Current state: Preview 2 core wiring lives behind `uicp_wasi_enable`; when disabled, `add_wasi_and_host` returns a guidance error instead of silently missing imports.
+    - TODO (host: `uicp/src-tauri/src/compute.rs`):
+      - [ ] Build the per-workspace readonly preopen using `WasiCtxBuilder::new().preopened_dir(...)` so guests can opt into `ws:/files/**` access while still flowing through `sanitize_ws_files_path()` and `fs_read_allowed()` policy guards.【F:uicp/src-tauri/src/compute.rs†L352-L398】
+      - [ ] Provide deterministic stdio/log bindings: plumb WASI stdout/stderr and the `uicp:host/logger` import into `ComputePartialEvent` emissions and increment the per-job `log_count` counter (`Ctx.log_count`).【F:uicp/src-tauri/src/compute.rs†L252-L264】【F:uicp/src-tauri/src/main.rs†L270-L305】
+      - [ ] Implement host shims for `uicp:host/control`, `uicp:host/rng`, and `uicp:host/clock` so the job-scoped fields (`rng_seed`, `logical_tick`, `deadline_ms`, `remaining_ms`) are observable by guests and captured for replay/metrics.【F:uicp/src-tauri/src/compute.rs†L255-L264】【F:docs/wit/uicp-host@1.0.0.wit†L1-L49】
+    - Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs.
 
-- [x] Guest export invocation (execution wiring)
-  - Host invokes typed exports via `get_typed_func` and routes success through `finalize_ok_with_metrics` (`uicp/src-tauri/src/compute.rs:516`).
-    - `csv.parse` resolves workspace inputs via `resolve_csv_source`; `table.query` converts JSON into WIT tuples before invocation.
-    - Cache writes persist the output and `outputHash`, keeping replay parity.
-  - Optional: `uicp_bindgen` feature can be re-enabled later, but it is not required for the current path.
+  - [x] Guest export invocation (execution wiring)
+    - Host instantiates the component and dispatches `csv#run` / `table#run` via `get_typed_func`, validates inputs, and maps outputs/errors through `finalize_ok_with_metrics()` / `finalize_error()`; see `uicp/src-tauri/src/compute.rs` lines 520-620.【F:uicp/src-tauri/src/compute.rs†L520-L620】
+    - Metrics enrichment and partial streaming live in the dedicated checklist items below.
 
-- [ ] Partial event streaming and guest logs
-  - `Ctx` tracks partial/invalid frame counters and the bridge listens for `compute.result.partial` (`uicp/src-tauri/src/compute.rs:252`, `uicp/src/lib/bridge/tauri.ts:396`), but the host does not emit partial frames yet; guest stdout/stderr/log imports remain TODO.
+  - [ ] Partial event streaming and guest logs
+    - Align the host/bridge schema: Rust currently defines `ComputePartialEvent { payload_b64 }` while TypeScript expects a `Uint8Array payload`; choose one encoding and update `uicp/src-tauri/src/main.rs`, `uicp/src/compute/types.ts`, and the bridge listener in `uicp/src/lib/bridge/tauri.ts` together.【F:uicp/src-tauri/src/main.rs†L270-L310】【F:uicp/src/compute/types.ts†L41-L69】【F:uicp/src/lib/bridge/tauri.ts†L364-L414】
+    - Implement the Preview 2 `streams::output-stream` sink returned by `open_partial_sink` so guest writes produce `compute.result.partial` events and increment `partial_frames` / `invalid_partial_frames`; enforce ordering via `Ctx.partial_seq` and validate payload size/type.【F:uicp/components/csv.parse/src/lib.rs†L11-L60】【F:uicp/src-tauri/src/compute.rs†L252-L259】
+    - Capture guest stdout/stderr and the structured logger import, trim payloads, emit `debug-log` telemetry, and bump `invalid_partial_frames` on rejects.
+    - Tests: add fixtures that stream valid and malformed CBOR frames, asserting host behavior and metrics.
 
-- [~] Metrics finishing pass
-  - `collect_metrics` (success path) now emits duration, `deadlineMs`, `remainingMsAtFinish`, `logCount`, and partial counters (`uicp/src-tauri/src/compute.rs:842`).
-  - TODO: hook `fuelUsed`/`memPeakMb`, attach metrics on error envelopes, and surface counts in UI/telemetry.
+  - [ ] Metrics finishing pass
+    - Extend `collect_metrics()` to record `fuelUsed` (via `Store::get_fuel` once metering is enabled) and `memPeakMb` from `StoreLimits`, alongside existing duration/deadline data.【F:uicp/src-tauri/src/compute.rs†L824-L858】
+    - Wire `log_count` increments inside the logger shim, propagate `partialFrames`/`invalidPartialsDropped`, and persist metrics in cache writes (`compute_cache::store`).
+    - Emit metrics for terminal error envelopes (`finalize_error`) to keep UI/telemetry parity with success cases.【F:uicp/src-tauri/src/compute.rs†L702-L765】
 
 -------------------------------------------------------------------------------
 
@@ -79,8 +93,10 @@ Legend
 - [x] Health/safe-mode
   - DB quick_check and safe-mode toggles; replay telemetry stream
 
-- [ ] E2E harness for compute
-  - TODO: add a Playwright/Vitest path that submits a small wasm task and observes terminal OK result
+  - [ ] E2E harness for compute
+    - Build a deterministic Playwright flow (or Vitest + Tauri harness) that launches the desktop, uploads a tiny CSV fixture, issues `window.uicpComputeCall` for `csv.parse@1.2.0`, waits for `compute.result.final.ok`, and asserts bindings/state updates in the UI store.【F:uicp/src/lib/bridge/tauri.ts†L364-L414】【F:uicp/tests/unit/compute.store.test.ts†L1-L200】
+    - Include negative coverage: cancel in-flight job, observe `Compute.Cancelled`, and verify cache hit replay path when running twice with `cache: 'readwrite'`.
+    - Gate the test behind a CI label (`npm run test:e2e -- --project compute`) so it can run headless on GitHub Actions once modules are bundled.
 
 -------------------------------------------------------------------------------
 
@@ -112,15 +128,17 @@ Legend
 - [x] Build/publish scripts
   - File: `uicp/package.json` (`modules:build:*`, `modules:update:*`, `modules:verify`)
 
-- [~] Guest ABI contract
-  - World decided: `world command` with `interface csv` and `interface table`; shared `rows` type via `interface common`.
-    - File: `uicp/src-tauri/wit/command.wit`
-  - Bindgen is optional; current host path uses typed funcs directly. `uicp_bindgen` may be enabled in the future if desired.
-  - Document the request/response schema and error mapping invariants
+  - [~] Guest ABI contract
+    - World: `world command` exports `csv` and `table` interfaces sharing `common.rows`; lives at `uicp/src-tauri/wit/command.wit` and mirrors component crates under `uicp/components/*`.【F:uicp/src-tauri/wit/command.wit†L1-L25】【F:uicp/components/csv.parse/src/lib.rs†L1-L74】
+    - TODO: freeze the ABI by documenting request/response schemas, error semantics, and host imports in `docs/compute/README.md` and a dedicated WIT changelog. Include examples for partial CBOR envelopes and cancellation contracts.
+    - TODO: ensure host shims match the WIT files (`uicp:host/control`, `logger`, `rng`, `clock`) and add conformance tests using `wit-bindgen` generated bindings once the host exposes these imports.
+    - TODO: add regression tests that diff the checked-in WIT files versus generated TypeScript/Rust bindings (`npm run gen:io`) so drift is caught in CI.
 
-- [ ] Minimum viable component(s)
-  - Add a tiny “echo” or `csv.parse` component with verified digest in the manifest
-  - E2E test: submit input, verify OK output and metrics populated
+  - [ ] Minimum viable component(s)
+    - Build and check in the release WASM binaries for `csv.parse@1.2.0` and `table.query@0.1.0` under `uicp/src-tauri/modules/`, replacing the placeholder digest values in `manifest.json` with actual SHA-256 hashes signed by the build pipeline.【F:uicp/src-tauri/modules/manifest.json†L1-L12】
+    - Automate artifact production using `npm run modules:build` + `npm run modules:publish`, ensure outputs are reproducible (document rustc/wasm-opt versions), and store provenance in CHANGELOG or release notes.
+    - Extend `scripts/verify-modules.mjs` to enforce signature/digest verification in CI (`STRICT_MODULES_VERIFY=1`) and add a regression test that loads a module via the host and exercises a smoke input.
+    - Include sample input/output fixtures so documentation and tests can validate module behavior deterministically.
 
 -------------------------------------------------------------------------------
 
@@ -132,11 +150,14 @@ Legend
 - [x] Symlink and traversal protection for workspace files
   - Canonicalization and base-dir prefix assertion
 
-- [ ] WASI surface hardening
-  - Preopens read-only; no ambient authority; restrict clocks/random if determinism is required
+  - [ ] WASI surface hardening
+    - Disable ambient authorities: avoid `.inherit_stdio()`, `.inherit_args()`, `.inherit_env()`, and only link the deterministic host shims in `uicp:host`; continue to default-deny `wasi:http` / `wasi:sockets`.【F:uicp/src-tauri/src/compute.rs†L352-L398】【F:docs/wit/uicp-host@1.0.0.wit†L1-L49】
+    - Gate any future capability expansion (e.g., net allowlists) behind `ComputeCapabilitiesSpec` checks in `compute_call()` and document policy expectations.
+    - Capture a security note in release docs summarizing which WASI imports are enabled by default.
 
-- [ ] Negative tests
-  - Add tests that ensure violations (net/fs/timeouts) fail with the correct error codes and logs
+  - [ ] Negative tests
+    - Add Rust unit/integration tests that attempt disallowed FS/net/time operations and assert the runtime surfaces `Compute.CapabilityDenied` or `Compute.Resource.Limit`; mirror critical cases through the Tauri command API in TS tests.【F:uicp/src-tauri/src/main.rs†L230-L333】
+    - Cover deadline overrun, cancellation grace, and memory exhaustion scenarios to prove the host halts work promptly and emits the correct telemetry.
 
 -------------------------------------------------------------------------------
 
@@ -149,8 +170,9 @@ Legend
   - Final Ok envelopes include duration, deadline budget, log/partial counters, and `outputHash`; cache persistence keeps metrics (`uicp/src-tauri/src/compute.rs:842`).
   - TODO: add mem/fuel capture, expose metrics in UI dashboards, and include error-path metrics.
 
-- [ ] Logs/trace capture
-  - Map guest stdout/stderr or host “log” import to frames; redact/sanitize
+  - [ ] Logs/trace capture
+    - Implement the structured logger import so guest `log(level, msg)` calls produce sanitized `debug-log` events and optionally feed a rolling buffer accessible in the UI; enforce rate limits and truncation.
+    - Integrate partial stream frames with tracing: attach job/task identifiers and sequence numbers so troubleshooting has sufficient context; redact PII before emission.
 
 -------------------------------------------------------------------------------
 
@@ -162,8 +184,9 @@ Legend
   - `rust-compute-build` CI job runs `cargo check`/`cargo build` with `wasm_compute,uicp_wasi_enable` (`.github/workflows/ci.yml:134`).
   - TODO: add feature-on `cargo test` and integrate Wasm component build smoke.
 
-- [ ] E2E smoke for compute
-  - Headed/CI-friendly run that starts Tauri (or harness bin) and executes one component
+  - [ ] E2E smoke for compute
+    - Add a CI-friendly Playwright job (Linux) that installs the bundled modules, starts the Tauri app in `--headless` or harness mode, submits a known job, and asserts final success/metrics/caching (pairs with the harness item above).
+    - Record video/log artifacts for debugging failures; gate merges on this smoke test once it is stable.
 
 -------------------------------------------------------------------------------
 
@@ -180,11 +203,11 @@ Legend
 
 ## 9) Release Gates (Go/No-Go)
 
-- [ ] Guest export wiring complete; csv.parse/table.query MVP runs end-to-end on local
-- [ ] WASI imports limited to policy; fs preopens verified to sandbox
-- [ ] Unit + integration + E2E suites green (Rust + TS)
-- [ ] CI builds with features on; module verifier green
-- [ ] Docs updated; feature flags default for release decided
+  - [ ] Guest export wiring complete; csv.parse/table.query MVP runs end-to-end locally with partial streaming + metrics captured (see Sections 1 & 3).
+  - [ ] WASI imports limited to policy; fs preopens verified to sandbox via automated tests (Section 5) and manual validation with real modules.
+  - [ ] Unit + integration + E2E suites green (Rust + TS), including the new compute harness and negative tests.
+  - [ ] CI builds with compute features enabled, module verifier strict mode, and WASM artifacts published.
+  - [ ] Docs updated; feature flag defaults agreed for release and reflected in README/setup + release notes.
 
 -------------------------------------------------------------------------------
 
