@@ -461,10 +461,11 @@ mod with_runtime {
                                         Err(err)
                                     } else {
                                         let resolved = resolved_res.unwrap();
+                                        // WIT `result<T, E>` comes through Wasmtime as the standard Rust `Result<T, E>`.
                                         let func_res: Result<
                                             wasmtime::component::TypedFunc<
                                                 (String, String, bool),
-                                                (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                                (Result<Vec<Vec<String>>, String>,),
                                             >,
                                             _,
                                         > = instance.get_typed_func(&mut store, "csv#run");
@@ -474,8 +475,8 @@ mod with_runtime {
                                                 .call_async(&mut store, (spec.job_id.clone(), resolved, has_header))
                                                 .await
                                             {
-                                                Ok((wasmtime::component::Result::Ok(rows),)) => Ok(serde_json::json!(rows)),
-                                                Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                                Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
+                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
                                                 Err(e) => Err(anyhow::Error::from(e)),
                                             },
                                         }
@@ -491,7 +492,7 @@ mod with_runtime {
                                     let func_res: Result<
                                         wasmtime::component::TypedFunc<
                                             (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
-                                            (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                            (Result<Vec<Vec<String>>, String>,),
                                         >,
                                         _,
                                     > = instance.get_typed_func(&mut store, "table#run");
@@ -501,8 +502,8 @@ mod with_runtime {
                                             .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
                                             .await
                                         {
-                                            Ok((wasmtime::component::Result::Ok(out),)) => Ok(serde_json::json!(out)),
-                                            Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                            Ok((Ok(out),)) => Ok(serde_json::json!(out)),
+                                            Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
                                             Err(e) => Err(anyhow::Error::from(e)),
                                         },
                                     }
@@ -553,10 +554,11 @@ mod with_runtime {
                                         Err(err)
                                     } else {
                                         let resolved = resolved_res.unwrap();
+                                        // Typed `result` from WIT surfaces as the standard Rust `Result`.
                                         let func_res: Result<
                                             wasmtime::component::TypedFunc<
                                                 (String, String, bool),
-                                                (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                                (Result<Vec<Vec<String>>, String>,),
                                             >,
                                             _,
                                         > = instance.get_typed_func(&mut store, "csv#run");
@@ -566,8 +568,8 @@ mod with_runtime {
                                                 .call_async(&mut store, (spec.job_id.clone(), resolved, has_header))
                                                 .await
                                             {
-                                                Ok((wasmtime::component::Result::Ok(rows),)) => Ok(serde_json::json!(rows)),
-                                                Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                                Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
+                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
                                                 Err(e) => Err(anyhow::Error::from(e)),
                                             },
                                         }
@@ -583,7 +585,7 @@ mod with_runtime {
                                     let func_res: Result<
                                         wasmtime::component::TypedFunc<
                                             (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
-                                            (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                            (Result<Vec<Vec<String>>, String>,),
                                         >,
                                         _,
                                     > = instance.get_typed_func(&mut store, "table#run");
@@ -593,8 +595,8 @@ mod with_runtime {
                                             .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
                                             .await
                                         {
-                                            Ok((wasmtime::component::Result::Ok(out),)) => Ok(serde_json::json!(out)),
-                                            Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                            Ok((Ok(out),)) => Ok(serde_json::json!(out)),
+                                            Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
                                             Err(e) => Err(anyhow::Error::from(e)),
                                         },
                                     }

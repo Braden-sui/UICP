@@ -4,14 +4,13 @@
       "task": "csv.parse",
       "version": "1.2.0",
       "filename": "csv.parse@1.2.0.wasm",
-      "digest_sha256": "<fill-with-sha256>"
+      "digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
       "task": "table.query",
       "version": "0.1.0",
       "filename": "table.query@0.1.0.wasm",
-      "digest_sha256": "<fill-with-sha256>"
+      "digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   ]
 }
-

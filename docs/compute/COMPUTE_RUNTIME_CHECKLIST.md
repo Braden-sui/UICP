@@ -114,11 +114,9 @@ Legend
 - [x] Unit tests
   - File: `uicp/tests/unit/compute.store.test.ts` covers new semantics and helpers
 
-  - [ ] UI affordances for compute
-    - Ship a dedicated compute activity panel (React) that displays job status, partial progress counters, metrics, and allows cancel/resubmit; wire it to `useComputeStore` selectors so state transitions are visible without devtools.【F:uicp/src/state/compute.ts†L1-L200】
-    - Surface cache hits and replay status (e.g., badge when served from cache) and show metric summaries (duration/fuel/memory) once emitted.
-    - Update error presentation to map taxonomy codes via `uicp/src/lib/compute/errors.ts` (or new helper), ensuring toast copy matches `ComputeErrorCode` definitions.
-    - Add accessibility and dark-mode coverage for the new UI, plus Playwright visual assertions if feasible.
+- [~] UI affordances for compute
+  - Compute store tracks duration, cache hits, partial counters (`uicp/src/state/compute.ts:5`), and bridge toasts now map codes via `formatComputeErrorToast` (`uicp/src/lib/bridge/tauri.ts:152`).
+  - TODO: render partial frames/metrics in UI, surface cache hits, and add dedicated compute panel indicators.
 
 -------------------------------------------------------------------------------
 
@@ -168,9 +166,9 @@ Legend
 - [x] Structured events
   - `debug-log`, `compute.result.final`, `compute.debug` telemetry; replay telemetry
 
-  - [ ] Per-task metrics
-    - Once `collect_metrics()` emits the enriched fields, persist them in SQLite/telemetry and expose via UI charts or developer HUD; ensure cache hits mark `cacheHit: true` for analytics.【F:uicp/src-tauri/src/compute.rs†L824-L858】
-    - Add Grafana-friendly exports (e.g., JSONL or metrics endpoint) so deployment operators can monitor latency, success rate, fuel usage, and memory headroom per task.
+- [~] Per-task metrics
+  - Final Ok envelopes include duration, deadline budget, log/partial counters, and `outputHash`; cache persistence keeps metrics (`uicp/src-tauri/src/compute.rs:842`).
+  - TODO: add mem/fuel capture, expose metrics in UI dashboards, and include error-path metrics.
 
   - [ ] Logs/trace capture
     - Implement the structured logger import so guest `log(level, msg)` calls produce sanitized `debug-log` events and optionally feed a rolling buffer accessible in the UI; enforce rate limits and truncation.
@@ -182,10 +180,9 @@ Legend
 
 - [x] Module verification workflow present (`.github/workflows/verify-modules.yml`)
 
-  - [ ] Compute build jobs
-    - Update CI to run `cargo check --features wasm_compute,uicp_wasi_enable` and `cargo test --features wasm_compute,uicp_wasi_enable` within `uicp/src-tauri`; include `wasmtime` downloads/cache warm-up to keep runtimes acceptable.【F:uicp/src-tauri/Cargo.toml†L1-L120】
-    - Ensure the TypeScript pipeline runs `npm run test`, `npm run lint`, and `npm run typecheck` with the compute-specific code paths enabled (e.g., `VITE_FEATURE_COMPUTE=1`).
-    - Publish the compiled WASM modules as build artifacts for traceability.
+- [~] Compute build jobs
+  - `rust-compute-build` CI job runs `cargo check`/`cargo build` with `wasm_compute,uicp_wasi_enable` (`.github/workflows/ci.yml:134`).
+  - TODO: add feature-on `cargo test` and integrate Wasm component build smoke.
 
   - [ ] E2E smoke for compute
     - Add a CI-friendly Playwright job (Linux) that installs the bundled modules, starts the Tauri app in `--headless` or harness mode, submits a known job, and asserts final success/metrics/caching (pairs with the harness item above).
@@ -197,11 +194,10 @@ Legend
 
 - [x] Baseline docs present: `docs/compute/README.md`, host skeleton (`docs/compute/host-skeleton.rs`), WIT draft
 
-  - [ ] Update docs with:
-    - Feature flag matrix: clearly document when to enable `wasm_compute`, `uicp_wasi_enable`, and optional `uicp_bindgen`, including build commands and CI expectations in `docs/compute/README.md` and `setup.md`.
-    - Module lifecycle: describe how to run `modules:build`, `modules:publish`, verify digests, where modules live on disk, and how updates are rolled out; include troubleshooting for manifest mismatches.
-    - Error taxonomy UX: map each `Compute.*` code to user-facing guidance/toasts (cross-link to `uicp/src/lib/compute/errors.ts` and frontend components), plus mention logging channels.
-    - Determinism/replay: spell out guarantees (fuel, RNG seed, logical clock) and known limitations; document how replay/caching interacts with partial streaming and metrics.
+- [~] Update docs with:
+  - Feature flags + enablement now covered in `docs/setup.md#wasm-compute`; module build/verify flow documented in `docs/compute/README.md`.
+  - Error taxonomy captured in `docs/compute/error-taxonomy.md`; compute toasts reference these codes.
+  - TODO: add determinism/record-replay guarantees, guest log policy, and UI surfacing guidelines.
 
 -------------------------------------------------------------------------------
 
