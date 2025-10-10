@@ -47,22 +47,21 @@ Legend
   - Emits `debug-log`, `compute.result.final`; caches deterministic payloads when replayable
 
 - [~] WASI imports
-  - Core P2 wired behind `uicp_wasi_enable`; disabled path now errors with guidance
-  - Pending: define precise preopens/policy and stdio/log bindings
+  - `add_wasi_and_host` links WASI Preview 2 only when `uicp_wasi_enable` is enabled (`uicp/src-tauri/src/compute.rs:640`); disabled builds surface a guidance error.
+  - TODO: wire explicit read-only preopens, stdout/stderr bindings, and policy-driven caps before exposing guest FS/IO.
 
-- [~] Guest export invocation (execution wiring)
-  - Current state: host invokes exports via Wasmtime typed API with `get_typed_func` (no bindgen required). See `uicp/src-tauri/src/compute.rs`.
-    - csv.parse: calls `csv#run(job_id, source, has_header)` after enforcing `ws:/files` policy and resolving to data: URL when needed
-    - table.query: calls `table#run(job_id, rows, select, where_contains)` with validated JSON → WIT mapping
-    - Success path emits `compute.result.final` with metrics via `finalize_ok_with_metrics()`; errors mapped via `map_trap_error()`
+- [x] Guest export invocation (execution wiring)
+  - Host invokes typed exports via `get_typed_func` and routes success through `finalize_ok_with_metrics` (`uicp/src-tauri/src/compute.rs:516`).
+    - `csv.parse` resolves workspace inputs via `resolve_csv_source`; `table.query` converts JSON into WIT tuples before invocation.
+    - Cache writes persist the output and `outputHash`, keeping replay parity.
   - Optional: `uicp_bindgen` feature can be re-enabled later, but it is not required for the current path.
-  - Remaining: enrich metrics (fuelUsed, memPeakMb), and add partial event streaming
 
 - [ ] Partial event streaming and guest logs
-  - TODO: surface `compute.result.partial` frames with seq, and count/log metrics (`partialFrames`, `invalidPartialsDropped`)
+  - `Ctx` tracks partial/invalid frame counters and the bridge listens for `compute.result.partial` (`uicp/src-tauri/src/compute.rs:252`, `uicp/src/lib/bridge/tauri.ts:396`), but the host does not emit partial frames yet; guest stdout/stderr/log imports remain TODO.
 
-- [ ] Metrics finishing pass
-  - Implement `collect_metrics` usage on success/error; emit `fuelUsed`, `memPeakMb` (if obtainable), `deadlineMs`, `remainingMsAtFinish`, `logCount`
+- [~] Metrics finishing pass
+  - `collect_metrics` (success path) now emits duration, `deadlineMs`, `remainingMsAtFinish`, `logCount`, and partial counters (`uicp/src-tauri/src/compute.rs:842`).
+  - TODO: hook `fuelUsed`/`memPeakMb`, attach metrics on error envelopes, and surface counts in UI/telemetry.
 
 -------------------------------------------------------------------------------
 
@@ -99,9 +98,9 @@ Legend
 - [x] Unit tests
   - File: `uicp/tests/unit/compute.store.test.ts` covers new semantics and helpers
 
-- [ ] UI affordances for compute
-  - TODO: add panel/indicators for partials, metrics, cancel, cache-hit iconography
-  - TODO: unify error toasts with code taxonomy (`errors.ts`)
+- [~] UI affordances for compute
+  - Compute store tracks duration, cache hits, partial counters (`uicp/src/state/compute.ts:5`), and bridge toasts now map codes via `formatComputeErrorToast` (`uicp/src/lib/bridge/tauri.ts:152`).
+  - TODO: render partial frames/metrics in UI, surface cache hits, and add dedicated compute panel indicators.
 
 -------------------------------------------------------------------------------
 
@@ -146,8 +145,9 @@ Legend
 - [x] Structured events
   - `debug-log`, `compute.result.final`, `compute.debug` telemetry; replay telemetry
 
-- [ ] Per-task metrics
-  - Populate and persist duration/fuel/memory/log counts; add app UI counters/chart if needed
+- [~] Per-task metrics
+  - Final Ok envelopes include duration, deadline budget, log/partial counters, and `outputHash`; cache persistence keeps metrics (`uicp/src-tauri/src/compute.rs:842`).
+  - TODO: add mem/fuel capture, expose metrics in UI dashboards, and include error-path metrics.
 
 - [ ] Logs/trace capture
   - Map guest stdout/stderr or host “log” import to frames; redact/sanitize
@@ -158,9 +158,9 @@ Legend
 
 - [x] Module verification workflow present (`.github/workflows/verify-modules.yml`)
 
-- [ ] Compute build jobs
-  - Add `cargo check/test` with `--features wasm_compute,uicp_wasi_enable`
-  - Run Rust unit tests (including `compute.rs`) and TypeScript unit tests
+- [~] Compute build jobs
+  - `rust-compute-build` CI job runs `cargo check`/`cargo build` with `wasm_compute,uicp_wasi_enable` (`.github/workflows/ci.yml:134`).
+  - TODO: add feature-on `cargo test` and integrate Wasm component build smoke.
 
 - [ ] E2E smoke for compute
   - Headed/CI-friendly run that starts Tauri (or harness bin) and executes one component
@@ -171,11 +171,10 @@ Legend
 
 - [x] Baseline docs present: `docs/compute/README.md`, host skeleton (`docs/compute/host-skeleton.rs`), WIT draft
 
-- [ ] Update docs with:
-  - Feature flags and when to enable (`wasm_compute`, `uicp_wasi_enable`; `uicp_bindgen` is optional and currently off by default)
-  - Module install/verify flow, expected directory layout, cache behavior
-  - Error taxonomy for frontend and how to surface it (toasts, logs)
-  - Determinism/record-replay guarantees and limitations
+- [~] Update docs with:
+  - Feature flags + enablement now covered in `docs/setup.md#wasm-compute`; module build/verify flow documented in `docs/compute/README.md`.
+  - Error taxonomy captured in `docs/compute/error-taxonomy.md`; compute toasts reference these codes.
+  - TODO: add determinism/record-replay guarantees, guest log policy, and UI surfacing guidelines.
 
 -------------------------------------------------------------------------------
 
