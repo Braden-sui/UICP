@@ -64,8 +64,16 @@ Legend
       - [x] Deterministic stdio/log bindings: line-buffered WASI stdout/stderr and `uicp:host/logger.log(level,msg)` emit `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream, tick, bytesLen, previewB64, truncated }`; increments per-job `log_count`.
       - [x] Host shims for `uicp:host/control` (open-partial-sink, should-cancel, deadline-ms, remaining-ms), `uicp:host/rng` (next-u64, fill), and `uicp:host/clock.now-ms` (deterministic logical tick).【F:uicp/src-tauri/src/compute.rs】【F:docs/wit/uicp-host@1.0.0.wit】
       - [x] Diagnostics toggle `UICP_WASI_DIAG=1` (also `uicp_wasi_diag`) emits a one-time `wasi_diag` event with mounts/imports.
-      - [ ] Deterministic seed contract - AC: job has a stable seed, either `JobSpec.jobSeed` or `SHA256(jobId||envHash)`, logged and replayed.
-      - [ ] Backpressure and write quotas - AC: per-job quotas on stdout/stderr/logger and partial events with backpressure (no drops). Defaults proposed: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
+      - [x] Deterministic seed contract - AC: job has a stable seed, either `JobSpec.jobSeed` or `SHA256(jobId||envHash)`, logged and replayed.
+        - Implemented: host derives `rng_seed = SHA256(jobId|envHash)` and uses it for `uicp:host/rng`.
+          - Files: `uicp/src-tauri/src/compute.rs` (`derive_job_seed`, seed wired into `Ctx.rng_seed`).
+          - Telemetry: emits `debug-log` event `{ event: "rng_seed", seedHex }` at job start; final metrics include `rngSeedHex` for golden tests.
+          - Determinism: replay of the same `(jobId, envHash)` yields identical RNG sequence.
+      - [~] Backpressure and write quotas - AC: per-job quotas on stdout/stderr/logger and partial events with backpressure (no drops). Defaults proposed: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
+        - Implemented (host): token-bucket limiters for stdout/stderr (bytes/s), logger (bytes/s), and partial events (events/s) with backpressure via `check_write()` and `ready()`; logger hostcall blocks in small intervals (no drops).
+          - Files: `uicp/src-tauri/src/compute.rs` (`RateLimiterBytes`, `RateLimiterEvents`, integrated in `GuestLogStream` and `PartialOutputStream`).
+          - Metrics: `logThrottleWaits`, `loggerThrottleWaits`, `partialThrottleWaits` surfaced in final envelopes; UI wiring pending.
+          - Next: add bounded buffers to guarantee no drops even if guests ignore `check_write()`, and enforce logger quotas.
     - Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs. (planned)
 
     - [x] Guest export invocation (execution wiring)
@@ -187,6 +195,10 @@ Legend
 
 - [ ] Deny-by-default WASI surface
   - AC: Context builder proves no ambient stdio/args/env are inherited; no sockets or `wasi:http` linked in V1; policy test fails if any new caps appear.
+  - Status: Partial
+    - Tests added to validate feature-gated behaviour of WASI linking:
+      - `uicp/src-tauri/src/compute.rs` tests assert `add_wasi_and_host` returns error when `uicp_wasi_enable` is disabled, and succeeds when enabled.
+    - Next: add integration tests to introspect linked imports and ensure no unexpected capabilities appear (e.g., no `wasi:http`).
 
   - [ ] Negative tests
     - Add Rust unit/integration tests that attempt disallowed FS/net/time operations and assert the runtime surfaces `Compute.CapabilityDenied` or `Compute.Resource.Limit`; mirror critical cases through the Tauri command API in TS tests.【F:uicp/src-tauri/src/main.rs†L230-L333】
@@ -214,8 +226,8 @@ Legend
 - [x] Module verification workflow present (`.github/workflows/verify-modules.yml`)
 
 - [~] Compute build jobs
-  - `rust-compute-build` CI job runs `cargo check`/`cargo build` with `wasm_compute,uicp_wasi_enable` (`.github/workflows/ci.yml:134`).
-  - TODO: add feature-on `cargo test` and integrate Wasm component build smoke.
+  - `compute-ci` workflow compiles the host with `wasm_compute,uicp_wasi_enable` and compiles tests; TS unit tests run headless (`.github/workflows/compute-ci.yml`).
+  - TODO: add feature-on `cargo test` execution and integrate Wasm component build smoke.
 
   - [ ] E2E smoke for compute
     - Add a CI-friendly Playwright job (Linux) that installs the bundled modules, starts the Tauri app in `--headless` or harness mode, submits a known job, and asserts final success/metrics/caching (pairs with the harness item above).
@@ -266,3 +278,5 @@ Legend
 - Bridge: `uicp/src/lib/bridge/tauri.ts`
 - Tests: `uicp/tests/unit/compute.store.test.ts`, Rust unit tests in `compute.rs`
 - Work-in-progress WIT: `uicp/src-tauri/wit/command.wit`, `docs/wit/uicp-host@1.0.0.wit`
+
+

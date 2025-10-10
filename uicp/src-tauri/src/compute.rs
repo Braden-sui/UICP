@@ -41,6 +41,8 @@ pub mod error_codes {
 
 // NOTE: removed unused placeholder import to avoid warning
 
+use sha2::{Digest as _, Sha256};
+
 /// Extract csv.parse input fields from a JSON value.
 pub(crate) fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
     let obj = input
@@ -151,6 +153,17 @@ pub(crate) fn resolve_csv_source(
     }
 }
 
+/// Derive a deterministic per-job seed from `job_id` and `env_hash`.
+/// Stable across replays and platforms; domain-separated.
+pub(crate) fn derive_job_seed(job_id: &str, env_hash: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"UICP-SEED\x00");
+    hasher.update(job_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(env_hash.as_bytes());
+    hasher.finalize().into()
+}
+
 /// Extract table.query input fields from a JSON value.
 pub(crate) fn extract_table_query_input(
     input: &serde_json::Value,
@@ -225,7 +238,7 @@ pub(crate) fn extract_table_query_input(
 mod with_runtime {
     use super::*;
     use bytes::Bytes;
-    use ciborium::value::{Integer, Value};
+    use ciborium::value::Value;
     use chrono::Utc;
     use serde_json;
     use sha2::{Digest, Sha256};
@@ -243,7 +256,8 @@ mod with_runtime {
         DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
         Subscribe, WasiCtx, WasiCtxBuilder, WasiView,
     };
-    use wasmtime_wasi::stdio::StdoutStream as WasiStdoutStream;
+    use wasmtime_wasi::StdoutStream as WasiStdoutStream;
+    use tokio::time::{sleep, Duration as TokioDuration};
     
 
     const DEFAULT_FUEL: u64 = 1_000_000;
@@ -280,6 +294,15 @@ mod with_runtime {
         // Log emission accounting
         emitted_log_bytes: Arc<AtomicU64>,
         max_log_bytes: usize,
+        initial_fuel: u64,
+        // Rate limiters and throttle counters (stdout/stderr)
+        log_rate: Arc<Mutex<RateLimiterBytes>>,
+        log_throttle_waits: Arc<AtomicU64>,
+        // Logger quotas (uicp:host/logger)
+        logger_rate: Arc<Mutex<RateLimiterBytes>>,
+        logger_throttle_waits: Arc<AtomicU64>,
+        partial_rate: Arc<Mutex<RateLimiterEvents>>,
+        partial_throttle_waits: Arc<AtomicU64>,
         limits: StoreLimits,
     }
 
@@ -318,6 +341,9 @@ mod with_runtime {
         partial_seq: Arc<AtomicU64>,
         partial_frames: Arc<AtomicU64>,
         invalid_partial_frames: Arc<AtomicU64>,
+        // Rate limiting for partial frames (events/s)
+        partial_rate: Arc<Mutex<RateLimiterEvents>>,
+        partial_throttle_waits: Arc<AtomicU64>,
     }
 
     struct PartialOutputStream {
@@ -378,6 +404,15 @@ mod with_runtime {
             if bytes.is_empty() {
                 return Ok(());
             }
+            // Consume one event token (best-effort). Backpressure is signaled via ready()/check_write.
+            {
+                let mut rl = self.shared.partial_rate.lock().unwrap();
+                if !rl.try_take_event() {
+                    self.shared
+                        .partial_throttle_waits
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
             match self.process_frame(bytes.as_ref()) {
                 Ok(event) => {
                     self.shared
@@ -400,12 +435,33 @@ mod with_runtime {
         }
 
         fn check_write(&mut self) -> Result<usize, StreamError> {
-            Ok(usize::MAX)
+            // Allow writes when at least one event token is available
+            let mut rl = self.shared.partial_rate.lock().unwrap();
+            if rl.peek_tokens() >= 1.0 {
+                Ok(usize::MAX)
+            } else {
+                Ok(0)
+            }
         }
     }
 
+    #[wasmtime_wasi::async_trait]
     impl Subscribe for PartialOutputStream {
-        async fn ready(&mut self) {}
+        async fn ready(&mut self) {
+            // Wait until an event token is available
+            loop {
+                if {
+                    let mut rl = self.shared.partial_rate.lock().unwrap();
+                    rl.peek_tokens() >= 1.0
+                } {
+                    break;
+                }
+                self.shared
+                    .partial_throttle_waits
+                    .fetch_add(1, Ordering::Relaxed);
+                sleep(TokioDuration::from_millis(10)).await;
+            }
+        }
     }
 
     struct GuestLogShared {
@@ -420,6 +476,9 @@ mod with_runtime {
         max_bytes: usize,
         max_len: usize,
         buf: Mutex<Vec<u8>>, // line buffer across writes
+        // Rate limiting for stdout/stderr (bytes/s)
+        log_rate: Arc<Mutex<RateLimiterBytes>>,
+        log_throttle_waits: Arc<AtomicU64>,
     }
 
     #[derive(Clone)]
@@ -440,6 +499,10 @@ mod with_runtime {
                 shared: self.shared.clone(),
                 channel: self.channel,
             })
+        }
+
+        fn isatty(&self) -> bool {
+            false
         }
     }
 
@@ -523,6 +586,17 @@ mod with_runtime {
 
     impl HostOutputStream for GuestLogStream {
         fn write(&mut self, bytes: Bytes) -> Result<(), StreamError> {
+            // Throttle by byte rate; rely on ready()/check_write for backpressure
+            let len = bytes.len();
+            {
+                let mut rl = self.shared.log_rate.lock().unwrap();
+                if rl.available() < len {
+                    self.shared
+                        .log_throttle_waits
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                rl.consume(len);
+            }
             self.emit_message(bytes.as_ref());
             Ok(())
         }
@@ -532,12 +606,26 @@ mod with_runtime {
         }
 
         fn check_write(&mut self) -> Result<usize, StreamError> {
-            Ok(usize::MAX)
+            let rl = self.shared.log_rate.lock().unwrap();
+            let avail = rl.available();
+            Ok(if avail == 0 { 0 } else { avail })
         }
     }
 
+    #[wasmtime_wasi::async_trait]
     impl Subscribe for GuestLogStream {
-        async fn ready(&mut self) {}
+        async fn ready(&mut self) {
+            loop {
+                let avail = { self.shared.log_rate.lock().unwrap().available() };
+                if avail > 0 {
+                    break;
+                }
+                self.shared
+                    .log_throttle_waits
+                    .fetch_add(1, Ordering::Relaxed);
+                sleep(TokioDuration::from_millis(10)).await;
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -644,6 +732,70 @@ mod with_runtime {
         }
         let truncated: String = input.chars().take(max_chars).collect();
         format!("{truncated}... (truncated)")
+    }
+
+    // ----------------------------
+    // Token-bucket rate limiters
+    // ----------------------------
+    struct RateLimiterBytes {
+        capacity: usize,
+        refill_per_sec: usize,
+        tokens: f64,
+        last: Instant,
+    }
+
+    impl RateLimiterBytes {
+        fn new(capacity: usize, refill_per_sec: usize) -> Self {
+            Self { capacity, refill_per_sec, tokens: capacity as f64, last: Instant::now() }
+        }
+        fn refill(&mut self) {
+            let elapsed = self.last.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                let add = elapsed * self.refill_per_sec as f64;
+                self.tokens = (self.tokens + add).min(self.capacity as f64);
+                self.last = Instant::now();
+            }
+        }
+        fn available(&self) -> usize {
+            self.tokens.max(0.0) as usize
+        }
+        fn consume(&mut self, n: usize) {
+            self.refill();
+            self.tokens = (self.tokens - n as f64).max(0.0);
+        }
+    }
+
+    struct RateLimiterEvents {
+        capacity: f64,
+        refill_per_sec: f64,
+        tokens: f64,
+        last: Instant,
+    }
+    impl RateLimiterEvents {
+        fn new(capacity: u32, refill_per_sec: u32) -> Self {
+            Self { capacity: capacity as f64, refill_per_sec: refill_per_sec as f64, tokens: capacity as f64, last: Instant::now() }
+        }
+        fn refill(&mut self) {
+            let elapsed = self.last.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                let add = elapsed * self.refill_per_sec;
+                self.tokens = (self.tokens + add).min(self.capacity);
+                self.last = Instant::now();
+            }
+        }
+        fn try_take_event(&mut self) -> bool {
+            self.refill();
+            if self.tokens >= 1.0 {
+                self.tokens -= 1.0;
+                true
+            } else {
+                false
+            }
+        }
+        fn peek_tokens(&mut self) -> f64 {
+            self.refill();
+            self.tokens
+        }
     }
 
     impl WasiView for Ctx {
@@ -768,6 +920,14 @@ mod with_runtime {
             let logical_tick = Arc::new(AtomicU64::new(0));
             let emitted_bytes = Arc::new(AtomicU64::new(0));
 
+            // Rate limiters (per job)
+            let log_rate = Arc::new(Mutex::new(RateLimiterBytes::new(1024 * 1024, 256 * 1024))); // stdout+stderr
+            let log_throttle_waits = Arc::new(AtomicU64::new(0));
+            let logger_rate = Arc::new(Mutex::new(RateLimiterBytes::new(64 * 1024, 64 * 1024))); // logger import
+            let logger_throttle_waits = Arc::new(AtomicU64::new(0));
+            let partial_rate = Arc::new(Mutex::new(RateLimiterEvents::new(30, 30)));
+            let partial_throttle_waits = Arc::new(AtomicU64::new(0));
+
             let log_shared = Arc::new(GuestLogShared {
                 emitter: telemetry.clone(),
                 job_id: spec.job_id.clone(),
@@ -779,6 +939,8 @@ mod with_runtime {
                 max_bytes: MAX_LOG_BYTES,
                 max_len: MAX_STDIO_CHARS,
                 buf: Mutex::new(Vec::new()),
+                log_rate: log_rate.clone(),
+                log_throttle_waits: log_throttle_waits.clone(),
             });
 
             let mut wasi_builder = WasiCtxBuilder::new();
@@ -803,6 +965,10 @@ mod with_runtime {
             }
             let wasi = wasi_builder.build();
 
+            // Derive deterministic seed from job + env for replay stability
+            let seed = derive_job_seed(&spec.job_id, &spec.provenance.env_hash);
+            let seed_hex = hex::encode(seed);
+
             let ctx = Ctx {
                 wasi,
                 table: ResourceTable::new(),
@@ -813,7 +979,7 @@ mod with_runtime {
                 partial_frames,
                 invalid_partial_frames: invalid_partials,
                 cancelled: cancelled.clone(),
-                rng_seed: [7u8; 32],
+                rng_seed: seed,
                 logical_tick: logical_tick.clone(),
                 started,
                 deadline_ms: deadline_ms as u32,
@@ -821,6 +987,13 @@ mod with_runtime {
                 log_count,
                 emitted_log_bytes: emitted_bytes.clone(),
                 max_log_bytes: MAX_LOG_BYTES,
+                initial_fuel: 0,
+                log_rate,
+                log_throttle_waits,
+                logger_rate,
+                logger_throttle_waits,
+                partial_rate,
+                partial_throttle_waits,
                 limits,
             };
             let mut store: Store<Ctx> = Store::new(&engine, ctx);
@@ -839,11 +1012,21 @@ mod with_runtime {
                     "imports": ["wasi:io/streams", "wasi:clocks", "wasi:random", "uicp:host/*"],
                 }));
             }
+            // Emit seed for reproducibility in debug logs
+            telemetry.emit_debug(serde_json::json!({
+                "event": "rng_seed",
+                "jobId": spec.job_id,
+                "task": spec.task,
+                "seedHex": seed_hex,
+            }));
 
-            // Configure fuel and epoch deadline enforcement.
+            // Configure fuel (optional) and epoch deadline enforcement.
             // Spawn epoch tick pump to enforce wall-clock deadline.
-            // CPU fuel metering is disabled in V1 (wall-clock epoch deadline only). Keep knob for future.
-            let _fuel_ignored = spec.fuel.filter(|f| *f > 0).unwrap_or(DEFAULT_FUEL);
+            if let Some(f) = spec.fuel.filter(|f| *f > 0) {
+                // Record initial fuel in context and seed store fuel.
+                store.data_mut().initial_fuel = f;
+                let _ = store.set_fuel(f);
+            }
             let mut deadline_ticks =
                 deadline_ms.saturating_add(EPOCH_TICK_INTERVAL_MS - 1) / EPOCH_TICK_INTERVAL_MS;
             if deadline_ticks == 0 {
@@ -955,7 +1138,7 @@ mod with_runtime {
                         };
                         match call_res {
                             Ok(output_json) => {
-                                let metrics = collect_metrics(&mut store);
+                                let metrics = collect_metrics(&store);
                                 finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
                             }
                             Err(err) => {
@@ -1048,7 +1231,7 @@ mod with_runtime {
                         };
                         match call_res {
                             Ok(output_json) => {
-                                let metrics = collect_metrics(&mut store);
+                                let metrics = collect_metrics(&store);
                                 finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
                             }
                             Err(err) => {
@@ -1136,7 +1319,7 @@ mod with_runtime {
     fn host_open_partial_sink(
         mut store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
-    ) -> anyhow::Result<Resource<WasiOutputStream>> {
+    ) -> anyhow::Result<(Resource<WasiOutputStream>,)> {
         {
             let ctx = store.data();
             if job != ctx.job_id {
@@ -1153,40 +1336,42 @@ mod with_runtime {
                 partial_seq: ctx.partial_seq.clone(),
                 partial_frames: ctx.partial_frames.clone(),
                 invalid_partial_frames: ctx.invalid_partial_frames.clone(),
+                partial_rate: ctx.partial_rate.clone(),
+                partial_throttle_waits: ctx.partial_throttle_waits.clone(),
             })
         };
         let stream: WasiOutputStream = Box::new(PartialOutputStream::new(shared));
         let handle = store.data_mut().table.push(stream)?;
-        Ok(handle)
+        Ok((handle,))
     }
 
     fn host_should_cancel(
-        mut store: StoreContextMut<'_, Ctx>,
+        store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<(bool,)> {
         let ctx = store.data();
         if job != ctx.job_id {
             log_job_mismatch(ctx, "should-cancel", &job);
-            return Ok(true);
+            return Ok((true,));
         }
-        Ok(ctx.cancelled.load(Ordering::Relaxed))
+        Ok((ctx.cancelled.load(Ordering::Relaxed),))
     }
 
     fn host_deadline_ms(
         store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
-    ) -> anyhow::Result<u32> {
+    ) -> anyhow::Result<(u32,)> {
         let ctx = store.data();
         if job != ctx.job_id {
             log_job_mismatch(ctx, "deadline-ms", &job);
         }
-        Ok(ctx.deadline_ms)
+        Ok((ctx.deadline_ms,))
     }
 
     fn host_remaining_ms(
-        mut store: StoreContextMut<'_, Ctx>,
+        store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
-    ) -> anyhow::Result<u32> {
+    ) -> anyhow::Result<(u32,)> {
         let ctx = store.data();
         if job != ctx.job_id {
             log_job_mismatch(ctx, "remaining-ms", &job);
@@ -1194,13 +1379,13 @@ mod with_runtime {
         let elapsed = ctx.started.elapsed().as_millis() as u64;
         let deadline = ctx.deadline_ms as u64;
         let remaining = deadline.saturating_sub(elapsed);
-        Ok(remaining.min(u32::MAX as u64) as u32)
+        Ok((remaining.min(u32::MAX as u64) as u32,))
     }
 
     fn host_rng_next_u64(
         mut store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
-    ) -> anyhow::Result<u64> {
+    ) -> anyhow::Result<(u64,)> {
         if job != store.data().job_id {
             let ctx = store.data();
             log_job_mismatch(ctx, "rng.next-u64", &job);
@@ -1208,18 +1393,18 @@ mod with_runtime {
         let ctx = store.data_mut();
         let block = derive_rng_block(&ctx.rng_seed, ctx.rng_counter);
         ctx.rng_counter = ctx.rng_counter.saturating_add(1);
-        Ok(u64::from_le_bytes(block[0..8].try_into().unwrap()))
+        Ok((u64::from_le_bytes(block[0..8].try_into().unwrap()),))
     }
 
     fn host_rng_fill(
         mut store: StoreContextMut<'_, Ctx>,
         (job, len): (String, u32),
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<(Vec<u8>,)> {
         if job != store.data().job_id {
             let ctx = store.data();
             log_job_mismatch(ctx, "rng.fill", &job);
         }
-        let mut ctx = store.data_mut();
+        let ctx = store.data_mut();
         let mut out = Vec::with_capacity(len as usize);
         while out.len() < len as usize {
             let block = derive_rng_block(&ctx.rng_seed, ctx.rng_counter);
@@ -1227,20 +1412,38 @@ mod with_runtime {
             let remaining = len as usize - out.len();
             out.extend_from_slice(&block[..remaining.min(block.len())]);
         }
-        Ok(out)
+        Ok((out,))
     }
 
     fn host_logger_log(
         mut store: StoreContextMut<'_, Ctx>,
         (level, message): (u32, String),
     ) -> anyhow::Result<()> {
+        use std::thread::sleep as block_sleep;
+        use std::time::Duration as StdDuration;
         let ctx = store.data();
         static LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
         let level_str = LEVELS
             .get(level as usize)
             .copied()
             .unwrap_or("info");
-        ctx.log_count.fetch_add(1, Ordering::Relaxed);
+        // Rate limit the logger: block in small intervals until enough tokens are available
+        let msg_len = message.as_bytes().len();
+        loop {
+            let mut rl = store.data().logger_rate.lock().unwrap();
+            if rl.available() >= msg_len {
+                rl.consume(msg_len);
+                break;
+            }
+            drop(rl);
+            store
+                .data()
+                .logger_throttle_waits
+                .fetch_add(1, Ordering::Relaxed);
+            block_sleep(StdDuration::from_millis(10));
+        }
+
+        store.data().log_count.fetch_add(1, Ordering::Relaxed);
 
         // Partial log event with deterministic seq/tick and byte caps
         let bytes = message.as_bytes();
@@ -1289,19 +1492,19 @@ mod with_runtime {
     }
 
     fn host_clock_now_ms(
-        mut store: StoreContextMut<'_, Ctx>,
+        store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
-    ) -> anyhow::Result<u64> {
+    ) -> anyhow::Result<(u64,)> {
         let ctx = store.data();
         if job != ctx.job_id {
             log_job_mismatch(ctx, "clock.now-ms", &job);
         }
         // Deterministic logical time: increment a job-scoped tick and return it (ms units)
-        Ok(store
+        Ok((store
             .data()
             .logical_tick
             .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1))
+            .saturating_add(1),))
     }
 
     fn derive_rng_block(seed: &[u8; 32], counter: u64) -> [u8; 32] {
@@ -1511,17 +1714,33 @@ mod with_runtime {
         crate::remove_compute_job(app, job_id).await;
     }
 
-    fn collect_metrics(store: &mut wasmtime::Store<Ctx>) -> serde_json::Value {
+    fn collect_metrics(store: &wasmtime::Store<Ctx>) -> serde_json::Value {
         let duration_ms = store.data().started.elapsed().as_millis() as i64;
         let remaining = (store.data().deadline_ms as i64 - duration_ms).max(0) as i64;
-        let metrics = serde_json::json!({
+        let mut metrics = serde_json::json!({
             "durationMs": duration_ms,
             "deadlineMs": store.data().deadline_ms,
             "logCount": store.data().log_count.load(Ordering::Relaxed),
             "partialFrames": store.data().partial_frames.load(Ordering::Relaxed),
             "invalidPartialsDropped": store.data().invalid_partial_frames.load(Ordering::Relaxed),
             "remainingMsAtFinish": remaining,
+            "rngSeedHex": hex::encode(store.data().rng_seed),
+            "logThrottleWaits": store.data().log_throttle_waits.load(Ordering::Relaxed),
+            "partialThrottleWaits": store.data().partial_throttle_waits.load(Ordering::Relaxed),
+            "loggerThrottleWaits": store.data().logger_throttle_waits.load(Ordering::Relaxed),
         });
+        // Optional fuel metrics if enabled
+        if store.data().initial_fuel > 0 {
+            if let Ok(remaining) = store.get_fuel() {
+                let used = store
+                    .data()
+                    .initial_fuel
+                    .saturating_sub(remaining);
+                if let Some(obj) = metrics.as_object_mut() {
+                    obj.insert("fuelUsed".into(), serde_json::json!(used));
+                }
+            }
+        }
         metrics
     }
 
@@ -1691,6 +1910,50 @@ mod with_runtime {
             let _ = std::fs::remove_file(&file_path);
             let _ = std::fs::remove_dir_all(&base);
         }
+
+        #[test]
+        fn rate_limiter_bytes_refills_over_time() {
+            let mut rl = RateLimiterBytes::new(1024, 256); // 1 KiB burst, 256 B/s
+            assert!(rl.available() >= 1024);
+            rl.consume(800);
+            let after_consume = rl.available();
+            assert!(after_consume <= 224, "expected ~224 tokens left, got {}", after_consume);
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            rl.consume(0); // trigger refill calculation
+            assert!(rl.available() > after_consume, "tokens should have refilled");
+        }
+
+        #[test]
+        fn rate_limiter_events_refills_over_time() {
+            let mut rl = RateLimiterEvents::new(10, 10); // 10 events/s
+            // Consume 10 events
+            let mut taken = 0;
+            while rl.try_take_event() { taken += 1; }
+            assert_eq!(taken, 10);
+            // No tokens immediately
+            assert!(rl.peek_tokens() < 1.0);
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            assert!(rl.peek_tokens() >= 1.0, "should have at least one token after 120ms");
+        }
+
+        // WASI deny-by-default proofs
+        #[cfg(all(feature = "wasm_compute", not(feature = "uicp_wasi_enable")))]
+        #[test]
+        fn wasi_add_returns_error_when_disabled() {
+            let engine = build_engine().expect("engine");
+            let mut linker: Linker<Ctx> = Linker::new(&engine);
+            let err = add_wasi_and_host(&mut linker).expect_err("expected wasi disabled error");
+            let msg = err.to_string().to_lowercase();
+            assert!(msg.contains("wasi") && msg.contains("disabled"), "unexpected error: {msg}");
+        }
+
+        #[cfg(all(feature = "wasm_compute", feature = "uicp_wasi_enable"))]
+        #[test]
+        fn wasi_add_succeeds_when_enabled() {
+            let engine = build_engine().expect("engine");
+            let mut linker: Linker<Ctx> = Linker::new(&engine);
+            add_wasi_and_host(&mut linker).expect("wasi add ok");
+        }
     }
 
 // -----------------------------------------------------------------------------
@@ -1726,6 +1989,29 @@ mod helper_tests {
         assert_eq!(sel, vec![1u32, 0u32]);
         assert_eq!(where_opt, Some((0u32, "a".into())));
     }
+    }
+
+    #[test]
+    fn derive_job_seed_is_stable_and_unique_per_env() {
+        let a1 = derive_job_seed(
+            "00000000-0000-4000-8000-000000000001",
+            "env-a",
+        );
+        let a2 = derive_job_seed(
+            "00000000-0000-4000-8000-000000000001",
+            "env-a",
+        );
+        let b = derive_job_seed(
+            "00000000-0000-4000-8000-000000000002",
+            "env-a",
+        );
+        let c = derive_job_seed(
+            "00000000-0000-4000-8000-000000000001",
+            "env-b",
+        );
+        assert_eq!(a1, a2, "seed must be deterministic for same (job, env)");
+        assert_ne!(a1, b, "seed must vary across job ids");
+        assert_ne!(a1, c, "seed must vary across env hashes");
     }
 }
 

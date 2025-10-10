@@ -113,6 +113,8 @@ Metrics (final Ok)
 - durationMs, deadlineMs, remainingMsAtFinish
 - logCount, partialFrames, invalidPartialsDropped
 - fuelUsed (when > 0)
+- rngSeedHex (for determinism probes)
+- logThrottleWaits (stdout/stderr), loggerThrottleWaits, partialThrottleWaits (rate-limit signals)
 - outputHash (sha256 over canonicalized JSON output)
 
 Guest logs and diagnostics

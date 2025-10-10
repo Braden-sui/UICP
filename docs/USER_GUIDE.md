@@ -1,7 +1,7 @@
 User Guide: Understanding UICP
 
 What is UICP
-- UICP is a desktop you build by describing what you want. The AI plans the work, then applies safe building blocks called commands.
+- UICP is a desktop you build by describing what you want. The AI plans the work, then applies safe building blocks called commands, this isn't just a toy or a proof of concept, it's a real desktop that you can use for your day to day flow. It's a whole shift in AI interaction. 
 
 Core concepts
 - Windows: places to show content.

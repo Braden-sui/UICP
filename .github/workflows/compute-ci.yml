@@ -1,0 +1,46 @@
+name: compute-ci
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Rust check (compute host)
+        working-directory: uicp/src-tauri
+        run: |
+          cargo check --features "wasm_compute uicp_wasi_enable"
+
+      - name: Rust tests compile (no run)
+        working-directory: uicp/src-tauri
+        run: |
+          cargo test --features "wasm_compute uicp_wasi_enable" --no-run
+
+      - name: Node install
+        working-directory: uicp
+        run: |
+          npm ci
+
+      - name: Unit tests (TS)
+        working-directory: uicp
+        run: |
+          npm run -s test
+
