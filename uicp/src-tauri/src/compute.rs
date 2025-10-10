@@ -9,10 +9,9 @@ use std::time::Duration;
 #[cfg(feature = "wasm_compute")]
 use std::time::Instant;
 
-#[cfg(feature = "wasm_compute")]
+// Base64 engine is needed by helpers regardless of wasm feature; import unconditionally.
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
-#[cfg(feature = "wasm_compute")]
-use base64::Engine;
+use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::OwnedSemaphorePermit;
@@ -36,6 +35,210 @@ pub mod error_codes {
     pub const MODULE_SIGNATURE_INVALID: &str = "Module.SignatureInvalid";
 }
 
+// -----------------------------------------------------------------------------
+// Shared helpers (feature-independent) for task input prep and workspace FS policy
+// -----------------------------------------------------------------------------
+
+use std::path::PathBuf as _PathBufForDocsOnly; // keep imports consistent when helpers unused on some builds
+
+/// Extract csv.parse input fields from a JSON value.
+pub(crate) fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
+    let obj = input
+        .as_object()
+        .ok_or_else(|| "input must be an object".to_string())?;
+    let source = obj
+        .get("source")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "input.source must be a string".to_string())?
+        .to_string();
+    let has_header = obj
+        .get("hasHeader")
+        .and_then(|v| v.as_bool())
+        .or_else(|| obj.get("has-header").and_then(|v| v.as_bool()))
+        .unwrap_or(true);
+    Ok((source, has_header))
+}
+
+/// Validate and map a `ws:/files/...` path to a host path under FILES_DIR.
+/// Rules: must start with ws:/files/, no absolute, no `..` segments, normalize separators.
+pub(crate) fn sanitize_ws_files_path(ws_path: &str) -> Result<std::path::PathBuf, String> {
+    let prefix = "ws:/files/";
+    if !ws_path.starts_with(prefix) {
+        return Err("path must start with ws:/files/".into());
+    }
+    let rel = &ws_path[prefix.len()..];
+    if rel.is_empty() {
+        return Err("path missing trailing file segment".into());
+    }
+    let base = crate::files_dir_path();
+    let base_canonical = base
+        .canonicalize()
+        .map_err(|err| format!("files directory unavailable: {err}"))?;
+    let mut buf = std::path::PathBuf::from(base);
+    for seg in rel.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            return Err("parent traversal not allowed".into());
+        }
+        if seg.contains('\\') {
+            return Err("invalid separator in path".into());
+        }
+        buf.push(seg);
+    }
+    let candidate = buf;
+    match candidate.canonicalize() {
+        Ok(canonical) => {
+            if !canonical.starts_with(&base_canonical) {
+                return Err("path escapes workspace files directory".into());
+            }
+            Ok(candidate)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = candidate.parent() {
+                if let Ok(parent_canon) = parent.canonicalize() {
+                    if !parent_canon.starts_with(&base_canonical) {
+                        return Err("path escapes workspace files directory".into());
+                    }
+                }
+            }
+            Ok(candidate)
+        }
+        Err(err) => Err(format!("canonicalize failed: {err}")),
+    }
+}
+
+/// Capability check: ensure a ws:/ path is allowed by fs_read caps (supports /** suffix glob).
+pub(crate) fn fs_read_allowed(spec: &ComputeJobSpec, ws_path: &str) -> bool {
+    if spec.capabilities.fs_read.is_empty() {
+        return false;
+    }
+    for pat in spec.capabilities.fs_read.iter() {
+        let p = pat.as_str();
+        if p.ends_with("/**") {
+            let base = &p[..p.len() - 3];
+            if ws_path.starts_with(base) {
+                return true;
+            }
+        } else if p == ws_path {
+            return true;
+        }
+    }
+    false
+}
+
+/// Resolve csv.parse source string, enforcing workspace policy when using `ws:/files/...`.
+pub(crate) fn resolve_csv_source(
+    spec: &ComputeJobSpec,
+    source: &str,
+) -> Result<String, (&'static str, String)> {
+    if !source.starts_with("ws:/files/") {
+        return Ok(source.to_string());
+    }
+    if !fs_read_allowed(spec, source) {
+        return Err((
+            error_codes::CAPABILITY_DENIED,
+            "fs_read does not allow this path".into(),
+        ));
+    }
+    let host_path = sanitize_ws_files_path(source).map_err(|e| (error_codes::IO_DENIED, e))?;
+    match std::fs::read(host_path) {
+        Ok(bytes) => Ok(format!(
+            "data:text/csv;base64,{}",
+            BASE64_ENGINE.encode(bytes)
+        )),
+        Err(err) => Err((error_codes::IO_DENIED, format!("read failed: {err}"))),
+    }
+}
+
+/// Extract table.query input fields from a JSON value.
+pub(crate) fn extract_table_query_input(
+    input: &serde_json::Value,
+) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), String> {
+    let obj = input
+        .as_object()
+        .ok_or_else(|| "input must be an object".to_string())?;
+    // rows: list<list<string>>
+    let rows_val = obj
+        .get("rows")
+        .ok_or_else(|| "input.rows required".to_string())?;
+    let rows = rows_val
+        .as_array()
+        .ok_or_else(|| "input.rows must be an array".to_string())?
+        .iter()
+        .map(|row| {
+            let arr = row
+                .as_array()
+                .ok_or_else(|| "row must be an array".to_string())?;
+            Ok(arr
+                .iter()
+                .map(|cell| cell.as_str().unwrap_or("").to_string())
+                .collect::<Vec<String>>())
+        })
+        .collect::<Result<Vec<Vec<String>>, String>>()?;
+
+    // select: list<u32>
+    let select_val = obj
+        .get("select")
+        .ok_or_else(|| "input.select required".to_string())?;
+    let select = select_val
+        .as_array()
+        .ok_or_else(|| "input.select must be an array".to_string())?
+        .iter()
+        .map(|v| {
+            v.as_u64()
+                .ok_or_else(|| "select entries must be non-negative integers".to_string())
+                .map(|u| u as u32)
+        })
+        .collect::<Result<Vec<u32>, String>>()?;
+
+    // where_contains: option<record { col: u32, needle: string }>
+    let where_opt = if let Some(w) = obj.get("where_contains") {
+        if w.is_null() {
+            None
+        } else {
+            let wobj = w
+                .as_object()
+                .ok_or_else(|| "where_contains must be an object".to_string())?;
+            let col = wobj
+                .get("col")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| "where_contains.col must be u32".to_string())?
+                as u32;
+            let needle = wobj
+                .get("needle")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "where_contains.needle must be string".to_string())?
+                .to_string();
+            Some((col, needle))
+        }
+    } else {
+        None
+    };
+
+    Ok((rows, select, where_opt))
+}
+
+fn validate_rows_value(val: &serde_json::Value) -> bool {
+    let arr = match val.as_array() {
+        Some(a) => a,
+        None => return false,
+    };
+    for row in arr.iter() {
+        let r = match row.as_array() {
+            Some(r) => r,
+            None => return false,
+        };
+        for cell in r.iter() {
+            if !cell.is_string() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
@@ -49,30 +252,10 @@ mod with_runtime {
         Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
     };
     use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
-    // Bring base64::Engine trait methods (encode/decode) into scope within this module.
-    use base64::Engine as _;
 
     const DEFAULT_FUEL: u64 = 1_000_000;
     const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
     const EPOCH_TICK_INTERVAL_MS: u64 = 10;
-
-    #[allow(dead_code)]
-    fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
-        let obj = input
-            .as_object()
-            .ok_or_else(|| "input must be an object".to_string())?;
-        let source = obj
-            .get("source")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "input.source must be a string".to_string())?
-            .to_string();
-        let has_header = obj
-            .get("hasHeader")
-            .and_then(|v| v.as_bool())
-            .or_else(|| obj.get("has-header").and_then(|v| v.as_bool()))
-            .unwrap_or(true);
-        Ok((source, has_header))
-    }
 
     // Optional bindgen scaffold for component interfaces (disabled by default until refactor completes)
     #[cfg(all(feature = "wasm_compute", feature = "uicp_bindgen"))]
@@ -92,186 +275,6 @@ mod with_runtime {
             // Default ON
             _ => true,
         }
-    }
-
-    #[allow(dead_code)]
-    fn extract_table_query_input(
-        input: &serde_json::Value,
-    ) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), String> {
-        let obj = input
-            .as_object()
-            .ok_or_else(|| "input must be an object".to_string())?;
-        // rows: list<list<string>>
-        let rows_val = obj
-            .get("rows")
-            .ok_or_else(|| "input.rows required".to_string())?;
-        let rows = rows_val
-            .as_array()
-            .ok_or_else(|| "input.rows must be an array".to_string())?
-            .iter()
-            .map(|row| {
-                let arr = row
-                    .as_array()
-                    .ok_or_else(|| "row must be an array".to_string())?;
-                Ok(arr
-                    .iter()
-                    .map(|cell| cell.as_str().unwrap_or("").to_string())
-                    .collect::<Vec<String>>())
-            })
-            .collect::<Result<Vec<Vec<String>>, String>>()?;
-
-        // select: list<u32>
-        let select_val = obj
-            .get("select")
-            .ok_or_else(|| "input.select required".to_string())?;
-        let select = select_val
-            .as_array()
-            .ok_or_else(|| "input.select must be an array".to_string())?
-            .iter()
-            .map(|v| {
-                v.as_u64()
-                    .ok_or_else(|| "select entries must be non-negative integers".to_string())
-                    .map(|u| u as u32)
-            })
-            .collect::<Result<Vec<u32>, String>>()?;
-
-        // where_contains: option<record { col: u32, needle: string }>
-        let where_opt = if let Some(w) = obj.get("where_contains") {
-            if w.is_null() {
-                None
-            } else {
-                let wobj = w
-                    .as_object()
-                    .ok_or_else(|| "where_contains must be an object".to_string())?;
-                let col = wobj
-                    .get("col")
-                    .and_then(|v| v.as_u64())
-                    .ok_or_else(|| "where_contains.col must be u32".to_string())?
-                    as u32;
-                let needle = wobj
-                    .get("needle")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "where_contains.needle must be string".to_string())?
-                    .to_string();
-                Some((col, needle))
-            }
-        } else {
-            None
-        };
-
-        Ok((rows, select, where_opt))
-    }
-
-    fn validate_rows_value(val: &serde_json::Value) -> bool {
-        let arr = match val.as_array() {
-            Some(a) => a,
-            None => return false,
-        };
-        for row in arr.iter() {
-            let r = match row.as_array() {
-                Some(r) => r,
-                None => return false,
-            };
-            for cell in r.iter() {
-                if !cell.is_string() {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    /// Resolve csv.parse source string, enforcing workspace policy when using `ws:/files/...`.
-    fn resolve_csv_source(
-        spec: &ComputeJobSpec,
-        source: &str,
-    ) -> Result<String, (&'static str, String)> {
-        if !source.starts_with("ws:/files/") {
-            return Ok(source.to_string());
-        }
-        if !fs_read_allowed(spec, source) {
-            return Err((
-                error_codes::CAPABILITY_DENIED,
-                "fs_read does not allow this path".into(),
-            ));
-        }
-        let host_path = sanitize_ws_files_path(source).map_err(|e| (error_codes::IO_DENIED, e))?;
-        match std::fs::read(host_path) {
-            Ok(bytes) => Ok(format!(
-                "data:text/csv;base64,{}",
-                BASE64_ENGINE.encode(bytes)
-            )),
-            Err(err) => Err((error_codes::IO_DENIED, format!("read failed: {err}"))),
-        }
-    }
-
-    /// Validate and map a `ws:/files/...` path to a host path under FILES_DIR.
-    /// Rules: must start with ws:/files/, no absolute, no `..` segments, normalize separators.
-    fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, String> {
-        let prefix = "ws:/files/";
-        if !ws_path.starts_with(prefix) {
-            return Err("path must start with ws:/files/".into());
-        }
-        let rel = &ws_path[prefix.len()..];
-        if rel.is_empty() {
-            return Err("path missing trailing file segment".into());
-        }
-        let base = crate::files_dir_path();
-        let base_canonical = base
-            .canonicalize()
-            .map_err(|err| format!("files directory unavailable: {err}"))?;
-        let mut buf = PathBuf::from(base);
-        for seg in rel.split('/') {
-            if seg.is_empty() || seg == "." {
-                continue;
-            }
-            if seg == ".." {
-                return Err("parent traversal not allowed".into());
-            }
-            if seg.contains('\\') {
-                return Err("invalid separator in path".into());
-            }
-            buf.push(seg);
-        }
-        let candidate = buf;
-        match candidate.canonicalize() {
-            Ok(canonical) => {
-                if !canonical.starts_with(&base_canonical) {
-                    return Err("path escapes workspace files directory".into());
-                }
-                Ok(candidate)
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                if let Some(parent) = candidate.parent() {
-                    if let Ok(parent_canon) = parent.canonicalize() {
-                        if !parent_canon.starts_with(&base_canonical) {
-                            return Err("path escapes workspace files directory".into());
-                        }
-                    }
-                }
-                Ok(candidate)
-            }
-            Err(err) => Err(format!("canonicalize failed: {err}")),
-        }
-    }
-
-    /// Capability check: ensure a ws:/ path is allowed by fs_read caps (supports /** suffix glob).
-    fn fs_read_allowed(spec: &ComputeJobSpec, ws_path: &str) -> bool {
-        if spec.capabilities.fs_read.is_empty() {
-            return false;
-        }
-        for pat in spec.capabilities.fs_read.iter() {
-            let p = pat.as_str();
-            if p.ends_with("/**") {
-                let base = &p[..p.len() - 3];
-                if ws_path.starts_with(base) {
-                    return true;
-                }
-            } else if p == ws_path {
-                return true;
-            }
-        }
-        false
     }
 
     /// Execution context for a single job store.
@@ -492,15 +495,59 @@ mod with_runtime {
                 let inst =
                     uicp_bindings::Command::instantiate(&mut store, &component, &linker).await;
                 match inst {
-                    Ok((_bindings, _instance)) => {
-                        finalize_error(
-                            &app,
-                            &spec,
-                            error_codes::RUNTIME_FAULT,
-                            "Wasm component instantiated (bindgen); execution wiring pending",
-                            started,
-                        )
-                        .await;
+                    Ok((_bindings, instance)) => {
+                        // Determine task and call the appropriate export using typed API
+                        let task_name = spec.task.split('@').next().unwrap_or("");
+                        let call_res: Result<serde_json::Value, anyhow::Error> = match task_name {
+                            "csv.parse" => {
+                                let (src, has_header) = extract_csv_input(&spec.input)
+                                    .map_err(|e| anyhow::anyhow!(e))?;
+                                let resolved = resolve_csv_source(&spec, &src)
+                                    .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)))?;
+                                let func: wasmtime::component::TypedFunc<
+                                    (String, String, bool),
+                                    Result<Vec<Vec<String>>, String>,
+                                > = instance
+                                    .get_typed_func(&mut store, "csv#run")
+                                    .map_err(anyhow::Error::from)?;
+                                match func.call_async(&mut store, (spec.job_id.clone(), resolved, has_header)).await {
+                                    Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
+                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
+                                    Err(e) => Err(anyhow::Error::from(e)),
+                                }
+                            }
+                            "table.query" => {
+                                let (rows, select, where_opt) =
+                                    extract_table_query_input(&spec.input)
+                                        .map_err(|e| anyhow::anyhow!(e))?;
+                                let func: wasmtime::component::TypedFunc<
+                                    (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                    Result<Vec<Vec<String>>, String>,
+                                > = instance
+                                    .get_typed_func(&mut store, "table#run")
+                                    .map_err(anyhow::Error::from)?;
+                                match func
+                                    .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
+                                    .await
+                                {
+                                    Ok(Ok(out)) => Ok(serde_json::json!(out)),
+                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
+                                    Err(e) => Err(anyhow::Error::from(e)),
+                                }
+                            }
+                            _ => Err(anyhow::anyhow!("unknown task for this world")),
+                        };
+                        match call_res {
+                            Ok(output_json) => {
+                                let metrics = collect_metrics(&mut store);
+                                finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
+                            }
+                            Err(err) => {
+                                let (code, msg) = map_trap_error(&err);
+                                let message = if msg.is_empty() { err.to_string() } else { msg };
+                                finalize_error(&app, &spec, code, &message, started).await;
+                            }
+                        }
                         abort_epoch();
                     }
                     Err(err) => {
@@ -516,16 +563,59 @@ mod with_runtime {
             {
                 let inst_res: Result<Instance, _> = Instance::new(&mut store, &component, &linker);
                 match inst_res {
-                    Ok(_instance) => {
-                        // For now we only validate instantiation and finalize with a pending-wiring message.
-                        finalize_error(
-                            &app,
-                            &spec,
-                            error_codes::RUNTIME_FAULT,
-                            "Wasm component instantiated; execution wiring pending",
-                            started,
-                        )
-                        .await;
+                    Ok(instance) => {
+                        // Call appropriate export using typed API
+                        let task_name = spec.task.split('@').next().unwrap_or("");
+                        let call_res: Result<serde_json::Value, anyhow::Error> = match task_name {
+                            "csv.parse" => {
+                                let (src, has_header) = extract_csv_input(&spec.input)
+                                    .map_err(|e| anyhow::anyhow!(e))?;
+                                let resolved = resolve_csv_source(&spec, &src)
+                                    .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)))?;
+                                let func: wasmtime::component::TypedFunc<
+                                    (String, String, bool),
+                                    Result<Vec<Vec<String>>, String>,
+                                > = instance
+                                    .get_typed_func(&mut store, "csv#run")
+                                    .map_err(anyhow::Error::from)?;
+                                match func.call_async(&mut store, (spec.job_id.clone(), resolved, has_header)).await {
+                                    Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
+                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
+                                    Err(e) => Err(anyhow::Error::from(e)),
+                                }
+                            }
+                            "table.query" => {
+                                let (rows, select, where_opt) =
+                                    extract_table_query_input(&spec.input)
+                                        .map_err(|e| anyhow::anyhow!(e))?;
+                                let func: wasmtime::component::TypedFunc<
+                                    (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                    Result<Vec<Vec<String>>, String>,
+                                > = instance
+                                    .get_typed_func(&mut store, "table#run")
+                                    .map_err(anyhow::Error::from)?;
+                                match func
+                                    .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
+                                    .await
+                                {
+                                    Ok(Ok(out)) => Ok(serde_json::json!(out)),
+                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
+                                    Err(e) => Err(anyhow::Error::from(e)),
+                                }
+                            }
+                            _ => Err(anyhow::anyhow!("unknown task for this world")),
+                        };
+                        match call_res {
+                            Ok(output_json) => {
+                                let metrics = collect_metrics(&mut store);
+                                finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
+                            }
+                            Err(err) => {
+                                let (code, msg) = map_trap_error(&err);
+                                let message = if msg.is_empty() { err.to_string() } else { msg };
+                                finalize_error(&app, &spec, code, &message, started).await;
+                            }
+                        }
                         abort_epoch();
                     }
                     Err(err) => {
@@ -928,6 +1018,41 @@ mod with_runtime {
             let _ = std::fs::remove_dir_all(&base);
         }
     }
+
+// -----------------------------------------------------------------------------
+// Non-wasm unit tests for helpers
+// -----------------------------------------------------------------------------
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn extract_csv_input_supports_has_header_variants() {
+        let v1 = serde_json::json!({"source":"x","hasHeader":true});
+        let (s1, h1) = extract_csv_input(&v1).unwrap();
+        assert_eq!(s1, "x");
+        assert!(h1);
+
+        let v2 = serde_json::json!({"source":"y","has-header":false});
+        let (s2, h2) = extract_csv_input(&v2).unwrap();
+        assert_eq!(s2, "y");
+        assert!(!h2);
+    }
+
+    #[test]
+    fn extract_table_query_input_parses_rows_select_and_where() {
+        let v = serde_json::json!({
+            "rows": [["a","b"],["c","d"]],
+            "select": [1u32,0u32],
+            "where_contains": {"col": 0u32, "needle": "a"}
+        });
+        let (rows, sel, where_opt) = extract_table_query_input(&v).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec!["a".into(), "b".into()]);
+        assert_eq!(sel, vec![1u32, 0u32]);
+        assert_eq!(where_opt, Some((0u32, "a".into())));
+    }
+}
 }
 
 #[cfg(not(feature = "wasm_compute"))]

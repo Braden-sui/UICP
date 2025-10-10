@@ -50,9 +50,12 @@ Legend
   - Core P2 wired behind `uicp_wasi_enable`; disabled path now errors with guidance
   - Pending: define precise preopens/policy and stdio/log bindings
 
-- [ ] Guest export invocation (execution wiring)
-  - Current state: component instantiates then returns a placeholder “execution wiring pending” fault
-  - TODO: resolve interface (WIT or raw), call the task’s export (e.g., `run`), and plumb inputs/outputs
+- [~] Guest export invocation (execution wiring)
+  - Current state: typed export invocation wired in host (`uicp/src-tauri/src/compute.rs`) using Wasmtime Component typed API.
+    - csv.parse: calls `csv#run(job_id, source, has_header)` after enforcing `ws:/files` policy and resolving to data: URL when needed
+    - table.query: calls `table#run(job_id, rows, select, where_contains)` with validated JSON → WIT mapping
+    - Success path emits `compute.result.final` with metrics via `finalize_ok_with_metrics()`; errors mapped via `map_trap_error()`
+  - Remaining: generate and gate WIT bindings (`uicp_bindgen`), enrich metrics (fuelUsed, memPeakMb), and add partial event streaming
 
 - [ ] Partial event streaming and guest logs
   - TODO: surface `compute.result.partial` frames with seq, and count/log metrics (`partialFrames`, `invalidPartialsDropped`)
