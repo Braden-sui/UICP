@@ -60,14 +60,21 @@ Legend
       - [ ] Build the per-workspace readonly preopen using `WasiCtxBuilder::new().preopened_dir(...)` so guests can opt into `ws:/files/**` access while still flowing through `sanitize_ws_files_path()` and `fs_read_allowed()` policy guards.【F:uicp/src-tauri/src/compute.rs†L352-L398】
       - [ ] Provide deterministic stdio/log bindings: plumb WASI stdout/stderr and the `uicp:host/logger` import into `ComputePartialEvent` emissions and increment the per-job `log_count` counter (`Ctx.log_count`).【F:uicp/src-tauri/src/compute.rs†L252-L264】【F:uicp/src-tauri/src/main.rs†L270-L305】
       - [ ] Implement host shims for `uicp:host/control`, `uicp:host/rng`, and `uicp:host/clock` so the job-scoped fields (`rng_seed`, `logical_tick`, `deadline_ms`, `remaining_ms`) are observable by guests and captured for replay/metrics.【F:uicp/src-tauri/src/compute.rs†L255-L264】【F:docs/wit/uicp-host@1.0.0.wit†L1-L49】
-    - Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs.
+    - [ ]Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs.
+   IntegrationDeterministic seed contract
 
-  - [x] Guest export invocation (execution wiring)
+AC: Job has a stable seed, either JobSpec.jobSeed or seed = SHA256(jobId || envHash), and it is logged and replayed.
+
+- [ ] Backpressure and write quotas
+
+AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, with backpressure, not drops. Defaults: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
+
+    - [x] Guest export invocation (execution wiring)
     - Host instantiates the component and dispatches `csv#run` / `table#run` via `get_typed_func`, validates inputs, and maps outputs/errors through `finalize_ok_with_metrics()` / `finalize_error()`; see `uicp/src-tauri/src/compute.rs` lines 520-620.【F:uicp/src-tauri/src/compute.rs†L520-L620】
     - Metrics enrichment and partial streaming live in the dedicated checklist items below.
 
-  - [ ] Partial event streaming and guest logs
-    - Align the host/bridge schema: Rust currently defines `ComputePartialEvent { payload_b64 }` while TypeScript expects a `Uint8Array payload`; choose one encoding and update `uicp/src-tauri/src/main.rs`, `uicp/src/compute/types.ts`, and the bridge listener in `uicp/src/lib/bridge/tauri.ts` together.【F:uicp/src-tauri/src/main.rs†L270-L310】【F:uicp/src/compute/types.ts†L41-L69】【F:uicp/src/lib/bridge/tauri.ts†L364-L414】
+    - [ ] Partial event streaming and guest logs
+    - [ ] Align the host/bridge schema: Rust currently defines `ComputePartialEvent { payload_b64 }` while TypeScript expects a `Uint8Array payload`; choose one encoding and update `uicp/src-tauri/src/main.rs`, `uicp/src/compute/types.ts`, and the bridge listener in `uicp/src/lib/bridge/tauri.ts` together.【F:uicp/src-tauri/src/main.rs†L270-L310】【F:uicp/src/compute/types.ts†L41-L69】【F:uicp/src/lib/bridge/tauri.ts†L364-L414】
     - Implement the Preview 2 `streams::output-stream` sink returned by `open_partial_sink` so guest writes produce `compute.result.partial` events and increment `partial_frames` / `invalid_partial_frames`; enforce ordering via `Ctx.partial_seq` and validate payload size/type.【F:uicp/components/csv.parse/src/lib.rs†L11-L60】【F:uicp/src-tauri/src/compute.rs†L252-L259】
     - Capture guest stdout/stderr and the structured logger import, trim payloads, emit `debug-log` telemetry, and bump `invalid_partial_frames` on rejects.
     - Tests: add fixtures that stream valid and malformed CBOR frames, asserting host behavior and metrics.
@@ -89,6 +96,9 @@ Legend
 
 - [x] Cache semantics
   - CA lookups keyed by task+input+env; readOnly vs readwrite policy handled
+  - SQLite table enforces `(workspace_id, key)` composite primary key with immutable `created_at`; migration helper `migrate_compute_cache()` rebuilds legacy rows and keeps the latest record per workspace/key.
+  - Supporting index `idx_compute_cache_task_env` covers hot `(workspace_id, task, env_hash)` probes; include a regression test ensuring different workspaces cannot clobber each other.
+  - Canonicalizer escapes control characters (including U+2028/U+2029); keep regression tests (`canonicalize_escapes_js_separators`, `upsert_scopes_to_workspace_and_preserves_created_at`) green via `cargo test compute_cache` whenever JSON formatting rules change.
 
 - [x] Health/safe-mode
   - DB quick_check and safe-mode toggles; replay telemetry stream
@@ -114,9 +124,9 @@ Legend
 - [x] Unit tests
   - File: `uicp/tests/unit/compute.store.test.ts` covers new semantics and helpers
 
-- [~] UI affordances for compute
+- [x] UI affordances for compute
   - Compute store tracks duration, cache hits, partial counters (`uicp/src/state/compute.ts:5`), and bridge toasts now map codes via `formatComputeErrorToast` (`uicp/src/lib/bridge/tauri.ts:152`).
-  - TODO: render partial frames/metrics in UI, surface cache hits, and add dedicated compute panel indicators.
+  - Metrics panel, Devtools compute panel, and the demo window surface partial frames + cache telemetry with indicator chips and per-job badges.
 
 -------------------------------------------------------------------------------
 
@@ -230,4 +240,3 @@ Legend
 - Bridge: `uicp/src/lib/bridge/tauri.ts`
 - Tests: `uicp/tests/unit/compute.store.test.ts`, Rust unit tests in `compute.rs`
 - Work-in-progress WIT: `uicp/src-tauri/wit/command.wit`, `docs/wit/uicp-host@1.0.0.wit`
-

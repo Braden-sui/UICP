@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppStore, type DevtoolsAnalyticsEvent, type IntentTelemetry } from '../state/app';
-import { useComputeStore } from '../state/compute';
+import { summarizeComputeJobs, useComputeStore } from '../state/compute';
 
 const formatDuration = (value: number | null) => {
   if (value == null) return '—';
@@ -35,27 +35,96 @@ const MetricsPanel = () => {
 
   const rows = useMemo(() => telemetry.slice(0, 12), [telemetry]);
   const devtoolsRows = useMemo(() => devtoolsEvents.slice(0, 12), [devtoolsEvents]);
-  const computeSummary = useMemo(() => {
-    const jobs = Object.values(computeJobs);
-    const running = jobs.filter((j) => j.status === 'running' || j.status === 'partial').length;
-    const done = jobs.filter((j) => j.status === 'done').length;
-    const timeout = jobs.filter((j) => j.status === 'timeout').length;
-    const cancelled = jobs.filter((j) => j.status === 'cancelled').length;
-    const error = jobs.filter((j) => j.status === 'error').length;
-    const cacheHits = jobs.filter((j) => j.cacheHit).length;
-    const durations = jobs.map((j) => j.durationMs ?? 0).filter((n) => n > 0).sort((a, b) => a - b);
-    const percentile = (p: number) => {
-      if (!durations.length) return 0;
-      const rank = Math.ceil(p * durations.length); // Nearest-rank method
-      const idx = Math.min(durations.length - 1, Math.max(0, rank - 1));
-      return durations[idx];
-    };
-    const p50 = percentile(0.5);
-    const p95 = percentile(0.95);
-    const cacheRatio = done > 0 ? Math.round((cacheHits / done) * 100) : 0;
-    const recent = jobs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 8);
-    return { total: jobs.length, running, done, timeout, cancelled, error, cacheHits, cacheRatio, p50, p95, recent };
-  }, [computeJobs]);
+  const computeSummary = useMemo(() => summarizeComputeJobs(computeJobs), [computeJobs]);
+
+  const computeIndicators = useMemo(() => {
+    if (computeSummary.total === 0) return [];
+    const chips: Array<{ key: string; label: string; value: string; className: string; title?: string }> = [
+      {
+        key: 'active',
+        label: 'Active',
+        value: String(computeSummary.active),
+        className:
+          computeSummary.active > 0
+            ? 'bg-emerald-100 text-emerald-700'
+            : 'bg-slate-100 text-slate-500',
+        title: 'Jobs currently queued, running, or streaming partials',
+      },
+      {
+        key: 'cache',
+        label: 'Cache',
+        value: `${computeSummary.cacheHits} (${computeSummary.cacheRatio}%)`,
+        className: 'bg-cyan-100 text-cyan-700',
+        title: 'Completed jobs served from compute cache',
+      },
+    ];
+    if (computeSummary.partialsSeen > 0) {
+      chips.push({
+        key: 'partials',
+        label: 'Partials',
+        value: String(computeSummary.partialsSeen),
+        className: 'bg-sky-100 text-sky-700',
+        title: 'Streaming frames observed across active jobs',
+      });
+    }
+    if (computeSummary.partialFrames > 0) {
+      chips.push({
+        key: 'frames',
+        label: 'Frames',
+        value: String(computeSummary.partialFrames),
+        className: 'bg-sky-50 text-sky-600',
+        title: 'Partial frames persisted by host metrics',
+      });
+    }
+    if (computeSummary.invalidPartialsDropped > 0) {
+      chips.push({
+        key: 'invalid',
+        label: 'Invalid frames',
+        value: String(computeSummary.invalidPartialsDropped),
+        className: 'bg-amber-100 text-amber-700',
+        title: 'Host reported partial frames dropped as invalid',
+      });
+    }
+    if (computeSummary.logCount > 0) {
+      chips.push({
+        key: 'logs',
+        label: 'Logs',
+        value: String(computeSummary.logCount),
+        className: 'bg-indigo-100 text-indigo-700',
+        title: 'Guest log records captured for recent jobs',
+      });
+    }
+    if (computeSummary.fuelUsed > 0) {
+      chips.push({
+        key: 'fuel',
+        label: 'Fuel',
+        value: String(computeSummary.fuelUsed),
+        className: 'bg-amber-50 text-amber-700',
+        title: 'Total guest fuel consumed across jobs',
+      });
+    }
+    if (computeSummary.memPeakP95 != null) {
+      chips.push({
+        key: 'mem',
+        label: 'mem p95',
+        value: `${Math.round(computeSummary.memPeakP95)} MB`,
+        className: 'bg-rose-100 text-rose-700',
+        title: '95th percentile peak memory across jobs',
+      });
+    }
+    return chips;
+  }, [
+    computeSummary.active,
+    computeSummary.cacheHits,
+    computeSummary.cacheRatio,
+    computeSummary.fuelUsed,
+    computeSummary.invalidPartialsDropped,
+    computeSummary.logCount,
+    computeSummary.memPeakP95,
+    computeSummary.partialFrames,
+    computeSummary.partialsSeen,
+    computeSummary.total,
+  ]);
 
   const formatDirection = (direction: DevtoolsAnalyticsEvent['direction']) => {
     if (direction === 'open') return 'Opened';
@@ -85,19 +154,32 @@ const MetricsPanel = () => {
             </p>
           ) : (
             <div className="flex flex-wrap items-center gap-3">
-              <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px]">running: {computeSummary.running}</span>
+            <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px]">running: {computeSummary.running}</span>
+              <span className="rounded bg-sky-100 px-2 py-0.5 text-[10px]">partial: {computeSummary.partial}</span>
+              <span className="rounded bg-slate-200 px-2 py-0.5 text-[10px]">queued: {computeSummary.queued}</span>
               <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px]">done: {computeSummary.done}</span>
               <span className="rounded bg-amber-100 px-2 py-0.5 text-[10px]">timeout: {computeSummary.timeout}</span>
               <span className="rounded bg-slate-200 px-2 py-0.5 text-[10px]">cancelled: {computeSummary.cancelled}</span>
               <span className="rounded bg-red-100 px-2 py-0.5 text-[10px]">error: {computeSummary.error}</span>
-              <span
-                className="rounded bg-cyan-100 px-2 py-0.5 text-[10px]"
-                title="Percentage of completed jobs that were served from cache"
-              >
-                cache hits: {computeSummary.cacheHits} ({computeSummary.cacheRatio}%)
+              <span className="rounded bg-white px-2 py-0.5 text-[10px]">
+                p50: {formatDuration(computeSummary.durationP50)}
               </span>
-              <span className="rounded bg-white px-2 py-0.5 text-[10px]">p50: {computeSummary.p50} ms</span>
-              <span className="rounded bg-white px-2 py-0.5 text-[10px]">p95: {computeSummary.p95} ms</span>
+              <span className="rounded bg-white px-2 py-0.5 text-[10px]">
+                p95: {formatDuration(computeSummary.durationP95)}
+              </span>
+              {computeIndicators.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {computeIndicators.map((chip) => (
+                    <span
+                      key={chip.key}
+                      className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${chip.className}`}
+                      title={chip.title}
+                    >
+                      {chip.label}: {chip.value}
+                    </span>
+                  ))}
+                </div>
+              )}
               <button
                 type="button"
                 className="ml-auto rounded border border-slate-300 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-white"
@@ -152,8 +234,31 @@ const MetricsPanel = () => {
                     </span>
                   </span>
                   {typeof j.durationMs === 'number' && <span>• {j.durationMs} ms</span>}
-                  {j.cacheHit && <span className="rounded bg-cyan-50 px-2 py-0.5 text-cyan-700">cache</span>}
+                  {j.cacheHit != null && (
+                    <span
+                      className={`rounded px-2 py-0.5 text-[10px] ${
+                        j.cacheHit ? 'bg-cyan-50 text-cyan-700' : 'bg-slate-100 text-slate-500'
+                      }`}
+                    >
+                      cache {j.cacheHit ? 'hit' : 'miss'}
+                    </span>
+                  )}
                   {j.lastError && <span className="rounded bg-red-50 px-2 py-0.5 text-red-600">{j.lastError}</span>}
+                  {j.partials > 0 && <span className="rounded bg-sky-50 px-2 py-0.5 text-sky-700">{j.partials} partials</span>}
+                  {typeof j.partialFrames === 'number' && (
+                    <span className="rounded bg-sky-50 px-2 py-0.5 text-sky-600">{j.partialFrames} frames</span>
+                  )}
+                  {typeof j.invalidPartialsDropped === 'number' && j.invalidPartialsDropped > 0 && (
+                    <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-700">
+                      {j.invalidPartialsDropped} invalid
+                    </span>
+                  )}
+                  {typeof j.logCount === 'number' && j.logCount > 0 && (
+                    <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-700">{j.logCount} logs</span>
+                  )}
+                  {typeof j.fuelUsed === 'number' && j.fuelUsed > 0 && (
+                    <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-700">{j.fuelUsed} fuel</span>
+                  )}
                 </li>
               ))}
             </ul>

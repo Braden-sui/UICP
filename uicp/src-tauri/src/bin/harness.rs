@@ -52,13 +52,16 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS compute_cache (
-            key TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            key TEXT NOT NULL,
             task TEXT NOT NULL,
             env_hash TEXT NOT NULL,
             value_json TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            workspace_id TEXT DEFAULT 'default'
+            PRIMARY KEY (workspace_id, key)
         );
+        CREATE INDEX IF NOT EXISTS idx_compute_cache_task_env
+            ON compute_cache (workspace_id, task, env_hash);
         CREATE TABLE IF NOT EXISTS replay_checkpoint (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             hash TEXT NOT NULL,

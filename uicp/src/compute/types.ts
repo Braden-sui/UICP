@@ -54,8 +54,8 @@ export const partialEventSchema = z.object({
   jobId: z.string().uuid(),
   task: z.string(),
   seq: z.number().int().nonnegative(),
-  // CBOR- or JSON-encoded bytes; adapter decodes per-task schema
-  payload: z.instanceof(Uint8Array),
+  // Base64-encoded CBOR frame; caller decodes to Uint8Array as needed
+  payload: z.string().min(1),
 });
 
 export type ComputePartialEvent = z.infer<typeof partialEventSchema>;

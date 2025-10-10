@@ -3,7 +3,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
 import { enqueueBatch, addQueueAppliedListener } from '../uicp/queue';
-import { finalEventSchema, type JobSpec } from '../../compute/types';
+import { finalEventSchema, partialEventSchema, type JobSpec } from '../../compute/types';
 import { useComputeStore } from '../../state/compute';
 import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
@@ -395,16 +395,35 @@ export async function initializeTauriBridge() {
 
   unsubs.push(
     await listen('compute.result.partial', (event) => {
-      const payload = event.payload as { jobId?: string; task?: string; seq?: number; payloadB64?: string } | undefined;
+      const payload = event.payload as { jobId?: unknown; task?: unknown; seq?: unknown; payload?: unknown } | undefined;
       if (!payload) return;
       // Best-effort dev log; adapter doesn't apply partials to state yet.
       try {
-        const jobId = String(payload.jobId ?? '');
-        const task = String(payload.task ?? '');
-        const seq = Number(payload.seq ?? 0);
-        if (jobId) useComputeStore.getState().markPartial(jobId);
-        // eslint-disable-next-line no-console
-        console.debug(`[compute.partial] job=${jobId} task=${task} seq=${seq}`);
+        const parsed = partialEventSchema.safeParse({
+          jobId: payload.jobId,
+          task: payload.task,
+          seq: payload.seq,
+          payload: payload.payload,
+        });
+        if (!parsed.success) {
+          console.warn('Invalid compute partial payload', parsed.error);
+          const maybeJob = typeof payload.jobId === 'string' ? payload.jobId : undefined;
+          if (maybeJob) useComputeStore.getState().markPartial(maybeJob);
+          prunePending();
+          return;
+        }
+        const frame = parsed.data;
+        if (frame.jobId) useComputeStore.getState().markPartial(frame.jobId);
+        const rawLen = frame.payload.length;
+        let approxBytes = 0;
+        if (rawLen) {
+          approxBytes = Math.floor((rawLen * 3) / 4);
+          if (frame.payload.endsWith('==')) approxBytes -= 2;
+          else if (frame.payload.endsWith('=')) approxBytes -= 1;
+        }
+        console.debug(
+          `[compute.partial] job=${frame.jobId} task=${frame.task} seq=${frame.seq} frameBytes~= ${approxBytes}`,
+        );
         prunePending();
       } catch {
         // ignore

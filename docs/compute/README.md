@@ -138,6 +138,12 @@ Cache semantics (workspace-scoped)
 - Backend code paths:
   - Reads: `uicp/src-tauri/src/main.rs` in `compute_call()` via `compute_cache::lookup(app, workspace_id, key)`
   - Writes: `uicp/src-tauri/src/compute.rs` via `compute_cache::store(app, workspace_id, key, ...)`
+- Storage:
+  - SQLite table `compute_cache` now enforces a composite primary key on `(workspace_id, key)` so tenants cannot overwrite each other.
+  - `created_at` is immutable after the first insert; conflict updates replace `task`, `env_hash`, and `value_json` only. A supporting index (`idx_compute_cache_task_env`) covers workspace/task/env probes.
+  - Upgrade helper `migrate_compute_cache()` rebuilds legacy tables in-place, deduplicating by latest `created_at` per `(workspace_id, key)`.
+- Canonicalization:
+  - Cache keys use `compute_cache::canonicalize_input`, which escapes control characters (including U+2028/U+2029) to keep the hash stable across JSON/JS runtimes.
 - Clearing cache:
   - Command: `clear_compute_cache(workspace_id?: String)` in `uicp/src-tauri/src/main.rs`
   - UI: Agent Settings → "Clear Cache" (clears for `default` workspace)

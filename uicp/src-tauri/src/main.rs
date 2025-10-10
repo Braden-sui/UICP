@@ -1658,11 +1658,13 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS compute_cache (
-            key TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            key TEXT NOT NULL,
             task TEXT NOT NULL,
             env_hash TEXT NOT NULL,
             value_json TEXT NOT NULL,
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, key)
         );
         "#,
     )
@@ -1680,16 +1682,111 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
-    // Migration: add workspace_id to compute_cache for workspace-scoped cleanup
-    match conn.execute(
-        "ALTER TABLE compute_cache ADD COLUMN workspace_id TEXT DEFAULT 'default'",
+    migrate_compute_cache(&conn).context("migrate compute_cache schema")?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_compute_cache_task_env ON compute_cache (workspace_id, task, env_hash)",
         [],
-    ) {
-        Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-            if msg.contains("duplicate column name") => {}
-        Err(err) => return Err(err.into()),
+    )
+    .context("ensure compute_cache task/env index")?;
+
+    Ok(())
+}
+
+fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
+    // Ensure the legacy table has the workspace column before we attempt to rebuild the PK.
+    let mut has_workspace_column = false;
+    {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info('compute_cache')")
+            .context("inspect compute_cache schema")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == "workspace_id" {
+                has_workspace_column = true;
+                break;
+            }
+        }
     }
+    if !has_workspace_column {
+        match conn.execute(
+            "ALTER TABLE compute_cache ADD COLUMN workspace_id TEXT DEFAULT 'default'",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    // Tighten NULLs that may have slipped in before the composite key existed.
+    conn.execute(
+        "UPDATE compute_cache SET workspace_id = 'default' WHERE workspace_id IS NULL",
+        [],
+    )
+    .context("backfill null workspace_id values")?;
+
+    // Detect if the composite primary key is already in place.
+    let mut pk_columns: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info('compute_cache')")
+            .context("inspect compute_cache primary key")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            let pk_pos: i32 = row.get(5)?;
+            if pk_pos > 0 {
+                pk_columns.push(name);
+            }
+        }
+    }
+    pk_columns.sort();
+    if pk_columns == ["key".to_string(), "workspace_id".to_string()] {
+        // Already migrated.
+        return Ok(());
+    }
+
+    // Drop any previous failed migration artifacts so the transaction below can succeed.
+    conn.execute("DROP TABLE IF EXISTS compute_cache_new", [])
+        .context("drop stale compute_cache_new helper table")?;
+
+    conn.execute_batch(
+        r#"
+        BEGIN IMMEDIATE;
+        CREATE TABLE compute_cache_new (
+            workspace_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            task TEXT NOT NULL,
+            env_hash TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, key)
+        );
+        INSERT INTO compute_cache_new (workspace_id, key, task, env_hash, value_json, created_at)
+        SELECT workspace_id, key, task, env_hash, value_json, created_at
+        FROM (
+            SELECT
+                workspace_id,
+                key,
+                task,
+                env_hash,
+                value_json,
+                created_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY workspace_id, key
+                    ORDER BY created_at DESC, rowid DESC
+                ) AS rn
+            FROM compute_cache
+        )
+        WHERE rn = 1;
+        DROP TABLE compute_cache;
+        ALTER TABLE compute_cache_new RENAME TO compute_cache;
+        COMMIT;
+        "#,
+    )
+    .context("rebuild compute_cache with composite primary key")?;
 
     Ok(())
 }

@@ -216,6 +216,45 @@ const ComputeDemoWindow = () => {
             <span>• {lastJob.task}</span>
             <span>• status: <strong>{lastJob.status}</strong></span>
             {typeof lastJob.durationMs === 'number' && <span>• {lastJob.durationMs} ms</span>}
+            {lastJob.cacheHit != null && (
+              <span
+                className={`rounded px-2 py-0.5 text-[10px] ${
+                  lastJob.cacheHit ? 'bg-cyan-100 text-cyan-700' : 'bg-slate-200 text-slate-600'
+                }`}
+              >
+                cache {lastJob.cacheHit ? 'hit' : 'miss'}
+              </span>
+            )}
+            {lastJob.partials > 0 && (
+              <span className="rounded bg-sky-100 px-2 py-0.5 text-[10px] text-sky-700">
+                {lastJob.partials} partial{lastJob.partials === 1 ? '' : 's'}
+              </span>
+            )}
+            {typeof lastJob.partialFrames === 'number' && (
+              <span className="rounded bg-sky-50 px-2 py-0.5 text-[10px] text-sky-600">
+                {lastJob.partialFrames} frame{lastJob.partialFrames === 1 ? '' : 's'}
+              </span>
+            )}
+            {typeof lastJob.invalidPartialsDropped === 'number' && lastJob.invalidPartialsDropped > 0 && (
+              <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">
+                {lastJob.invalidPartialsDropped} invalid
+              </span>
+            )}
+            {typeof lastJob.logCount === 'number' && lastJob.logCount > 0 && (
+              <span className="rounded bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-700">
+                {lastJob.logCount} log{lastJob.logCount === 1 ? '' : 's'}
+              </span>
+            )}
+            {typeof lastJob.fuelUsed === 'number' && lastJob.fuelUsed > 0 && (
+              <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">
+                {lastJob.fuelUsed} fuel
+              </span>
+            )}
+            {typeof lastJob.memPeakMb === 'number' && (
+              <span className="rounded bg-rose-50 px-2 py-0.5 text-[10px] text-rose-700">
+                mem {Math.round(lastJob.memPeakMb)} MB
+              </span>
+            )}
             {lastJob.lastError && (
               <span className="rounded bg-red-50 px-2 py-0.5 text-red-600">{lastJob.lastError}</span>
             )}

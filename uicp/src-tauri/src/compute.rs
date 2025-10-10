@@ -224,19 +224,35 @@ pub(crate) fn extract_table_query_input(
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
+    use bytes::Bytes;
+    use ciborium::value::{Integer, Value};
+    use chrono::Utc;
+    use serde_json;
+    use sha2::{Digest, Sha256};
+    use std::convert::TryFrom;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
     };
+    use std::io::Cursor;
     use wasmtime::{
-        component::{Component, Linker, ResourceTable},
-        Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
+        component::{Component, Linker, Resource, ResourceTable},
+        Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
-    use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
+    use wasmtime_wasi::{
+        DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
+        Subscribe, WasiCtx, WasiCtxBuilder, WasiView,
+    };
+    use wasmtime_wasi::stdio::StdoutStream as WasiStdoutStream;
+    
 
     const DEFAULT_FUEL: u64 = 1_000_000;
     const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
     const EPOCH_TICK_INTERVAL_MS: u64 = 10;
+    // Max total bytes we will emit across all stdio log frames per job (deterministic cap)
+    const MAX_LOG_BYTES: usize = 256 * 1024;
+    // Max preview bytes per log frame to include in partial events
+    const LOG_PREVIEW_MAX: usize = 256;
 
     // Bindgen generation is deferred; we directly use typed funcs via `get_typed_func` for now.
 
@@ -246,22 +262,388 @@ mod with_runtime {
     struct Ctx {
         wasi: WasiCtx,
         table: ResourceTable,
-        app: AppHandle,
+        emitter: Arc<dyn TelemetryEmitter>,
         job_id: String,
         task: String,
-        partial_seq: u64,
-        partial_frames: Arc<std::sync::atomic::AtomicU64>,
-        invalid_partial_frames: Arc<std::sync::atomic::AtomicU64>,
+        partial_seq: Arc<AtomicU64>,
+        partial_frames: Arc<AtomicU64>,
+        invalid_partial_frames: Arc<AtomicU64>,
         cancelled: Arc<AtomicBool>,
         // Determinism scaffolding (seeded RNG and logical clock) keeps telemetry repeatable
         rng_seed: [u8; 32],
-        logical_tick: u64,
+        logical_tick: Arc<AtomicU64>,
         // Host policy and telemetry
         started: Instant,
         deadline_ms: u32,
         rng_counter: u64,
-        log_count: u32,
+        log_count: Arc<AtomicU64>,
+        // Log emission accounting
+        emitted_log_bytes: Arc<AtomicU64>,
+        max_log_bytes: usize,
         limits: StoreLimits,
+    }
+
+    const MAX_PARTIAL_FRAME_BYTES: usize = 64 * 1024;
+    const MAX_STDIO_CHARS: usize = 4_096;
+
+    trait TelemetryEmitter: Send + Sync {
+        fn emit_debug(&self, payload: serde_json::Value);
+        fn emit_partial(&self, event: crate::ComputePartialEvent);
+        fn emit_partial_json(&self, payload: serde_json::Value);
+    }
+
+    #[derive(Clone)]
+    struct TauriEmitter {
+        app: AppHandle,
+    }
+
+    impl TelemetryEmitter for TauriEmitter {
+        fn emit_debug(&self, payload: serde_json::Value) {
+            let _ = self.app.emit("debug-log", payload);
+        }
+
+        fn emit_partial(&self, event: crate::ComputePartialEvent) {
+            let _ = self.app.emit("compute.result.partial", event);
+        }
+
+        fn emit_partial_json(&self, payload: serde_json::Value) {
+            let _ = self.app.emit("compute.result.partial", payload);
+        }
+    }
+
+    struct PartialStreamShared {
+        emitter: Arc<dyn TelemetryEmitter>,
+        job_id: String,
+        task: String,
+        partial_seq: Arc<AtomicU64>,
+        partial_frames: Arc<AtomicU64>,
+        invalid_partial_frames: Arc<AtomicU64>,
+    }
+
+    struct PartialOutputStream {
+        shared: Arc<PartialStreamShared>,
+    }
+
+    impl PartialOutputStream {
+        fn new(shared: Arc<PartialStreamShared>) -> Self {
+            Self { shared }
+        }
+
+        fn process_frame(
+            &self,
+            bytes: &[u8],
+        ) -> Result<crate::ComputePartialEvent, PartialFrameError> {
+            if bytes.len() > MAX_PARTIAL_FRAME_BYTES {
+                return Err(PartialFrameError::TooLarge(bytes.len()));
+            }
+            let envelope = decode_partial_envelope(bytes)?;
+            let expected = self
+                .shared
+                .partial_seq
+                .load(Ordering::Relaxed)
+                .saturating_add(1);
+            if envelope.seq != expected {
+                return Err(PartialFrameError::OutOfOrder {
+                    expected,
+                    got: envelope.seq,
+                });
+            }
+            self.shared
+                .partial_seq
+                .store(envelope.seq, Ordering::Relaxed);
+            Ok(crate::ComputePartialEvent {
+                job_id: self.shared.job_id.clone(),
+                task: self.shared.task.clone(),
+                seq: envelope.seq,
+                payload_b64: BASE64_ENGINE.encode(bytes),
+            })
+        }
+
+        fn log_reject(&self, err: &PartialFrameError, len: usize) {
+            self.shared
+                .emitter
+                .emit_debug(serde_json::json!({
+                    "event": "compute_partial_reject",
+                    "jobId": self.shared.job_id,
+                    "task": self.shared.task,
+                    "reason": err.to_string(),
+                    "len": len,
+                    "ts": Utc::now().timestamp_millis(),
+                }));
+        }
+    }
+
+    impl HostOutputStream for PartialOutputStream {
+        fn write(&mut self, bytes: Bytes) -> Result<(), StreamError> {
+            if bytes.is_empty() {
+                return Ok(());
+            }
+            match self.process_frame(bytes.as_ref()) {
+                Ok(event) => {
+                    self.shared
+                        .partial_frames
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.shared.emitter.emit_partial(event);
+                }
+                Err(err) => {
+                    self.shared
+                        .invalid_partial_frames
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.log_reject(&err, bytes.len());
+                }
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<(), StreamError> {
+            Ok(())
+        }
+
+        fn check_write(&mut self) -> Result<usize, StreamError> {
+            Ok(usize::MAX)
+        }
+    }
+
+    impl Subscribe for PartialOutputStream {
+        async fn ready(&mut self) {}
+    }
+
+    struct GuestLogShared {
+        emitter: Arc<dyn TelemetryEmitter>,
+        job_id: String,
+        task: String,
+        // Shared counters/state
+        seq: Arc<AtomicU64>,
+        tick: Arc<AtomicU64>,
+        log_count: Arc<AtomicU64>,
+        emitted_bytes: Arc<AtomicU64>,
+        max_bytes: usize,
+        max_len: usize,
+        buf: Mutex<Vec<u8>>, // line buffer across writes
+    }
+
+    #[derive(Clone)]
+    struct TelemetryStdout {
+        shared: Arc<GuestLogShared>,
+        channel: &'static str,
+    }
+
+    impl TelemetryStdout {
+        fn new(shared: Arc<GuestLogShared>, channel: &'static str) -> Self {
+            Self { shared, channel }
+        }
+    }
+
+    impl WasiStdoutStream for TelemetryStdout {
+        fn stream(&self) -> WasiOutputStream {
+            Box::new(GuestLogStream {
+                shared: self.shared.clone(),
+                channel: self.channel,
+            })
+        }
+    }
+
+    struct GuestLogStream {
+        shared: Arc<GuestLogShared>,
+        channel: &'static str,
+    }
+
+    impl GuestLogStream {
+        fn emit_message(&self, bytes: &[u8]) {
+            if bytes.is_empty() {
+                return;
+            }
+            let mut buf = self.shared.buf.lock().unwrap();
+            buf.extend_from_slice(bytes);
+            // Emit one event per completed line
+            loop {
+                if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    let line_with_nl: Vec<u8> = buf.drain(..=pos).collect();
+                    let line = if line_with_nl.ends_with(&[b'\n']) {
+                        &line_with_nl[..line_with_nl.len() - 1]
+                    } else {
+                        &line_with_nl[..]
+                    };
+                    if line.is_empty() {
+                        continue;
+                    }
+                    // Enforce per-job cap deterministically
+                    let cur = self.shared.emitted_bytes.load(Ordering::Relaxed) as usize;
+                    if cur >= self.shared.max_bytes {
+                        break;
+                    }
+                    let to_emit = line;
+                    let preview_len = to_emit.len().min(LOG_PREVIEW_MAX);
+                    let preview_b64 = BASE64_ENGINE.encode(&to_emit[..preview_len]);
+                    let seq_no = self.shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
+                    let tick_no = self.shared.tick.fetch_add(1, Ordering::Relaxed) + 1;
+                    let new_total = self
+                        .shared
+                        .emitted_bytes
+                        .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
+                        .saturating_add(to_emit.len() as u64) as usize;
+                    let truncated = new_total > self.shared.max_bytes;
+
+                    self.shared
+                        .log_count
+                        .fetch_add(1, Ordering::Relaxed);
+
+                    // Emit structured partial log event
+                    self.shared.emitter.emit_partial_json(serde_json::json!({
+                        "jobId": self.shared.job_id,
+                        "task": self.shared.task,
+                        "seq": seq_no,
+                        "kind": "log",
+                        "stream": self.channel,
+                        "tick": tick_no,
+                        "bytesLen": to_emit.len(),
+                        "previewB64": preview_b64,
+                        "truncated": truncated,
+                    }));
+
+                    // Mirror as debug-log for developer visibility
+                    let output = truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
+                    self.shared
+                        .emitter
+                        .emit_debug(serde_json::json!({
+                            "event": "compute_guest_stdio",
+                            "jobId": self.shared.job_id,
+                            "task": self.shared.task,
+                            "channel": self.channel,
+                            "len": to_emit.len(),
+                            "message": output,
+                            "ts": Utc::now().timestamp_millis(),
+                        }));
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    impl HostOutputStream for GuestLogStream {
+        fn write(&mut self, bytes: Bytes) -> Result<(), StreamError> {
+            self.emit_message(bytes.as_ref());
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<(), StreamError> {
+            Ok(())
+        }
+
+        fn check_write(&mut self) -> Result<usize, StreamError> {
+            Ok(usize::MAX)
+        }
+    }
+
+    impl Subscribe for GuestLogStream {
+        async fn ready(&mut self) {}
+    }
+
+    #[derive(Debug)]
+    struct PartialEnvelope {
+        seq: u64,
+    }
+
+    #[derive(Debug)]
+    enum PartialFrameError {
+        TooLarge(usize),
+        Malformed(String),
+        MissingSequence,
+        OutOfOrder { expected: u64, got: u64 },
+        PayloadTooLarge(usize),
+    }
+
+    impl std::fmt::Display for PartialFrameError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::TooLarge(len) => write!(
+                    f,
+                    "frame exceeds {} bytes (len={})",
+                    MAX_PARTIAL_FRAME_BYTES, len
+                ),
+                Self::Malformed(msg) => write!(f, "malformed frame: {msg}"),
+                Self::MissingSequence => write!(f, "frame missing sequence number"),
+                Self::OutOfOrder { expected, got } => write!(
+                    f,
+                    "frame sequence out of order (expected {}, got {})",
+                    expected, got
+                ),
+                Self::PayloadTooLarge(len) => write!(
+                    f,
+                    "embedded payload exceeds limit (len={})",
+                    len
+                ),
+            }
+        }
+    }
+
+    impl std::error::Error for PartialFrameError {}
+
+    fn decode_partial_envelope(bytes: &[u8]) -> Result<PartialEnvelope, PartialFrameError> {
+        let mut cursor = Cursor::new(bytes);
+        let value: Value = ciborium::de::from_reader(&mut cursor)
+            .map_err(|err| PartialFrameError::Malformed(err.to_string()))?;
+        match value {
+            Value::Map(entries) => {
+                let mut seq: Option<u64> = None;
+                for (key, val) in entries {
+                    let Some(index) = integer_key_to_u64(&key) else {
+                        continue;
+                    };
+                    match index {
+                        2 => {
+                            seq = match &val {
+                                Value::Integer(int) => u64::try_from(*int).ok(),
+                                _ => None,
+                            };
+                        }
+                        4 => validate_payload(&val)?,
+                        _ => {}
+                    }
+                }
+                let seq = seq.ok_or(PartialFrameError::MissingSequence)?;
+                Ok(PartialEnvelope { seq })
+            }
+            _ => Err(PartialFrameError::Malformed(
+                "partial payload must be a CBOR map".into(),
+            )),
+        }
+    }
+
+    fn integer_key_to_u64(value: &Value) -> Option<u64> {
+        match value {
+            Value::Integer(int) => u64::try_from(*int).ok(),
+            _ => None,
+        }
+    }
+
+    fn validate_payload(value: &Value) -> Result<(), PartialFrameError> {
+        match value {
+            Value::Bytes(buf) => {
+                if buf.len() > MAX_PARTIAL_FRAME_BYTES {
+                    Err(PartialFrameError::PayloadTooLarge(buf.len()))
+                } else {
+                    Ok(())
+                }
+            }
+            Value::Text(text) => {
+                if text.chars().count() > MAX_PARTIAL_FRAME_BYTES {
+                    Err(PartialFrameError::PayloadTooLarge(text.len()))
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn truncate_message(input: &str, max_chars: usize) -> String {
+        if input.chars().count() <= max_chars {
+            return input.to_owned();
+        }
+        let truncated: String = input.chars().take(max_chars).collect();
+        format!("{truncated}... (truncated)")
     }
 
     impl WasiView for Ctx {
@@ -377,26 +759,86 @@ mod with_runtime {
                 .build();
             let deadline_ms = spec.timeout_ms.unwrap_or(30_000).min(u32::MAX as u64);
 
-            let ctx = Ctx {
-                wasi: WasiCtxBuilder::new().build(),
-                table: ResourceTable::new(),
-                app: app.clone(),
+            let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(TauriEmitter { app: app.clone() });
+            let partial_seq = Arc::new(AtomicU64::new(0));
+            let partial_frames = Arc::new(AtomicU64::new(0));
+            let invalid_partials = Arc::new(AtomicU64::new(0));
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let log_count = Arc::new(AtomicU64::new(0));
+            let logical_tick = Arc::new(AtomicU64::new(0));
+            let emitted_bytes = Arc::new(AtomicU64::new(0));
+
+            let log_shared = Arc::new(GuestLogShared {
+                emitter: telemetry.clone(),
                 job_id: spec.job_id.clone(),
                 task: spec.task.clone(),
-                partial_seq: 0,
-                partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                invalid_partial_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                cancelled: Arc::new(AtomicBool::new(false)),
+                seq: partial_seq.clone(),
+                tick: logical_tick.clone(),
+                log_count: log_count.clone(),
+                emitted_bytes: emitted_bytes.clone(),
+                max_bytes: MAX_LOG_BYTES,
+                max_len: MAX_STDIO_CHARS,
+                buf: Mutex::new(Vec::new()),
+            });
+
+            let mut wasi_builder = WasiCtxBuilder::new();
+            wasi_builder
+                .stdout(TelemetryStdout::new(log_shared.clone(), "stdout"))
+                .stderr(TelemetryStdout::new(log_shared, "stderr"));
+            // Single readonly preopen for workspace files, mounted at /ws/files in the guest.
+            // Only enable when the job requested workspace file access via capabilities.
+            let want_ws_preopen = spec
+                .capabilities
+                .fs_read
+                .iter()
+                .chain(spec.capabilities.fs_write.iter())
+                .any(|p| p.starts_with("ws:/files/"));
+            if want_ws_preopen {
+                let _ = wasi_builder.preopened_dir(
+                    crate::files_dir_path(),
+                    "/ws/files",
+                    DirPerms::READ,
+                    FilePerms::READ,
+                );
+            }
+            let wasi = wasi_builder.build();
+
+            let ctx = Ctx {
+                wasi,
+                table: ResourceTable::new(),
+                emitter: telemetry.clone(),
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                partial_seq,
+                partial_frames,
+                invalid_partial_frames: invalid_partials,
+                cancelled: cancelled.clone(),
                 rng_seed: [7u8; 32],
-                logical_tick: 0,
+                logical_tick: logical_tick.clone(),
                 started,
                 deadline_ms: deadline_ms as u32,
                 rng_counter: 0,
-                log_count: 0,
+                log_count,
+                emitted_log_bytes: emitted_bytes.clone(),
+                max_log_bytes: MAX_LOG_BYTES,
                 limits,
             };
             let mut store: Store<Ctx> = Store::new(&engine, ctx);
             store.limiter(|ctx| &mut ctx.limits);
+
+            // Optional diagnostics for mounts/imports at job start (support both cases)
+            let diag_env = std::env::var("UICP_WASI_DIAG")
+                .or_else(|_| std::env::var("uicp_wasi_diag"))
+                .unwrap_or_default();
+            if matches!(diag_env.as_str(), "1" | "true" | "TRUE" | "yes" | "on") {
+                telemetry.emit_debug(serde_json::json!({
+                    "event": "wasi_diag",
+                    "jobId": spec.job_id,
+                    "task": spec.task,
+                    "mounts": [{ "guest": "/ws/files", "host": crate::files_dir_path().display().to_string(), "perms": "ro" }],
+                    "imports": ["wasi:io/streams", "wasi:clocks", "wasi:random", "uicp:host/*"],
+                }));
+            }
 
             // Configure fuel and epoch deadline enforcement.
             // Spawn epoch tick pump to enforce wall-clock deadline.
@@ -640,6 +1082,7 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
+        add_uicp_host(linker)?;
         Ok(())
     }
 
@@ -648,6 +1091,199 @@ mod with_runtime {
         Err(anyhow::anyhow!(
             "WASI imports disabled; rebuild with `--features uicp_wasi_enable` to enable WASI host imports"
         ))
+    }
+
+    fn add_uicp_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
+        register_control_interface(linker, "uicp:host/control")?;
+        register_control_interface(linker, "uicp:host/control@1.0.0")?;
+        register_rng_interface(linker, "uicp:host/rng")?;
+        register_rng_interface(linker, "uicp:host/rng@1.0.0")?;
+        register_logger_interface(linker, "uicp:host/logger")?;
+        register_logger_interface(linker, "uicp:host/logger@1.0.0")?;
+        register_clock_interface(linker, "uicp:host/clock")?;
+        register_clock_interface(linker, "uicp:host/clock@1.0.0")?;
+        Ok(())
+    }
+
+    fn register_control_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
+        let mut instance = linker.instance(name)?;
+        instance.func_wrap("open-partial-sink", host_open_partial_sink)?;
+        instance.func_wrap("should-cancel", host_should_cancel)?;
+        instance.func_wrap("deadline-ms", host_deadline_ms)?;
+        instance.func_wrap("remaining-ms", host_remaining_ms)?;
+        Ok(())
+    }
+
+    fn register_rng_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
+        let mut instance = linker.instance(name)?;
+        instance.func_wrap("next-u64", host_rng_next_u64)?;
+        instance.func_wrap("fill", host_rng_fill)?;
+        Ok(())
+    }
+
+    fn register_logger_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
+        let mut instance = linker.instance(name)?;
+        instance.func_wrap("log", host_logger_log)?;
+        Ok(())
+    }
+
+    fn register_clock_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
+        let mut instance = linker.instance(name)?;
+        instance.func_wrap("now-ms", host_clock_now_ms)?;
+        Ok(())
+    }
+
+    fn host_open_partial_sink(
+        mut store: StoreContextMut<'_, Ctx>,
+        (job,): (String,),
+    ) -> anyhow::Result<Resource<WasiOutputStream>> {
+        {
+            let ctx = store.data();
+            if job != ctx.job_id {
+                log_job_mismatch(ctx, "open-partial-sink", &job);
+                return Err(anyhow::anyhow!("partial sink job id mismatch"));
+            }
+        }
+        let shared = {
+            let ctx = store.data();
+            Arc::new(PartialStreamShared {
+                emitter: ctx.emitter.clone(),
+                job_id: ctx.job_id.clone(),
+                task: ctx.task.clone(),
+                partial_seq: ctx.partial_seq.clone(),
+                partial_frames: ctx.partial_frames.clone(),
+                invalid_partial_frames: ctx.invalid_partial_frames.clone(),
+            })
+        };
+        let stream: WasiOutputStream = Box::new(PartialOutputStream::new(shared));
+        let handle = store.data_mut().table.push(stream)?;
+        Ok(handle)
+    }
+
+    fn host_should_cancel(
+        mut store: StoreContextMut<'_, Ctx>,
+        (job,): (String,),
+    ) -> anyhow::Result<bool> {
+        let ctx = store.data();
+        if job != ctx.job_id {
+            log_job_mismatch(ctx, "should-cancel", &job);
+            return Ok(true);
+        }
+        Ok(ctx.cancelled.load(Ordering::Relaxed))
+    }
+
+    fn host_deadline_ms(
+        store: StoreContextMut<'_, Ctx>,
+        (job,): (String,),
+    ) -> anyhow::Result<u32> {
+        let ctx = store.data();
+        if job != ctx.job_id {
+            log_job_mismatch(ctx, "deadline-ms", &job);
+        }
+        Ok(ctx.deadline_ms)
+    }
+
+    fn host_remaining_ms(
+        mut store: StoreContextMut<'_, Ctx>,
+        (job,): (String,),
+    ) -> anyhow::Result<u32> {
+        let ctx = store.data();
+        if job != ctx.job_id {
+            log_job_mismatch(ctx, "remaining-ms", &job);
+        }
+        let elapsed = ctx.started.elapsed().as_millis() as u64;
+        let deadline = ctx.deadline_ms as u64;
+        let remaining = deadline.saturating_sub(elapsed);
+        Ok(remaining.min(u32::MAX as u64) as u32)
+    }
+
+    fn host_rng_next_u64(
+        mut store: StoreContextMut<'_, Ctx>,
+        (job,): (String,),
+    ) -> anyhow::Result<u64> {
+        if job != store.data().job_id {
+            let ctx = store.data();
+            log_job_mismatch(ctx, "rng.next-u64", &job);
+        }
+        let ctx = store.data_mut();
+        let block = derive_rng_block(&ctx.rng_seed, ctx.rng_counter);
+        ctx.rng_counter = ctx.rng_counter.saturating_add(1);
+        Ok(u64::from_le_bytes(block[0..8].try_into().unwrap()))
+    }
+
+    fn host_rng_fill(
+        mut store: StoreContextMut<'_, Ctx>,
+        (job, len): (String, u32),
+    ) -> anyhow::Result<Vec<u8>> {
+        if job != store.data().job_id {
+            let ctx = store.data();
+            log_job_mismatch(ctx, "rng.fill", &job);
+        }
+        let mut ctx = store.data_mut();
+        let mut out = Vec::with_capacity(len as usize);
+        while out.len() < len as usize {
+            let block = derive_rng_block(&ctx.rng_seed, ctx.rng_counter);
+            ctx.rng_counter = ctx.rng_counter.saturating_add(1);
+            let remaining = len as usize - out.len();
+            out.extend_from_slice(&block[..remaining.min(block.len())]);
+        }
+        Ok(out)
+    }
+
+    fn host_logger_log(
+        mut store: StoreContextMut<'_, Ctx>,
+        (level, message): (u32, String),
+    ) -> anyhow::Result<()> {
+        let ctx = store.data();
+        static LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
+        let level_str = LEVELS
+            .get(level as usize)
+            .copied()
+            .unwrap_or("info");
+        ctx.log_count.fetch_add(1, Ordering::Relaxed);
+        ctx.emitter.emit_debug(serde_json::json!({
+            "event": "compute_guest_log",
+            "jobId": ctx.job_id,
+            "task": ctx.task,
+            "level": level_str,
+            "message": message,
+            "ts": Utc::now().timestamp_millis(),
+        }));
+        Ok(())
+    }
+
+    fn host_clock_now_ms(
+        mut store: StoreContextMut<'_, Ctx>,
+        (job,): (String,),
+    ) -> anyhow::Result<u64> {
+        let ctx = store.data();
+        if job != ctx.job_id {
+            log_job_mismatch(ctx, "clock.now-ms", &job);
+        }
+        // Deterministic logical time: increment a job-scoped tick and return it (ms units)
+        Ok(store
+            .data()
+            .logical_tick
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1))
+    }
+
+    fn derive_rng_block(seed: &[u8; 32], counter: u64) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(seed);
+        hasher.update(counter.to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    fn log_job_mismatch(ctx: &Ctx, operation: &str, requested: &str) {
+        ctx.emitter.emit_debug(serde_json::json!({
+            "event": "compute_job_mismatch",
+            "operation": operation,
+            "jobId": ctx.job_id,
+            "task": ctx.task,
+            "requested": requested,
+            "ts": Utc::now().timestamp_millis(),
+        }));
     }
 
     /// Map a Wasmtime/linker error into a compute taxonomy code and message.
@@ -845,7 +1481,7 @@ mod with_runtime {
         let metrics = serde_json::json!({
             "durationMs": duration_ms,
             "deadlineMs": store.data().deadline_ms,
-            "logCount": store.data().log_count,
+            "logCount": store.data().log_count.load(Ordering::Relaxed),
             "partialFrames": store.data().partial_frames.load(Ordering::Relaxed),
             "invalidPartialsDropped": store.data().invalid_partial_frames.load(Ordering::Relaxed),
             "remainingMsAtFinish": remaining,
@@ -1054,8 +1690,117 @@ mod helper_tests {
         assert_eq!(sel, vec![1u32, 0u32]);
         assert_eq!(where_opt, Some((0u32, "a".into())));
     }
+    }
 }
-}
+
+    #[cfg(test)]
+    mod partial_stream_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct TestEmitter {
+            partials: Mutex<Vec<crate::ComputePartialEvent>>,
+            logs: Mutex<Vec<serde_json::Value>>,
+        }
+
+        impl TelemetryEmitter for TestEmitter {
+            fn emit_debug(&self, payload: serde_json::Value) {
+                self.logs.lock().unwrap().push(payload);
+            }
+
+            fn emit_partial(&self, event: crate::ComputePartialEvent) {
+                self.partials.lock().unwrap().push(event);
+            }
+        }
+
+        fn build_envelope(seq: u32) -> Vec<u8> {
+            use ciborium::value::{Integer, Value};
+
+            let payload = Value::Map(vec![(
+                Value::Text("done".into()),
+                Value::Integer(Integer::from(1u64)),
+            )]);
+            let entries = vec![
+                (
+                    Value::Integer(Integer::from(1u8)),
+                    Value::Integer(Integer::from(0u8)),
+                ),
+                (
+                    Value::Integer(Integer::from(2u32)),
+                    Value::Integer(Integer::from(seq)),
+                ),
+                (
+                    Value::Integer(Integer::from(3u64)),
+                    Value::Integer(Integer::from(1234u64)),
+                ),
+                (Value::Integer(Integer::from(4u8)), payload),
+            ];
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).unwrap();
+            bytes
+        }
+
+        fn shared_state(emitter: Arc<dyn TelemetryEmitter>) -> Arc<PartialStreamShared> {
+            Arc::new(PartialStreamShared {
+                emitter,
+                job_id: "job".into(),
+                task: "task".into(),
+                partial_seq: Arc::new(AtomicU64::new(0)),
+                partial_frames: Arc::new(AtomicU64::new(0)),
+                invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+            })
+        }
+
+        #[test]
+        fn accepts_valid_partial_frame() {
+            let emitter = Arc::new(TestEmitter::default());
+            let shared = shared_state(emitter.clone());
+            let mut stream = PartialOutputStream::new(shared.clone());
+            stream.write(Bytes::from(build_envelope(1))).unwrap();
+
+            assert_eq!(shared.partial_frames.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                shared.invalid_partial_frames.load(Ordering::Relaxed),
+                0
+            );
+            assert_eq!(emitter.partials.lock().unwrap().len(), 1);
+            assert!(emitter.logs.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn rejects_malformed_frame() {
+            let emitter = Arc::new(TestEmitter::default());
+            let shared = shared_state(emitter.clone());
+            let mut stream = PartialOutputStream::new(shared.clone());
+            stream.write(Bytes::from_static(&[0x80])).unwrap();
+
+            assert_eq!(shared.partial_frames.load(Ordering::Relaxed), 0);
+            assert_eq!(
+                shared.invalid_partial_frames.load(Ordering::Relaxed),
+                1
+            );
+            assert!(emitter.partials.lock().unwrap().is_empty());
+            assert!(!emitter.logs.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn rejects_out_of_order_sequence() {
+            let emitter = Arc::new(TestEmitter::default());
+            let shared = shared_state(emitter.clone());
+            let mut stream = PartialOutputStream::new(shared.clone());
+            stream.write(Bytes::from(build_envelope(1))).unwrap();
+            stream.write(Bytes::from(build_envelope(3))).unwrap();
+
+            assert_eq!(shared.partial_frames.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                shared.invalid_partial_frames.load(Ordering::Relaxed),
+                1
+            );
+            assert_eq!(emitter.partials.lock().unwrap().len(), 1);
+            assert!(!emitter.logs.lock().unwrap().is_empty());
+        }
+    }
 
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {

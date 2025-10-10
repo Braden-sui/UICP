@@ -31,6 +31,8 @@ type ComputeState = {
   reset: () => void;
 };
 
+const ACTIVE_STATES: ComputeStatus[] = ['running', 'partial', 'queued'];
+
 // Retain all active jobs plus up to this many terminal jobs (newest first).
 const MAX_TERMINAL_JOBS = 100;
 
@@ -130,6 +132,98 @@ export const useComputeStore = create<ComputeState>((set) => ({
       const next = { ...state.jobs };
       delete next[jobId];
       return { jobs: next };
-    }),
+  }),
   reset: () => set({ jobs: {} }),
 }));
+
+export type ComputeSummary = {
+  total: number;
+  queued: number;
+  running: number;
+  partial: number;
+  active: number;
+  done: number;
+  cancelled: number;
+  timeout: number;
+  error: number;
+  cacheHits: number;
+  cacheRatio: number;
+  partialsSeen: number;
+  partialFrames: number;
+  invalidPartialsDropped: number;
+  logCount: number;
+  fuelUsed: number;
+  durationP50: number | null;
+  durationP95: number | null;
+  memPeakP95: number | null;
+  recent: ComputeJob[];
+};
+
+const percentile = (values: number[], p: number): number | null => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = Math.ceil(p * sorted.length);
+  const idx = Math.min(sorted.length - 1, Math.max(0, rank - 1));
+  return sorted[idx];
+};
+
+export const summarizeComputeJobs = (
+  jobs: Record<string, ComputeJob>,
+  recentLimit = 8,
+): ComputeSummary => {
+  const list = Object.values(jobs);
+  const queued = list.filter((j) => j.status === 'queued').length;
+  const running = list.filter((j) => j.status === 'running').length;
+  const partial = list.filter((j) => j.status === 'partial').length;
+  const done = list.filter((j) => j.status === 'done').length;
+  const cancelled = list.filter((j) => j.status === 'cancelled').length;
+  const timeout = list.filter((j) => j.status === 'timeout').length;
+  const error = list.filter((j) => j.status === 'error').length;
+  const cacheHits = list.filter((j) => j.cacheHit === true).length;
+  const doneWithCache = list.filter((j) => j.status === 'done' && j.cacheHit === true).length;
+  const cacheRatio =
+    done > 0 ? Math.round((doneWithCache / done) * 100) : 0;
+  const partialsSeen = list.reduce((acc, job) => acc + (job.partials ?? 0), 0);
+  const partialFrames = list.reduce((acc, job) => acc + (job.partialFrames ?? 0), 0);
+  const invalidPartialsDropped = list.reduce(
+    (acc, job) => acc + (job.invalidPartialsDropped ?? 0),
+    0,
+  );
+  const logCount = list.reduce((acc, job) => acc + (job.logCount ?? 0), 0);
+  const fuelUsed = list.reduce((acc, job) => acc + (job.fuelUsed ?? 0), 0);
+  const durations = list
+    .map((job) => job.durationMs ?? 0)
+    .filter((n) => n > 0);
+  const memPeaks = list
+    .map((job) => job.memPeakMb ?? 0)
+    .filter((n) => n > 0);
+  const durationP50 = percentile(durations, 0.5);
+  const durationP95 = percentile(durations, 0.95);
+  const memPeakP95 = percentile(memPeaks, 0.95);
+  const recent = [...list]
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, recentLimit);
+  const active = list.filter((j) => ACTIVE_STATES.includes(j.status)).length;
+  return {
+    total: list.length,
+    queued,
+    running,
+    partial,
+    active,
+    done,
+    cancelled,
+    timeout,
+    error,
+    cacheHits,
+    cacheRatio,
+    partialsSeen,
+    partialFrames,
+    invalidPartialsDropped,
+    logCount,
+    fuelUsed,
+    durationP50: durationP50 ?? null,
+    durationP95: durationP95 ?? null,
+    memPeakP95: memPeakP95 ?? null,
+    recent,
+  };
+};
