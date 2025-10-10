@@ -123,15 +123,15 @@ fn cmd_log_hash(db: &PathBuf) -> anyhow::Result<i32> {
         let res: String = row.get(3)?;
         let ts: i64 = row.get(4)?;
         hasher.update(id.as_bytes());
-        hasher.update(&[0]);
+        hasher.update([0]);
         hasher.update(tool.as_bytes());
-        hasher.update(&[0]);
+        hasher.update([0]);
         hasher.update(args.as_bytes());
-        hasher.update(&[0]);
+        hasher.update([0]);
         hasher.update(res.as_bytes());
-        hasher.update(&[0]);
+        hasher.update([0]);
         hasher.update(ts.to_le_bytes());
-        hasher.update(&[0xff]);
+        hasher.update([0xff]);
     }
     let hex = hex::encode(hasher.finalize());
     println!("{}", hex);

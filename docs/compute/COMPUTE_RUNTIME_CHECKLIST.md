@@ -51,11 +51,12 @@ Legend
   - Pending: define precise preopens/policy and stdio/log bindings
 
 - [~] Guest export invocation (execution wiring)
-  - Current state: typed export invocation wired in host (`uicp/src-tauri/src/compute.rs`) using Wasmtime Component typed API.
+  - Current state: host invokes exports via Wasmtime typed API with `get_typed_func` (no bindgen required). See `uicp/src-tauri/src/compute.rs`.
     - csv.parse: calls `csv#run(job_id, source, has_header)` after enforcing `ws:/files` policy and resolving to data: URL when needed
     - table.query: calls `table#run(job_id, rows, select, where_contains)` with validated JSON → WIT mapping
     - Success path emits `compute.result.final` with metrics via `finalize_ok_with_metrics()`; errors mapped via `map_trap_error()`
-  - Remaining: generate and gate WIT bindings (`uicp_bindgen`), enrich metrics (fuelUsed, memPeakMb), and add partial event streaming
+  - Optional: `uicp_bindgen` feature can be re-enabled later, but it is not required for the current path.
+  - Remaining: enrich metrics (fuelUsed, memPeakMb), and add partial event streaming
 
 - [ ] Partial event streaming and guest logs
   - TODO: surface `compute.result.partial` frames with seq, and count/log metrics (`partialFrames`, `invalidPartialsDropped`)
@@ -112,9 +113,10 @@ Legend
 - [x] Build/publish scripts
   - File: `uicp/package.json` (`modules:build:*`, `modules:update:*`, `modules:verify`)
 
-- [ ] Guest ABI contract
-  - Decide WIT world and finalize (`uicp/src-tauri/wit/command.wit`, `docs/wit/uicp-host@1.0.0.wit`)
-  - Enable `uicp_bindgen` feature and generate bindings for the chosen world
+- [~] Guest ABI contract
+  - World decided: `world command` with `interface csv` and `interface table`; shared `rows` type via `interface common`.
+    - File: `uicp/src-tauri/wit/command.wit`
+  - Bindgen is optional; current host path uses typed funcs directly. `uicp_bindgen` may be enabled in the future if desired.
   - Document the request/response schema and error mapping invariants
 
 - [ ] Minimum viable component(s)
@@ -170,7 +172,7 @@ Legend
 - [x] Baseline docs present: `docs/compute/README.md`, host skeleton (`docs/compute/host-skeleton.rs`), WIT draft
 
 - [ ] Update docs with:
-  - Feature flags and when to enable (`wasm_compute`, `uicp_wasi_enable`, `uicp_bindgen`)
+  - Feature flags and when to enable (`wasm_compute`, `uicp_wasi_enable`; `uicp_bindgen` is optional and currently off by default)
   - Module install/verify flow, expected directory layout, cache behavior
   - Error taxonomy for frontend and how to surface it (toasts, logs)
   - Determinism/record-replay guarantees and limitations

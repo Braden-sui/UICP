@@ -306,7 +306,7 @@ async fn compute_call(
     // --- Policy enforcement (Non-negotiables v1) ---
     // Timeouts: default 30s, allowed 1s-120s; >30s requires cap.longRun
     let timeout = spec.timeout_ms.unwrap_or(30_000);
-    if timeout < 1_000 || timeout > 120_000 {
+    if !(1_000..=120_000).contains(&timeout) {
         let payload = ComputeFinalErr {
             ok: false,
             job_id: spec.job_id.clone(),
@@ -331,7 +331,7 @@ async fn compute_call(
 
     // Memory limits: default 256MB, allowed 64-1024; >256 requires cap.memHigh
     if let Some(mem) = spec.mem_limit_mb {
-        if mem < 64 || mem > 1024 {
+        if !(64..=1024).contains(&mem) {
             let payload = ComputeFinalErr {
                 ok: false,
                 job_id: spec.job_id.clone(),
@@ -709,7 +709,7 @@ async fn delete_window_commands(
 ) -> Result<(), String> {
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let conn = Connection::open(db_path).context("open sqlite delete window commands")?;
+        let mut conn = Connection::open(db_path).context("open sqlite delete window commands")?;
         configure_sqlite(&conn).context("configure sqlite delete window commands")?;
         // Try JSON1-powered delete; fallback to manual filter if JSON1 is unavailable.
         let sql = "DELETE FROM tool_call
@@ -733,6 +733,8 @@ async fn delete_window_commands(
                         Ok((id, tool, args_json))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
+                // Ensure stmt is dropped before starting a transaction to avoid overlapping borrows.
+                drop(stmt);
                 let mut to_delete: Vec<String> = Vec::new();
                 for (id, tool, args_json) in rows.into_iter() {
                     let parsed: serde_json::Value = serde_json::from_str(&args_json).unwrap_or(serde_json::json!({}));
@@ -1015,7 +1017,7 @@ async fn chat_completion(
         let append_trace = |event: serde_json::Value| {
             let path = trace_path.clone();
             async move {
-                let line = format!("{}\n", event.to_string());
+                let line = format!("{event}\n");
                 if let Ok(mut f) = tokio::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -1380,7 +1382,7 @@ async fn chat_completion(
                     let mut event_buf = String::new();
 
                     // Helper to process a complete SSE payload line (assembled in event_buf)
-                    let mut process_payload = |
+                    let process_payload = |
                         payload_str: &str,
                         app_handle: &tauri::AppHandle,
                         rid: &str,
@@ -1546,8 +1548,8 @@ async fn chat_completion(
                                                 }
                                                 continue;
                                             }
-                                            if trimmed.starts_with("data:") {
-                                                let content = trimmed[5..].trim();
+                                            if let Some(stripped) = trimmed.strip_prefix("data:") {
+                                                let content = stripped.trim();
                                                 if content == "[DONE]" {
                                                     process_payload("[DONE]", &app_handle, &rid_for_task);
                                                     // reset event buffer
@@ -2080,7 +2082,7 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
     }
 
     // Only allow regular files; reject symlinks and directories.
-    let meta = fs::symlink_metadata(&p).map_err(|e| format!("stat failed: {e}"))?;
+    let meta = fs::symlink_metadata(p).map_err(|e| format!("stat failed: {e}"))?;
     if !meta.file_type().is_file() {
         return Err("Source must be a regular file".into());
     }
@@ -2116,7 +2118,7 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
         dest = dest_dir.join(new_name);
     }
 
-    fs::copy(&p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
+    fs::copy(p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
 
     // Return ws:/ path for use with compute tasks
     Ok(format!("ws:/files/{}", dest.file_name().and_then(|s| s.to_str()).unwrap_or(&fname)))

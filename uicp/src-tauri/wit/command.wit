@@ -1,14 +1,18 @@
-package uicp:task
+package uicp:task;
 
-// Shared row type used by csv and table tasks
-type rows = list<list<string>>;
+// Common types shared by task interfaces
+interface common {
+  type rows = list<list<string>>;
+}
 
 interface csv {
+  use common.{rows};
   /// Parse CSV source into rows. `source` may be a data: URL or resolved ws:/ path.
   run: func(job_id: string, source: string, has_header: bool) -> result<rows, string>;
 }
 
 interface table {
+  use common.{rows};
   /// Optional contains filter for a column
   record filter { col: u32, needle: string }
 

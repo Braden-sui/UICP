@@ -18,7 +18,7 @@ use tokio::sync::OwnedSemaphorePermit;
 
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
-use crate::{ComputeFinalErr, ComputeJobSpec};
+use crate::ComputeJobSpec;
 
 /// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
@@ -39,7 +39,7 @@ pub mod error_codes {
 // Shared helpers (feature-independent) for task input prep and workspace FS policy
 // -----------------------------------------------------------------------------
 
-use std::path::PathBuf as _PathBufForDocsOnly; // keep imports consistent when helpers unused on some builds
+// NOTE: removed unused placeholder import to avoid warning
 
 /// Extract csv.parse input fields from a JSON value.
 pub(crate) fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
@@ -116,8 +116,7 @@ pub(crate) fn fs_read_allowed(spec: &ComputeJobSpec, ws_path: &str) -> bool {
     }
     for pat in spec.capabilities.fs_read.iter() {
         let p = pat.as_str();
-        if p.ends_with("/**") {
-            let base = &p[..p.len() - 3];
+        if let Some(base) = p.strip_suffix("/**") {
             if ws_path.starts_with(base) {
                 return true;
             }
@@ -220,35 +219,17 @@ pub(crate) fn extract_table_query_input(
     Ok((rows, select, where_opt))
 }
 
-fn validate_rows_value(val: &serde_json::Value) -> bool {
-    let arr = match val.as_array() {
-        Some(a) => a,
-        None => return false,
-    };
-    for row in arr.iter() {
-        let r = match row.as_array() {
-            Some(r) => r,
-            None => return false,
-        };
-        for cell in r.iter() {
-            if !cell.is_string() {
-                return false;
-            }
-        }
-    }
-    true
-}
+// removed unused validate_rows_value helper
 
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     };
     use wasmtime::{
-        component::{Component, Instance, Linker, ResourceTable, TypedFunc},
+        component::{Component, Linker, ResourceTable},
         Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
     };
     use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
@@ -257,25 +238,9 @@ mod with_runtime {
     const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
     const EPOCH_TICK_INTERVAL_MS: u64 = 10;
 
-    // Optional bindgen scaffold for component interfaces (disabled by default until refactor completes)
-    #[cfg(all(feature = "wasm_compute", feature = "uicp_bindgen"))]
-    mod uicp_bindings {
-        wasmtime::component::bindgen!({
-            path: "wit",
-            world: "command",
-            async: true,
-        });
-    }
+    // Bindgen generation is deferred; we directly use typed funcs via `get_typed_func` for now.
 
-    #[allow(dead_code)]
-    fn is_typed_only() -> bool {
-        match std::env::var("UICP_COMPUTE_TYPED_ONLY") {
-            // Explicit opt-out
-            Ok(v) if matches!(v.as_str(), "0" | "false" | "FALSE" | "no" | "off") => false,
-            // Default ON
-            _ => true,
-        }
-    }
+    // removed unused is_typed_only helper
 
     /// Execution context for a single job store.
     struct Ctx {
@@ -434,23 +399,9 @@ mod with_runtime {
             store.limiter(|ctx| &mut ctx.limits);
 
             // Configure fuel and epoch deadline enforcement.
-            let mut epoch_pump: Option<JoinHandle<()>> = None;
-            let mut abort_epoch = || {
-                if let Some(handle) = epoch_pump.take() {
-                    handle.abort();
-                }
-            };
-            let fuel = spec.fuel.filter(|f| *f > 0).unwrap_or(DEFAULT_FUEL);
-            if let Err(err) = store.add_fuel(fuel) {
-                abort_epoch();
-                let any = anyhow::Error::from(err);
-                let (code, msg) = map_trap_error(&any);
-                finalize_error(&app, &spec, code, &msg, started).await;
-                let state: tauri::State<'_, crate::AppState> = app.state();
-                state.compute_cancel.write().await.remove(&spec.job_id);
-                crate::remove_compute_job(&app, &spec.job_id).await;
-                return;
-            }
+            // Spawn epoch tick pump to enforce wall-clock deadline.
+            // CPU fuel metering is disabled in V1 (wall-clock epoch deadline only). Keep knob for future.
+            let _fuel_ignored = spec.fuel.filter(|f| *f > 0).unwrap_or(DEFAULT_FUEL);
             let mut deadline_ticks =
                 deadline_ms.saturating_add(EPOCH_TICK_INTERVAL_MS - 1) / EPOCH_TICK_INTERVAL_MS;
             if deadline_ticks == 0 {
@@ -460,12 +411,12 @@ mod with_runtime {
             let eng = engine.clone();
             let tick_interval = Duration::from_millis(EPOCH_TICK_INTERVAL_MS);
             let ticks = deadline_ticks;
-            epoch_pump = Some(tauri_spawn(async move {
+            let epoch_pump: JoinHandle<()> = tauri_spawn(async move {
                 for _ in 0..ticks {
                     tokio::time::sleep(tick_interval).await;
                     eng.increment_epoch();
                 }
-            }));
+            });
 
             // Propagate cancel signal into store context
             {
@@ -479,7 +430,7 @@ mod with_runtime {
             // Link WASI and host imports, then instantiate the world
             let mut linker: Linker<Ctx> = Linker::new(&engine);
             if let Err(err) = add_wasi_and_host(&mut linker) {
-                abort_epoch();
+                epoch_pump.abort();
                 let any = anyhow::Error::from(err);
                 let (code, msg) = map_trap_error(&any);
                 finalize_error(&app, &spec, code, &msg, started).await;
@@ -489,118 +440,72 @@ mod with_runtime {
                 return;
             }
 
-            // Instantiate the world using bindgen types when enabled; else use raw Instance.
-            #[cfg(all(feature = "uicp_bindgen"))]
+            // Instantiate the world and call exports using typed API (no bindgen for now)
+            #[cfg(feature = "uicp_bindgen")]
             {
-                let inst =
-                    uicp_bindings::Command::instantiate(&mut store, &component, &linker).await;
-                match inst {
-                    Ok((_bindings, instance)) => {
-                        // Determine task and call the appropriate export using typed API
-                        let task_name = spec.task.split('@').next().unwrap_or("");
-                        let call_res: Result<serde_json::Value, anyhow::Error> = match task_name {
-                            "csv.parse" => {
-                                let (src, has_header) = extract_csv_input(&spec.input)
-                                    .map_err(|e| anyhow::anyhow!(e))?;
-                                let resolved = resolve_csv_source(&spec, &src)
-                                    .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)))?;
-                                let func: wasmtime::component::TypedFunc<
-                                    (String, String, bool),
-                                    Result<Vec<Vec<String>>, String>,
-                                > = instance
-                                    .get_typed_func(&mut store, "csv#run")
-                                    .map_err(anyhow::Error::from)?;
-                                match func.call_async(&mut store, (spec.job_id.clone(), resolved, has_header)).await {
-                                    Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
-                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
-                                    Err(e) => Err(anyhow::Error::from(e)),
-                                }
-                            }
-                            "table.query" => {
-                                let (rows, select, where_opt) =
-                                    extract_table_query_input(&spec.input)
-                                        .map_err(|e| anyhow::anyhow!(e))?;
-                                let func: wasmtime::component::TypedFunc<
-                                    (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
-                                    Result<Vec<Vec<String>>, String>,
-                                > = instance
-                                    .get_typed_func(&mut store, "table#run")
-                                    .map_err(anyhow::Error::from)?;
-                                match func
-                                    .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
-                                    .await
-                                {
-                                    Ok(Ok(out)) => Ok(serde_json::json!(out)),
-                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
-                                    Err(e) => Err(anyhow::Error::from(e)),
-                                }
-                            }
-                            _ => Err(anyhow::anyhow!("unknown task for this world")),
-                        };
-                        match call_res {
-                            Ok(output_json) => {
-                                let metrics = collect_metrics(&mut store);
-                                finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
-                            }
-                            Err(err) => {
-                                let (code, msg) = map_trap_error(&err);
-                                let message = if msg.is_empty() { err.to_string() } else { msg };
-                                finalize_error(&app, &spec, code, &message, started).await;
-                            }
-                        }
-                        abort_epoch();
-                    }
-                    Err(err) => {
-                        let any = anyhow::Error::from(err);
-                        let (code, msg) = map_trap_error(&any);
-                        finalize_error(&app, &spec, code, &msg, started).await;
-                        abort_epoch();
-                    }
-                }
-            }
-
-            #[cfg(not(all(feature = "uicp_bindgen")))]
-            {
-                let inst_res: Result<Instance, _> = Instance::new(&mut store, &component, &linker);
+                let inst_res: Result<wasmtime::component::Instance, _> =
+                    linker.instantiate(&mut store, &component);
                 match inst_res {
                     Ok(instance) => {
-                        // Call appropriate export using typed API
                         let task_name = spec.task.split('@').next().unwrap_or("");
-                        let call_res: Result<serde_json::Value, anyhow::Error> = match task_name {
+                        let call_res: anyhow::Result<serde_json::Value> = match task_name {
                             "csv.parse" => {
-                                let (src, has_header) = extract_csv_input(&spec.input)
-                                    .map_err(|e| anyhow::anyhow!(e))?;
-                                let resolved = resolve_csv_source(&spec, &src)
-                                    .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)))?;
-                                let func: wasmtime::component::TypedFunc<
-                                    (String, String, bool),
-                                    Result<Vec<Vec<String>>, String>,
-                                > = instance
-                                    .get_typed_func(&mut store, "csv#run")
-                                    .map_err(anyhow::Error::from)?;
-                                match func.call_async(&mut store, (spec.job_id.clone(), resolved, has_header)).await {
-                                    Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
-                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
-                                    Err(e) => Err(anyhow::Error::from(e)),
+                                let src_has = extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                if let Err(err) = src_has {
+                                    Err(err)
+                                } else {
+                                    let (src, has_header) = src_has.unwrap();
+                                    let resolved_res = resolve_csv_source(&spec, &src)
+                                        .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)));
+                                    if let Err(err) = resolved_res {
+                                        Err(err)
+                                    } else {
+                                        let resolved = resolved_res.unwrap();
+                                        let func_res: Result<
+                                            wasmtime::component::TypedFunc<
+                                                (String, String, bool),
+                                                (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                            >,
+                                            _,
+                                        > = instance.get_typed_func(&mut store, "csv#run");
+                                        match func_res {
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                            Ok(func) => match func
+                                                .call_async(&mut store, (spec.job_id.clone(), resolved, has_header))
+                                                .await
+                                            {
+                                                Ok((wasmtime::component::Result::Ok(rows),)) => Ok(serde_json::json!(rows)),
+                                                Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                                Err(e) => Err(anyhow::Error::from(e)),
+                                            },
+                                        }
+                                    }
                                 }
                             }
                             "table.query" => {
-                                let (rows, select, where_opt) =
-                                    extract_table_query_input(&spec.input)
-                                        .map_err(|e| anyhow::anyhow!(e))?;
-                                let func: wasmtime::component::TypedFunc<
-                                    (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
-                                    Result<Vec<Vec<String>>, String>,
-                                > = instance
-                                    .get_typed_func(&mut store, "table#run")
-                                    .map_err(anyhow::Error::from)?;
-                                match func
-                                    .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
-                                    .await
-                                {
-                                    Ok(Ok(out)) => Ok(serde_json::json!(out)),
-                                    Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
-                                    Err(e) => Err(anyhow::Error::from(e)),
+                                let parsed = extract_table_query_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                if let Err(err) = parsed {
+                                    Err(err)
+                                } else {
+                                    let (rows, select, where_opt) = parsed.unwrap();
+                                    let func_res: Result<
+                                        wasmtime::component::TypedFunc<
+                                            (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                            (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                        >,
+                                        _,
+                                    > = instance.get_typed_func(&mut store, "table#run");
+                                    match func_res {
+                                        Err(e) => Err(anyhow::Error::from(e)),
+                                        Ok(func) => match func
+                                            .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
+                                            .await
+                                        {
+                                            Ok((wasmtime::component::Result::Ok(out),)) => Ok(serde_json::json!(out)),
+                                            Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                        },
+                                    }
                                 }
                             }
                             _ => Err(anyhow::anyhow!("unknown task for this world")),
@@ -616,18 +521,110 @@ mod with_runtime {
                                 finalize_error(&app, &spec, code, &message, started).await;
                             }
                         }
-                        abort_epoch();
+                        epoch_pump.abort();
                     }
                     Err(err) => {
                         let any = anyhow::Error::from(err);
                         let (code, msg) = map_trap_error(&any);
                         finalize_error(&app, &spec, code, &msg, started).await;
-                        abort_epoch();
+                        epoch_pump.abort();
                     }
                 }
             }
 
-            abort_epoch();
+            #[cfg(not(feature = "uicp_bindgen"))]
+            {
+                let inst_res: Result<wasmtime::component::Instance, _> =
+                    linker.instantiate(&mut store, &component);
+                match inst_res {
+                    Ok(instance) => {
+                        // Call appropriate export using typed API.
+                        let task_name = spec.task.split('@').next().unwrap_or("");
+                        let call_res: anyhow::Result<serde_json::Value> = match task_name {
+                            "csv.parse" => {
+                                let parsed = extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                if let Err(err) = parsed {
+                                    Err(err)
+                                } else {
+                                    let (src, has_header) = parsed.unwrap();
+                                    let resolved_res = resolve_csv_source(&spec, &src)
+                                        .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)));
+                                    if let Err(err) = resolved_res {
+                                        Err(err)
+                                    } else {
+                                        let resolved = resolved_res.unwrap();
+                                        let func_res: Result<
+                                            wasmtime::component::TypedFunc<
+                                                (String, String, bool),
+                                                (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                            >,
+                                            _,
+                                        > = instance.get_typed_func(&mut store, "csv#run");
+                                        match func_res {
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                            Ok(func) => match func
+                                                .call_async(&mut store, (spec.job_id.clone(), resolved, has_header))
+                                                .await
+                                            {
+                                                Ok((wasmtime::component::Result::Ok(rows),)) => Ok(serde_json::json!(rows)),
+                                                Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                                Err(e) => Err(anyhow::Error::from(e)),
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                            "table.query" => {
+                                let parsed = extract_table_query_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                if let Err(err) = parsed {
+                                    Err(err)
+                                } else {
+                                    let (rows, select, where_opt) = parsed.unwrap();
+                                    let func_res: Result<
+                                        wasmtime::component::TypedFunc<
+                                            (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                            (wasmtime::component::Result<Vec<Vec<String>>, String>,),
+                                        >,
+                                        _,
+                                    > = instance.get_typed_func(&mut store, "table#run");
+                                    match func_res {
+                                        Err(e) => Err(anyhow::Error::from(e)),
+                                        Ok(func) => match func
+                                            .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
+                                            .await
+                                        {
+                                            Ok((wasmtime::component::Result::Ok(out),)) => Ok(serde_json::json!(out)),
+                                            Ok((wasmtime::component::Result::Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                        },
+                                    }
+                                }
+                            }
+                            _ => Err(anyhow::anyhow!("unknown task for this world")),
+                        };
+                        match call_res {
+                            Ok(output_json) => {
+                                let metrics = collect_metrics(&mut store);
+                                finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
+                            }
+                            Err(err) => {
+                                let (code, msg) = map_trap_error(&err);
+                                let message = if msg.is_empty() { err.to_string() } else { msg };
+                                finalize_error(&app, &spec, code, &message, started).await;
+                            }
+                        }
+                        epoch_pump.abort();
+                    }
+                    Err(err) => {
+                        let any = anyhow::Error::from(err);
+                        let (code, msg) = map_trap_error(&any);
+                        finalize_error(&app, &spec, code, &msg, started).await;
+                        epoch_pump.abort();
+                    }
+                }
+            }
+
+            epoch_pump.abort();
 
             // Cleanup cancel map and job registry
             let state: tauri::State<'_, crate::AppState> = app.state();
@@ -917,6 +914,7 @@ mod with_runtime {
                     long_run: false,
                     mem_high: false,
                 },
+                workspace_id: "default".into(),
                 replayable: true,
                 provenance: crate::ComputeProvenanceSpec {
                     env_hash: "dev".into(),
@@ -954,6 +952,7 @@ mod with_runtime {
                 bind: vec![],
                 cache: "readwrite".into(),
                 capabilities: crate::ComputeCapabilitiesSpec::default(),
+                workspace_id: "default".into(),
                 replayable: true,
                 provenance: crate::ComputeProvenanceSpec {
                     env_hash: "dev".into(),
@@ -989,6 +988,7 @@ mod with_runtime {
                     fs_read: vec!["ws:/files/**".into()],
                     ..Default::default()
                 },
+                workspace_id: "default".into(),
                 replayable: true,
                 provenance: crate::ComputeProvenanceSpec {
                     env_hash: "dev".into(),
@@ -1048,7 +1048,7 @@ mod helper_tests {
         });
         let (rows, sel, where_opt) = extract_table_query_input(&v).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], vec!["a".into(), "b".into()]);
+        assert_eq!(rows[0], vec!["a".to_string(), "b".to_string()]);
         assert_eq!(sel, vec![1u32, 0u32]);
         assert_eq!(where_opt, Some((0u32, "a".into())));
     }
@@ -1058,6 +1058,7 @@ mod helper_tests {
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {
     use super::*;
+    use crate::ComputeFinalErr;
 
     /// Spawn a stub compute job that fails immediately when the Wasm runtime is not compiled in.
     pub(super) fn spawn_job(

@@ -564,7 +564,7 @@ pub enum SignatureStatus {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-    use sha2::{Digest as _, Sha256};
+    use sha2::{Digest, Sha256};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
