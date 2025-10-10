@@ -41,6 +41,11 @@ export const LogsPanel = () => {
     ageMs?: number;
     message?: string;
     inFlight?: number;
+    // Compute log extras
+    seq?: number;
+    stream?: string;
+    level?: string;
+    truncated?: boolean;
   };
   const [debugEntries, setDebugEntries] = useState<Array<DebugEntry>>([]);
 
@@ -104,6 +109,10 @@ export const LogsPanel = () => {
           ageMs: typeof detail.ageMs === 'number' ? (detail.ageMs as number) : undefined,
           message: typeof detail.message === 'string' ? (detail.message as string) : undefined,
           inFlight: typeof detail.inFlight === 'number' ? (detail.inFlight as number) : undefined,
+          seq: typeof detail.seq === 'number' ? (detail.seq as number) : undefined,
+          stream: typeof detail.stream === 'string' ? (detail.stream as string) : undefined,
+          level: typeof detail.level === 'string' ? (detail.level as string) : undefined,
+          truncated: typeof detail.truncated === 'boolean' ? (detail.truncated as boolean) : undefined,
         };
         setDebugEntries((prev) => [entry, ...prev].slice(0, 200));
       };
@@ -204,6 +213,38 @@ export const LogsPanel = () => {
                     </span>
                   </li>
                 ))}
+              </ul>
+            </section>
+          )}
+          {/* Compute logs (previews) */}
+          {debugEntries.some((d) => d.event === 'compute_log') && (
+            <section className="rounded border border-slate-200 bg-white p-3 text-[11px] text-slate-700">
+              <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500">
+                <span>Compute logs</span>
+                <span className="text-[10px] font-mono lowercase text-slate-400">
+                  {debugEntries.filter((d) => d.event === 'compute_log').length} entries
+                </span>
+              </div>
+              <ul className="max-h-48 space-y-1 overflow-auto">
+                {debugEntries
+                  .filter((d) => d.event === 'compute_log')
+                  .slice(0, 100)
+                  .map((d, i) => (
+                    <li key={`clog-${d.ts}-${i}`} className="flex flex-col gap-0.5 rounded border border-slate-200 bg-slate-50 px-2 py-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[10px] text-slate-500">{new Date(d.ts).toLocaleTimeString()}</span>
+                        <span className="font-mono text-[10px] text-slate-400">
+                          {d.jobId ?? ''}#{d.seq ?? 0}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500">
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5">{d.stream ?? 'stdout'}</span>
+                        {d.level && <span className="rounded bg-slate-100 px-1.5 py-0.5">{d.level}</span>}
+                        {d.truncated && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">truncated</span>}
+                      </div>
+                      {d.message && <div className="whitespace-pre-wrap break-words text-[11px] text-slate-700">{d.message}</div>}
+                    </li>
+                  ))}
               </ul>
             </section>
           )}

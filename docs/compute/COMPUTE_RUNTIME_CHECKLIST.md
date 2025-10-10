@@ -27,6 +27,9 @@ Legend
   - Component model + async + fuel + epoch interruption configured (`build_engine()`)
   - `StoreLimits` attached; memory cap derived from `mem_limit_mb`
 
+- [ ] Version pin and upgrade gate
+  - AC: Wasmtime and WASI preview level are pinned; CI blocks version bumps unless golden tests pass under the new engine configuration.
+
 - [x] Resource enforcement
   - CPU: `add_fuel(DEFAULT_FUEL or spec.fuel)` and epoch deadline with background epoch pump
   - Memory: `StoreLimitsBuilder::memory_size` with default 256MB unless overridden and policy-allowed
@@ -60,14 +63,9 @@ Legend
       - [ ] Build the per-workspace readonly preopen using `WasiCtxBuilder::new().preopened_dir(...)` so guests can opt into `ws:/files/**` access while still flowing through `sanitize_ws_files_path()` and `fs_read_allowed()` policy guards.【F:uicp/src-tauri/src/compute.rs†L352-L398】
       - [ ] Provide deterministic stdio/log bindings: plumb WASI stdout/stderr and the `uicp:host/logger` import into `ComputePartialEvent` emissions and increment the per-job `log_count` counter (`Ctx.log_count`).【F:uicp/src-tauri/src/compute.rs†L252-L264】【F:uicp/src-tauri/src/main.rs†L270-L305】
       - [ ] Implement host shims for `uicp:host/control`, `uicp:host/rng`, and `uicp:host/clock` so the job-scoped fields (`rng_seed`, `logical_tick`, `deadline_ms`, `remaining_ms`) are observable by guests and captured for replay/metrics.【F:uicp/src-tauri/src/compute.rs†L255-L264】【F:docs/wit/uicp-host@1.0.0.wit†L1-L49】
-    - [ ]Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs.
-   IntegrationDeterministic seed contract
-
-AC: Job has a stable seed, either JobSpec.jobSeed or seed = SHA256(jobId || envHash), and it is logged and replayed.
-
-- [ ] Backpressure and write quotas
-
-AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, with backpressure, not drops. Defaults: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
+      - [ ] Deterministic seed contract - AC: Job has a stable seed, either `JobSpec.jobSeed` or `seed = SHA256(jobId || envHash)`, and it is logged and replayed.
+      - [ ] Backpressure and write quotas - AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, with backpressure (no drops). Defaults: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
+    - Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs.
 
     - [x] Guest export invocation (execution wiring)
     - Host instantiates the component and dispatches `csv#run` / `table#run` via `get_typed_func`, validates inputs, and maps outputs/errors through `finalize_ok_with_metrics()` / `finalize_error()`; see `uicp/src-tauri/src/compute.rs` lines 520-620.【F:uicp/src-tauri/src/compute.rs†L520-L620】
@@ -108,6 +106,12 @@ AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, wit
     - Include negative coverage: cancel in-flight job, observe `Compute.Cancelled`, and verify cache hit replay path when running twice with `cache: 'readwrite'`.
     - Gate the test behind a CI label (`npm run test:e2e -- --project compute`) so it can run headless on GitHub Actions once modules are bundled.
 
+- [ ] Concurrency cap enforcement test
+  - AC: With cap `N = 2`, CI proves two jobs run concurrently and a third queues; metrics show `queue_time` for the third.
+
+- [ ] Kill-and-replay shakedown
+  - AC: CI kills host mid-job, restarts, and replays to the same `outputHash` without corruption or orphaned temp files.
+
 -------------------------------------------------------------------------------
 
 ## 3) Frontend State + Bridge (TypeScript)
@@ -144,11 +148,26 @@ AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, wit
     - TODO: ensure host shims match the WIT files (`uicp:host/control`, `logger`, `rng`, `clock`) and add conformance tests using `wit-bindgen` generated bindings once the host exposes these imports.
     - TODO: add regression tests that diff the checked-in WIT files versus generated TypeScript/Rust bindings (`npm run gen:io`) so drift is caught in CI.
 
+- [ ] Float determinism guard
+  - AC: Golden test runs the same module on x86_64 and aarch64, exercises NaN/Inf paths, and `outputHash` matches bit-for-bit; test fails on drift.
+
+- [ ] Clock monotonicity and deadline coupling
+  - AC: `clock.now_ms` is monotonic per job and never exceeds `control.deadline_ms`; `remaining_ms` hits 0 before the host hard-stops the job.
+
+- [ ] RNG reproducibility
+  - AC: For a fixed seed, three consecutive `rng.next_u64` sequences match across two separate runs; `rng_counter` increments are reflected in metrics.
+
   - [ ] Minimum viable component(s)
     - Build and check in the release WASM binaries for `csv.parse@1.2.0` and `table.query@0.1.0` under `uicp/src-tauri/modules/`, replacing the placeholder digest values in `manifest.json` with actual SHA-256 hashes signed by the build pipeline.【F:uicp/src-tauri/modules/manifest.json†L1-L12】
     - Automate artifact production using `npm run modules:build` + `npm run modules:publish`, ensure outputs are reproducible (document rustc/wasm-opt versions), and store provenance in CHANGELOG or release notes.
     - Extend `scripts/verify-modules.mjs` to enforce signature/digest verification in CI (`STRICT_MODULES_VERIFY=1`) and add a regression test that loads a module via the host and exercises a smoke input.
     - Include sample input/output fixtures so documentation and tests can validate module behavior deterministically.
+
+- [ ] Mandatory module signatures in release
+  - AC: With `STRICT_MODULES_VERIFY=1`, unsigned or mismatched-digest modules refuse to load; CI release job runs with this flag.
+
+- [ ] Component feature preflight
+  - AC: Before instantiation, host inspects component metadata and rejects unsupported features with a precise error code and message.
 
 -------------------------------------------------------------------------------
 
@@ -164,6 +183,9 @@ AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, wit
     - Disable ambient authorities: avoid `.inherit_stdio()`, `.inherit_args()`, `.inherit_env()`, and only link the deterministic host shims in `uicp:host`; continue to default-deny `wasi:http` / `wasi:sockets`.【F:uicp/src-tauri/src/compute.rs†L352-L398】【F:docs/wit/uicp-host@1.0.0.wit†L1-L49】
     - Gate any future capability expansion (e.g., net allowlists) behind `ComputeCapabilitiesSpec` checks in `compute_call()` and document policy expectations.
     - Capture a security note in release docs summarizing which WASI imports are enabled by default.
+
+- [ ] Deny-by-default WASI surface
+  - AC: Context builder proves no ambient stdio/args/env are inherited; no sockets or `wasi:http` linked in V1; policy test fails if any new caps appear.
 
   - [ ] Negative tests
     - Add Rust unit/integration tests that attempt disallowed FS/net/time operations and assert the runtime surfaces `Compute.CapabilityDenied` or `Compute.Resource.Limit`; mirror critical cases through the Tauri command API in TS tests.【F:uicp/src-tauri/src/main.rs†L230-L333】
@@ -197,6 +219,9 @@ AC: Host enforces per-job quotas on stdout/stderr/logger and partial events, wit
   - [ ] E2E smoke for compute
     - Add a CI-friendly Playwright job (Linux) that installs the bundled modules, starts the Tauri app in `--headless` or harness mode, submits a known job, and asserts final success/metrics/caching (pairs with the harness item above).
     - Record video/log artifacts for debugging failures; gate merges on this smoke test once it is stable.
+
+- [ ] Host-only E2E smoke with `STRICT_MODULES_VERIFY`
+  - AC: CI builds a sample component, verifies signature, loads it in the host, runs a trivial preopen read-write job, and asserts the expected output file and digest.
 
 -------------------------------------------------------------------------------
 

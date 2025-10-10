@@ -6,8 +6,10 @@ This package hosts the runtime schemas and adapter used by the desktop client to
 
 ```ts
 {
-  id?: string;            // optional UUID so the backend can respond to a specific command
+  id?: string;            // optional UUID for response correlation
   idempotencyKey?: string; // prevents duplicate application on reconnect
+  traceId?: string;       // request tracking identifier across system
+  txnId?: string;         // transaction grouping identifier
   windowId?: string;      // convenience mirror of params.windowId where applicable
   op: OperationName;      // "window.create" | ...
   params: OperationParamMap[op];
@@ -18,8 +20,8 @@ This package hosts the runtime schemas and adapter used by the desktop client to
 
 | op                | params summary |
 |-------------------|----------------|
-| `window.create`   | `{ id?, title, x?, y?, width?, height?, zIndex?, size? }` |
-| `window.update`   | `{ id, title?, x?, y?, width?, height?, zIndex? }` |
+| `window.create`   | `{ id?, title, x?, y?, width?, height?, zIndex?, size? }` (size: "xs"\|"sm"\|"md"\|"lg"\|"xl", min width/height: 120px) |
+| `window.update`   | `{ id, title?, x?, y?, width?, height?, zIndex? }` (min width/height: 120px) |
 | `window.close`    | `{ id }` |
 | `dom.set`         | `{ windowId, target, html, sanitize? }` (preferred full-target replace) |
 | `dom.replace`     | `{ windowId, target, html, sanitize? }` (same shape, planner may use either) |
@@ -27,10 +29,10 @@ This package hosts the runtime schemas and adapter used by the desktop client to
 | `component.render`| `{ id?, windowId, target, type, props? }` |
 | `component.update`| `{ id, props }` |
 | `component.destroy`| `{ id }` |
-| `state.set`       | `{ scope, key, value, windowId?, ttlMs? }` |
+| `state.set`       | `{ scope, key, value, windowId?, ttlMs? }` (ttlMs must be positive integer) |
 | `state.get`       | `{ scope, key, windowId? }` |
 | `state.watch` / `state.unwatch` | same as `state.get` |
-| `api.call`        | `{ method, url, headers?, body?, idempotencyKey? }` |
+| `api.call`        | `{ method?, url, headers?, body?, idempotencyKey? }` (method defaults to "GET") |
 | `txn.cancel`      | `{ id? }` |
 
 The adapter maintains per-window DOM islands under `#workspace-root`. Commands are applied in FIFO order per window, coalesced into a single animation frame.
@@ -57,20 +59,66 @@ To keep planner output pure HTML, the adapter wires simple event actions via att
 
 These hooks let models build functional apps without emitting JavaScript. All generated HTML remains subject to the sanitizer.
 
+## Budgets and Limits
+
+The system enforces these hard limits:
+
+- **MAX_OPS_PER_BATCH**: 64 operations per batch
+- **MAX_HTML_PER_OP**: 64KB HTML per operation
+- **MAX_TOTAL_HTML_PER_BATCH**: 128KB total HTML across all operations in batch
+- **MAX_DATA_COMMAND_LEN**: 32KB for data-command attribute JSON
+- **MAX_TEMPLATE_TOKENS**: 16 template token substitutions per element
+
+Exceeding these limits will cause validation errors.
+
 ## `api.call` special schemes
 
 `api.call` is side-effectful and runs best-effort on the frontend:
 
-- `uicp://intent`
-  - Body: `{ text: string, windowId?: string }`
-  - Dispatches a new chat message through the app pipeline with `text`. The bridge automatically merges it with the most recent user ask:
-    - `"<last user message>\n\nAdditional details: <text>"`
-    This ensures the planner receives both the original request and the user’s follow‑up.
+### Simple text intent
+- `uicp://intent` with body: `{ text: string, windowId?: string }`
+- Dispatches a new chat message through the app pipeline with `text`
+- The bridge automatically merges it with the most recent user ask:
+  `"<last user message>\n\nAdditional details: <text>"`
+
+### Structured clarifier form
+- `uicp://intent` with body: `{ textPrompt?: string, fields?: [...], title?, submit?, cancel?, windowId?, width?, height?, description? }`
+- Renders an interactive form window with specified fields
+- On submit, dispatches structured data back to chat pipeline
+- Body MUST have `textPrompt` OR `fields` (or both)
+- Body MUST NOT have `text` field (incompatible with structured format)
+- Supported field types: "text", "textarea", "select"
+- Field spec: `{ name: string, label: string, placeholder?: string, type?: string, options?: string[], defaultValue?: string }`
+
+Example structured clarifier:
+```json
+{
+  "op": "api.call",
+  "params": {
+    "method": "POST",
+    "url": "uicp://intent",
+    "body": {
+      "title": "Clarify Details",
+      "textPrompt": "Please provide additional information:",
+      "fields": [
+        { "name": "answer", "label": "Answer", "type": "text", "placeholder": "Type here..." }
+      ],
+      "submit": "Continue",
+      "cancel": "Skip"
+    }
+  }
+}
+```
+
+### File operations
 - `tauri://fs/writeTextFile`
   - Body: `{ path: string, contents: string, directory?: "Desktop" | "Document" | ... }`
-  - Writes `contents` to `path` under the given base directory (defaults to Desktop) using Tauri's filesystem API.
+  - Writes `contents` to `path` under the given base directory (defaults to Desktop)
+
+### HTTP requests
 - `http://` or `https://`
-  - Performs a `fetch` with optional JSON `body` and `headers`. Errors are logged; no response is surfaced to the planner.
+  - Performs a `fetch` with optional JSON `body` and `headers`
+  - Errors are logged; no response is surfaced to the planner
 
 Unknown schemes are treated as no-ops (success result), preserving idempotency sequencing.
 

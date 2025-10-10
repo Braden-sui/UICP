@@ -24,9 +24,11 @@ Entry shape (each command in batch):
 {
   "op": OperationName,
   "params": object,
-  "idempotencyKey"?: string,
-  "txnId"?: string,
-  "windowId"?: string
+  "id"?: string,              // optional UUID for response correlation
+  "idempotencyKey"?: string,  // prevents duplicate application
+  "traceId"?: string,         // request tracking across system
+  "txnId"?: string,           // transaction grouping
+  "windowId"?: string         // convenience mirror of params.windowId
 }
 
 ## Available Operations
@@ -34,9 +36,10 @@ Entry shape (each command in batch):
 Refer only to these operations defined in schemas.ts OperationName enum:
 
 ### Window Operations
-- window.create: { id?: string, title: string, x?: number, y?: number, width?: number, height?: number, zIndex?: number, size?: enum }
+- window.create: { id?: string, title: string, x?: number, y?: number, width?: number, height?: number, zIndex?: number, size?: "xs"|"sm"|"md"|"lg"|"xl" }
   - Use stable IDs: "win-notepad", "win-calc", "win-dashboard"
-  - Default size: width 520-720, height 320-520
+  - Minimum width/height: 120px
+  - Recommended size: width 520-720, height 320-520 (when not using size enum)
 - window.update: { id: string, title?: string, x?: number, y?: number, width?: number, height?: number, zIndex?: number }
 - window.close: { id: string }
 
@@ -63,7 +66,8 @@ Refer only to these operations defined in schemas.ts OperationName enum:
 - component.destroy: { id: string }
 
 ### API Operations
-- api.call: { method: "GET"|"POST"|"PUT"|"PATCH"|"DELETE", url: string, headers?: object, body?: unknown, idempotencyKey?: string }
+- api.call: { method?: "GET"|"POST"|"PUT"|"PATCH"|"DELETE", url: string, headers?: object, body?: unknown, idempotencyKey?: string }
+  - method defaults to "GET" if omitted
   - "uicp://intent" - dispatch to chat pipeline for clarifications
   - "tauri://fs/writeTextFile" - save files: { path: string, contents: string, directory?: "Desktop" }
   - "http(s)://" - external HTTP requests
@@ -140,28 +144,63 @@ From MVP checklist and adapter behavior:
 
 ## Clarify Pattern
 
-When essential details are missing:
-- Set summary to natural-language question ending with "?"
-- Include exactly one api.call to "uicp://intent":
+When essential details are missing, create a structured clarifier plan:
+
+1. Set summary to natural-language question ending with "?"
+2. Include risk entry: "clarifier:structured" (required for detection)
+3. Include exactly one api.call to "uicp://intent" with structured body
+
+Structured clarifier body format:
+{
+  "title"?: string,           // window title (default: "Clarify")
+  "textPrompt"?: string,      // main question to display
+  "description"?: string,     // optional additional context
+  "fields"?: [                // input fields (if omitted, single text input used)
+    {
+      "name": string,         // field name for {{form.NAME}} token
+      "label": string,        // display label
+      "placeholder"?: string, // input placeholder
+      "type"?: "text"|"textarea"|"select",
+      "options"?: string[]    // for type: "select"
+    }
+  ],
+  "submit"?: string,          // submit button text (default: "Submit")
+  "cancel"?: string | false,  // cancel button text, or false to hide
+  "windowId"?: string,        // target window for response
+  "width"?: number,
+  "height"?: number
+}
+
+Requirements:
+- Summary MUST end with "?"
+- Risks MUST include "clarifier:structured"
+- Batch MUST contain exactly one api.call to "uicp://intent"
+- Body MUST have textPrompt OR fields (or both)
+- Body MUST NOT have "text" field (use textPrompt instead)
+- Do not emit window.*, dom.*, component.*, or state.* in clarifier batch
+
+Example:
 ```json
 {
-  "op": "api.call",
-  "params": {
-    "method": "POST",
-    "url": "uicp://intent",
-    "body": {
-      "title": "Clarify: Feature Name",
-      "textPrompt": "What details are needed?",
-      "fields": [
-        { "name": "answer", "label": "Answer", "placeholder": "e.g., specific requirements", "type": "text" }
-      ],
-      "submit": "Continue"
+  "summary": "Which city should display weather for?",
+  "risks": ["clarifier:structured"],
+  "batch": [{
+    "op": "api.call",
+    "params": {
+      "method": "POST",
+      "url": "uicp://intent",
+      "body": {
+        "title": "Clarify: City Selection",
+        "textPrompt": "Please specify the city for weather display.",
+        "fields": [
+          { "name": "city", "label": "City Name", "placeholder": "e.g., New York", "type": "text" }
+        ],
+        "submit": "Continue"
+      }
     }
-  }
+  }]
 }
 ```
-- Supported field types: "text", "textarea", "select"
-- Do not emit window.*, dom.*, component.*, or state.* in clarifier batch
 
 ## Design Language
 
@@ -183,7 +222,11 @@ Before finalizing your plan:
 - [ ] Is HTML safe (no script/style/on*/javascript:)?
 - [ ] Are data-command attributes within limits (32KB, 16 tokens)?
 - [ ] Are actor_hints concise and actionable (max 20 items)?
-- [ ] If clarifying, is the batch a single api.call to uicp://intent?
+- [ ] If clarifying:
+  - [ ] Does summary end with "?"
+  - [ ] Do risks include "clarifier:structured"?
+  - [ ] Is batch a single api.call to uicp://intent?
+  - [ ] Does body have textPrompt or fields (not text)?
 
 ## Example: Notepad
 

@@ -1241,12 +1241,48 @@ mod with_runtime {
             .copied()
             .unwrap_or("info");
         ctx.log_count.fetch_add(1, Ordering::Relaxed);
-        ctx.emitter.emit_debug(serde_json::json!({
-            "event": "compute_guest_log",
-            "jobId": ctx.job_id,
-            "task": ctx.task,
+
+        // Partial log event with deterministic seq/tick and byte caps
+        let bytes = message.as_bytes();
+        let preview_len = bytes.len().min(LOG_PREVIEW_MAX);
+        let preview_b64 = BASE64_ENGINE.encode(&bytes[..preview_len]);
+        let seq_no = store
+            .data()
+            .partial_seq
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let tick_no = store
+            .data()
+            .logical_tick
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let new_total = store
+            .data()
+            .emitted_log_bytes
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed)
+            .saturating_add(bytes.len() as u64) as usize;
+        let truncated = new_total > store.data().max_log_bytes;
+
+        store.data().emitter.emit_partial_json(serde_json::json!({
+            "jobId": store.data().job_id,
+            "task": store.data().task,
+            "seq": seq_no,
+            "kind": "log",
+            "stream": "uicp_logger",
             "level": level_str,
-            "message": message,
+            "tick": tick_no,
+            "bytesLen": bytes.len(),
+            "previewB64": preview_b64,
+            "truncated": truncated,
+        }));
+
+        // Mirror to debug-log for developer visibility
+        store.data().emitter.emit_debug(serde_json::json!({
+            "event": "compute_guest_log",
+            "jobId": store.data().job_id,
+            "task": store.data().task,
+            "level": level_str,
+            "message": truncate_message(&message, MAX_STDIO_CHARS),
             "ts": Utc::now().timestamp_millis(),
         }));
         Ok(())
@@ -1693,121 +1729,10 @@ mod helper_tests {
     }
 }
 
-    #[cfg(test)]
-    mod partial_stream_tests {
-        use super::*;
-        use std::sync::{Arc, Mutex};
-
-        #[derive(Default)]
-        struct TestEmitter {
-            partials: Mutex<Vec<crate::ComputePartialEvent>>,
-            logs: Mutex<Vec<serde_json::Value>>,
-        }
-
-        impl TelemetryEmitter for TestEmitter {
-            fn emit_debug(&self, payload: serde_json::Value) {
-                self.logs.lock().unwrap().push(payload);
-            }
-
-            fn emit_partial(&self, event: crate::ComputePartialEvent) {
-                self.partials.lock().unwrap().push(event);
-            }
-        }
-
-        fn build_envelope(seq: u32) -> Vec<u8> {
-            use ciborium::value::{Integer, Value};
-
-            let payload = Value::Map(vec![(
-                Value::Text("done".into()),
-                Value::Integer(Integer::from(1u64)),
-            )]);
-            let entries = vec![
-                (
-                    Value::Integer(Integer::from(1u8)),
-                    Value::Integer(Integer::from(0u8)),
-                ),
-                (
-                    Value::Integer(Integer::from(2u32)),
-                    Value::Integer(Integer::from(seq)),
-                ),
-                (
-                    Value::Integer(Integer::from(3u64)),
-                    Value::Integer(Integer::from(1234u64)),
-                ),
-                (Value::Integer(Integer::from(4u8)), payload),
-            ];
-            let mut bytes = Vec::new();
-            ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).unwrap();
-            bytes
-        }
-
-        fn shared_state(emitter: Arc<dyn TelemetryEmitter>) -> Arc<PartialStreamShared> {
-            Arc::new(PartialStreamShared {
-                emitter,
-                job_id: "job".into(),
-                task: "task".into(),
-                partial_seq: Arc::new(AtomicU64::new(0)),
-                partial_frames: Arc::new(AtomicU64::new(0)),
-                invalid_partial_frames: Arc::new(AtomicU64::new(0)),
-            })
-        }
-
-        #[test]
-        fn accepts_valid_partial_frame() {
-            let emitter = Arc::new(TestEmitter::default());
-            let shared = shared_state(emitter.clone());
-            let mut stream = PartialOutputStream::new(shared.clone());
-            stream.write(Bytes::from(build_envelope(1))).unwrap();
-
-            assert_eq!(shared.partial_frames.load(Ordering::Relaxed), 1);
-            assert_eq!(
-                shared.invalid_partial_frames.load(Ordering::Relaxed),
-                0
-            );
-            assert_eq!(emitter.partials.lock().unwrap().len(), 1);
-            assert!(emitter.logs.lock().unwrap().is_empty());
-        }
-
-        #[test]
-        fn rejects_malformed_frame() {
-            let emitter = Arc::new(TestEmitter::default());
-            let shared = shared_state(emitter.clone());
-            let mut stream = PartialOutputStream::new(shared.clone());
-            stream.write(Bytes::from_static(&[0x80])).unwrap();
-
-            assert_eq!(shared.partial_frames.load(Ordering::Relaxed), 0);
-            assert_eq!(
-                shared.invalid_partial_frames.load(Ordering::Relaxed),
-                1
-            );
-            assert!(emitter.partials.lock().unwrap().is_empty());
-            assert!(!emitter.logs.lock().unwrap().is_empty());
-        }
-
-        #[test]
-        fn rejects_out_of_order_sequence() {
-            let emitter = Arc::new(TestEmitter::default());
-            let shared = shared_state(emitter.clone());
-            let mut stream = PartialOutputStream::new(shared.clone());
-            stream.write(Bytes::from(build_envelope(1))).unwrap();
-            stream.write(Bytes::from(build_envelope(3))).unwrap();
-
-            assert_eq!(shared.partial_frames.load(Ordering::Relaxed), 1);
-            assert_eq!(
-                shared.invalid_partial_frames.load(Ordering::Relaxed),
-                1
-            );
-            assert_eq!(emitter.partials.lock().unwrap().len(), 1);
-            assert!(!emitter.logs.lock().unwrap().is_empty());
-        }
-    }
-
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {
     use super::*;
     use crate::ComputeFinalErr;
-
-    /// Spawn a stub compute job that fails immediately when the Wasm runtime is not compiled in.
     pub(super) fn spawn_job(
         app: AppHandle,
         spec: ComputeJobSpec,

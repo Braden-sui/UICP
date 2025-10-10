@@ -26,9 +26,11 @@ Entry shape:
 {
   "op": OperationName,
   "params": object,
-  "idempotencyKey"?: string,
-  "txnId"?: string,
-  "windowId"?: string
+  "id"?: string,              // optional UUID for response correlation
+  "idempotencyKey"?: string,  // prevents duplicate application
+  "traceId"?: string,         // request tracking across system
+  "txnId"?: string,           // transaction grouping
+  "windowId"?: string         // convenience mirror of params.windowId
 }
 
 ## Available Operations
@@ -38,7 +40,8 @@ Refer only to these operations from schemas.ts OperationName enum:
 
 ### Parameters (OperationParamMap)
 
-window.create: { id?: string, title: string, x?: number, y?: number, width?: number, height?: number, zIndex?: number, size?: enum }
+window.create: { id?: string, title: string, x?: number, y?: number, width?: number, height?: number, zIndex?: number, size?: "xs"|"sm"|"md"|"lg"|"xl" }
+  - Minimum width/height: 120px
 window.update: { id: string, title?: string, x?: number, y?: number, width?: number, height?: number, zIndex?: number }
 window.close: { id: string }
 dom.set: { windowId: string, target: string, html: string, sanitize?: boolean }
@@ -51,7 +54,8 @@ state.set: { scope: "window"|"workspace"|"global", key: string, value: any, wind
 state.get: { scope: "window"|"workspace"|"global", key: string, windowId?: string }
 state.watch: { scope: "window"|"workspace"|"global", key: string, windowId?: string }
 state.unwatch: { scope: "window"|"workspace"|"global", key: string, windowId?: string }
-api.call: { method: "GET"|"POST"|"PUT"|"PATCH"|"DELETE", url: string, headers?: object, body?: unknown, idempotencyKey?: string }
+api.call: { method?: "GET"|"POST"|"PUT"|"PATCH"|"DELETE", url: string, headers?: object, body?: unknown, idempotencyKey?: string }
+  - method defaults to "GET"
 txn.cancel: { id?: string }
 
 ## Constraints and Budgets
@@ -89,7 +93,7 @@ Wire functionality by embedding JSON batches in data-command attributes on click
 </button>
 ```
 
-Constraints per adapter.ts enforcement (lines 551-563):
+Constraints per adapter.ts:
 - data-command serialized length: maximum 32KB (MAX_DATA_COMMAND_LEN)
 - Template tokens per element: maximum 16 (MAX_TEMPLATE_TOKENS)
 
@@ -140,16 +144,6 @@ Before returning the batch, verify:
 - [ ] No event.* operations in the batch
 - [ ] idempotencyKey and txnId stamped where beneficial
 - [ ] Each params.target selector exists based on earlier steps in batch
-
-## Fallback on Invalid Input
-
-If the Planner plan is invalid or unsafe twice, return this safe fallback:
-{
-  "batch": [
-    { "op": "window.create", "params": { "id": "win-error", "title": "Error", "width": 480, "height": 160 } },
-    { "op": "dom.replace", "params": { "windowId": "win-error", "target": "#root", "html": "<div class=\"p-4 text-sm text-slate-700\">Unable to apply plan safely.</div>" } }
-  ]
-}
 
 ## Design Patterns
 
