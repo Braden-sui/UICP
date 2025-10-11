@@ -5,6 +5,7 @@ dist/
 
 # Rust
 uicp/src-tauri/target/
+**/target/
 *.pdb
 
 # OS
@@ -18,14 +19,8 @@ documents/
 *.sqlite/
 tmp/
 .env
-.claude/settings.local.json
-.claude/*
 
-**/target/
- uicp/src-tauri/target/
-
-.windsurf/rules/*
+# Tooling / IDE
+.claude/
 .windsurf/
-.vscode/*
-.github/*
-.claude/*
+.vscode/
