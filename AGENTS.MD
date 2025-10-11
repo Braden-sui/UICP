@@ -20,7 +20,7 @@ This document helps contributors work efficiently in this repo.
 - TypeScript strict; React 18; Rust async (Tokio)
 - Formatting via Prettier; lint via ESLint (`@typescript-eslint`)
 - Indentation: 2 spaces; no trailing whitespace
-- Names: `PascalCase` React components, `camelCase` vars/functions, `kebab-case` file names where practical
+- Names: `PascalCase` React components, `camelCase` vars/functions, `kebab_case` WIT identifiers, `kebab-case` file names where practical
 - No inline JS from models; interactivity via `data-command`/`data-state-*`
 
 ## Testing Guidelines

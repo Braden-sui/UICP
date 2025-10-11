@@ -1,11 +1,11 @@
-package uicp:task_csv_parse@1.2.0;
+package uicp:task-csv-parse@1.2.0;
 
 use uicp:host/system;
 
 interface types {
   record input {
     source: string,
-    has_header: bool,
+    has-header: bool,
   }
   type output = list<list<string>>;
 }
@@ -19,4 +19,3 @@ world entry {
   import system;
   export task;
 }
-

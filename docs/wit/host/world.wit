@@ -3,56 +3,50 @@ package uicp:host@1.0.0;
 use wasi:io/streams@0.2.0;
 
 /// A stable identifier for the running job. Provided by the host.
-type job_id = string;
+type job-id = string;
 
 /// Log levels for structured logs.
-enum log_level {
-  trace,
-  debug,
-  info,
-  warn,
-  error,
-}
+enum log-level { trace, debug, info, warn, error }
 
 /// Control and coordination with the host.
 interface control {
   /// Open an output stream for partial, structured updates.
   /// The host may apply backpressure; see semantics.
-  open_partial_sink: func(job: job_id) -> streams.output_stream;
+  open-partial-sink: func(job: job-id) -> streams.output-stream;
 
   /// Cooperative cancellation signal. Return true if the job should
   /// begin graceful shutdown. Host may still hard-stop after the deadline.
-  should_cancel: func(job: job_id) -> bool;
+  should-cancel: func(job: job-id) -> bool;
 
   /// Return the total wall-clock budget (ms) that the host granted this job.
   /// Deterministic, constant for the job lifetime.
-  deadline_ms: func(job: job_id) -> u32;
+  deadline-ms: func(job: job-id) -> u32;
 
   /// Return remaining wall-clock budget (ms) at call time.
   /// Decreases to 0; may return 0 before a hard stop to let the guest exit cleanly.
-  remaining_ms: func(job: job_id) -> u32;
+  remaining-ms: func(job: job-id) -> u32;
 }
 
 /// Deterministic random values (seeded by host per job).
 /// Replay of the same job yields the same sequence.
 interface rng {
   /// Next 64-bit value from the job-scoped PRNG.
-  next_u64: func(job: job_id) -> u64;
+  next-u64: func(job: job-id) -> u64;
   /// Fill a buffer with pseudorandom bytes.
-  fill: func(job: job_id, len: u32) -> list<u8>;
+  fill: func(job: job-id, len: u32) -> list<u8>;
 }
 
 /// Structured logging to host.
 interface logger {
   /// Emit a structured log entry.
   /// `fields` is key/value map encoded as CBOR.
-  log: func(job: job_id, level: log_level, fields: list<u8>);
+  log: func(job: job-id, level: log-level, fields: list<u8>);
 }
 
 /// Access to logical clock; host may provide monotonic time.
 interface clock {
   /// Return job-scoped monotonic time (ms).
-  now_ms: func(job: job_id) -> u64;
+  now-ms: func(job: job-id) -> u64;
 }
 
 /// System-level functions available to guests.

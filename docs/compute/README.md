@@ -4,8 +4,8 @@ Master Checklist
 - See `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md` for the authoritative list of what’s done and what remains (host, UI, modules, CI, docs).
 
 - RFC: docs/rfcs/0001-wasm-only-compute-plane.md
-- WIT: docs/wit/uicp-host@1.0.0.wit
-- Task example WIT: docs/wit/tasks/uicp-task-csv-parse@1.2.0.wit
+- WIT: docs/wit/uicp_host@1.0.0.wit
+- Task example WIT: components/csv.parse/wit/world.wit
 - Error taxonomy: docs/compute/error-taxonomy.md
 - Host runtime (implemented): uicp/src-tauri/src/compute.rs
 - Cache module (implemented): uicp/src-tauri/src/compute_cache.rs
@@ -167,3 +167,6 @@ Drift Guard
 -----------
 
 - CI workflow `.github/workflows/compute-ci.yml` includes a `Regenerate WIT bindings` step that runs `npm run gen:io` followed by `git diff --exit-code src/compute/generated`, ensuring ABI changes are synchronized with generated bindings before merge.
+
+
+

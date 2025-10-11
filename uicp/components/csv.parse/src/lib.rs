@@ -1,4 +1,4 @@
-wit_bindgen::generate!({ path: "../../docs/wit/tasks/uicp-task-csv-parse@1.2.0.wit", world: "entry" });
+wit_bindgen::generate!({ path: "../wit/world.wit", world: "entry" });
 
 use ciborium::value::{Integer, Value};
 
@@ -105,3 +105,5 @@ fn hex_val(b: u8) -> Option<u8> {
     _ => None,
   }
 }
+
+

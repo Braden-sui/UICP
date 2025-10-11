@@ -8,7 +8,7 @@ Two reference tasks are planned for V1:
 Build guidance (local):
 
 1) Install `cargo-component` (toolchain).
-2) Components must implement the typed WIT in `docs/wit/tasks/*` (world `entry`).
+2) Components implement their WIT world under `components/<task>/wit/world.wit` (world `entry`).
 3) Build to a component-model Wasm: `cargo component build --release -Zunstable-options`.
 4) Copy the resulting `*.wasm` to `<dataDir>/modules/` and update `<dataDir>/modules/manifest.json` with `task`, `version`, `filename`, and `digest_sha256` (sha256 of wasm bytes).
    Or run:

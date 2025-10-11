@@ -1,0 +1,27 @@
+package uicp:task;
+
+type rows = list<list<string>>;
+
+interface csv {
+  /// Parse CSV source into rows. `source` may be a data: URL or resolved ws:/ path.
+  run: func(job_id: string, source: string, has_header: bool) -> result<rows, string>;
+}
+
+interface table {
+  /// Optional contains filter for a column.
+  type filter = record { col: u32, needle: string };
+
+  /// Select columns from rows and optionally filter by contains.
+  run: func(
+    job_id: string,
+    rows: rows,
+    select: list<u32>,
+    where_contains: option<filter>,
+  ) -> result<rows, string>;
+}
+
+world command {
+  // A component implements one of these interfaces; the host will bind to the appropriate export.
+  export csv;
+  export table;
+}

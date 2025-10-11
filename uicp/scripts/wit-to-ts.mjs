@@ -6,8 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const witDir = join(here, '..', '..', 'docs', 'wit', 'tasks');
 const out = join(here, '..', 'src', 'compute', 'types.gen.ts');
+const witFiles = [
+  join(here, '..', '..', 'components', 'csv.parse', 'wit', 'world.wit'),
+  join(here, '..', '..', 'components', 'table.query', 'wit', 'world.wit'),
+];
 
 /** Camel-case a WIT identifier (dash/underscore to camel). */
 function camel(s) {
@@ -95,10 +98,7 @@ async function parseTaskFile(file) {
 }
 
 async function main() {
-  const files = [
-    join(witDir, 'uicp-task-csv-parse@1.2.0.wit'),
-    join(witDir, 'uicp-task-table-query@0.1.0.wit'),
-  ];
+  const files = witFiles;
   const entries = [];
   for (const f of files) {
     const r = await parseTaskFile(f);
@@ -128,3 +128,5 @@ async function main() {
 }
 
 await main();
+
+

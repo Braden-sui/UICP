@@ -1,0 +1,26 @@
+package uicp:task-table-query@0.1.0;
+
+use uicp:host/system;
+
+interface types {
+  record filter {
+    col: u32,
+    needle: string,
+  }
+  record input {
+    rows: list<list<string>>,
+    select: list<u32>,
+    where-contains: option<filter>,
+  }
+  type output = list<list<string>>;
+}
+
+interface task {
+  use types.{filter, input, output};
+  run: func(job: string, input: input) -> result<output, string>;
+}
+
+world entry {
+  import system;
+  export task;
+}

@@ -56,6 +56,7 @@ pub(crate) fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bo
     let has_header = obj
         .get("hasHeader")
         .and_then(|v| v.as_bool())
+        .or_else(|| obj.get("has_header").and_then(|v| v.as_bool()))
         .or_else(|| obj.get("has-header").and_then(|v| v.as_bool()))
         .unwrap_or(true);
     Ok((source, has_header))

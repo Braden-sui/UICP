@@ -1,4 +1,4 @@
-wit_bindgen::generate!({ path: "../../docs/wit/tasks/uicp-task-table-query@0.1.0.wit", world: "entry" });
+wit_bindgen::generate!({ path: "../wit/world.wit", world: "entry" });
 
 use ciborium::value::{Integer, Value};
 
@@ -71,3 +71,4 @@ fn cbor_envelope(t: u8, s: u32, ts: u64, payload: Option<Value>) -> Vec<u8> {
   let _ = ciborium::ser::into_writer(&map, &mut out);
   out
 }
+
