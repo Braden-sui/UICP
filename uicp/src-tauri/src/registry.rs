@@ -10,7 +10,7 @@ use std::{
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::{Manager, Runtime};
 // Optional signature verification (if caller provides a public key)
 use base64::engine::general_purpose::{
     STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD,
@@ -40,7 +40,7 @@ pub struct ModuleRef {
     pub path: PathBuf,
 }
 
-fn resolve_modules_dir(app: &AppHandle) -> PathBuf {
+fn resolve_modules_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     // Allow override via env for dev; else, place near app data dir under \"modules\".
     if let Ok(dir) = std::env::var("UICP_MODULES_DIR") {
         return PathBuf::from(dir);
@@ -56,7 +56,7 @@ fn resolve_modules_dir(app: &AppHandle) -> PathBuf {
 }
 
 /// Public accessor for the resolved modules directory path.
-pub fn modules_dir(app: &AppHandle) -> PathBuf {
+pub fn modules_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     resolve_modules_dir(app)
 }
 
@@ -64,7 +64,7 @@ pub fn modules_dir(app: &AppHandle) -> PathBuf {
 /// files referenced by the manifest. If the user's modules directory is empty
 /// or missing files, and a bundled copy is present under the app resources,
 /// copy the bundled directory into place.
-pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
+pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<()> {
     // In dev, when UICP_MODULES_DIR is provided, assume the developer manages
     // modules directly in that directory and avoid touching files (which would
     // trigger Tauri's file watcher and cause rebuild loops).
@@ -301,7 +301,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn load_manifest(app: &AppHandle) -> Result<ModuleManifest> {
+pub fn load_manifest<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ModuleManifest> {
     let dir = resolve_modules_dir(app);
     let manifest_path = dir.join("manifest.json");
     if !manifest_path.exists() {
@@ -315,7 +315,7 @@ pub fn load_manifest(app: &AppHandle) -> Result<ModuleManifest> {
 }
 
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
-pub fn find_module(app: &AppHandle, task_at_version: &str) -> Result<Option<ModuleRef>> {
+pub fn find_module<R: Runtime>(app: &tauri::AppHandle<R>, task_at_version: &str) -> Result<Option<ModuleRef>> {
     let (task, version) = task_at_version
         .split_once('@')
         .unwrap_or((task_at_version, ""));
@@ -464,7 +464,7 @@ fn try_create_lock_file(path: &Path) -> Option<FileLock> {
 }
 
 #[cfg(feature = "tauri2")]
-fn bundled_modules_path(app: &AppHandle) -> Option<PathBuf> {
+fn bundled_modules_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     app.path()
         .resource_dir()
         .ok()
@@ -472,7 +472,7 @@ fn bundled_modules_path(app: &AppHandle) -> Option<PathBuf> {
 }
 
 #[cfg(not(feature = "tauri2"))]
-fn bundled_modules_path(app: &AppHandle) -> Option<PathBuf> {
+fn bundled_modules_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     app.path().resource_dir().map(|dir| dir.join("modules"))
 }
 

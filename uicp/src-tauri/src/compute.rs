@@ -13,7 +13,7 @@ use std::time::Instant;
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::mpsc;
 
@@ -481,6 +481,7 @@ mod with_runtime {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
+        fn as_any(&self) -> &dyn Any { self }
     }
 
     struct PartialStreamShared {
@@ -1047,8 +1048,8 @@ mod with_runtime {
 
     /// Spawn a compute job using Wasmtime: build engine/store, link WASI + host, and instantiate the component world.
     /// Execution of task exports will be wired in the next milestone; for now we finalize with a pending-wiring message.
-    pub(super) fn spawn_job(
-        app: AppHandle,
+    pub(super) fn spawn_job<R: Runtime>(
+        app: tauri::AppHandle<R>,
         spec: ComputeJobSpec,
         permit: Option<OwnedSemaphorePermit>,
         queue_wait_ms: u64,
@@ -2238,6 +2239,7 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
+                fn as_any(&self) -> &dyn Any { self }
             }
 
             let captured_partials: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2461,8 +2463,8 @@ mod helper_tests {
 mod no_runtime {
     use super::*;
     use crate::ComputeFinalErr;
-    pub(super) fn spawn_job(
-        app: AppHandle,
+    pub(super) fn spawn_job<R: Runtime>(
+        app: tauri::AppHandle<R>,
         spec: ComputeJobSpec,
         permit: Option<OwnedSemaphorePermit>,
         queue_wait_ms: u64,
@@ -2523,8 +2525,8 @@ mod no_runtime {
 }
 
 /// Public shim that selects the correct implementation.
-pub fn spawn_job(
-    app: AppHandle,
+pub fn spawn_job<R: Runtime>(
+    app: tauri::AppHandle<R>,
     spec: ComputeJobSpec,
     permit: Option<OwnedSemaphorePermit>,
     queue_wait_ms: u64,

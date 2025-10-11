@@ -121,15 +121,6 @@ impl ComputeTestHarness {
         builder = builder
             .manage(state)
             .plugin(tauri_plugin_fs::init())
-            .invoke_handler(tauri::generate_handler![
-                compute_call,
-                compute_cancel,
-                crate::copy_into_files,
-                crate::clear_compute_cache,
-                crate::get_modules_info,
-                crate::load_workspace,
-                crate::save_workspace,
-            ])
             .setup(|app| {
                 if let Err(err) = std::fs::create_dir_all(&*DATA_DIR) {
                     eprintln!("create data dir failed: {err:?}");
@@ -140,7 +131,8 @@ impl ComputeTestHarness {
                 if let Err(err) = std::fs::create_dir_all(&*FILES_DIR) {
                     eprintln!("create files dir failed: {err:?}");
                 }
-                if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
+                let handle = app.handle();
+                if let Err(err) = crate::registry::install_bundled_modules_if_missing(&handle) {
                     eprintln!("install modules failed: {err:?}");
                 }
                 Ok(())
@@ -184,11 +176,11 @@ impl ComputeTestHarness {
         let state: tauri::State<'_, AppState> = self.app.state();
         if let Err(err) = compute_call(self.window.clone(), state, spec.clone()).await {
             self.app.unlisten(listener_id);
-            return Err(anyhow::Error::from(err));
+            return Err(anyhow::anyhow!(err));
         }
 
         let result = tokio::time::timeout(Duration::from_secs(30), async move {
-            rx.await.map_err(anyhow::Error::from)
+            rx.await.map_err(|e| anyhow::anyhow!(e))
         })
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for compute.result.final"));
@@ -205,7 +197,7 @@ impl ComputeTestHarness {
     /// Issue a cancellation for a running job.
     pub async fn cancel_job(&self, job_id: &str) -> Result<()> {
         let state: tauri::State<'_, AppState> = self.app.state();
-        compute_cancel(state, job_id.to_string(), self.window.clone())
+        compute_cancel(self.window.clone(), state, job_id.to_string())
             .await
             .map_err(|err| anyhow::anyhow!(err))
     }

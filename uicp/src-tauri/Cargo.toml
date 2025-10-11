@@ -25,6 +25,7 @@ base64 = "0.22"
 semver = "1.0"
 bytes = "1.7"
 tauri = { version = "2.4.1", features = [] }
+tempfile = { version = "3.10", optional = true }
 tauri-plugin-fs = "2.4"
 time = "0.3"
 tokio-stream = "0.1"
@@ -43,7 +44,6 @@ tokio = { version = "1", features = ["full"] }
   tauri-build = { version = "2.4.1", features = [] }
 
 [dev-dependencies]
-tempfile = "3.10"
 tauri = { version = "2.4.1", features = ["test"] }
 
 [[bin]]
@@ -65,7 +65,7 @@ tauri2 = []
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]
 uicp_wasi_enable = []
 uicp_bindgen = []
-compute_harness = []
+compute_harness = ["dep:tempfile"]
 
 [[bin]]
 name = "compute_harness"

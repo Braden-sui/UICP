@@ -8,7 +8,7 @@ use std::time::Instant;
 
 #[tauri::command]
 pub async fn compute_call(
-    window: tauri::Window,
+    window: tauri::WebviewWindow,
     state: State<'_, AppState>,
     spec: ComputeJobSpec,
 ) -> Result<(), String> {
@@ -87,9 +87,9 @@ pub async fn compute_call(
 
 #[tauri::command]
 pub async fn compute_cancel(
+    window: tauri::WebviewWindow,
     state: State<'_, AppState>,
     job_id: String,
-    window: tauri::Window,
 ) -> Result<(), String> {
     let app_handle = window.app_handle().clone();
     let _ = app_handle.emit(
@@ -131,8 +131,8 @@ pub async fn compute_cancel(
 }
 
 #[tauri::command]
-pub async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let dir = registry::modules_dir(&app);
+pub async fn get_modules_info(window: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    let dir = registry::modules_dir(&window.app_handle());
     let manifest = dir.join("manifest.json");
     let exists = manifest.exists();
     let mut entries = 0usize;
@@ -152,7 +152,7 @@ pub async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value
 }
 
 #[tauri::command]
-pub async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<String, String> {
+pub async fn copy_into_files(src_path: String) -> Result<String, String> {
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -212,7 +212,7 @@ pub async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<serde_json
 
 #[tauri::command]
 pub async fn save_workspace(
-    _window: tauri::Window,
+    _window: tauri::WebviewWindow,
     _state: State<'_, AppState>,
     _windows: Vec<serde_json::Value>,
 ) -> Result<(), String> {
@@ -222,10 +222,11 @@ pub async fn save_workspace(
 
 #[tauri::command]
 pub async fn clear_compute_cache(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     workspace_id: Option<String>,
 ) -> Result<(), String> {
     let ws = workspace_id.unwrap_or_else(|| "default".into());
+    let app = window.app_handle();
     let state: State<'_, AppState> = app.state();
     let path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {

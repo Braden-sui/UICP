@@ -217,24 +217,24 @@ pub async fn lookup(
     let key = key.to_string();
     let ws = workspace_id.to_string();
     let state: State<'_, AppState> = app.state();
-    let res = state
-        .db_ro
-        .call(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT value_json FROM compute_cache WHERE workspace_id = ?1 AND key = ?2")
-                .context("prepare cache select")?;
-            let mut rows = stmt.query(params![ws, key]).context("exec cache select")?;
-            if let Some(row) = rows.next()? {
-                let json_str: String = row.get(0)?;
-                let val: Value = serde_json::from_str(&json_str).context("parse cached value")?;
-                Ok(Some(val))
-            } else {
-                Ok(None)
-            }
-        })
-        .await
-        .context("cache lookup")?;
-    Ok(res)
+    let path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
+        let conn = Connection::open(path).context("open sqlite for cache lookup")?;
+        crate::configure_sqlite(&conn).context("configure sqlite for cache lookup")?;
+        let mut stmt = conn
+            .prepare("SELECT value_json FROM compute_cache WHERE workspace_id = ?1 AND key = ?2")
+            .context("prepare cache select")?;
+        let mut rows = stmt.query(params![ws, key]).context("exec cache select")?;
+        if let Some(row) = rows.next()? {
+            let json_str: String = row.get(0)?;
+            let val: Value = serde_json::from_str(&json_str).context("parse cached value")?;
+            Ok(Some(val))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
+    .context("cache lookup")?
 }
 
 fn upsert_cache_row(
@@ -279,13 +279,14 @@ pub async fn store(
     let task = task.to_string();
     let env_hash = env_hash.to_string();
     let json = serde_json::to_string(value).context("serialize cache value")?;
-    state
-        .db_rw
-        .call(move |conn| {
-            let now = Utc::now().timestamp();
-            upsert_cache_row(conn, &ws, &key, &task, &env_hash, &json, now)
-        })
-        .await
-        .context("cache store")??;
+    let path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let conn = Connection::open(path).context("open sqlite for cache store")?;
+        crate::configure_sqlite(&conn).context("configure sqlite for cache store")?;
+        let now = Utc::now().timestamp();
+        upsert_cache_row(&conn, &ws, &key, &task, &env_hash, &json, now)
+    })
+    .await
+    .context("cache store")??;
     Ok(())
 }

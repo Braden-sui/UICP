@@ -10,8 +10,8 @@ use chrono::Utc;
 use dirs::document_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
-use rusqlite::{params, Connection, OptionalExtension};
-use tauri::{async_runtime::JoinHandle, Manager, State};
+use rusqlite::{params, Connection};
+use tauri::{async_runtime::JoinHandle, Emitter, Manager, State};
 use tokio::sync::{RwLock, Semaphore};
 
 // ----------------------------------------------------------------------------
