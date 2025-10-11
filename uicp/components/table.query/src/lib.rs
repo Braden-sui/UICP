@@ -1,12 +1,14 @@
 // Generate bindings with wit-bindgen (WASI Preview 2) and explicit package mapping
 // Use cargo-component plugin to include generated bindings from target/bindings
-cargo_component_bindings::generate!();
+#[allow(warnings)]
 mod bindings;
 
+use bindings::export;
+use bindings::exports;
 use bindings::exports::uicp::task_table_query::task::{Error, Guest, Input};
-use bindings::imports::uicp::host::control;
-use bindings::imports::wasi::clocks::monotonic_clock;
-use bindings::imports::wasi::io::streams::OutputStream;
+use bindings::uicp::host::control;
+use bindings::wasi::clocks::monotonic_clock;
+use bindings::wasi::io::streams::OutputStream;
 use ciborium::value::{Integer, Value};
 
 struct Component;
@@ -63,7 +65,7 @@ impl Guest for Component {
     Ok(out)
   }
 }
-bindings::export!(Component);
+export!(Component);
 
 fn cbor_envelope(t: u8, s: u32, ts: u64, payload: Option<Value>) -> Vec<u8> {
   let mut entries: Vec<(Value, Value)> = vec![
