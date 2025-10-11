@@ -44,6 +44,9 @@ static APP_NAME: &str = "UICP";
 static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
 static OLLAMA_LOCAL_BASE_DEFAULT: &str = "http://127.0.0.1:11434/v1";
 static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    if let Ok(dir) = std::env::var("UICP_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     let base = document_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_NAME)
 });
@@ -259,16 +262,18 @@ async fn compute_call(
     }
 
     // Spawn the job via compute host (feature-gated implementation), respecting concurrency cap.
+    let queued_at = Instant::now();
     let permit = state
         .compute_sem
         .clone()
         .acquire_owned()
         .await
         .map_err(|e| e.to_string())?;
+    let queue_wait_ms = queued_at.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
     // Pass a normalized cache policy down to the host
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
-    let join = compute::spawn_job(app_handle, spec_norm, Some(permit));
+    let join = compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms);
     // Bookkeeping: track the running job so we can cancel/cleanup later.
     state
         .compute_ongoing
@@ -1916,6 +1921,14 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(any(test, feature = "compute_harness"))]
+pub mod harness;
+
+#[cfg(test)]
+pub mod test_support {
+    pub use crate::harness::ComputeTestHarness;
 }
 
 /// Verify that all module entries listed in the manifest exist and match their digests.

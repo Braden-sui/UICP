@@ -19,7 +19,6 @@ const orchestratorEnabled = (() => {
 const viteMockMode = orchestratorEnabled ? "false" : (process.env.VITE_MOCK_MODE ?? "true");
 
 export default defineConfig({
-  testDir: "tests/e2e/specs",
   use: {
     baseURL: "http://127.0.0.1:4173",
     headless: true,
@@ -37,4 +36,16 @@ export default defineConfig({
       E2E_ORCHESTRATOR: orchestratorEnabled ? "1" : "0",
     },
   },
+  projects: [
+    {
+      name: "default",
+      testDir: "tests/e2e/specs",
+      testMatch: /.*\.spec\.ts$/,
+    },
+    {
+      name: "compute",
+      testDir: "tests/e2e",
+      testMatch: /compute\.smoke\.spec\.ts$/,
+    },
+  ],
 });

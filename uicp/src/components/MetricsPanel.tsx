@@ -94,6 +94,33 @@ const MetricsPanel = () => {
         title: 'Guest log records captured for recent jobs',
       });
     }
+    if (computeSummary.logThrottleWaits > 0) {
+      chips.push({
+        key: 'log-waits',
+        label: 'stdout/err waits',
+        value: String(computeSummary.logThrottleWaits),
+        className: 'bg-slate-100 text-slate-700',
+        title: 'Number of stdout/stderr backpressure waits across jobs',
+      });
+    }
+    if (computeSummary.loggerThrottleWaits > 0) {
+      chips.push({
+        key: 'logger-waits',
+        label: 'logger waits',
+        value: String(computeSummary.loggerThrottleWaits),
+        className: 'bg-slate-100 text-slate-700',
+        title: 'Number of wasi:logging backpressure waits across jobs',
+      });
+    }
+    if (computeSummary.partialThrottleWaits > 0) {
+      chips.push({
+        key: 'partial-waits',
+        label: 'partial waits',
+        value: String(computeSummary.partialThrottleWaits),
+        className: 'bg-slate-100 text-slate-700',
+        title: 'Number of partial event backpressure waits across jobs',
+      });
+    }
     if (computeSummary.fuelUsed > 0) {
       chips.push({
         key: 'fuel',
@@ -120,6 +147,9 @@ const MetricsPanel = () => {
     computeSummary.fuelUsed,
     computeSummary.invalidPartialsDropped,
     computeSummary.logCount,
+    computeSummary.logThrottleWaits,
+    computeSummary.loggerThrottleWaits,
+    computeSummary.partialThrottleWaits,
     computeSummary.memPeakP95,
     computeSummary.partialFrames,
     computeSummary.partialsSeen,

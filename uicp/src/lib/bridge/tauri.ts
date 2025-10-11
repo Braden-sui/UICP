@@ -3,7 +3,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
 import { enqueueBatch, addQueueAppliedListener } from '../uicp/queue';
-import { finalEventSchema, type JobSpec } from '../../compute/types';
+import { finalEventSchema, type JobSpec, type ComputeFinalEvent } from '../../compute/types';
 import { useComputeStore } from '../../state/compute';
 import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
@@ -19,8 +19,20 @@ export async function initializeTauriBridge() {
 
   // If not running inside Tauri, no-op gracefully.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const hasTauri = typeof (window as any).__TAURI__ !== 'undefined';
-  if (!hasTauri) return;
+  const globalAny = window as any;
+  const hasTauri = typeof globalAny.__TAURI__ !== 'undefined';
+  if (!hasTauri) {
+    const testCompute = globalAny.__UICP_TEST_COMPUTE__;
+    if (typeof testCompute === 'function') {
+      started = true;
+      const testCancel =
+        typeof globalAny.__UICP_TEST_COMPUTE_CANCEL__ === 'function'
+          ? (globalAny.__UICP_TEST_COMPUTE_CANCEL__ as (jobId: string) => void)
+          : undefined;
+      setupTestComputeFallback(testCompute as (spec: JobSpec) => Promise<unknown>, testCancel);
+    }
+    return;
+  }
   started = true;
 
   // Dev-only: enable backend debug logs and mirror key events to DevTools
@@ -382,6 +394,115 @@ export async function initializeTauriBridge() {
     }
   };
 
+  if (typeof window !== 'undefined') {
+    const globalAny = window as any;
+    if (!globalAny.__UICP_COMPUTE_STORE__) {
+      Object.defineProperty(globalAny, '__UICP_COMPUTE_STORE__', {
+        value: useComputeStore,
+        configurable: true,
+        writable: false,
+      });
+    }
+    if (!globalAny.__UICP_APP_STORE__) {
+      Object.defineProperty(globalAny, '__UICP_APP_STORE__', {
+        value: useAppStore,
+        configurable: true,
+        writable: false,
+      });
+    }
+  }
+
+  const applyFinalEvent = async (final: ComputeFinalEvent) => {
+    const entry = pendingBinds.get(final.jobId);
+    if (!final.ok) {
+      const toast = formatComputeErrorToast(final as any);
+      useAppStore.getState().pushToast(toast);
+      useChatStore.getState().pushSystemMessage(toast.message, 'compute_final_error');
+      useComputeStore.getState().markFinal(final.jobId, false, undefined, final.message, final.code);
+      pendingBinds.delete(final.jobId);
+      return;
+    }
+    if (entry && entry.binds && entry.binds.length) {
+      const batch = entry.binds.map((b) => ({
+        op: 'state.set',
+        params: {
+          scope: 'workspace',
+          key: asStatePath(b.toStatePath),
+          value: final.output,
+        },
+      } as const));
+      const outcome = await enqueueBatch(batch);
+      if (!outcome.success) {
+        console.error('Failed to apply compute bindings', outcome.errors);
+        useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
+      }
+    }
+    const meta = (final as any).metrics as {
+      durationMs?: number;
+      fuelUsed?: number;
+      memPeakMb?: number;
+      cacheHit?: boolean;
+      deadlineMs?: number;
+      remainingMsAtFinish?: number;
+      logCount?: number;
+      partialFrames?: number;
+      invalidPartialsDropped?: number;
+      logThrottleWaits?: number;
+      loggerThrottleWaits?: number;
+      partialThrottleWaits?: number;
+    } | undefined;
+    useComputeStore.getState().markFinal(final.jobId, true, {
+      durationMs: meta?.durationMs,
+      fuelUsed: meta?.fuelUsed,
+      memPeakMb: meta?.memPeakMb,
+      cacheHit: meta?.cacheHit,
+      deadlineMs: meta?.deadlineMs,
+      remainingMsAtFinish: meta?.remainingMsAtFinish,
+      logCount: meta?.logCount,
+      partialFrames: meta?.partialFrames,
+      invalidPartialsDropped: meta?.invalidPartialsDropped,
+      logThrottleWaits: meta?.logThrottleWaits,
+      loggerThrottleWaits: meta?.loggerThrottleWaits,
+      partialThrottleWaits: meta?.partialThrottleWaits,
+    });
+    pendingBinds.delete(final.jobId);
+  };
+
+  const setupTestComputeFallback = (
+    computeFn: (spec: JobSpec) => Promise<unknown>,
+    cancelFn?: (jobId: string) => void,
+  ) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).uicpComputeCall = async (spec: JobSpec) => {
+      try {
+        pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
+        prunePending();
+        useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
+        const finalSpec = { ...spec, workspaceId: (spec as any).workspaceId ?? 'default' } as JobSpec;
+        const final = await computeFn(finalSpec);
+        const parsed = finalEventSchema.safeParse(final);
+        if (!parsed.success) {
+          throw new Error('Test compute stub returned invalid final payload');
+        }
+        await applyFinalEvent(parsed.data);
+      } catch (error) {
+        pendingBinds.delete(spec.jobId);
+        useComputeStore
+          .getState()
+          .markFinal(spec.jobId, false, undefined, error instanceof Error ? error.message : String(error), ComputeError.CapabilityDenied);
+        throw error;
+      }
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).uicpComputeCancel = async (jobId: string) => {
+      try {
+        cancelFn?.(jobId);
+      } catch {
+        // ignore cancellation stub errors
+      }
+    };
+  };
+
   // Expose a helper for callers to submit jobs and remember bindings.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).uicpComputeCall = async (spec: JobSpec) => {
@@ -465,56 +586,7 @@ export async function initializeTauriBridge() {
         console.error('Invalid compute final payload', parsed.error);
         return;
       }
-      const final = parsed.data;
-      const entry = pendingBinds.get(final.jobId);
-      if (!final.ok) {
-        // Surface enriched error feedback; bindings are ignored.
-        const toast = formatComputeErrorToast(final as any);
-        useAppStore.getState().pushToast(toast);
-        useChatStore.getState().pushSystemMessage(toast.message, 'compute_final_error');
-        useComputeStore.getState().markFinal(final.jobId, false, undefined, final.message, final.code);
-        pendingBinds.delete(final.jobId);
-        return;
-      }
-      if (entry && entry.binds && entry.binds.length) {
-        // State-only bindings: map each to a workspace-scoped state.set
-        const batch = entry.binds.map((b) => ({
-          op: 'state.set',
-          params: {
-            scope: 'workspace',
-            key: asStatePath(b.toStatePath),
-            value: final.output,
-          },
-        } as const));
-        const outcome = await enqueueBatch(batch);
-        if (!outcome.success) {
-          console.error('Failed to apply compute bindings', outcome.errors);
-          useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
-        }
-      }
-      const meta = (final as any).metrics as {
-        durationMs?: number;
-        fuelUsed?: number;
-        memPeakMb?: number;
-        cacheHit?: boolean;
-        deadlineMs?: number;
-        remainingMsAtFinish?: number;
-        logCount?: number;
-        partialFrames?: number;
-        invalidPartialsDropped?: number;
-      } | undefined;
-      useComputeStore.getState().markFinal(final.jobId, true, {
-        durationMs: meta?.durationMs,
-        fuelUsed: meta?.fuelUsed,
-        memPeakMb: meta?.memPeakMb,
-        cacheHit: meta?.cacheHit,
-        deadlineMs: meta?.deadlineMs,
-        remainingMsAtFinish: meta?.remainingMsAtFinish,
-        logCount: meta?.logCount,
-        partialFrames: meta?.partialFrames,
-        invalidPartialsDropped: meta?.invalidPartialsDropped,
-      });
-      pendingBinds.delete(final.jobId);
+      await applyFinalEvent(parsed.data);
     }),
   );
 

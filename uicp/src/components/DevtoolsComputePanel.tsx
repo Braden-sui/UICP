@@ -248,6 +248,15 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
                       <span className="text-[10px] text-amber-700">invalid={j.invalidPartialsDropped}</span>
                     ) : null}
                     {j.logCount ? <span className="text-[10px] text-indigo-700">logs={j.logCount}</span> : null}
+                    {typeof j.logThrottleWaits === 'number' && j.logThrottleWaits > 0 ? (
+                      <span className="text-[10px] text-slate-600">stdout/err waits={j.logThrottleWaits}</span>
+                    ) : null}
+                    {typeof j.loggerThrottleWaits === 'number' && j.loggerThrottleWaits > 0 ? (
+                      <span className="text-[10px] text-slate-600">logger waits={j.loggerThrottleWaits}</span>
+                    ) : null}
+                    {typeof j.partialThrottleWaits === 'number' && j.partialThrottleWaits > 0 ? (
+                      <span className="text-[10px] text-slate-600">partial waits={j.partialThrottleWaits}</span>
+                    ) : null}
                     {j.fuelUsed != null ? (
                       <span className="text-[10px] text-amber-700">fuel={j.fuelUsed}</span>
                     ) : null}

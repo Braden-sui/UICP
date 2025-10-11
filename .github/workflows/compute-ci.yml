@@ -65,6 +65,14 @@ jobs:
         working-directory: uicp
         run: |
           npm run -s test
+      - name: Install Playwright browsers
+        working-directory: uicp
+        run: |
+          npx playwright install chromium --with-deps
+      - name: E2E compute harness
+        working-directory: uicp
+        run: |
+          npm run -s test:e2e -- --project compute
 
       - name: Verify WIT packages
         run: |

@@ -84,6 +84,17 @@ const stateStore = new Map<StateScope, Map<string, unknown>>([
   ["global", new Map()],
 ]);
 
+if (typeof window !== "undefined") {
+  const globalAny = window as any;
+  if (!globalAny.__UICP_STATE_STORE__) {
+    Object.defineProperty(globalAny, "__UICP_STATE_STORE__", {
+      value: stateStore,
+      configurable: true,
+      writable: false,
+    });
+  }
+}
+
 // Track per-window drag cleanup so we can detach listeners on destroy.
 const windowDragCleanup = new WeakMap<HTMLElement, () => void>();
 

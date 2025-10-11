@@ -15,6 +15,7 @@ use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::mpsc;
 
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
@@ -363,6 +364,7 @@ mod with_runtime {
     };
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use tokio::time::{sleep, Duration as TokioDuration};
+    use tokio::sync::mpsc::error::TryRecvError;
     
 
     const DEFAULT_FUEL: u64 = 1_000_000;
@@ -372,6 +374,19 @@ mod with_runtime {
     const MAX_LOG_BYTES: usize = 256 * 1024;
     // Max preview bytes per log frame to include in partial events
     const LOG_PREVIEW_MAX: usize = 256;
+
+    // Adaptive controller parameters
+    const ADAPT_SAMPLE_MS: u64 = 800; // sampling interval
+    const AIMD_INC: f64 = 1.10; // increase factor
+    const AIMD_DEC: f64 = 0.75; // decrease factor
+    const WAITS_HI: u64 = 3; // waits per sample considered high
+    // Per-channel min/max bounds
+    const RL_BYTES_MIN: usize = 64 * 1024; // 64 KiB/s
+    const RL_BYTES_MAX: usize = 1024 * 1024; // 1 MiB/s (stdout/stderr)
+    const LOGGER_BYTES_MIN: usize = 16 * 1024; // 16 KiB/s
+    const LOGGER_BYTES_MAX: usize = 256 * 1024; // 256 KiB/s
+    const EVENTS_MIN: u32 = 10; // 10 events/s
+    const EVENTS_MAX: u32 = 60; // 60 events/s
 
     // Bindgen generation is deferred; we directly use typed funcs via `get_typed_func` for now.
 
@@ -420,22 +435,47 @@ mod with_runtime {
         fn emit_partial_json(&self, payload: serde_json::Value);
     }
 
-    #[derive(Clone)]
-    struct TauriEmitter {
-        app: AppHandle,
+    enum UiEvent {
+        Debug(serde_json::Value),
+        PartialEvent(crate::ComputePartialEvent),
+        PartialJson(serde_json::Value),
     }
 
-    impl TelemetryEmitter for TauriEmitter {
+    struct QueueingEmitter {
+        tx: Mutex<mpsc::Sender<UiEvent>>,
+    }
+
+    impl Clone for QueueingEmitter {
+        fn clone(&self) -> Self {
+            let tx = self.tx.lock().unwrap().clone();
+            Self { tx: Mutex::new(tx) }
+        }
+    }
+
+    impl TelemetryEmitter for QueueingEmitter {
         fn emit_debug(&self, payload: serde_json::Value) {
-            let _ = self.app.emit("debug-log", payload);
+            loop {
+                let mut tx = self.tx.lock().unwrap();
+                if tx.try_send(UiEvent::Debug(payload.clone())).is_ok() { break; }
+                drop(tx);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
-
         fn emit_partial(&self, event: crate::ComputePartialEvent) {
-            let _ = self.app.emit("compute.result.partial", event);
+            loop {
+                let mut tx = self.tx.lock().unwrap();
+                if tx.try_send(UiEvent::PartialEvent(event.clone())).is_ok() { break; }
+                drop(tx);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
-
         fn emit_partial_json(&self, payload: serde_json::Value) {
-            let _ = self.app.emit("compute.result.partial", payload);
+            loop {
+                let mut tx = self.tx.lock().unwrap();
+                if tx.try_send(UiEvent::PartialJson(payload.clone())).is_ok() { break; }
+                drop(tx);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
     }
 
@@ -509,14 +549,17 @@ mod with_runtime {
             if bytes.is_empty() {
                 return Ok(());
             }
-            // Consume one event token (best-effort). Backpressure is signaled via ready()/check_write.
-            {
+            loop {
                 let mut rl = self.shared.partial_rate.lock().unwrap();
-                if !rl.try_take_event() {
-                    self.shared
-                        .partial_throttle_waits
-                        .fetch_add(1, Ordering::Relaxed);
+                if rl.peek_tokens() >= 1.0 {
+                    let _ = rl.try_take_event();
+                    break;
                 }
+                drop(rl);
+                self.shared
+                    .partial_throttle_waits
+                    .fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             match self.process_frame(bytes.as_ref()) {
                 Ok(event) => {
@@ -694,13 +737,19 @@ mod with_runtime {
             // Throttle by byte rate; rely on ready()/check_write for backpressure
             let len = bytes.len();
             {
-                let mut rl = self.shared.log_rate.lock().unwrap();
-                if rl.available() < len {
+                loop {
+                    let mut rl = self.shared.log_rate.lock().unwrap();
+                    let avail = rl.available();
+                    if avail >= len {
+                        rl.consume(len);
+                        break;
+                    }
+                    drop(rl);
                     self.shared
                         .log_throttle_waits
                         .fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                rl.consume(len);
             }
             self.emit_message(bytes.as_ref());
             Ok(())
@@ -711,7 +760,7 @@ mod with_runtime {
         }
 
         fn check_write(&mut self) -> Result<usize, StreamError> {
-            let rl = self.shared.log_rate.lock().unwrap();
+            let mut rl = self.shared.log_rate.lock().unwrap();
             let avail = rl.available();
             Ok(if avail == 0 { 0 } else { avail })
         }
@@ -721,7 +770,10 @@ mod with_runtime {
     impl Subscribe for GuestLogStream {
         async fn ready(&mut self) {
             loop {
-                let avail = { self.shared.log_rate.lock().unwrap().available() };
+                let avail = {
+                    let mut rl = self.shared.log_rate.lock().unwrap();
+                    rl.available()
+                };
                 if avail > 0 {
                     break;
                 }
@@ -861,13 +913,25 @@ mod with_runtime {
                 self.last = Instant::now();
             }
         }
-        fn available(&self) -> usize {
+        fn available(&mut self) -> usize {
+            self.refill();
             self.tokens.max(0.0) as usize
         }
         fn consume(&mut self, n: usize) {
             self.refill();
             self.tokens = (self.tokens - n as f64).max(0.0);
         }
+        fn set_rate_per_sec(&mut self, rate: usize) {
+            self.refill_per_sec = rate.max(1);
+        }
+        fn rate_per_sec(&self) -> usize { self.refill_per_sec }
+        fn set_capacity(&mut self, cap: usize) {
+            self.capacity = cap.max(1);
+            if self.tokens > self.capacity as f64 {
+                self.tokens = self.capacity as f64;
+            }
+        }
+        fn capacity(&self) -> usize { self.capacity }
     }
 
     struct RateLimiterEvents {
@@ -901,6 +965,17 @@ mod with_runtime {
             self.refill();
             self.tokens
         }
+        fn set_rate_per_sec(&mut self, rate: u32) {
+            self.refill_per_sec = (rate.max(1)) as f64;
+        }
+        fn rate_per_sec(&self) -> u32 { self.refill_per_sec as u32 }
+        fn set_capacity(&mut self, cap: u32) {
+            self.capacity = (cap.max(1)) as f64;
+            if self.tokens > self.capacity {
+                self.tokens = self.capacity;
+            }
+        }
+        fn capacity(&self) -> u32 { self.capacity as u32 }
     }
 
     impl WasiView for Ctx {
@@ -929,6 +1004,7 @@ mod with_runtime {
         app: AppHandle,
         spec: ComputeJobSpec,
         permit: Option<OwnedSemaphorePermit>,
+        queue_wait_ms: u64,
     ) -> JoinHandle<()> {
         tauri_spawn(async move {
             let _permit = permit;
@@ -951,7 +1027,7 @@ mod with_runtime {
                 Err(err) => {
                     let any = anyhow::Error::from(err);
                     let (code, msg) = map_trap_error(&any);
-                    finalize_error(&app, &spec, code, &msg, started).await;
+                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -969,6 +1045,7 @@ mod with_runtime {
                         error_codes::TASK_NOT_FOUND,
                         "Module not found for task",
                         started,
+                        queue_wait_ms,
                     )
                     .await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
@@ -979,7 +1056,7 @@ mod with_runtime {
                 Err(err) => {
                     let any = anyhow::Error::from(err);
                     let (code, msg) = map_trap_error(&any);
-                    finalize_error(&app, &spec, code, &msg, started).await;
+                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -993,7 +1070,7 @@ mod with_runtime {
                 Err(err) => {
                     let any = anyhow::Error::from(err);
                     let (code, msg) = map_trap_error(&any);
-                    finalize_error(&app, &spec, code, &msg, started).await;
+                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -1016,7 +1093,32 @@ mod with_runtime {
                 .build();
             let deadline_ms = spec.timeout_ms.unwrap_or(30_000).min(u32::MAX as u64);
 
-            let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(TauriEmitter { app: app.clone() });
+            let ui_capacity: usize = if spec.task.contains("log") { 512 } else { 256 };
+            let (tx_ui, mut rx_ui) = mpsc::channel::<UiEvent>(ui_capacity);
+            let app_for_ui = app.clone();
+            let drain: JoinHandle<()> = tauri_spawn(async move {
+                while let Some(first) = rx_ui.recv().await {
+                    // Micro-batch drain to reduce await overhead when backlog accumulates
+                    let mut batch: Vec<UiEvent> = Vec::with_capacity(32);
+                    batch.push(first);
+                    for _ in 0..31 {
+                        match rx_ui.try_recv() {
+                            Ok(ev) => batch.push(ev),
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => break,
+                        }
+                    }
+                    for ev in batch.drain(..) {
+                        match ev {
+                            UiEvent::Debug(v) => { let _ = app_for_ui.emit("debug-log", v); }
+                            UiEvent::PartialEvent(e) => { let _ = app_for_ui.emit("compute.result.partial", e); }
+                            UiEvent::PartialJson(v) => { let _ = app_for_ui.emit("compute.result.partial", v); }
+                        }
+                    }
+                }
+            });
+            let _ = drain;
+            let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(QueueingEmitter { tx: Mutex::new(tx_ui) });
             let partial_seq = Arc::new(AtomicU64::new(0));
             let partial_frames = Arc::new(AtomicU64::new(0));
             let invalid_partials = Arc::new(AtomicU64::new(0));
@@ -1032,6 +1134,80 @@ mod with_runtime {
             let logger_throttle_waits = Arc::new(AtomicU64::new(0));
             let partial_rate = Arc::new(Mutex::new(RateLimiterEvents::new(30, 30)));
             let partial_throttle_waits = Arc::new(AtomicU64::new(0));
+
+            // Adaptive controller: adjust rates based on observed throttle waits.
+            {
+                let mut cancel_rx_for_ctrl = rx_cancel.clone();
+                let log_rate_c = log_rate.clone();
+                let logger_rate_c = logger_rate.clone();
+                let partial_rate_c = partial_rate.clone();
+                let log_waits_c = log_throttle_waits.clone();
+                let logger_waits_c = logger_throttle_waits.clone();
+                let partial_waits_c = partial_throttle_waits.clone();
+                tauri_spawn(async move {
+                    let mut last_log: u64 = 0;
+                    let mut last_logger: u64 = 0;
+                    let mut last_partial: u64 = 0;
+                    let mut ewma_log = 0.0f64;
+                    let mut ewma_logger = 0.0f64;
+                    let mut ewma_partial = 0.0f64;
+                    loop {
+                        tokio::select! {
+                            _ = sleep(TokioDuration::from_millis(ADAPT_SAMPLE_MS)) => {},
+                            changed = cancel_rx_for_ctrl.changed() => {
+                                if changed.is_err() { break; }
+                                if *cancel_rx_for_ctrl.borrow() { break; }
+                            }
+                        }
+                        let cur_log = log_waits_c.load(Ordering::Relaxed);
+                        let cur_logger = logger_waits_c.load(Ordering::Relaxed);
+                        let cur_partial = partial_waits_c.load(Ordering::Relaxed);
+                        let d_log = cur_log.saturating_sub(last_log); last_log = cur_log;
+                        let d_logger = cur_logger.saturating_sub(last_logger); last_logger = cur_logger;
+                        let d_partial = cur_partial.saturating_sub(last_partial); last_partial = cur_partial;
+                        ewma_log = 0.7 * ewma_log + 0.3 * (d_log as f64);
+                        ewma_logger = 0.7 * ewma_logger + 0.3 * (d_logger as f64);
+                        ewma_partial = 0.7 * ewma_partial + 0.3 * (d_partial as f64);
+
+                        // stdout/stderr
+                        {
+                            let mut rl = log_rate_c.lock().unwrap();
+                            let cur = rl.rate_per_sec();
+                            if ewma_log >= WAITS_HI as f64 {
+                                let next = ((cur as f64) * AIMD_DEC).round() as usize;
+                                rl.set_rate_per_sec(next.max(RL_BYTES_MIN).min(RL_BYTES_MAX));
+                            } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
+                                let next = ((cur as f64) * AIMD_INC).round() as usize;
+                                rl.set_rate_per_sec(next.max(RL_BYTES_MIN).min(RL_BYTES_MAX));
+                            }
+                        }
+                        // logger
+                        {
+                            let mut rl = logger_rate_c.lock().unwrap();
+                            let cur = rl.rate_per_sec();
+                            if ewma_logger >= WAITS_HI as f64 {
+                                let next = ((cur as f64) * AIMD_DEC).round() as usize;
+                                rl.set_rate_per_sec(next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX));
+                            } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
+                                let next = ((cur as f64) * AIMD_INC).round() as usize;
+                                rl.set_rate_per_sec(next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX));
+                            }
+                        }
+                        // partial events
+                        {
+                            let mut rl = partial_rate_c.lock().unwrap();
+                            let cur = rl.rate_per_sec();
+                            if ewma_partial >= WAITS_HI as f64 {
+                                let next = ((cur as f64) * AIMD_DEC).round() as u32;
+                                rl.set_rate_per_sec(next.max(EVENTS_MIN).min(EVENTS_MAX));
+                            } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
+                                let next = ((cur as f64) * AIMD_INC).round() as u32;
+                                rl.set_rate_per_sec(next.max(EVENTS_MIN).min(EVENTS_MAX));
+                            }
+                        }
+                    }
+                });
+            }
 
             let log_shared = Arc::new(GuestLogShared {
                 emitter: telemetry.clone(),
@@ -1163,7 +1339,7 @@ mod with_runtime {
                 epoch_pump.abort();
                 let any = anyhow::Error::from(err);
                 let (code, msg) = map_trap_error(&any);
-                finalize_error(&app, &spec, code, &msg, started).await;
+                finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
                 let state: tauri::State<'_, crate::AppState> = app.state();
                 state.compute_cancel.write().await.remove(&spec.job_id);
                 crate::remove_compute_job(&app, &spec.job_id).await;
@@ -1178,6 +1354,9 @@ mod with_runtime {
                 match inst_res {
                     Ok(instance) => {
                         let task_name = spec.task.split('@').next().unwrap_or("");
+                        if let Some(delay) = artificial_delay_ms {
+                            sleep(TokioDuration::from_millis(delay)).await;
+                        }
                         let call_res: anyhow::Result<serde_json::Value> = match task_name {
                             "csv.parse" => {
                                 let src_has = extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
@@ -1244,12 +1423,20 @@ mod with_runtime {
                         match call_res {
                             Ok(output_json) => {
                                 let metrics = collect_metrics(&store);
-                                finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
+                                finalize_ok_with_metrics(
+                                    &app,
+                                    &spec,
+                                    output_json,
+                                    metrics,
+                                    queue_wait_ms,
+                                )
+                                .await;
                             }
                             Err(err) => {
                                 let (code, msg) = map_trap_error(&err);
                                 let message = if msg.is_empty() { err.to_string() } else { msg };
-                                finalize_error(&app, &spec, code, &message, started).await;
+                                finalize_error(&app, &spec, code, &message, started, queue_wait_ms)
+                                    .await;
                             }
                         }
                         epoch_pump.abort();
@@ -1257,7 +1444,7 @@ mod with_runtime {
                     Err(err) => {
                         let any = anyhow::Error::from(err);
                         let (code, msg) = map_trap_error(&any);
-                        finalize_error(&app, &spec, code, &msg, started).await;
+                        finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
                         epoch_pump.abort();
                     }
                 }
@@ -1271,6 +1458,9 @@ mod with_runtime {
                     Ok(instance) => {
                         // Call appropriate export using typed API.
                         let task_name = spec.task.split('@').next().unwrap_or("");
+                        if let Some(delay) = artificial_delay_ms {
+                            sleep(TokioDuration::from_millis(delay)).await;
+                        }
                         let call_res: anyhow::Result<serde_json::Value> = match task_name {
                             "csv.parse" => {
                                 let parsed = extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
@@ -1337,12 +1527,20 @@ mod with_runtime {
                         match call_res {
                             Ok(output_json) => {
                                 let metrics = collect_metrics(&store);
-                                finalize_ok_with_metrics(&app, &spec, output_json, metrics).await;
+                                finalize_ok_with_metrics(
+                                    &app,
+                                    &spec,
+                                    output_json,
+                                    metrics,
+                                    queue_wait_ms,
+                                )
+                                .await;
                             }
                             Err(err) => {
                                 let (code, msg) = map_trap_error(&err);
                                 let message = if msg.is_empty() { err.to_string() } else { msg };
-                                finalize_error(&app, &spec, code, &message, started).await;
+                                finalize_error(&app, &spec, code, &message, started, queue_wait_ms)
+                                    .await;
                             }
                         }
                         epoch_pump.abort();
@@ -1350,7 +1548,7 @@ mod with_runtime {
                     Err(err) => {
                         let any = anyhow::Error::from(err);
                         let (code, msg) = map_trap_error(&any);
-                        finalize_error(&app, &spec, code, &msg, started).await;
+                        finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
                         epoch_pump.abort();
                     }
                 }
@@ -1434,15 +1632,20 @@ mod with_runtime {
         let ctx_bytes = context.as_bytes();
         let total = bytes.len().saturating_add(ctx_bytes.len());
         {
-            let mut rl = store.data().logger_rate.lock().unwrap();
-            let avail = rl.available();
-            if avail < total {
+            loop {
+                let mut rl = store.data().logger_rate.lock().unwrap();
+                let avail = rl.available();
+                if avail >= total {
+                    rl.consume(total);
+                    break;
+                }
+                drop(rl);
                 store
                     .data()
                     .logger_throttle_waits
                     .fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            rl.consume(total);
         }
         // Enforce per-job max emission budget (shared with stdio)
         let cur = store.data().emitted_log_bytes.load(Ordering::Relaxed) as usize;
@@ -1673,6 +1876,7 @@ mod with_runtime {
         code: &str,
         message: &str,
         started: Instant,
+        queue_wait_ms: u64,
     ) {
         let ms = started.elapsed().as_millis() as i64;
         let payload = crate::ComputeFinalErr {
@@ -1702,7 +1906,10 @@ mod with_runtime {
             );
             let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
             if let Some(map) = obj.as_object_mut() {
-                map.insert("metrics".into(), serde_json::json!({ "durationMs": ms }));
+                map.insert(
+                    "metrics".into(),
+                    serde_json::json!({ "durationMs": ms, "queueMs": queue_wait_ms }),
+                );
             }
             let _ = crate::compute_cache::store(
                 app,
@@ -1721,6 +1928,7 @@ mod with_runtime {
         spec: &ComputeJobSpec,
         output: serde_json::Value,
         started: Instant,
+        queue_wait_ms: u64,
     ) {
         let ms = started.elapsed().as_millis() as i64;
         let payload = crate::ComputeFinalOk {
@@ -1728,7 +1936,7 @@ mod with_runtime {
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
             output: output.clone(),
-            metrics: Some(serde_json::json!({ "durationMs": ms })),
+            metrics: Some(serde_json::json!({ "durationMs": ms, "queueMs": queue_wait_ms })),
         };
         let _ = app.emit("compute.result.final", payload);
         if spec.replayable && spec.cache == "readwrite" {
@@ -1741,7 +1949,11 @@ mod with_runtime {
             if let Some(map) = obj.as_object_mut() {
                 map.insert(
                     "metrics".into(),
-                    serde_json::json!({ "durationMs": ms, "cacheHit": false }),
+                    serde_json::json!({
+                        "durationMs": ms,
+                        "cacheHit": false,
+                        "queueMs": queue_wait_ms
+                    }),
                 );
             }
             let _ = crate::compute_cache::store(
@@ -1761,6 +1973,7 @@ mod with_runtime {
         spec: &ComputeJobSpec,
         output: serde_json::Value,
         mut metrics: serde_json::Value,
+        queue_wait_ms: u64,
     ) {
         // Compute a deterministic hash of the final output for determinism goldens.
         let canonical = crate::compute_cache::canonicalize_input(&output);
@@ -1770,6 +1983,13 @@ mod with_runtime {
         let out_hash = hex::encode(hasher.finalize());
         if let Some(map) = metrics.as_object_mut() {
             map.insert("outputHash".into(), serde_json::json!(out_hash));
+            map.entry("queueMs".into())
+                .or_insert_with(|| serde_json::json!(queue_wait_ms));
+        } else {
+            metrics = serde_json::json!({
+                "outputHash": out_hash,
+                "queueMs": queue_wait_ms
+            });
         }
         let payload = crate::ComputeFinalOk {
             ok: true,
@@ -2319,6 +2539,7 @@ mod no_runtime {
         app: AppHandle,
         spec: ComputeJobSpec,
         permit: Option<OwnedSemaphorePermit>,
+        queue_wait_ms: u64,
     ) -> JoinHandle<()> {
         tauri_spawn(async move {
             let _permit = permit;
@@ -2354,7 +2575,14 @@ mod no_runtime {
                     let _ = app.emit("compute.result.final", payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
                         let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
-                        let _ = crate::compute_cache::store(&app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &serde_json::to_value(&payload).unwrap()).await;
+                        let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
+                        if let Some(map) = obj.as_object_mut() {
+                            map.insert(
+                                "metrics".into(),
+                                serde_json::json!({ "queueMs": queue_wait_ms }),
+                            );
+                        }
+                        let _ = crate::compute_cache::store(&app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
                     }
                 }
             }
@@ -2373,13 +2601,14 @@ pub fn spawn_job(
     app: AppHandle,
     spec: ComputeJobSpec,
     permit: Option<OwnedSemaphorePermit>,
+    queue_wait_ms: u64,
 ) -> JoinHandle<()> {
     #[cfg(feature = "wasm_compute")]
     {
-        with_runtime::spawn_job(app, spec, permit)
+        with_runtime::spawn_job(app, spec, permit, queue_wait_ms)
     }
     #[cfg(not(feature = "wasm_compute"))]
     {
-        no_runtime::spawn_job(app, spec, permit)
+        no_runtime::spawn_job(app, spec, permit, queue_wait_ms)
     }
 }

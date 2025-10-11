@@ -63,3 +63,9 @@ tauri2 = []
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]
 uicp_wasi_enable = []
 uicp_bindgen = []
+compute_harness = []
+
+[[bin]]
+name = "compute_harness"
+path = "src/bin/compute_harness.rs"
+required-features = ["compute_harness"]

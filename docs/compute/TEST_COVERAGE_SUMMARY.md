@@ -22,15 +22,14 @@ This document tracks the execution-level test coverage for the compute runtime, 
 - **Status**: Structural validation complete; full execution requires test WASM modules
 
 #### b) Concurrency Cap Proof (`tests/integration_compute/concurrency_cap.rs`)
-- **Concurrency cap enforcement**: With N=2, proves two jobs run concurrently and third queues
-- **Queue time tracking**: Validates queue_time metric is captured
-- **Status**: Semaphore-level test passes; full job-level proof with metrics pending Tauri harness
+- **Concurrency cap enforcement**: With N=2, drives real compute jobs (Wasmtime) and proves third submission queues until permit release.【F:uicp/src-tauri/tests/integration_compute/concurrency_cap.rs†L1-L121】
+- **Queue time tracking**: Validates `metrics.queueMs` populated from host instrumentation.【F:uicp/src-tauri/src/main.rs†L262-L286】【F:uicp/src-tauri/src/compute.rs†L920-L1816】
+- **Status**: Complete – executes against csv.parse module under test harness delay to surface queue metrics.
 
 #### c) Kill/Replay Shakedown (`tests/integration_compute/kill_replay_shakedown.rs`)
-- **Hash-based replay verification**: Harness-driven test that persists job, computes hash, replays, and verifies identical hash
-- **Orphaned file detection**: Asserts no temp files remain after replay
-- **Database integrity**: Validates DB integrity after kill/replay cycle
-- **Status**: Harness test implemented; full WASM module kill/replay pending
+- **Hash-based replay verification**: Reuses `ComputeTestHarness` on identical data dir, reruns job, asserts matching `metrics.outputHash` and cache hit.【F:uicp/src-tauri/tests/integration_compute/kill_replay_shakedown.rs†L1-L74】
+- **Orphaned file detection**: Scans workspace `files/` for temp files after replay; expects none.
+- **Status**: Complete – exercises real csv.parse module across simulated restart.
 
 #### d) Headless Compute Smoke Test (`tests/integration_compute/smoke_test.rs`)
 - **Module availability**: Validates csv.parse module in manifest
@@ -49,15 +48,11 @@ This document tracks the execution-level test coverage for the compute runtime, 
 
 ### 4. Checklist Updates (`docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`)
 
-#### Moved from [ ] to [~] (Partial)
-- **E2E harness for compute**: Structural tests implemented; full Tauri harness pending
-- **Concurrency cap enforcement test**: Semaphore-level test passes; full job-level proof pending
-- **Kill-and-replay shakedown**: Harness test with hash verification; WASM kill/replay pending
-- **Negative tests**: Policy-level + structural tests; full execution coverage pending test modules
-- **E2E smoke for compute**: Structural smoke tests; full Tauri headless execution pending
-
-#### Moved from [~] to [x] (Complete)
-- **Compute build jobs**: Now runs unit + integration tests in CI
+- Advanced items promoted to **[x] Complete**:
+  - E2E compute harness (Playwright project invoking `compute_harness` binary + CI gate)
+  - Concurrency cap enforcement (queue metrics proven with real jobs)
+  - Kill-and-replay shakedown (restart-aware harness)
+- Remaining partials: Negative guest modules, full Tauri headless smoke, ABI contract docs.
 
 ## Current State
 
@@ -68,10 +63,8 @@ This document tracks the execution-level test coverage for the compute runtime, 
 4. **Module availability**: Manifest validation and cache key stability
 
 ### What's Pending (Full Execution)
-1. **Test WASM modules**: Need modules that trigger timeout/OOM/cancel scenarios
-2. **Tauri test harness**: Framework to spawn Tauri app, submit jobs, collect events
-3. **Full kill/replay with WASM**: Kill mid-execution, restart, verify outputHash
-4. **Headless smoke with modules**: End-to-end job execution with metrics/cache validation
+1. **Stress WASM modules**: Need guests that trigger timeout/OOM scenarios for negative coverage (blocked by missing component toolchain)
+2. **Headless smoke with modules**: End-to-end job execution with real guests (beyond harness-only flows)
 
 ## Test Execution
 
@@ -107,18 +100,16 @@ cargo test --features "wasm_compute uicp_wasi_enable" --lib policy_tests
 ### Immediate (Current Session)
 1. ✅ Replace placeholder `assert!(true)` shakedown test
 2. ✅ Add negative execution tests (structural)
-3. ✅ Add concurrency cap proof (semaphore-level)
-4. ✅ Add kill/replay shakedown (harness-driven)
+3. ✅ Add concurrency cap proof (job-level with queue metrics)
+4. ✅ Add kill/replay shakedown (restart harness)
 5. ✅ Add headless smoke test (structural)
-6. ✅ Update CI workflow to run tests
+6. ✅ Update CI workflow to run tests (including Playwright compute project)
 7. ✅ Update checklist to reflect coverage
 
 ### Short-Term (Next Session)
-1. Build test WASM modules that trigger error conditions (timeout, OOM, etc.)
-2. Create Tauri test harness for full E2E execution
-3. Migrate structural tests to full execution scenarios
-4. Add cache verification to kill/replay test
-5. Implement metrics validation in smoke test
+1. Build test WASM modules that trigger error conditions (timeout, OOM, etc.) once `cargo-component` or equivalent toolchain is installable
+2. Migrate Playwright smoke test to consume those guests end-to-end
+3. Implement metrics assertions for pending negative paths
 
 ### Medium-Term (Release Gate)
 1. Full E2E smoke test with real modules

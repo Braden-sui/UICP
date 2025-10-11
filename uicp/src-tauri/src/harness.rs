@@ -1,0 +1,189 @@
+#![cfg(any(test, feature = "compute_harness"))]
+
+use crate::{
+    compute_call, compute_cancel, ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR,
+};
+use anyhow::{Context, Result};
+use serde_json::Value;
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use reqwest::Client;
+use tokio::sync::{RwLock, Semaphore};
+use tauri::{
+    test::{mock_builder, mock_context, noop_assets, MockRuntime},
+    Listener, Manager,
+};
+use tempfile::TempDir;
+
+/// Test harness that provisions an in-memory (tempdir-backed) app instance capable of running
+/// real compute jobs against the Wasm runtime.
+pub struct ComputeTestHarness {
+    temp: Option<TempDir>,
+    data_dir: PathBuf,
+    app: tauri::App<MockRuntime>,
+    window: tauri::Window<MockRuntime>,
+}
+
+impl ComputeTestHarness {
+    /// Build a new harness. Modules are resolved from `UICP_MODULES_DIR` if set, otherwise
+    /// default to the checked-in `src-tauri/modules` directory.
+    pub fn new() -> Result<Self> {
+        let temp = TempDir::new().context("create temp data dir")?;
+        let data_dir = temp.path().to_path_buf();
+        let (app, window) = Self::build_app(&data_dir)?;
+
+        Ok(Self {
+            temp: Some(temp),
+            data_dir,
+            app,
+            window,
+        })
+    }
+
+    /// Reuse an existing data directory (e.g. to simulate process restart).
+    pub fn with_data_dir<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        let data_dir = dir.as_ref().to_path_buf();
+        let (app, window) = Self::build_app(&data_dir)?;
+        Ok(Self {
+            temp: None,
+            data_dir,
+            app,
+            window,
+        })
+    }
+
+    fn build_app(data_dir: &Path) -> Result<(tauri::App<MockRuntime>, tauri::Window<MockRuntime>)> {
+        std::fs::create_dir_all(data_dir).context("create data dir root")?;
+        std::env::set_var("UICP_DATA_DIR", data_dir);
+        if std::env::var("UICP_MODULES_DIR").is_err() {
+            let modules_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("modules");
+            std::env::set_var("UICP_MODULES_DIR", modules_dir.as_os_str());
+        }
+
+        let db_path = data_dir.join("data.db");
+
+        let state = AppState {
+            db_path: db_path.clone(),
+            last_save_ok: RwLock::new(true),
+            ollama_key: RwLock::new(None),
+            use_direct_cloud: RwLock::new(true),
+            debug_enabled: RwLock::new(false),
+            http: Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .pool_idle_timeout(Some(Duration::from_secs(5)))
+                .tcp_keepalive(Some(Duration::from_secs(5)))
+                .build()
+                .context("build reqwest client")?,
+            ongoing: RwLock::new(std::collections::HashMap::new()),
+            compute_ongoing: RwLock::new(std::collections::HashMap::new()),
+            compute_sem: Arc::new(Semaphore::new(2)),
+            compute_cancel: RwLock::new(std::collections::HashMap::new()),
+            safe_mode: RwLock::new(false),
+            safe_reason: RwLock::new(None),
+            circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        };
+
+        init_database(&db_path).context("init test database")?;
+        ensure_default_workspace(&db_path).context("ensure default workspace")?;
+
+        let mut builder = mock_builder();
+        builder = builder
+            .manage(state)
+            .plugin(tauri_plugin_fs::init())
+            .invoke_handler(tauri::generate_handler![
+                compute_call,
+                compute_cancel,
+                crate::copy_into_files,
+                crate::clear_compute_cache,
+                crate::get_modules_info,
+                crate::load_workspace,
+                crate::save_workspace,
+            ])
+            .setup(|app| {
+                if let Err(err) = std::fs::create_dir_all(&*DATA_DIR) {
+                    eprintln!("create data dir failed: {err:?}");
+                }
+                if let Err(err) = std::fs::create_dir_all(&*LOGS_DIR) {
+                    eprintln!("create logs dir failed: {err:?}");
+                }
+                if let Err(err) = std::fs::create_dir_all(&*FILES_DIR) {
+                    eprintln!("create files dir failed: {err:?}");
+                }
+                if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
+                    eprintln!("install modules failed: {err:?}");
+                }
+                Ok(())
+            });
+
+        let app = builder
+            .build(mock_context(noop_assets()))
+            .context("build test app")?;
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .context("create test window")?;
+
+        Ok((app, window))
+    }
+
+    /// Run a compute job and return the final event payload as JSON.
+    pub async fn run_job(&self, spec: crate::ComputeJobSpec) -> Result<Value> {
+        use tokio::sync::oneshot;
+
+        let (tx, rx) = oneshot::channel::<Value>();
+        let job_id = spec.job_id.clone();
+        let tx_arc = Arc::new(Mutex::new(Some(tx)));
+        let handler_job_id = job_id.clone();
+        let handler_tx = Arc::clone(&tx_arc);
+
+        let listener_id = self.app.listen("compute.result.final", move |event| {
+            if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
+                if value
+                    .get("jobId")
+                    .and_then(|v| v.as_str())
+                    .map(|id| id == handler_job_id)
+                    .unwrap_or(false)
+                {
+                    if let Some(sender) = handler_tx.lock().ok().and_then(|mut guard| guard.take()) {
+                        let _ = sender.send(value);
+                    }
+                }
+            }
+        });
+
+        let state: tauri::State<'_, AppState> = self.app.state();
+        if let Err(err) = compute_call(self.window.clone(), state, spec.clone()).await {
+            self.app.unlisten(listener_id);
+            return Err(anyhow::anyhow!(err));
+        }
+
+        let result = tokio::time::timeout(Duration::from_secs(30), async move {
+            rx.await.map_err(|err| anyhow::anyhow!(err))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for compute.result.final"));
+
+        self.app.unlisten(listener_id);
+
+        match result {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(err)) => Err(err),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Issue a cancellation for a running job.
+    pub async fn cancel_job(&self, job_id: &str) -> Result<()> {
+        let state: tauri::State<'_, AppState> = self.app.state();
+        compute_cancel(state, job_id.to_string(), self.window.clone())
+            .await
+            .map_err(|err| anyhow::anyhow!(err))
+    }
+
+    /// Return the temp workspace path backing this harness.
+    pub fn workspace_dir(&self) -> &Path {
+        &self.data_dir
+    }
+}

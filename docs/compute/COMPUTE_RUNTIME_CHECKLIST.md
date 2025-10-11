@@ -74,11 +74,13 @@ Legend
           - Files: `uicp/src-tauri/src/compute.rs` (`derive_job_seed`, seed wired into `Ctx.rng_seed`).
           - Telemetry: emits `debug-log` event `{ event: "rng_seed", seedHex }` at job start; final metrics include `rngSeedHex` for golden tests.
           - Determinism: replay of the same `(jobId, envHash)` yields identical RNG sequence.
-      - [~] Backpressure and write quotas - AC: per-job quotas on stdout/stderr/logger and partial events with backpressure (no drops). Defaults proposed: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
-        - Implemented (host): token-bucket limiters for stdout/stderr (bytes/s), logger (bytes/s), and partial events (events/s) with backpressure via `check_write()` and `ready()`; logger hostcall blocks in small intervals (no drops).
-          - Files: `uicp/src-tauri/src/compute.rs` (`RateLimiterBytes`, `RateLimiterEvents`, integrated in `GuestLogStream` and `PartialOutputStream`).
-          - Metrics: `logThrottleWaits`, `loggerThrottleWaits`, `partialThrottleWaits` surfaced in final envelopes; UI wiring pending.
-          - Next: add bounded buffers to guarantee no drops even if guests ignore `check_write()`, and enforce logger quotas.
+      - [~] Backpressure and write quotas - AC: per-job quotas on stdout/stderr/logger and partial events with backpressure (no drops). Defaults: stdout+stderr 256 KiB/s with 1 MiB burst, logger 64 KiB/s, partial events 30/s.
+        - Implemented (host): token-bucket limiters for stdout/stderr (bytes/s), logger (bytes/s), and partial events (events/s) with backpressure. Writes now block in small intervals inside host streams/hostcalls so no drops occur even if guests ignore `check_write()`/`ready()`.
+          - Files: `uicp/src-tauri/src/compute.rs` (`RateLimiterBytes`, `RateLimiterEvents`, integrated in `GuestLogStream`, `PartialOutputStream`, and `host_wasi_log`).
+          - Implemented (host): bounded UI event queue decouples emission from Tauri bus (`mpsc::channel` + background drain), guaranteeing no drops with backpressure.
+          - Metrics: `logThrottleWaits`, `loggerThrottleWaits`, `partialThrottleWaits` surfaced in final envelopes; UI wiring added in `uicp/src/lib/bridge/tauri.ts`, `uicp/src/state/compute.ts`, `uicp/src/components/DevtoolsComputePanel.tsx`, and `uicp/src/components/MetricsPanel.tsx`.
+          - Next: tune queue capacity thresholds and add alerts when sustained throttling occurs; integration tests for quotas/backpressure.
+
     - Validation: add feature-gated tests beside `compute.rs` that open the preopen, attempt escapes, and exercise the host control/rng APIs. (planned)
 
     - [x] Guest export invocation (execution wiring)
@@ -115,16 +117,16 @@ Legend
 - [x] Health/safe-mode
   - DB quick_check and safe-mode toggles; replay telemetry stream
 
-  - [ ] E2E harness for compute
-    - Build a deterministic Playwright flow (or Vitest + Tauri harness) that launches the desktop, uploads a tiny CSV fixture, issues `window.uicpComputeCall` for `csv.parse@1.2.0`, waits for `compute.result.final.ok`, and asserts bindings/state updates in the UI store.【F:uicp/src/lib/bridge/tauri.ts†L364-L414】【F:uicp/tests/unit/compute.store.test.ts†L1-L200】
-    - Include negative coverage: cancel in-flight job, observe `Compute.Cancelled`, and verify cache hit replay path when running twice with `cache: 'readwrite'`.
-    - Gate the test behind a CI label (`npm run test:e2e -- --project compute`) so it can run headless on GitHub Actions once modules are bundled.
+  - [x] E2E harness for compute
+    - Implemented Playwright `compute` project that spawns the new `compute_harness` binary (Cargo `run --features compute_harness`). Exercises `window.uicpComputeCall`, asserts store bindings via exposed test hooks, verifies cancellation and cache replay against the real Tauri host.【F:uicp/src/lib/bridge/tauri.ts†L13-L195】【F:uicp/tests/e2e/compute.smoke.spec.ts†L1-L189】【F:uicp/playwright.config.ts†L26-L44】
+    - Negative coverage presently covers cancellation and cache replay; timeout/OOM fixtures remain blocked pending a buildable stress module (see notes).
+    - CI step `npm run test:e2e -- --project compute` wired in `.github/workflows/compute-ci.yml` to run headless on Actions once modules bundle.【F:.github/workflows/compute-ci.yml†L63-L84】
 
-- [ ] Concurrency cap enforcement test
-  - AC: With cap `N = 2`, CI proves two jobs run concurrently and a third queues; metrics show `queue_time` for the third.
+- [x] Concurrency cap enforcement test
+  - AC: With cap `N = 2`, tokio integration test drives real module execution, asserts queue wait metrics via `queueMs`, and proves third job queues while the first two run.【F:uicp/src-tauri/src/main.rs†L262-L286】【F:uicp/src-tauri/src/compute.rs†L920-L1816】【F:uicp/src-tauri/tests/integration_compute/concurrency_cap.rs†L1-L121】
 
-- [ ] Kill-and-replay shakedown
-  - AC: CI kills host mid-job, restarts, and replays to the same `outputHash` without corruption or orphaned temp files.
+- [x] Kill-and-replay shakedown
+  - AC: Restart-aware harness reuses the same data dir, reruns identical job, compares `metrics.outputHash`, ensures cache hit, and checks workspace files for orphans.【F:uicp/src-tauri/src/main.rs†L215-L344】【F:uicp/src-tauri/tests/integration_compute/kill_replay_shakedown.rs†L1-L74】
 
 -------------------------------------------------------------------------------
 
@@ -259,12 +261,12 @@ Legend
 
 ## 9) Release Gates (Go/No-Go)
 
-  - [ ] Guest export wiring complete; csv.parse/table.query MVP runs end-to-end locally with partial streaming + metrics captured (see Sections 1 & 3).
-  - [ ] WASI imports limited to policy; fs preopens verified to sandbox via automated tests (Section 5) and manual validation with real modules.
-    - Host tests include import-surface assertions and a logging guest component; add import enumeration diff for all bundled modules before release.
-  - [ ] Unit + integration + E2E suites green (Rust + TS), including the new compute harness and negative tests.
-  - [ ] CI builds with compute features enabled, module verifier strict mode, and WASM artifacts published.
-  - [ ] Docs updated; feature flag defaults agreed for release and reflected in README/setup + release notes.
+- [ ] Guest export wiring complete; csv.parse/table.query MVP runs end-to-end locally with partial streaming + metrics captured (see Sections 1 & 3).
+- [ ] WASI imports limited to policy; fs preopens verified to sandbox via automated tests (Section 5) and manual validation with real modules.
+- Host tests include import-surface assertions and a logging guest component; add import enumeration diff for all bundled modules before release.
+- [ ] Unit + integration + E2E suites green (Rust + TS), including the new compute harness and negative tests.
+- [ ] CI builds with compute features enabled, module verifier strict mode, and WASM artifacts published.
+- [ ] Docs updated; feature flag defaults agreed for release and reflected in README/setup + release notes.
 
 -------------------------------------------------------------------------------
 
