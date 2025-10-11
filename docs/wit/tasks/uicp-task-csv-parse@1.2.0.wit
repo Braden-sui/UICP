@@ -1,15 +1,22 @@
-package uicp:task-csv-parse@1.2.0
+package uicp:task_csv_parse@1.2.0;
 
-use uicp:host@1.0.0/host;
+use uicp:host/system;
+
+interface types {
+  record input {
+    source: string,
+    has_header: bool,
+  }
+  type output = list<list<string>>;
+}
 
 interface task {
-  type input = record { source: string, has-header: bool }
-  // V1 host expects a simple list-of-rows where each row is list<string>.
-  type output = list<list<string>>
-  run: func(job: host/job-id, input: input) -> result<output, string>
+  use types.{input, output};
+  run: func(job: string, input: input) -> result<output, string>;
 }
 
 world entry {
-  import uicp:host@1.0.0/system
-  export task
+  import system;
+  export task;
 }
+

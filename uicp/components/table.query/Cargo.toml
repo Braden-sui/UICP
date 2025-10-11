@@ -7,9 +7,15 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.26", default-features = false, features = ["macros"] }
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros"] }
 ciborium = "0.2"
 
 [package.metadata.component]
+package = "uicp:task_table_query@0.1.0"
+[package.metadata.component.dependencies]
+"uicp:host@1.0.0" = { path = "../../../docs/wit/uicp-host@1.0.0.wit" }
+
+[package.metadata.component.target]
+path = "../../../docs/wit/tasks/uicp-task-table-query@0.1.0.wit"
 world = "entry"
-wit-path = "../../docs/wit/tasks/uicp-task-table-query@0.1.0.wit"
+

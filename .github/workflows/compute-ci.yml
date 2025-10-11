@@ -39,6 +39,12 @@ jobs:
         run: |
           npm ci
 
+      - name: Regenerate WIT bindings
+        working-directory: uicp
+        run: |
+          npm run -s gen:io
+          git diff --exit-code src/compute/generated
+
       - name: Unit tests (TS)
         working-directory: uicp
         run: |

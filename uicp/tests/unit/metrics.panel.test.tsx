@@ -46,10 +46,9 @@ describe('MetricsPanel compute health', () => {
     expect(screen.getByText(/p50: 100 ms/i)).toBeInTheDocument();
     expect(screen.getByText(/p95: 300 ms/i)).toBeInTheDocument();
     // cache ratio: 1/2 done => 50%
-    expect(screen.getByText(/cache hits: 1 \(50%\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/cache\s*:\s*1 \(50%\)/i)).toBeInTheDocument();
     // recent jobs section lists job ids and statuses
     expect(screen.getByText(/Recent jobs/i)).toBeInTheDocument();
     expect(screen.getByText(/CapabilityDenied/)).toBeInTheDocument();
   });
 });
-

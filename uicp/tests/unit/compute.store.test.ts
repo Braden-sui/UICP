@@ -45,7 +45,9 @@ describe('useComputeStore', () => {
     { ok: true, expected: 'done' },
     { code: 'Compute.Timeout', ok: false, expected: 'timeout' },
     { message: 'Timeout: deadline exceeded', ok: false, expected: 'timeout' },
+    { code: 'Compute.Cancelled', ok: false, expected: 'cancelled' },
     { message: 'Cancelled by user', ok: false, expected: 'cancelled' },
+    { code: 'Compute.Resource.Limit', ok: false, expected: 'error' },
     { code: 'Compute.CapabilityDenied', ok: false, expected: 'error' },
   ];
 

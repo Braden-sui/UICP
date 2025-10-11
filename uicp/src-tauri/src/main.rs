@@ -32,7 +32,13 @@ use tokio_stream::StreamExt;
 
 mod compute;
 mod compute_cache;
+mod policy;
 mod registry;
+
+pub use policy::{
+    enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
+    ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
+};
 
 static APP_NAME: &str = "UICP";
 static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
@@ -192,99 +198,6 @@ struct CommandRequest {
     args: serde_json::Value,
 }
 
-// --- Compute plane: JobSpec mirror (Phase 0 scaffold; no Wasmtime yet) ---
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ComputeBindSpec {
-    to_state_path: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-struct ComputeCapabilitiesSpec {
-    #[serde(default)]
-    fs_read: Vec<String>,
-    #[serde(default)]
-    fs_write: Vec<String>,
-    #[serde(default)]
-    net: Vec<String>,
-    #[serde(default)]
-    long_run: bool,
-    #[serde(default)]
-    mem_high: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ComputeProvenanceSpec {
-    env_hash: String,
-    agent_trace_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ComputeJobSpec {
-    job_id: String,
-    task: String,
-    input: serde_json::Value,
-    timeout_ms: Option<u64>,
-    fuel: Option<u64>,
-    mem_limit_mb: Option<u64>,
-    #[serde(default)]
-    bind: Vec<ComputeBindSpec>,
-    #[serde(default = "default_cache_mode")]
-    cache: String,
-    #[serde(default)]
-    capabilities: ComputeCapabilitiesSpec,
-    #[serde(default = "default_replayable")]
-    replayable: bool,
-    #[serde(default = "default_workspace_id")]
-    workspace_id: String,
-    provenance: ComputeProvenanceSpec,
-}
-
-fn default_cache_mode() -> String {
-    "readwrite".into()
-}
-fn default_replayable() -> bool {
-    true
-}
-fn default_workspace_id() -> String {
-    "default".into()
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ComputeFinalOk {
-    ok: bool,
-    job_id: String,
-    task: String,
-    output: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    metrics: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ComputeFinalErr {
-    ok: bool,
-    job_id: String,
-    task: String,
-    code: String,
-    message: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ComputePartialEvent {
-    job_id: String,
-    task: String,
-    seq: u64,
-    // base64-encoded chunk; guest will use CBOR/JSON when wired
-    payload_b64: String,
-}
-
 #[tauri::command]
 async fn compute_call(
     window: tauri::Window,
@@ -304,86 +217,8 @@ async fn compute_call(
     let app_handle = window.app_handle().clone();
 
     // --- Policy enforcement (Non-negotiables v1) ---
-    // Timeouts: default 30s, allowed 1s-120s; >30s requires cap.longRun
-    let timeout = spec.timeout_ms.unwrap_or(30_000);
-    if !(1_000..=120_000).contains(&timeout) {
-        let payload = ComputeFinalErr {
-            ok: false,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
-            message: "timeoutMs outside allowed range (1000-120000)".into(),
-        };
-        emit_or_log(&app_handle, "compute.result.final", &payload);
-        return Ok(());
-    }
-    if timeout > 30_000 && !spec.capabilities.long_run {
-        let payload = ComputeFinalErr {
-            ok: false,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
-            message: "timeoutMs>30000 requires capabilities.longRun".into(),
-        };
-        emit_or_log(&app_handle, "compute.result.final", &payload);
-        return Ok(());
-    }
-
-    // Memory limits: default 256MB, allowed 64-1024; >256 requires cap.memHigh
-    if let Some(mem) = spec.mem_limit_mb {
-        if !(64..=1024).contains(&mem) {
-            let payload = ComputeFinalErr {
-                ok: false,
-                job_id: spec.job_id.clone(),
-                task: spec.task.clone(),
-                code: "Compute.CapabilityDenied".into(),
-                message: "memLimitMb outside allowed range (64-1024)".into(),
-            };
-            emit_or_log(&app_handle, "compute.result.final", &payload);
-            return Ok(());
-        }
-        if mem > 256 && !spec.capabilities.mem_high {
-            let payload = ComputeFinalErr {
-                ok: false,
-                job_id: spec.job_id.clone(),
-                task: spec.task.clone(),
-                code: "Compute.CapabilityDenied".into(),
-                message: "memLimitMb>256 requires capabilities.memHigh".into(),
-            };
-            emit_or_log(&app_handle, "compute.result.final", &payload);
-            return Ok(());
-        }
-    }
-
-    // Network: default deny in v1
-    if !spec.capabilities.net.is_empty() {
-        let payload = ComputeFinalErr {
-            ok: false,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
-            message: "Network is disabled by policy (cap.net required)".into(),
-        };
-        emit_or_log(&app_handle, "compute.result.final", &payload);
-        return Ok(());
-    }
-
-    // Filesystem: allow only ws:/ globs in v1
-    let fs_ok = spec
-        .capabilities
-        .fs_read
-        .iter()
-        .chain(spec.capabilities.fs_write.iter())
-        .all(|p| p.starts_with("ws:/"));
-    if !fs_ok {
-        let payload = ComputeFinalErr {
-            ok: false,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
-            message: "Filesystem paths must be workspace-scoped (ws:/...)".into(),
-        };
-        emit_or_log(&app_handle, "compute.result.final", &payload);
+    if let Some(deny) = enforce_compute_policy(&spec) {
+        emit_or_log(&app_handle, "compute.result.final", &deny);
         return Ok(());
     }
 

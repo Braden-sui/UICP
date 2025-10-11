@@ -227,6 +227,7 @@ Legend
 
 - [~] Compute build jobs
   - `compute-ci` workflow compiles the host with `wasm_compute,uicp_wasi_enable` and compiles tests; TS unit tests run headless (`.github/workflows/compute-ci.yml`).
+  - Workflow step `Regenerate WIT bindings` runs `npm run gen:io` and fails when generated bindings drift from checked-in WIT definitions.
   - TODO: add feature-on `cargo test` execution and integrate Wasm component build smoke.
 
   - [ ] E2E smoke for compute
