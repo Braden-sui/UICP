@@ -23,3 +23,9 @@ tmp/
 
 **/target/
  uicp/src-tauri/target/
+
+.windsurf/rules/*
+.windsurf/
+.vscode/*
+.github/*
+.claude/*
