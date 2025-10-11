@@ -95,6 +95,12 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
         return Ok(());
     }
 
+    // Attempt a best-effort repair of invalid digests in a pre-existing manifest
+    // using either the bundled manifest (preferred) or by hashing existing files.
+    if manifest_path.exists() {
+        let _ = try_repair_manifest(&target, &bundled);
+    }
+
     // Otherwise validate listed files exist; copy missing ones from bundle when possible.
     let text = fs::read_to_string(&manifest_path)
         .with_context(|| format!("read manifest: {}", manifest_path.display()))?;
@@ -204,6 +210,70 @@ pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
+/// Attempt to repair a manifest with invalid or placeholder digests.
+/// Strategy:
+/// 1) If a bundled manifest exists, prefer its digest values for matching task@version.
+/// 2) Otherwise, compute the digest of any present module file and fill it in.
+fn try_repair_manifest(target: &Path, bundled: &Option<PathBuf>) -> Result<()> {
+    let manifest_path = target.join("manifest.json");
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+    let text = match fs::read_to_string(&manifest_path) {
+        Ok(t) => t,
+        Err(_) => return Ok(()),
+    };
+    // Parse without validation to allow fixing bad entries.
+    let mut manifest: ModuleManifest = match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+
+    // Load bundled manifest if available.
+    let bundled_entries: Option<Vec<ModuleEntry>> = bundled
+        .as_ref()
+        .and_then(|dir| {
+            let p = dir.join("manifest.json");
+            fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<ModuleManifest>(&s).ok()).map(|m| m.entries)
+        });
+
+    let mut updated = false;
+    for entry in manifest.entries.iter_mut() {
+        if is_valid_digest_hex(&entry.digest_sha256) {
+            continue;
+        }
+        // Try bundled digest first
+        if let Some(ref entries) = bundled_entries {
+            if let Some(src) = entries.iter().find(|e| e.task == entry.task && e.version == entry.version) {
+                if is_valid_digest_hex(&src.digest_sha256) {
+                    entry.digest_sha256 = src.digest_sha256.clone();
+                    updated = true;
+                    continue;
+                }
+            }
+        }
+        // Fallback: compute digest of existing file in target
+        let path = target.join(&entry.filename);
+        if path.exists() && is_regular_file(&path) {
+            match fs::read(&path) {
+                Ok(bytes) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&bytes);
+                    entry.digest_sha256 = hex::encode(hasher.finalize());
+                    updated = true;
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    if updated {
+        let repaired = serde_json::to_string_pretty(&manifest)? + "\n";
+        let _ = fs::write(&manifest_path, repaired);
+    }
+    Ok(())
+}
+
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("mkdir: {}", dst.display()))?;
     for entry in fs::read_dir(src).with_context(|| format!("readdir: {}", src.display()))? {
@@ -230,6 +300,8 @@ pub fn load_manifest(app: &AppHandle) -> Result<ModuleManifest> {
     if !manifest_path.exists() {
         return Ok(ModuleManifest::default());
     }
+    // Attempt a best-effort repair before strict parsing.
+    let _ = try_repair_manifest(&dir, &bundled_modules_path(app));
     let text = fs::read_to_string(&manifest_path)
         .with_context(|| format!("read manifest: {}", manifest_path.display()))?;
     parse_manifest(&text)

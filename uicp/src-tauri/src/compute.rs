@@ -235,6 +235,110 @@ pub(crate) fn extract_table_query_input(
 
 // removed unused validate_rows_value helper
 
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base_spec() -> crate::ComputeJobSpec {
+        crate::ComputeJobSpec {
+            job_id: "00000000-0000-4000-8000-000000000002".into(),
+            task: "csv.parse@1.2.0".into(),
+            input: json!({}),
+            timeout_ms: Some(30_000),
+            fuel: None,
+            mem_limit_mb: None,
+            bind: vec![],
+            cache: "readwrite".into(),
+            capabilities: crate::ComputeCapabilitiesSpec::default(),
+            replayable: true,
+            workspace_id: "default".into(),
+            provenance: crate::ComputeProvenanceSpec { env_hash: "test-env".into(), agent_trace_id: None },
+        }
+    }
+
+    #[test]
+    fn csv_input_parses_and_header_defaults() {
+        let v = json!({"source":"data:text/csv,foo,bar"});
+        let (src, has_header) = extract_csv_input(&v).expect("ok");
+        assert!(src.starts_with("data:text/csv"));
+        assert!(has_header, "default hasHeader should be true");
+
+        let v = json!({"source":"data:text/csv,foo,bar","hasHeader":false});
+        let (_src, has_header) = extract_csv_input(&v).expect("ok");
+        assert!(!has_header);
+    }
+
+    #[test]
+    fn table_query_input_parses() {
+        let v = json!({
+          "rows": [["a","b"],["c","d"]],
+          "select": [1],
+          "where_contains": {"col": 0, "needle": "c"}
+        });
+        let (rows, sel, wc) = extract_table_query_input(&v).expect("ok");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(sel, vec![1]);
+        assert_eq!(wc, Some((0, "c".into())));
+    }
+
+    #[test]
+    fn job_seed_is_deterministic() {
+        let a = derive_job_seed("job-1", "env-xyz");
+        let b = derive_job_seed("job-1", "env-xyz");
+        assert_eq!(a, b);
+        let c = derive_job_seed("job-2", "env-xyz");
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn sanitize_ws_paths() {
+        // Ensure files dir exists for mapping
+        let base = crate::files_dir_path();
+        let _ = std::fs::create_dir_all(base);
+        let ok = sanitize_ws_files_path("ws:/files/some/dir/data.csv").expect("ok");
+        assert!(ok.starts_with(base));
+
+        let err = sanitize_ws_files_path("/absolute/bad").unwrap_err();
+        assert!(err.contains("ws:/files"));
+
+        let err = sanitize_ws_files_path("ws:/files/../../escape").unwrap_err();
+        assert!(err.contains("parent traversal"));
+
+        let err = sanitize_ws_files_path("ws:/files/bad\\slash.csv").unwrap_err();
+        assert!(err.contains("invalid separator"));
+    }
+
+    #[test]
+    fn resolve_source_ws_and_plain() {
+        let mut spec = base_spec();
+        // Plain data URI passes through
+        let s = resolve_csv_source(&spec, "data:text/csv,hello").expect("ok");
+        assert_eq!(s, "data:text/csv,hello");
+
+        // Allow workspace reads
+        spec.capabilities.fs_read = vec!["ws:/files/**".into()];
+        let base = crate::files_dir_path();
+        let _ = std::fs::create_dir_all(base);
+        let f = base.join("u_test_compute.csv");
+        std::fs::write(&f, b"a,b\n1,2\n").expect("write");
+        let out = resolve_csv_source(&spec, "ws:/files/u_test_compute.csv").expect("ok");
+        assert!(out.starts_with("data:text/csv;base64,"));
+        let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn fs_read_allowed_matches_exact_and_glob() {
+        let mut spec = base_spec();
+        assert!(!fs_read_allowed(&spec, "ws:/files/foo.csv"));
+        spec.capabilities.fs_read = vec!["ws:/files/**".into()];
+        assert!(fs_read_allowed(&spec, "ws:/files/foo/bar.csv"));
+        spec.capabilities.fs_read = vec!["ws:/files/a.csv".into()];
+        assert!(fs_read_allowed(&spec, "ws:/files/a.csv"));
+        assert!(!fs_read_allowed(&spec, "ws:/files/b.csv"));
+    }
+}
+
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
