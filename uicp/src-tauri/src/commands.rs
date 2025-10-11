@@ -1,4 +1,4 @@
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager, State, Runtime};
 use anyhow::Context;
 
 use crate::{
@@ -6,9 +6,8 @@ use crate::{
 };
 use std::time::Instant;
 
-#[tauri::command]
-pub async fn compute_call(
-    window: tauri::WebviewWindow,
+pub async fn compute_call<R: Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     spec: ComputeJobSpec,
 ) -> Result<(), String> {
@@ -22,7 +21,7 @@ pub async fn compute_call(
         return Err(format!("Duplicate job id {}", spec.job_id));
     }
 
-    let app_handle = window.app_handle().clone();
+    let app_handle = app.clone();
 
     // --- Policy enforcement ---
     if let Some(deny) = enforce_compute_policy(&spec) {
@@ -85,13 +84,12 @@ pub async fn compute_call(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn compute_cancel(
-    window: tauri::WebviewWindow,
+pub async fn compute_cancel<R: Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     job_id: String,
 ) -> Result<(), String> {
-    let app_handle = window.app_handle().clone();
+    let app_handle = app.clone();
     let _ = app_handle.emit(
         "compute.debug",
         serde_json::json!({ "jobId": job_id, "event": "cancel_requested" }),
@@ -130,9 +128,8 @@ pub async fn compute_cancel(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn get_modules_info(window: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
-    let dir = registry::modules_dir(&window.app_handle());
+pub async fn get_modules_info<R: Runtime>(app: tauri::AppHandle<R>) -> Result<serde_json::Value, String> {
+    let dir = registry::modules_dir(&app);
     let manifest = dir.join("manifest.json");
     let exists = manifest.exists();
     let mut entries = 0usize;
@@ -151,7 +148,6 @@ pub async fn get_modules_info(window: tauri::WebviewWindow) -> Result<serde_json
     }))
 }
 
-#[tauri::command]
 pub async fn copy_into_files(src_path: String) -> Result<String, String> {
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -203,16 +199,14 @@ pub async fn copy_into_files(src_path: String) -> Result<String, String> {
     ))
 }
 
-#[tauri::command]
 pub async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     // Minimal stub for tests; not used by compute harness tests directly.
     let _db_path = state.db_path.clone();
     Ok(vec![])
 }
 
-#[tauri::command]
 pub async fn save_workspace(
-    _window: tauri::WebviewWindow,
+    _window: (),
     _state: State<'_, AppState>,
     _windows: Vec<serde_json::Value>,
 ) -> Result<(), String> {
@@ -220,13 +214,11 @@ pub async fn save_workspace(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn clear_compute_cache(
-    window: tauri::WebviewWindow,
+pub async fn clear_compute_cache<R: Runtime>(
+    app: tauri::AppHandle<R>,
     workspace_id: Option<String>,
 ) -> Result<(), String> {
     let ws = workspace_id.unwrap_or_else(|| "default".into());
-    let app = window.app_handle();
     let state: State<'_, AppState> = app.state();
     let path = state.db_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {

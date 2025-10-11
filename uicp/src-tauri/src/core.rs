@@ -11,7 +11,7 @@ use dirs::document_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection};
-use tauri::{async_runtime::JoinHandle, Emitter, Manager, State};
+use tauri::{async_runtime::JoinHandle, Emitter, Manager, State, Runtime};
 use tokio::sync::{RwLock, Semaphore};
 
 // ----------------------------------------------------------------------------
@@ -263,7 +263,7 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn emit_or_log<T>(app_handle: &tauri::AppHandle, event: &str, payload: T)
+pub fn emit_or_log<R: Runtime, T>(app_handle: &tauri::AppHandle<R>, event: &str, payload: T)
 where
     T: serde::Serialize + Clone,
 {
@@ -273,7 +273,7 @@ where
 }
 
 /// Remove a compute job from the ongoing map. Used by the compute host to release state.
-pub async fn remove_compute_job(app_handle: &tauri::AppHandle, job_id: &str) {
+pub async fn remove_compute_job<R: Runtime>(app_handle: &tauri::AppHandle<R>, job_id: &str) {
     let state: State<'_, crate::AppState> = app_handle.state();
     state.compute_ongoing.write().await.remove(job_id);
 }

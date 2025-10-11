@@ -17,7 +17,6 @@ use tauri::{
     Listener, Manager,
 };
 use tempfile::TempDir;
-use tokio_rusqlite::Connection as AsyncConn;
  
 
 /// Test harness that provisions an in-memory (tempdir-backed) app instance capable of running
@@ -70,32 +69,10 @@ impl ComputeTestHarness {
         init_database(&db_path).context("init test database")?;
         ensure_default_workspace(&db_path).context("ensure default workspace")?;
 
-        // Initialize resident async SQLite connections for the test harness
-        let db_rw = tauri::async_runtime::block_on(AsyncConn::open(&db_path))
-            .expect("open sqlite rw (harness)");
-        let db_ro = tauri::async_runtime::block_on(AsyncConn::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ))
-        .expect("open sqlite ro (harness)");
-        tauri::async_runtime::block_on(async {
-            db_rw.call(|c| crate::configure_sqlite(c)).await.unwrap();
-            // Read-only: only non-writing pragmas
-            db_ro
-                .call(|c| {
-                    use std::time::Duration;
-                    c.busy_timeout(Duration::from_millis(5_000)).unwrap();
-                    c.pragma_update(None, "foreign_keys", "ON").unwrap();
-                    Ok::<_, rusqlite::Error>(())
-                })
-                .await
-                .unwrap();
-        });
+        // No resident tokio_rusqlite connections in the harness; functions open connections as needed.
 
         let state = AppState {
             db_path: db_path.clone(),
-            db_ro,
-            db_rw,
             last_save_ok: RwLock::new(true),
             ollama_key: RwLock::new(None),
             use_direct_cloud: RwLock::new(true),
@@ -174,7 +151,7 @@ impl ComputeTestHarness {
         });
 
         let state: tauri::State<'_, AppState> = self.app.state();
-        if let Err(err) = compute_call(self.window.clone(), state, spec.clone()).await {
+        if let Err(err) = compute_call(self.app.handle().clone(), state, spec.clone()).await {
             self.app.unlisten(listener_id);
             return Err(anyhow::anyhow!(err));
         }
@@ -197,7 +174,7 @@ impl ComputeTestHarness {
     /// Issue a cancellation for a running job.
     pub async fn cancel_job(&self, job_id: &str) -> Result<()> {
         let state: tauri::State<'_, AppState> = self.app.state();
-        compute_cancel(self.window.clone(), state, job_id.to_string())
+        compute_cancel(self.app.handle().clone(), state, job_id.to_string())
             .await
             .map_err(|err| anyhow::anyhow!(err))
     }

@@ -15,6 +15,7 @@ use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::OwnedSemaphorePermit;
+#[cfg(feature = "wasm_compute")]
 use tokio::sync::mpsc;
 
 #[cfg(feature = "wasm_compute")]
@@ -1793,8 +1794,8 @@ mod with_runtime {
         (error_codes::RUNTIME_FAULT, String::new())
     }
 
-    async fn finalize_error(
-        app: &AppHandle,
+    async fn finalize_error<R: Runtime>(
+        app: &AppHandle<R>,
         spec: &ComputeJobSpec,
         code: &str,
         message: &str,
@@ -1846,8 +1847,8 @@ mod with_runtime {
         }
     }
 
-    async fn finalize_ok(
-        app: &AppHandle,
+    async fn finalize_ok<R: Runtime>(
+        app: &AppHandle<R>,
         spec: &ComputeJobSpec,
         output: serde_json::Value,
         started: Instant,
@@ -1891,8 +1892,8 @@ mod with_runtime {
         }
     }
 
-    async fn finalize_ok_with_metrics(
-        app: &AppHandle,
+    async fn finalize_ok_with_metrics<R: Runtime>(
+        app: &AppHandle<R>,
         spec: &ComputeJobSpec,
         output: serde_json::Value,
         mut metrics: serde_json::Value,
@@ -1944,7 +1945,7 @@ mod with_runtime {
         }
     }
 
-    async fn cleanup_job(app: &AppHandle, job_id: &str) {
+    async fn cleanup_job<R: Runtime>(app: &AppHandle<R>, job_id: &str) {
         let state: tauri::State<'_, crate::AppState> = app.state();
         state.compute_cancel.write().await.remove(job_id);
         crate::remove_compute_job(app, job_id).await;

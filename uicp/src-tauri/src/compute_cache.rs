@@ -3,7 +3,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, State};
+use tauri::{Manager, Runtime, State};
 
 use crate::AppState;
 
@@ -209,8 +209,8 @@ mod tests {
 }
 
 /// Fetch cached final event payload by key, scoped to a workspace.
-pub async fn lookup(
-    app: &AppHandle,
+pub async fn lookup<R: Runtime>(
+    app: &tauri::AppHandle<R>,
     workspace_id: &str,
     key: &str,
 ) -> anyhow::Result<Option<Value>> {
@@ -261,8 +261,8 @@ fn upsert_cache_row(
 }
 
 /// Store final event payload by key (idempotent upsert).
-pub async fn store(
-    app: &AppHandle,
+pub async fn store<R: Runtime>(
+    app: &tauri::AppHandle<R>,
     workspace_id: &str,
     key: &str,
     task: &str,
