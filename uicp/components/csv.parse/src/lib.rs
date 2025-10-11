@@ -1,6 +1,7 @@
 // Generate bindings with wit-bindgen (WASI Preview 2) and explicit package mapping
 // Use cargo-component plugin to include generated bindings from target/bindings
 cargo_component_bindings::generate!();
+mod bindings;
 
 use bindings::exports::uicp::task_csv_parse::task::{Error, Guest, Input};
 use bindings::imports::uicp::host::control;
