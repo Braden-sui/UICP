@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 wit-bindgen = { version = "0.46", default-features = false, features = ["macros"] }
 ciborium = "0.2"
 wit-bindgen-rt = "0.23"
+cargo-component-bindings = "0.6.0"
 
 [package.metadata.component]
 package = "uicp:task-table-query"
