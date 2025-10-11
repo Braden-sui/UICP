@@ -1,3 +1,12 @@
+# !WARNING!
+
+  - NOT PRODUCTION-READY — ACTIVE DEVELOPMENT — EXPECT BREAKING CHANGES
+  - Interfaces, prompts, and storage schemas are unstable and may change without notice.
+  - Security hardening is incomplete; do not use with sensitive data or in regulated environments.
+  - Data may be lost during upgrades; backups and migrations are not guaranteed.
+  - Windows-focused MVP; Linux/macOS support is incomplete.
+  - Mock mode defaults on; cloud calls and compute features are experimental.
+
 # Generative Desktop
 
 Local-first Tauri UI that exposes a clean desktop canvas and a DockChat surface. DockChat is the only control that users touch while the agent drives the UI through UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
