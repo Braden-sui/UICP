@@ -35,8 +35,9 @@ tokio = { version = "1", features = ["full"] }
   # Optional Wasm runtime (WASI Preview 2) for the compute plane.
   # Default-enabled in this repo via the "wasm_compute" feature to exercise compute paths.
   # Opt out at build time with `--no-default-features` (disables "wasm_compute").
-  wasmtime = { version = "22", default-features = false, features = ["cranelift", "component-model"], optional = true }
-  wasmtime-wasi = { version = "22", optional = true }
+  wasmtime = { version = "24", default-features = false, features = ["cranelift", "component-model", "cache"], optional = true }
+  wasmtime-wasi = { version = "24", optional = true }
+  dashmap = "6.0"
 
   [build-dependencies]
   tauri-build = { version = "2.4.1", features = [] }

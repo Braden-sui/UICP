@@ -355,6 +355,8 @@ mod with_runtime {
     };
     use std::any::Any;
     use std::io::Cursor;
+    use once_cell::sync::Lazy;
+    use dashmap::DashMap;
     use wasmtime::{
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
@@ -989,7 +991,49 @@ mod with_runtime {
         }
     }
 
-    /// Build a Wasmtime engine configured for the Component Model and limits.
+    /// Global Engine configured for the Component Model with on-disk artifact cache enabled.
+    static ENGINE: Lazy<Engine> = Lazy::new(|| {
+        let mut cfg = Config::new();
+        cfg.wasm_component_model(true)
+            .async_support(true)
+            .consume_fuel(true)
+            .epoch_interruption(true)
+            .wasm_memory64(false);
+        // Enable Wasmtime on-disk artifact cache (uses default OS cache dir)
+        let _ = cfg.cache_config_load_default();
+        Engine::new(&cfg).expect("wasmtime engine")
+    });
+
+    /// Reused Linker with WASI + host interfaces registered.
+    static LINKER: Lazy<Linker<Ctx>> = Lazy::new(|| {
+        let mut linker = Linker::<Ctx>::new(&ENGINE);
+        add_wasi_and_host(&mut linker).expect("add wasi+host");
+        linker
+    });
+
+    /// LRU-ish compiled Component cache keyed by path + mtime.
+    static COMPONENT_CACHE: Lazy<DashMap<String, Arc<Component>>> = Lazy::new(DashMap::new);
+
+    fn load_component_cached(path: &std::path::Path) -> anyhow::Result<Arc<Component>> {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let meta = fs::metadata(path)?;
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let mtime = modified
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let key = format!("{}|{}", path.display(), mtime);
+        if let Some(found) = COMPONENT_CACHE.get(&key) {
+            return Ok(found.clone());
+        }
+        let comp = Component::from_file(&*ENGINE, path)?;
+        let arc = Arc::new(comp);
+        COMPONENT_CACHE.insert(key, arc.clone());
+        Ok(arc)
+    }
+
+    /// Build a fresh Engine (used by some unit tests); runtime uses the global ENGINE.
     fn build_engine() -> anyhow::Result<Engine> {
         let mut cfg = Config::new();
         cfg.wasm_component_model(true)
@@ -997,6 +1041,7 @@ mod with_runtime {
             .consume_fuel(true)
             .epoch_interruption(true)
             .wasm_memory64(false);
+        let _ = cfg.cache_config_load_default();
         Ok(Engine::new(&cfg)?)
     }
 
@@ -1023,19 +1068,8 @@ mod with_runtime {
                     .insert(spec.job_id.clone(), tx_cancel);
             }
 
-            // Build engine
-            let engine = match build_engine() {
-                Ok(e) => e,
-                Err(err) => {
-                    let any = anyhow::Error::from(err);
-                    let (code, msg) = map_trap_error(&any);
-                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
-                    let state: tauri::State<'_, crate::AppState> = app.state();
-                    state.compute_cancel.write().await.remove(&spec.job_id);
-                    crate::remove_compute_job(&app, &spec.job_id).await;
-                    return;
-                }
-            };
+            // Reuse global engine
+            let engine: &Engine = &*ENGINE;
 
             // Resolve module by task@version
             let module = match registry::find_module(&app, &spec.task) {
@@ -1066,8 +1100,8 @@ mod with_runtime {
                 }
             };
 
-            // Create component from file
-            let component = match Component::from_file(&engine, &module.path) {
+            // Load compiled component from cache
+            let component = match load_component_cached(&module.path) {
                 Ok(c) => c,
                 Err(err) => {
                     let any = anyhow::Error::from(err);
@@ -1279,7 +1313,7 @@ mod with_runtime {
                 partial_throttle_waits,
                 limits,
             };
-            let mut store: Store<Ctx> = Store::new(&engine, ctx);
+            let mut store: Store<Ctx> = Store::new(engine, ctx);
             store.limiter(|ctx| &mut ctx.limits);
 
             // Optional diagnostics for mounts/imports at job start (support both cases)
@@ -1316,7 +1350,7 @@ mod with_runtime {
                 deadline_ticks = 1;
             }
             store.set_epoch_deadline(deadline_ticks);
-            let eng = engine.clone();
+            let eng: &Engine = engine;
             let tick_interval = Duration::from_millis(EPOCH_TICK_INTERVAL_MS);
             let ticks = deadline_ticks;
             let epoch_pump: JoinHandle<()> = tauri_spawn(async move {
@@ -1335,24 +1369,14 @@ mod with_runtime {
                 });
             }
 
-            // Link WASI and host imports, then instantiate the world
-            let mut linker: Linker<Ctx> = Linker::new(&engine);
-            if let Err(err) = add_wasi_and_host(&mut linker) {
-                epoch_pump.abort();
-                let any = anyhow::Error::from(err);
-                let (code, msg) = map_trap_error(&any);
-                finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
-                let state: tauri::State<'_, crate::AppState> = app.state();
-                state.compute_cancel.write().await.remove(&spec.job_id);
-                crate::remove_compute_job(&app, &spec.job_id).await;
-                return;
-            }
+            // Instantiate with shared linker (WASI + host already registered)
+            let linker: &Linker<Ctx> = &*LINKER;
 
             // Instantiate the world and call exports using typed API (no bindgen for now)
             #[cfg(feature = "uicp_bindgen")]
             {
                 let inst_res: Result<wasmtime::component::Instance, _> =
-                    linker.instantiate(&mut store, &component);
+                    linker.instantiate(&mut store, &*component);
                 match inst_res {
                     Ok(instance) => {
                         let task_name = spec.task.split('@').next().unwrap_or("");
@@ -1398,54 +1422,6 @@ mod with_runtime {
                                 let parsed = extract_table_query_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
                                 if let Err(err) = parsed {
                                     Err(err)
-                                } else {
-                                    let (rows, select, where_opt) = parsed.unwrap();
-                                    let func_res: Result<
-                                        wasmtime::component::TypedFunc<
-                                            (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
-                                            (Result<Vec<Vec<String>>, String>,),
-                                        >,
-                                        _,
-                                    > = instance.get_typed_func(&mut store, "table#run");
-                                    match func_res {
-                                        Err(e) => Err(anyhow::Error::from(e)),
-                                        Ok(func) => match func
-                                            .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
-                                            .await
-                                        {
-                                            Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                            Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                            Err(e) => Err(anyhow::Error::from(e)),
-                                        },
-                                    }
-                                }
-                            }
-                            _ => Err(anyhow::anyhow!("unknown task for this world")),
-                        };
-                        match call_res {
-                            Ok(output_json) => {
-                                let metrics = collect_metrics(&store);
-                                finalize_ok_with_metrics(
-                                    &app,
-                                    &spec,
-                                    output_json,
-                                    metrics,
-                                    queue_wait_ms,
-                                )
-                                .await;
-                            }
-                            Err(err) => {
-                                let (code, msg) = map_trap_error(&err);
-                                let message = if msg.is_empty() { err.to_string() } else { msg };
-                                finalize_error(&app, &spec, code, &message, started, queue_wait_ms)
-                                    .await;
-                            }
-                        }
-                        epoch_pump.abort();
-                    }
-                    Err(err) => {
-                        let any = anyhow::Error::from(err);
-                }
                                 } else {
                                     let (rows, select, where_opt) = parsed.unwrap();
                                     let func_res: Result<
