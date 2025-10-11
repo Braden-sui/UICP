@@ -3,16 +3,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
+use tokio_rusqlite::Connection as AsyncConn;
 use sha2::{Digest, Sha256};
 
-fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
+async fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let conn = Connection::open(db_path)?;
-    configure_sqlite(&conn)?;
-    conn.execute_batch(
+    let conn = AsyncConn::open(db_path).await?;
+    conn.call(|c| configure_sqlite(c)).await?;
+    conn.call(|c| c.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS workspace (
             id TEXT PRIMARY KEY,
@@ -68,11 +69,11 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             created_at INTEGER NOT NULL
         );
         "#,
-    )?;
+    )).await?;
     Ok(())
 }
 
-fn configure_sqlite(conn: &Connection) -> rusqlite::Result<()> {
+fn configure_sqlite(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(Duration::from_millis(5_000))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -80,68 +81,81 @@ fn configure_sqlite(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
-    let conn = Connection::open(db_path)?;
-    configure_sqlite(&conn)?;
+async fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
+    let conn = AsyncConn::open(db_path).await?;
+    conn.call(|c| configure_sqlite(c)).await?;
     let now = Utc::now().timestamp();
-    conn.execute(
-        "INSERT OR IGNORE INTO workspace (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-        params!["default", "Default Workspace", now],
-    )?;
+    conn.call(move |c| {
+        c.execute(
+            "INSERT OR IGNORE INTO workspace (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+            params!["default", "Default Workspace", now],
+        )?;
+        Ok::<_, rusqlite::Error>(())
+    }).await?;
     Ok(())
 }
 
-fn cmd_init_db(db: &PathBuf) -> anyhow::Result<i32> {
-    init_database(db)?;
-    ensure_default_workspace(db)?;
+async fn cmd_init_db(db: &PathBuf) -> anyhow::Result<i32> {
+    init_database(db).await?;
+    ensure_default_workspace(db).await?;
     Ok(0)
 }
 
-fn cmd_persist(db: &PathBuf, id: &str, tool: &str, args_json: &str) -> anyhow::Result<i32> {
-    init_database(db)?; // idempotent
-    ensure_default_workspace(db)?;
-    let conn = Connection::open(db)?;
-    configure_sqlite(&conn)?;
-    let now = Utc::now().timestamp();
-    conn.execute(
-        "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
-        params![id, "default", tool, args_json, now],
-    )?;
+async fn cmd_persist(db: &PathBuf, id: &str, tool: &str, args_json: &str) -> anyhow::Result<i32> {
+    init_database(db).await?; // idempotent
+    ensure_default_workspace(db).await?;
+    let conn = AsyncConn::open(db).await?;
+    conn.call(|c| configure_sqlite(c)).await?;
+    let id = id.to_string();
+    let tool = tool.to_string();
+    let args = args_json.to_string();
+    conn.call(move |c| {
+        let now = Utc::now().timestamp();
+        c.execute(
+            "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+            params![id, "default", tool, args, now],
+        )?;
+        Ok::<_, rusqlite::Error>(())
+    }).await?;
     Ok(0)
 }
 
-fn cmd_log_hash(db: &PathBuf) -> anyhow::Result<i32> {
-    init_database(db)?;
-    let conn = Connection::open(db)?;
-    configure_sqlite(&conn)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, tool, COALESCE(args_json, ''), COALESCE(result_json, ''), created_at FROM tool_call ORDER BY created_at ASC, id ASC",
-    )?;
-    let mut rows = stmt.query([])?;
-    let mut hasher = Sha256::new();
-    while let Some(row) = rows.next()? {
-        let id: String = row.get(0)?;
-        let tool: String = row.get(1)?;
-        let args: String = row.get(2)?;
-        let res: String = row.get(3)?;
-        let ts: i64 = row.get(4)?;
-        hasher.update(id.as_bytes());
-        hasher.update([0]);
-        hasher.update(tool.as_bytes());
-        hasher.update([0]);
-        hasher.update(args.as_bytes());
-        hasher.update([0]);
-        hasher.update(res.as_bytes());
-        hasher.update([0]);
-        hasher.update(ts.to_le_bytes());
-        hasher.update([0xff]);
-    }
-    let hex = hex::encode(hasher.finalize());
+async fn cmd_log_hash(db: &PathBuf) -> anyhow::Result<i32> {
+    init_database(db).await?;
+    let conn = AsyncConn::open(db).await?;
+    conn.call(|c| configure_sqlite(c)).await?;
+    let hex = conn
+        .call(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, tool, COALESCE(args_json, ''), COALESCE(result_json, ''), created_at FROM tool_call ORDER BY created_at ASC, id ASC",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut hasher = Sha256::new();
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let tool: String = row.get(1)?;
+                let args: String = row.get(2)?;
+                let res: String = row.get(3)?;
+                let ts: i64 = row.get(4)?;
+                hasher.update(id.as_bytes());
+                hasher.update([0]);
+                hasher.update(tool.as_bytes());
+                hasher.update([0]);
+                hasher.update(args.as_bytes());
+                hasher.update([0]);
+                hasher.update(res.as_bytes());
+                hasher.update([0]);
+                hasher.update(ts.to_le_bytes());
+                hasher.update([0xff]);
+            }
+            Ok::<_, rusqlite::Error>(hex::encode(hasher.finalize()))
+        })
+        .await?;
     println!("{}", hex);
     Ok(0)
 }
 
-fn last_checkpoint_ts(conn: &Connection) -> anyhow::Result<Option<i64>> {
+fn last_checkpoint_ts(conn: &rusqlite::Connection) -> anyhow::Result<Option<i64>> {
     let ts: Option<i64> = conn
         .query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| {
             r.get(0)
@@ -150,27 +164,41 @@ fn last_checkpoint_ts(conn: &Connection) -> anyhow::Result<Option<i64>> {
     Ok(ts)
 }
 
-fn cmd_save_checkpoint(db: &PathBuf, hash: &str) -> anyhow::Result<i32> {
-    init_database(db)?;
-    let conn = Connection::open(db)?;
-    configure_sqlite(&conn)?;
-    let now = Utc::now().timestamp();
-    conn.execute(
-        "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
-        params![hash, now],
-    )?;
+async fn cmd_save_checkpoint(db: &PathBuf, hash: &str) -> anyhow::Result<i32> {
+    init_database(db).await?;
+    let conn = AsyncConn::open(db).await?;
+    conn.call(|c| configure_sqlite(c)).await?;
+    let hash = hash.to_string();
+    conn
+        .call(move |c| {
+            let now = Utc::now().timestamp();
+            c.execute(
+                "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
+                params![hash, now],
+            )?;
+            Ok::<_, rusqlite::Error>(())
+        })
+        .await?;
     Ok(0)
 }
 
-fn cmd_compact_log(db: &PathBuf) -> anyhow::Result<i32> {
-    init_database(db)?;
-    let conn = Connection::open(db)?;
-    configure_sqlite(&conn)?;
-    let since = last_checkpoint_ts(&conn)?.unwrap_or(0);
-    let deleted = conn.execute(
-        "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
-        params![since],
-    )? as i64;
+async fn cmd_compact_log(db: &PathBuf) -> anyhow::Result<i32> {
+    init_database(db).await?;
+    let conn = AsyncConn::open(db).await?;
+    conn.call(|c| configure_sqlite(c)).await?;
+    let since = conn
+        .call(|c| last_checkpoint_ts(c))
+        .await?
+        .unwrap_or(0);
+    let deleted = conn
+        .call(move |c| {
+            let n = c.execute(
+                "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
+                params![since],
+            )? as i64;
+            Ok::<_, rusqlite::Error>(n)
+        })
+        .await?;
     println!("{}", deleted);
     Ok(0)
 }
@@ -180,50 +208,51 @@ fn usage() -> ! {
     std::process::exit(2)
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let mut args = env::args().skip(1);
     let Some(cmd) = args.next() else { usage() };
     let code = match cmd.as_str() {
         "init-db" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
-            cmd_init_db(&db)
+            cmd_init_db(&db).await
         }
         "persist" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
             let id = args.next().unwrap_or_else(|| usage());
             let tool = args.next().unwrap_or_else(|| usage());
             let args_json = args.next().unwrap_or_else(|| usage());
-            cmd_persist(&db, &id, &tool, &args_json)
+            cmd_persist(&db, &id, &tool, &args_json).await
         }
         "log-hash" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
-            cmd_log_hash(&db)
+            cmd_log_hash(&db).await
         }
         "materialize" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
             let key = args.next().unwrap_or_else(|| usage());
-            cmd_materialize(&db, &key)
+            cmd_materialize(&db, &key).await
         }
         "count-missing" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
-            cmd_count_missing(&db)
+            cmd_count_missing(&db).await
         }
         "quick-check" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
-            cmd_quick_check(&db)
+            cmd_quick_check(&db).await
         }
         "fk-check" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
-            cmd_fk_check(&db)
+            cmd_fk_check(&db).await
         }
         "save-checkpoint" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
             let hash = args.next().unwrap_or_else(|| usage());
-            cmd_save_checkpoint(&db, &hash)
+            cmd_save_checkpoint(&db, &hash).await
         }
         "compact-log" => {
             let db = PathBuf::from(args.next().unwrap_or_else(|| usage()));
-            cmd_compact_log(&db)
+            cmd_compact_log(&db).await
         }
         _ => usage(),
     };

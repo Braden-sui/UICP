@@ -5,6 +5,21 @@ pub use policy::{
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
+pub mod registry;
+pub mod compute;
+pub mod compute_cache;
+pub mod core;
+
+pub use core::{
+    AppState, DATA_DIR, FILES_DIR, LOGS_DIR, files_dir_path, configure_sqlite, init_database,
+    ensure_default_workspace, emit_or_log, remove_compute_job,
+};
+
+pub mod commands;
+pub use commands::{
+    compute_call, compute_cancel, copy_into_files, clear_compute_cache, get_modules_info,
+    load_workspace, save_workspace,
+};
 use serde_json::Value;
 use sha2::{Digest as Sha2Digest, Sha256 as Sha2_256};
 

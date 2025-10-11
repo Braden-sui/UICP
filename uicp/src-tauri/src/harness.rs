@@ -18,6 +18,7 @@ use tauri::{
 };
 use tempfile::TempDir;
 use tokio_rusqlite::Connection as AsyncConn;
+ 
 
 /// Test harness that provisions an in-memory (tempdir-backed) app instance capable of running
 /// real compute jobs against the Wasm runtime.
@@ -25,7 +26,7 @@ pub struct ComputeTestHarness {
     temp: Option<TempDir>,
     data_dir: PathBuf,
     app: tauri::App<MockRuntime>,
-    window: tauri::Window<MockRuntime>,
+    window: tauri::WebviewWindow<MockRuntime>,
 }
 
 impl ComputeTestHarness {
@@ -56,7 +57,7 @@ impl ComputeTestHarness {
         })
     }
 
-    fn build_app(data_dir: &Path) -> Result<(tauri::App<MockRuntime>, tauri::Window<MockRuntime>)> {
+    fn build_app(data_dir: &Path) -> Result<(tauri::App<MockRuntime>, tauri::WebviewWindow<MockRuntime>)> {
         std::fs::create_dir_all(data_dir).context("create data dir root")?;
         std::env::set_var("UICP_DATA_DIR", data_dir);
         if std::env::var("UICP_MODULES_DIR").is_err() {
@@ -66,7 +67,10 @@ impl ComputeTestHarness {
 
         let db_path = data_dir.join("data.db");
 
-        // Initialize resident async SQLite connections for tests
+        init_database(&db_path).context("init test database")?;
+        ensure_default_workspace(&db_path).context("ensure default workspace")?;
+
+        // Initialize resident async SQLite connections for the test harness
         let db_rw = tauri::async_runtime::block_on(AsyncConn::open(&db_path))
             .expect("open sqlite rw (harness)");
         let db_ro = tauri::async_runtime::block_on(AsyncConn::open_with_flags(
@@ -76,7 +80,16 @@ impl ComputeTestHarness {
         .expect("open sqlite ro (harness)");
         tauri::async_runtime::block_on(async {
             db_rw.call(|c| crate::configure_sqlite(c)).await.unwrap();
-            db_ro.call(|c| crate::configure_sqlite(c)).await.unwrap();
+            // Read-only: only non-writing pragmas
+            db_ro
+                .call(|c| {
+                    use std::time::Duration;
+                    c.busy_timeout(Duration::from_millis(5_000)).unwrap();
+                    c.pragma_update(None, "foreign_keys", "ON").unwrap();
+                    Ok::<_, rusqlite::Error>(())
+                })
+                .await
+                .unwrap();
         });
 
         let state = AppState {
@@ -102,8 +115,7 @@ impl ComputeTestHarness {
             circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
         };
 
-        init_database(&db_path).context("init test database")?;
-        ensure_default_workspace(&db_path).context("ensure default workspace")?;
+        // database initialized above
 
         let mut builder = mock_builder();
         builder = builder
@@ -172,11 +184,11 @@ impl ComputeTestHarness {
         let state: tauri::State<'_, AppState> = self.app.state();
         if let Err(err) = compute_call(self.window.clone(), state, spec.clone()).await {
             self.app.unlisten(listener_id);
-            return Err(anyhow::anyhow!(err));
+            return Err(anyhow::Error::from(err));
         }
 
         let result = tokio::time::timeout(Duration::from_secs(30), async move {
-            rx.await.map_err(|err| anyhow::anyhow!(err))
+            rx.await.map_err(anyhow::Error::from)
         })
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for compute.result.final"));

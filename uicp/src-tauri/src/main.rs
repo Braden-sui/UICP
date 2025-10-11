@@ -1807,6 +1807,21 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
     });
 }
 
+fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
+    spawn(async move {
+        let mut ticker = interval(Duration::from_secs(24 * 60 * 60));
+        loop {
+            ticker.tick().await;
+            let state: State<'_, AppState> = app_handle.state();
+            // Best-effort: run optimize and compact WAL periodically
+            let _ = state
+                .db_rw
+                .call(|c| c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);"))
+                .await;
+        }
+    });
+}
+
 fn main() {
     if let Err(err) = dotenv() {
         eprintln!("Failed to load .env: {err:?}");
@@ -1828,8 +1843,16 @@ fn main() {
             .call(|c| crate::configure_sqlite(c))
             .await
             .expect("configure sqlite rw");
+        // Read-only: set a subset that does not require writes
         db_ro
-            .call(|c| crate::configure_sqlite(c))
+            .call(|c| {
+                use std::time::Duration;
+                c.busy_timeout(Duration::from_millis(5_000))
+                    .map_err(anyhow::Error::from)?;
+                c.pragma_update(None, "foreign_keys", "ON")
+                    .map_err(anyhow::Error::from)?;
+                Ok::<_, anyhow::Error}(())
+            })
             .await
             .expect("configure sqlite ro");
         // Best-effort hygiene
@@ -1897,6 +1920,8 @@ fn main() {
                 eprintln!("module install failed: {err:?}");
             }
             spawn_autosave(app.handle().clone());
+            // Periodic DB maintenance to keep WAL and stats tidy
+            spawn_db_maintenance(app.handle().clone());
             // Run DB health check at startup; enter Safe Mode on failure
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

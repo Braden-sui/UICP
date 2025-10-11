@@ -1373,13 +1373,13 @@ mod with_runtime {
             let linker: &Linker<Ctx> = &*LINKER;
 
             // Instantiate the world and call exports using typed API (no bindgen for now)
-            #[cfg(feature = "uicp_bindgen")]
             {
                 let inst_res: Result<wasmtime::component::Instance, _> =
                     linker.instantiate(&mut store, &*component);
                 match inst_res {
                     Ok(instance) => {
                         let task_name = spec.task.split('@').next().unwrap_or("");
+                        let artificial_delay_ms = std::env::var("UICP_TEST_COMPUTE_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok());
                         if let Some(delay) = artificial_delay_ms {
                             sleep(TokioDuration::from_millis(delay)).await;
                         }
