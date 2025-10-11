@@ -488,8 +488,8 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
                 "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at)
                  VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
                 params![id, "default", tool, args_json, now],
-            )
-            .context("insert tool_call")
+            )?;
+            Ok::<_, rusqlite::Error>(())
         })
         .await
         .map_err(|e| format!("DB error: {e:?}"))?;
@@ -501,13 +501,11 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
     let commands = state
         .db_ro
         .call(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, tool, args_json FROM tool_call
-                     WHERE workspace_id = ?1
-                     ORDER BY created_at ASC",
-                )
-                .context("prepare tool_call select")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, tool, args_json FROM tool_call
+                 WHERE workspace_id = ?1
+                 ORDER BY created_at ASC",
+            )?;
             let rows = stmt
                 .query_map(params!["default"], |row| {
                     let id: String = row.get(0)?;
@@ -518,7 +516,7 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
                     Ok(CommandRequest { id, tool, args })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok::<_, anyhow::Error>(rows)
+            Ok::<_, rusqlite::Error>(rows)
         })
         .await
         .map_err(|e| format!("DB error: {e:?}"))?;
@@ -533,8 +531,8 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
             conn.execute(
                 "DELETE FROM tool_call WHERE workspace_id = ?1",
                 params!["default"],
-            )
-            .context("delete tool_calls")
+            )?;
+            Ok::<_, rusqlite::Error>(())
         })
         .await
         .map_err(|e| format!("DB error: {e:?}"))?;
@@ -560,8 +558,7 @@ async fn delete_window_commands(
                 Ok(_) => Ok(()),
                 Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such function: json_extract") => {
                     let mut stmt = conn
-                        .prepare("SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1")
-                        .context("prepare select for manual delete")?;
+                        .prepare("SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1")?;
                     let rows = stmt
                         .query_map(params!["default"], |row| {
                             let id: String = row.get(0)?;
@@ -591,7 +588,7 @@ async fn delete_window_commands(
                     }
                     Ok(())
                 }
-                Err(e) => Err::<(), anyhow::Error>(e.into()),
+                Err(e) => Err::<(), rusqlite::Error>(e),
             }
         })
         .await
@@ -604,13 +601,11 @@ async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePay
     let windows = state
         .db_ro
         .call(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
-                     COALESCE(height, 480), COALESCE(z_index, 0)
-                     FROM window WHERE workspace_id = ?1 ORDER BY z_index ASC, created_at ASC",
-                )
-                .context("prepare window select")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
+                 COALESCE(height, 480), COALESCE(z_index, 0)
+                 FROM window WHERE workspace_id = ?1 ORDER BY z_index ASC, created_at ASC",
+            )?;
             let rows = stmt
                 .query_map(params!["default"], |row| {
                     Ok(WindowStatePayload {
@@ -625,7 +620,7 @@ async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePay
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok::<_, anyhow::Error>(if rows.is_empty() {
+            Ok::<_, rusqlite::Error>(if rows.is_empty() {
                 vec![WindowStatePayload {
                     id: uuid::Uuid::new_v4().to_string(),
                     title: "Welcome".into(),
@@ -1764,7 +1759,10 @@ where
 }
 
 /// Remove a compute job from the ongoing map. Used by the compute host to release state.
-pub(crate) async fn remove_compute_job(app_handle: &tauri::AppHandle, job_id: &str) {
+pub(crate) async fn remove_compute_job<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    job_id: &str,
+) {
     let state: State<'_, AppState> = app_handle.state();
     state.compute_ongoing.write().await.remove(job_id);
 }
@@ -1839,22 +1837,26 @@ fn main() {
     .expect("open sqlite ro connection");
     // Configure connections once on startup
     tauri::async_runtime::block_on(async {
-        db_rw
-            .call(|c| crate::configure_sqlite(c))
-            .await
-            .expect("configure sqlite rw");
-        // Read-only: set a subset that does not require writes
-        db_ro
+        // Writer: full configuration
+        let _ = db_rw
             .call(|c| {
                 use std::time::Duration;
-                c.busy_timeout(Duration::from_millis(5_000))
-                    .map_err(anyhow::Error::from)?;
-                c.pragma_update(None, "foreign_keys", "ON")
-                    .map_err(anyhow::Error::from)?;
-                Ok::<_, anyhow::Error}(())
+                c.busy_timeout(Duration::from_millis(5_000))?;
+                c.pragma_update(None, "journal_mode", "WAL")?;
+                c.pragma_update(None, "synchronous", "NORMAL")?;
+                c.pragma_update(None, "foreign_keys", "ON")?;
+                Ok::<_, rusqlite::Error>(())
             })
-            .await
-            .expect("configure sqlite ro");
+            .await;
+        // Read-only: set a subset that does not require writes
+        let _ = db_ro
+            .call(|c| {
+                use std::time::Duration;
+                c.busy_timeout(Duration::from_millis(5_000))?;
+                c.pragma_update(None, "foreign_keys", "ON")?;
+                Ok::<_, rusqlite::Error>(())
+            })
+            .await;
         // Best-effort hygiene
         let _ = db_rw
             .call(|c| c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);"))
@@ -2191,16 +2193,14 @@ async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<s
     let status = state
         .db_ro
         .call(|conn| {
-            let mut stmt = conn
-                .prepare("PRAGMA quick_check")
-                .context("prepare quick_check")?;
-            let mut rows = stmt.query([]).context("exec quick_check")?;
+            let mut stmt = conn.prepare("PRAGMA quick_check")?;
+            let mut rows = stmt.query([])?;
             let mut results = Vec::new();
             while let Some(row) = rows.next()? {
                 let s: String = row.get(0)?;
                 results.push(s);
             }
-            Ok::<_, anyhow::Error>(results.join(", "))
+            Ok::<_, rusqlite::Error>(results.join(", "))
         })
         .await?;
 
@@ -2226,8 +2226,8 @@ async fn clear_compute_cache(
             conn.execute(
                 "DELETE FROM compute_cache WHERE workspace_id = ?1",
                 params![ws],
-            )
-            .context("clear compute_cache")
+            )?;
+            Ok::<_, rusqlite::Error>(())
         })
         .await
         .map_err(|e| format!("{e:?}"))
@@ -2251,7 +2251,7 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
                 "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
                 params![hash, now],
             )?;
-            Ok(())
+            Ok::<_, rusqlite::Error>(())
         })
         .await
         .map_err(|e| format!("{e:?}"))
@@ -2269,12 +2269,11 @@ async fn determinism_probe(
         .db_ro
         .call(move |conn| {
             let mut stmt = conn
-                .prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")
-                .context("prepare select checkpoints")?;
+                .prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")?;
             let rows = stmt
                 .query_map(params![limit], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok::<_, anyhow::Error>(rows)
+            Ok::<_, rusqlite::Error>(rows)
         })
         .await
         .map_err(|e| format!("{e:?}"))?;
@@ -2472,7 +2471,7 @@ async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, Str
         .call(|conn| {
             let tool_calls: i64 = conn.query_row("SELECT COUNT(*) FROM tool_call", [], |r| r.get(0))?;
             let cache_rows: i64 = conn.query_row("SELECT COUNT(*) FROM compute_cache", [], |r| r.get(0))?;
-            Ok::<_, anyhow::Error>(serde_json::json!({"tool_call": tool_calls, "compute_cache": cache_rows}))
+            Ok::<_, rusqlite::Error>(serde_json::json!({"tool_call": tool_calls, "compute_cache": cache_rows}))
         })
         .await
         .map_err(|e| format!("{e:?}"))?;
@@ -2508,7 +2507,7 @@ async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
                 let s: String = row.get(0)?;
                 results.push(s);
             }
-            Ok::<_, anyhow::Error>(results.join(", "))
+            Ok::<_, rusqlite::Error>(results.join(", "))
         })
         .await?;
     Ok(status.to_lowercase().contains("ok"))
@@ -2526,7 +2525,7 @@ async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64
             let ts: Option<i64> = conn
                 .query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0))
                 .optional()?;
-            Ok::<_, anyhow::Error>(ts)
+            Ok::<_, rusqlite::Error>(ts)
         })
         .await?;
     Ok(ts)
@@ -2546,7 +2545,7 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
                 "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
                 params![since],
             )?;
-            Ok::<_, anyhow::Error>(n as i64)
+            Ok::<_, rusqlite::Error>(n as i64)
         })
         .await?;
     Ok(deleted)
@@ -2566,7 +2565,7 @@ async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i
                 "DELETE FROM tool_call WHERE created_at > ?1",
                 params![since],
             )?;
-            Ok::<_, anyhow::Error>(n as i64)
+            Ok::<_, rusqlite::Error>(n as i64)
         })
         .await?;
     Ok(truncated)

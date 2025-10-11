@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::select;
 
-use uicp::harness::ComputeTestHarness;
+use uicp::test_support::ComputeTestHarness;
 use uicp::ComputeJobSpec;
 
 #[tokio::main(flavor = "current_thread")]

@@ -17,6 +17,7 @@ use tauri::{
     Listener, Manager,
 };
 use tempfile::TempDir;
+use tokio_rusqlite::Connection as AsyncConn;
  
 
 /// Test harness that provisions an in-memory (tempdir-backed) app instance capable of running
@@ -69,10 +70,45 @@ impl ComputeTestHarness {
         init_database(&db_path).context("init test database")?;
         ensure_default_workspace(&db_path).context("ensure default workspace")?;
 
-        // No resident tokio_rusqlite connections in the harness; functions open connections as needed.
+        // Initialize resident async SQLite connections for tests
+        let db_rw = tauri::async_runtime::block_on(AsyncConn::open(&db_path))
+            .expect("open sqlite rw (harness)");
+        let db_ro = tauri::async_runtime::block_on(AsyncConn::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ))
+        .expect("open sqlite ro (harness)");
+        tauri::async_runtime::block_on(async {
+            // Writer: full configuration (unwrap both layers: tokio_rusqlite and rusqlite)
+            db_rw
+                .call(|c| {
+                    use std::time::Duration;
+                    c.busy_timeout(Duration::from_millis(5_000))?;
+                    c.pragma_update(None, "journal_mode", "WAL")?;
+                    c.pragma_update(None, "synchronous", "NORMAL")?;
+                    c.pragma_update(None, "foreign_keys", "ON")?;
+                    Ok::<_, rusqlite::Error>(())
+                })
+                .await
+                .expect("tokio-rusqlite call")
+                .expect("configure sqlite rw");
+            // Reader: non-writing pragmas only
+            db_ro
+                .call(|c| {
+                    use std::time::Duration;
+                    c.busy_timeout(Duration::from_millis(5_000))?;
+                    c.pragma_update(None, "foreign_keys", "ON")?;
+                    Ok::<_, rusqlite::Error>(())
+                })
+                .await
+                .expect("tokio-rusqlite call")
+                .expect("configure sqlite ro");
+        });
 
         let state = AppState {
             db_path: db_path.clone(),
+            db_ro,
+            db_rw,
             last_save_ok: RwLock::new(true),
             ollama_key: RwLock::new(None),
             use_direct_cloud: RwLock::new(true),

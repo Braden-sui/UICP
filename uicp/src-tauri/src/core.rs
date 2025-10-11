@@ -11,6 +11,7 @@ use dirs::document_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection};
+use tokio_rusqlite::Connection as AsyncConn;
 use tauri::{async_runtime::JoinHandle, Emitter, Manager, State, Runtime};
 use tokio::sync::{RwLock, Semaphore};
 
@@ -49,6 +50,8 @@ pub struct CircuitState {
 
 pub struct AppState {
     pub db_path: PathBuf,
+    pub db_ro: AsyncConn,
+    pub db_rw: AsyncConn,
     pub last_save_ok: RwLock<bool>,
     pub ollama_key: RwLock<Option<String>>,
     pub use_direct_cloud: RwLock<bool>,
