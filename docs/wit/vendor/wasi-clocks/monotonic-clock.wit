@@ -1,0 +1,19 @@
+package wasi:clocks@0.2.0;
+
+/// Monotonic clocks
+@since(version = 0.2.0)
+interface monotonic-clock {
+    /// An instant in time, opaque u64 value
+    @since(version = 0.2.0)
+    type instant = u64;
+
+    /// Return the current time value of this clock.
+    @since(version = 0.2.0)
+    now: func() -> instant;
+
+    /// Subscribe to an event when this clock reaches a certain time.
+    @since(version = 0.2.0)
+    use wasi:io/poll@0.2.8.{pollable};
+    @since(version = 0.2.0)
+    subscribe-instant: func(when: instant) -> pollable;
+}

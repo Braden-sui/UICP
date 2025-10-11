@@ -1,5 +1,6 @@
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
 import { useAppStore, type AgentMode, type AgentPhase } from '../state/app';
@@ -107,7 +108,12 @@ export const DockChat = () => {
         elasticity={0.7}
         className="pointer-events-auto mb-4 w-[min(640px,90vw)]"
       >
-        <div className="flex flex-col gap-3 border border-slate-200/50 bg-white/85 p-4 shadow-[0_-20px_60px_rgba(0,0,0,0.15),0_-8px_25px_rgba(0,0,0,0.1)] backdrop-blur">
+        <div className={clsx(
+          'flex flex-col gap-3 border border-slate-200/50 bg-white/85 p-4',
+          'shadow-[0_-20px_60px_rgba(0,0,0,0.15),0_-8px_25px_rgba(0,0,0,0.1)]',
+          'backdrop-blur',
+          agentStatus.phase !== 'idle' && 'dock-thinking',
+        )}>
           <header className="flex items-center justify-between text-xs font-medium text-slate-600">
           <div className="flex flex-col gap-1 text-left">
             <span>

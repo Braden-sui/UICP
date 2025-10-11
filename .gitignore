@@ -20,3 +20,6 @@ tmp/
 .env
 .claude/settings.local.json
 .claude/*
+
+**/target/
+ uicp/src-tauri/target/

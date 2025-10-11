@@ -193,7 +193,7 @@ Legend
   - Canonicalization and base-dir prefix assertion
 
   - [ ] WASI surface hardening
-    - Disable ambient authorities: avoid `.inherit_stdio()`, `.inherit_args()`, `.inherit_env()`, and only link the deterministic host shims in `uicp:host`; continue to default-deny `wasi:http` / `wasi:sockets`.【F:uicp/src-tauri/src/compute.rs†L352-L398】【F:docs/wit/uicp_host@1.0.0.wit†L1-L49】
+    - Disable ambient authorities: avoid `.inherit_stdio()`, `.inherit_args()`, `.inherit_env()`, and only link the deterministic host shims in `uicp:host`; continue to default-deny `wasi:http` / `wasi:sockets`.【F:uicp/src-tauri/src/compute.rs†L352-L398】【F:docs/wit/host/world.wit†L1-L49】
     - Gate any future capability expansion (e.g., net allowlists) behind `ComputeCapabilitiesSpec` checks in `compute_call()` and document policy expectations.
     - Capture a security note in release docs summarizing which WASI imports are enabled by default.
 
@@ -282,7 +282,8 @@ Legend
 - Frontend store: `uicp/src/state/compute.ts`
 - Bridge: `uicp/src/lib/bridge/tauri.ts`
 - Tests: `uicp/tests/unit/compute.store.test.ts`, Rust unit tests in `compute.rs`
-- Work-in-progress WIT: `uicp/src-tauri/wit/command.wit`, `docs/wit/uicp_host@1.0.0.wit`
+- Work-in-progress WIT: `uicp/src-tauri/wit/command.wit`, `docs/wit/host/world.wit`
+
 
 
 

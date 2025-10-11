@@ -740,18 +740,19 @@ const executeWindowCreate = (
     wrapper.dataset.windowId = id;
     wrapper.className = "workspace-window pointer-events-auto";
     wrapper.style.position = "absolute";
-    wrapper.style.backdropFilter = "blur(12px)";
-    wrapper.style.background = "rgba(255,255,255,0.78)";
-    wrapper.style.border = "1px solid rgba(15,23,42,0.08)";
-    wrapper.style.borderRadius = "16px";
-    wrapper.style.boxShadow = "0 18px 38px rgba(15,23,42,0.18)";
+    wrapper.style.backdropFilter = "blur(16px) saturate(180%)";
+    wrapper.style.background = "linear-gradient(135deg, rgba(255,255,255,0.85) 0%, rgba(255,255,255,0.75) 100%)";
+    wrapper.style.border = "1px solid rgba(255,255,255,0.18)";
+    wrapper.style.borderRadius = "20px";
+    wrapper.style.boxShadow = "0 20px 50px rgba(15,23,42,0.15), 0 8px 20px rgba(15,23,42,0.08), inset 0 0 0 1px rgba(255,255,255,0.2)";
     wrapper.style.padding = "0";
     wrapper.style.display = "flex";
     wrapper.style.flexDirection = "column";
     wrapper.style.overflow = "hidden";
+    wrapper.style.transition = "transform 0.2s ease-out, box-shadow 0.2s ease-out";
 
     const chrome = document.createElement("div");
-    chrome.className = "window-title flex items-center justify-between bg-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur select-none cursor-grab";
+    chrome.className = "window-title flex items-center justify-between bg-gradient-to-r from-white/80 to-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur-sm select-none cursor-grab border-b border-slate-200/40";
 
     const titleText = document.createElement("span");
     titleText.className = "truncate";
@@ -765,7 +766,7 @@ const executeWindowCreate = (
     closeButton.type = "button";
     closeButton.setAttribute("aria-label", "Close window");
     closeButton.textContent = "Ãƒâ€”";
-    closeButton.className = "flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 bg-white text-xs text-slate-500 transition hover:bg-slate-100 hover:text-slate-900";
+    closeButton.className = "flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-base text-slate-500 shadow-sm backdrop-blur-sm transition-all duration-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 hover:scale-110 active:scale-95";
     const stopPointerPropagation = (event: Event) => {
       event.stopPropagation();
     };
@@ -782,7 +783,7 @@ const executeWindowCreate = (
     chrome.appendChild(controls);
 
     const content = document.createElement("div");
-    content.className = "window-content flex-1 overflow-auto bg-white/40 px-4 py-3 backdrop-blur";
+    content.className = "window-content flex-1 overflow-auto bg-gradient-to-b from-white/50 to-white/30 px-4 py-3 backdrop-blur-sm";
     const rootNode = document.createElement("div");
     rootNode.id = "root";
     content.appendChild(rootNode);

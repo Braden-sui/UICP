@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 wit-bindgen = { version = "0.46", default-features = false, features = ["macros"] }
 ciborium = "0.2"
+wit-bindgen-rt = "0.23"
 
 [package.metadata.component]
 package = "uicp:task-table-query"
@@ -17,5 +18,8 @@ path = "wit"
 world = "entry"
 
 [package.metadata.component.target.dependencies]
-"uicp:host" = { path = "../../../docs/wit/host" }
+"uicp:host"   = { path = "../../../docs/wit/host" }
+"wasi:io"     = { path = "../../../docs/wit/vendor/wasi-io" }
+"wasi:clocks" = { path = "../../../docs/wit/vendor/wasi-clocks" }
+"wasi:logging"= { path = "../../../docs/wit/vendor/wasi-logging" }
 

@@ -24,6 +24,11 @@ jobs:
           profile: minimal
           override: true
 
+      - name: Install component tools
+        run: |
+          cargo install cargo-component --locked || true
+          cargo install wit-component --locked || true
+
       - name: Rust check (compute host)
         working-directory: uicp/src-tauri
         run: |
@@ -49,4 +54,20 @@ jobs:
         working-directory: uicp
         run: |
           npm run -s test
+
+      - name: Verify WIT packages
+        run: |
+          wit-component wit --check docs/wit
+          wit-component wit --check uicp/components/csv.parse/wit
+          wit-component wit --check uicp/components/table.query/wit
+
+      - name: cargo-component metadata (csv.parse)
+        working-directory: uicp/components/csv.parse
+        run: |
+          cargo component metadata
+
+      - name: cargo-component metadata (table.query)
+        working-directory: uicp/components/table.query
+        run: |
+          cargo component metadata
 

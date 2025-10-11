@@ -1,0 +1,10 @@
+package wasi:io@0.2.8;
+
+@since(version = 0.2.0)
+interface error {
+    resource error {
+        @since(version = 0.2.0)
+        to-debug-string: func() -> string;
+    }
+}
+

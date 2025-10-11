@@ -1,7 +1,5 @@
 package uicp:task-csv-parse@1.2.0;
 
-use uicp:host/system;
-
 interface types {
   record input {
     source: string,
@@ -12,10 +10,15 @@ interface types {
 
 interface task {
   use types.{input, output};
-  run: func(job: string, input: input) -> result<output, string>;
+  enum error { cancelled, invalid-input, csv-error }
+  run: func(job: string, input: input) -> result<output, error>;
 }
 
 world entry {
-  import system;
+  // Guests call methods on wasi:io/streams::output-stream (e.g., blocking-write-and-flush).
+  // Import the interface explicitly to satisfy component-model linking.
+  import wasi:io/streams@0.2.8;
+  import wasi:clocks/monotonic-clock@0.2.0;
+  import uicp:host/control@1.0.0;
   export task;
 }

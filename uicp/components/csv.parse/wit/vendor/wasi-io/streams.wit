@@ -1,0 +1,79 @@
+package wasi:io@0.2.8;
+
+/// WASI I/O is an I/O abstraction API which is currently focused on providing
+/// stream types.
+///
+/// In the future, the component model is expected to add built-in stream types;
+/// when it does, they are expected to subsume this API.
+@since(version = 0.2.0)
+interface streams {
+    @since(version = 0.2.0)
+    use error.{error};
+    @since(version = 0.2.0)
+    use poll.{pollable};
+
+    /// An error for input-stream and output-stream operations.
+    @since(version = 0.2.0)
+    variant stream-error {
+        /// The last operation (a write or flush) failed before completion.
+        ///
+        /// More information is available in the `error` payload.
+        ///
+        /// After this, the stream will be closed. All future operations return
+        /// `stream-error::closed`.
+        last-operation-failed(error),
+        /// The stream is closed: no more input will be accepted by the
+        /// stream. A closed output-stream will return this error on all
+        /// future operations.
+        closed
+    }
+
+    /// An input bytestream.
+    ///
+    /// `input-stream`s are *non-blocking* to the extent practical on underlying
+    /// platforms. I/O operations always return promptly; if fewer bytes are
+    /// promptly available than requested, they return the number of bytes promptly
+    /// available, which could even be zero. To wait for data to be available,
+    /// use the `subscribe` function to obtain a `pollable` which can be polled
+    /// for using `wasi:io/poll`.
+    @since(version = 0.2.0)
+    resource input-stream {
+        /// Perform a non-blocking read from the stream.
+        @since(version = 0.2.0)
+        read: func(len: u64) -> result<list<u8>, stream-error>;
+        @since(version = 0.2.0)
+        blocking-read: func(len: u64) -> result<list<u8>, stream-error>;
+        @since(version = 0.2.0)
+        skip: func(len: u64) -> result<u64, stream-error>;
+        @since(version = 0.2.0)
+        blocking-skip: func(len: u64) -> result<u64, stream-error>;
+        @since(version = 0.2.0)
+        subscribe: func() -> pollable;
+    }
+
+    /// An output bytestream.
+    @since(version = 0.2.0)
+    resource output-stream {
+        @since(version = 0.2.0)
+        check-write: func() -> result<u64, stream-error>;
+        @since(version = 0.2.0)
+        write: func(contents: list<u8>) -> result<_, stream-error>;
+        @since(version = 0.2.0)
+        blocking-write-and-flush: func(contents: list<u8>) -> result<_, stream-error>;
+        @since(version = 0.2.0)
+        flush: func() -> result<_, stream-error>;
+        @since(version = 0.2.0)
+        blocking-flush: func() -> result<_, stream-error>;
+        @since(version = 0.2.0)
+        subscribe: func() -> pollable;
+        @since(version = 0.2.0)
+        write-zeroes: func(len: u64) -> result<_, stream-error>;
+        @since(version = 0.2.0)
+        blocking-write-zeroes-and-flush: func(len: u64) -> result<_, stream-error>;
+        @since(version = 0.2.0)
+        splice: func(src: borrow<input-stream>, len: u64) -> result<u64, stream-error>;
+        @since(version = 0.2.0)
+        blocking-splice: func(src: borrow<input-stream>, len: u64) -> result<u64, stream-error>;
+    }
+}
+

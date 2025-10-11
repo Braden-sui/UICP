@@ -1,0 +1,22 @@
+package uicp:host@1.0.0;
+
+interface control {
+  use wasi:io/streams@0.2.8.{output-stream};
+  open-partial-sink: func(job: string) -> own<output-stream>;
+  should-cancel: func(job: string) -> bool;
+  deadline-ms: func(job: string) -> u32;
+  remaining-ms: func(job: string) -> u32;
+}
+
+interface rng {
+  next-u64: func(job: string) -> u64;
+  fill: func(job: string, len: u32) -> list<u8>;
+}
+
+world system {
+  import wasi:io/streams@0.2.8;
+  import wasi:clocks/monotonic-clock@0.2.0;
+  import wasi:logging/logging@0.2.0;
+  import control;
+  import rng;
+}

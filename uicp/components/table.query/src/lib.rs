@@ -1,19 +1,24 @@
-wit_bindgen::generate!({ path: "../wit/world.wit", world: "entry" });
+// Generate bindings with wit-bindgen (WASI Preview 2) and explicit package mapping
+wit_bindgen::generate!({ path: "wit", world: "entry" });
 
+use exports::uicp::task_table_query::task::{Error, Guest, Input};
+use imports::uicp::host::control;
+use imports::wasi::clocks::monotonic_clock;
+use imports::wasi::io::streams::OutputStream;
 use ciborium::value::{Integer, Value};
 
 struct Component;
 
-impl exports::uicp::task_table_query::task::Guest for Component {
+impl Guest for Component {
   fn run(
     job: String,
-    input: exports::uicp::task_table_query::task::Input,
-  ) -> Result<Vec<Vec<String>>, String> {
+    input: Input,
+  ) -> Result<Vec<Vec<String>>, Error> {
     let rows = input.rows;
     let select = input.select;
     let where_opt = input.where_contains;
 
-    let sink = imports::uicp::host::control::open_partial_sink(&job);
+    let sink: OutputStream = control::open_partial_sink(&job);
     let mut seq: u32 = 0;
 
     // Optional filter: contains needle in column `col`
@@ -37,27 +42,26 @@ impl exports::uicp::task_table_query::task::Guest for Component {
       out.push(proj);
 
       if idx % 100 == 0 {
-        let ts = imports::uicp::host::clock::now_ms(&job);
+        let ts = (monotonic_clock::now() / 1_000_000) as u64;
         let payload = Value::Map(vec![(Value::Text("processed".into()), Value::Integer(Integer::from(idx as u64)))]);
         let frame = cbor_envelope(0, { seq = seq.wrapping_add(1); seq }, ts, Some(payload));
-        imports::wasi::io::streams::blocking_write(&sink, &frame);
-        imports::wasi::io::streams::flush(&sink);
+        let _ = sink.blocking_write_and_flush(&frame);
       }
 
-      if imports::uicp::host::control::should_cancel(&job) || imports::uicp::host::control::remaining_ms(&job) == 0 {
-        return Err("cancelled".into());
+      if control::should_cancel(&job) || control::remaining_ms(&job) == 0 {
+        return Err(Error::Cancelled);
       }
     }
 
-    let ts = imports::uicp::host::clock::now_ms(&job);
+    let ts = (monotonic_clock::now() / 1_000_000) as u64;
     let payload = Value::Map(vec![(Value::Text("total".into()), Value::Integer(Integer::from(out.len() as u64)))]);
     let frame = cbor_envelope(2, { seq = seq.wrapping_add(1); seq }, ts, Some(payload));
-    imports::wasi::io::streams::blocking_write(&sink, &frame);
-    imports::wasi::io::streams::flush(&sink);
+    let _ = sink.blocking_write_and_flush(&frame);
 
     Ok(out)
   }
 }
+export!(Component);
 
 fn cbor_envelope(t: u8, s: u32, ts: u64, payload: Option<Value>) -> Vec<u8> {
   let mut entries: Vec<(Value, Value)> = vec![

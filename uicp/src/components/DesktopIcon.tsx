@@ -128,6 +128,7 @@ const DesktopIcon = ({
       className={clsx(
         'desktop-icon pointer-events-auto absolute flex w-24 flex-col items-center gap-2 text-slate-700 transition-transform',
         dragging && 'scale-[1.02]',
+        active && 'active',
       )}
       style={{ left: position.x, top: position.y }}
       onDoubleClick={handleOpen}
@@ -139,13 +140,28 @@ const DesktopIcon = ({
     >
       <div
         className={clsx(
-          'flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-200/70 bg-white/80 shadow-xl backdrop-blur',
-          active && 'ring-2 ring-slate-500',
+          'desktop-icon-inner',
+          'flex h-16 w-16 items-center justify-center',
+          'rounded-2xl border border-slate-200/70',
+          'bg-white/80 backdrop-blur-md',
+          'shadow-xl',
+          'transition-all duration-300 ease-out',
+          active && 'ring-2 ring-indigo-400/60 bg-white/95',
+          !active && 'hover:shadow-2xl',
         )}
       >
-        {icon}
+        <div className="icon-content">
+          {icon}
+        </div>
       </div>
-      <span className={clsx('text-center text-xs font-semibold', active ? 'text-slate-900' : 'text-slate-700')}>
+      <span
+        className={clsx(
+          'text-center text-xs font-semibold',
+          'transition-all duration-200',
+          'drop-shadow-sm',
+          active ? 'text-slate-900 scale-105' : 'text-slate-700',
+        )}
+      >
         {label}
       </span>
     </div>

@@ -1282,10 +1282,6 @@ mod with_runtime {
         register_control_interface(linker, "uicp:host/control@1.0.0")?;
         register_rng_interface(linker, "uicp:host/rng")?;
         register_rng_interface(linker, "uicp:host/rng@1.0.0")?;
-        register_logger_interface(linker, "uicp:host/logger")?;
-        register_logger_interface(linker, "uicp:host/logger@1.0.0")?;
-        register_clock_interface(linker, "uicp:host/clock")?;
-        register_clock_interface(linker, "uicp:host/clock@1.0.0")?;
         Ok(())
     }
 
@@ -1305,17 +1301,7 @@ mod with_runtime {
         Ok(())
     }
 
-    fn register_logger_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
-        let mut instance = linker.instance(name)?;
-        instance.func_wrap("log", host_logger_log)?;
-        Ok(())
-    }
-
-    fn register_clock_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
-        let mut instance = linker.instance(name)?;
-        instance.func_wrap("now-ms", host_clock_now_ms)?;
-        Ok(())
-    }
+    
 
     fn host_open_partial_sink(
         mut store: StoreContextMut<'_, Ctx>,
@@ -1416,97 +1402,7 @@ mod with_runtime {
         Ok((out,))
     }
 
-    fn host_logger_log(
-        mut store: StoreContextMut<'_, Ctx>,
-        (level, message): (u32, String),
-    ) -> anyhow::Result<()> {
-        use std::thread::sleep as block_sleep;
-        use std::time::Duration as StdDuration;
-        let ctx = store.data();
-        static LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
-        let level_str = LEVELS
-            .get(level as usize)
-            .copied()
-            .unwrap_or("info");
-        // Rate limit the logger: block in small intervals until enough tokens are available
-        let msg_len = message.as_bytes().len();
-        loop {
-            let mut rl = store.data().logger_rate.lock().unwrap();
-            if rl.available() >= msg_len {
-                rl.consume(msg_len);
-                break;
-            }
-            drop(rl);
-            store
-                .data()
-                .logger_throttle_waits
-                .fetch_add(1, Ordering::Relaxed);
-            block_sleep(StdDuration::from_millis(10));
-        }
-
-        store.data().log_count.fetch_add(1, Ordering::Relaxed);
-
-        // Partial log event with deterministic seq/tick and byte caps
-        let bytes = message.as_bytes();
-        let preview_len = bytes.len().min(LOG_PREVIEW_MAX);
-        let preview_b64 = BASE64_ENGINE.encode(&bytes[..preview_len]);
-        let seq_no = store
-            .data()
-            .partial_seq
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let tick_no = store
-            .data()
-            .logical_tick
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let new_total = store
-            .data()
-            .emitted_log_bytes
-            .fetch_add(bytes.len() as u64, Ordering::Relaxed)
-            .saturating_add(bytes.len() as u64) as usize;
-        let truncated = new_total > store.data().max_log_bytes;
-
-        store.data().emitter.emit_partial_json(serde_json::json!({
-            "jobId": store.data().job_id,
-            "task": store.data().task,
-            "seq": seq_no,
-            "kind": "log",
-            "stream": "uicp_logger",
-            "level": level_str,
-            "tick": tick_no,
-            "bytesLen": bytes.len(),
-            "previewB64": preview_b64,
-            "truncated": truncated,
-        }));
-
-        // Mirror to debug-log for developer visibility
-        store.data().emitter.emit_debug(serde_json::json!({
-            "event": "compute_guest_log",
-            "jobId": store.data().job_id,
-            "task": store.data().task,
-            "level": level_str,
-            "message": truncate_message(&message, MAX_STDIO_CHARS),
-            "ts": Utc::now().timestamp_millis(),
-        }));
-        Ok(())
-    }
-
-    fn host_clock_now_ms(
-        store: StoreContextMut<'_, Ctx>,
-        (job,): (String,),
-    ) -> anyhow::Result<(u64,)> {
-        let ctx = store.data();
-        if job != ctx.job_id {
-            log_job_mismatch(ctx, "clock.now-ms", &job);
-        }
-        // Deterministic logical time: increment a job-scoped tick and return it (ms units)
-        Ok((store
-            .data()
-            .logical_tick
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1),))
-    }
+    
 
     fn derive_rng_block(seed: &[u8; 32], counter: u64) -> [u8; 32] {
         let mut hasher = Sha256::new();
