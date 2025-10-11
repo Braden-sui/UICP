@@ -1,0 +1,22 @@
+[package]
+name = "uicp-task-log-test"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros"] }
+wit-bindgen-rt = "0.23"
+
+[package.metadata.component]
+package = "uicp:task-log-test"
+
+[package.metadata.component.target]
+path = "wit"
+world = "entry"
+
+[package.metadata.component.target.dependencies]
+"wasi:logging" = { path = "../../../docs/wit/vendor/wasi-logging" }
+

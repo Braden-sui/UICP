@@ -15,9 +15,9 @@ Legend
 - Progress updates will call out blockers, additional context needed, or environment limitations as soon as they are discovered rather than waiting for a deadline.
 - If an explicit calendar deadline is required (for example, to align with a release cut), add it to the relevant checklist item so prioritization and sequencing can be adjusted.
 ## Identifier hygiene
-- WIT packages, interfaces, functions, and fields use lower_snake_case (no hyphenated labels) to satisfy the v0.240+ component parser.
-- WIT packages, interfaces, functions, and fields use kebab-case (lowercase words separated by single hyphens) to satisfy the component parser.
-- Cargo `package.metadata.component` should stick to cargo-component supported fields (`world`, `wit-path`); do not introduce custom hyphenated keys.
+- WIT packages, interfaces, functions, and fields use kebab-case (lowercase words separated by single hyphens). Examples: `uicp:host@1.0.0`, `uicp:task-csv-parse@1.2.0`, `has-header`.
+- Pin WIT import versions explicitly (e.g., `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`).
+- Cargo `package.metadata.component` sticks to cargo-component supported keys (`world`, `wit-path`).
 
 -------------------------------------------------------------------------------
 
@@ -31,8 +31,9 @@ Legend
   - Component model + async + fuel + epoch interruption configured (`build_engine()`)
   - `StoreLimits` attached; memory cap derived from `mem_limit_mb`
 
-- [ ] Version pin and upgrade gate
-  - AC: Wasmtime and WASI preview level are pinned; CI blocks version bumps unless golden tests pass under the new engine configuration.
+- [~] Version pin and upgrade gate
+  - Current: Wasmtime and wasmtime-wasi are pinned via lockfile to `22.0.1` (Cargo.lock). Preview 2 is in use. CI enforces pinned versions.
+  - Next: Add golden-run gate before allowing engine upgrades.
 
 - [x] Resource enforcement
   - CPU: `add_fuel(DEFAULT_FUEL or spec.fuel)` and epoch deadline with background epoch pump
@@ -65,8 +66,8 @@ Legend
     - Current state: Preview 2 core wiring lives behind `uicp_wasi_enable`; when disabled, `add_wasi_and_host` returns a guidance error instead of silently missing imports.
     - Implemented (host: `uicp/src-tauri/src/compute.rs`):
       - [x] Per-workspace readonly preopen via `WasiCtxBuilder::new().preopened_dir(filesDir, "/ws/files", DirPerms::READ, FilePerms::READ)`; enabled only when `capabilities.fs_read|fs_write` includes `ws:/files/**`. Host helpers still enforce `sanitize_ws_files_path()` and `fs_read_allowed()` for host-mediated reads.
-      - [x] Deterministic stdio/log bindings: line-buffered WASI stdout/stderr and `uicp:host/logger.log(level,msg)` emit `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream, tick, bytesLen, previewB64, truncated }`; increments per-job `log_count`.
-      - [x] Host shims for `uicp:host/control` (open_partial_sink, should_cancel, deadline_ms, remaining_ms), `uicp:host/rng` (next_u64, fill), and `uicp:host/clock.now_ms` (deterministic logical tick).
+      - [x] Deterministic stdio/log handling: line-buffered WASI stdout/stderr emit `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream, tick, bytesLen, previewB64, truncated }`; increments per-job `log_count`. Mapping `wasi:logging/logging` to structured partials is planned.
+      - [x] Host shims for `uicp:host/control` (open_partial_sink, should_cancel, deadline_ms, remaining_ms) and `uicp:host/rng` (next_u64, fill). Logical tick is tracked internally for telemetry; guests use standard `wasi:clocks/monotonic-clock`.
       - [x] Diagnostics toggle `UICP_WASI_DIAG=1` (also `uicp_wasi_diag`) emits a one-time `wasi_diag` event with mounts/imports.
       - [x] Deterministic seed contract - AC: job has a stable seed, either `JobSpec.jobSeed` or `SHA256(jobId||envHash)`, logged and replayed.
         - Implemented: host derives `rng_seed = SHA256(jobId|envHash)` and uses it for `uicp:host/rng`.
@@ -197,16 +198,17 @@ Legend
     - Gate any future capability expansion (e.g., net allowlists) behind `ComputeCapabilitiesSpec` checks in `compute_call()` and document policy expectations.
     - Capture a security note in release docs summarizing which WASI imports are enabled by default.
 
-- [ ] Deny-by-default WASI surface
+  - [~] Deny-by-default WASI surface
   - AC: Context builder proves no ambient stdio/args/env are inherited; no sockets or `wasi:http` linked in V1; policy test fails if any new caps appear.
   - Status: Partial
-    - Tests added to validate feature-gated behaviour of WASI linking:
-      - `uicp/src-tauri/src/compute.rs` tests assert `add_wasi_and_host` returns error when `uicp_wasi_enable` is disabled, and succeeds when enabled.
-    - Next: add integration tests to introspect linked imports and ensure no unexpected capabilities appear (e.g., no `wasi:http`).
+    - Tests added:
+      - `uicp/src-tauri/src/compute.rs` unit tests assert `add_wasi_and_host` fails when `uicp_wasi_enable` is disabled and succeeds when enabled.
+      - `uicp/src-tauri/src/compute.rs` import-surface test asserts `wasi:http/*` and `wasi:sockets/*` are not linked.
+    - Next: component-level differential test to enumerate imports of a sample guest and compare against policy.
 
-  - [ ] Negative tests
-    - Add Rust unit/integration tests that attempt disallowed FS/net/time operations and assert the runtime surfaces `Compute.CapabilityDenied` or `Compute.Resource.Limit`; mirror critical cases through the Tauri command API in TS tests.【F:uicp/src-tauri/src/main.rs†L230-L333】
-    - Cover deadline overrun, cancellation grace, and memory exhaustion scenarios to prove the host halts work promptly and emits the correct telemetry.
+  - [~] Negative tests
+    - Added policy-level denials for out-of-range `timeoutMs`, `memLimitMb`, and non-workspace FS paths; see `uicp/src-tauri/tests/integration_compute/negative_execution.rs` and unit tests in `uicp/src-tauri/src/compute.rs`.
+    - Next: add guest-executed WASI attempts (net/time/fs) to assert `Compute.CapabilityDenied`/`Compute.Resource.Limit` and verify telemetry on deadline overrun/cancellation/memory exhaustion.
 
 -------------------------------------------------------------------------------
 
@@ -219,9 +221,10 @@ Legend
   - Final Ok envelopes include duration, deadline budget, log/partial counters, and `outputHash`; cache persistence keeps metrics (`uicp/src-tauri/src/compute.rs:842`).
   - TODO: add mem/fuel capture, expose metrics in UI dashboards, and include error-path metrics.
 
-  - [ ] Logs/trace capture
-    - Implement the structured logger import so guest `log(level, msg)` calls produce sanitized `debug-log` events and optionally feed a rolling buffer accessible in the UI; enforce rate limits and truncation.
-    - Integrate partial stream frames with tracing: attach job/task identifiers and sequence numbers so troubleshooting has sufficient context; redact PII before emission.
+  - [~] Logs/trace capture
+    - Implemented: `wasi:logging/logging` bridged to structured `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream:"wasi-logging", level, context, tick, bytesLen, previewB64, truncated }`. Per-job byte budgets and rate limits applied. Mirrored as `debug-log` with `compute_guest_log` for dev visibility.
+    - UI: DevtoolsComputePanel renders a bounded rolling log with jobId/level filters and a Clear button (via `ui-debug-log` bus). LogsPanel shows a larger view. Tests cover panel ingestion, filtering, and clearing.
+    - Next: add an integration test with a guest component invoking `wasi:logging` and assert UI entries; ensure memory caps enforced.
 
 -------------------------------------------------------------------------------
 
@@ -229,10 +232,10 @@ Legend
 
 - [x] Module verification workflow present (`.github/workflows/verify-modules.yml`)
 
-- [~] Compute build jobs
-  - `compute-ci` workflow compiles the host with `wasm_compute,uicp_wasi_enable` and compiles tests; TS unit tests run headless (`.github/workflows/compute-ci.yml`).
-  - Workflow step `Regenerate WIT bindings` runs `npm run gen:io` and fails when generated bindings drift from checked-in WIT definitions.
-  - TODO: add feature-on `cargo test` execution and integrate Wasm component build smoke.
+- [x] Compute build jobs
+  - `compute-ci` compiles the host with `wasm_compute,uicp_wasi_enable` and runs `cargo test` for Rust, plus TS unit tests (`.github/workflows/compute-ci.yml`).
+  - `Regenerate WIT bindings` runs `npm run gen:io` and fails when generated bindings drift from checked-in WIT definitions.
+  - Added metadata checks for `components/log.test` to guard interface drift. Next: integrate Wasm component build smoke.
 
   - [ ] E2E smoke for compute
     - Add a CI-friendly Playwright job (Linux) that installs the bundled modules, starts the Tauri app in `--headless` or harness mode, submits a known job, and asserts final success/metrics/caching (pairs with the harness item above).
@@ -258,6 +261,7 @@ Legend
 
   - [ ] Guest export wiring complete; csv.parse/table.query MVP runs end-to-end locally with partial streaming + metrics captured (see Sections 1 & 3).
   - [ ] WASI imports limited to policy; fs preopens verified to sandbox via automated tests (Section 5) and manual validation with real modules.
+    - Host tests include import-surface assertions and a logging guest component; add import enumeration diff for all bundled modules before release.
   - [ ] Unit + integration + E2E suites green (Rust + TS), including the new compute harness and negative tests.
   - [ ] CI builds with compute features enabled, module verifier strict mode, and WASM artifacts published.
   - [ ] Docs updated; feature flag defaults agreed for release and reflected in README/setup + release notes.
@@ -281,7 +285,7 @@ Legend
 - Cache: `uicp/src-tauri/src/compute_cache.rs`
 - Frontend store: `uicp/src/state/compute.ts`
 - Bridge: `uicp/src/lib/bridge/tauri.ts`
-- Tests: `uicp/tests/unit/compute.store.test.ts`, Rust unit tests in `compute.rs`
+- Tests: `uicp/tests/unit/compute.store.test.ts`, Rust unit tests in `compute.rs`, integration suite under `uicp/src-tauri/tests/integration_compute/*`
 - Work-in-progress WIT: `uicp/src-tauri/wit/command.wit`, `docs/wit/host/world.wit`
 
 

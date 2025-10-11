@@ -1114,7 +1114,7 @@ mod with_runtime {
                     "jobId": spec.job_id,
                     "task": spec.task,
                     "mounts": [{ "guest": "/ws/files", "host": crate::files_dir_path().display().to_string(), "perms": "ro" }],
-                    "imports": ["wasi:io/streams", "wasi:clocks", "wasi:random", "uicp:host/*"],
+                    "imports": ["wasi:io/streams", "wasi:clocks", "wasi:random", "wasi:logging", "uicp:host/*"],
                 }));
             }
             // Emit seed for reproducibility in debug logs
@@ -1370,6 +1370,9 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
+        // Register wasi:logging bridge to structured partial events (rate-limited)
+        register_wasi_logging(linker, "wasi:logging/logging")?;
+        register_wasi_logging(linker, "wasi:logging/logging@0.2.0")?;
         add_uicp_host(linker)?;
         Ok(())
     }
@@ -1386,6 +1389,13 @@ mod with_runtime {
         register_control_interface(linker, "uicp:host/control@1.0.0")?;
         register_rng_interface(linker, "uicp:host/rng")?;
         register_rng_interface(linker, "uicp:host/rng@1.0.0")?;
+        Ok(())
+    }
+
+    fn register_wasi_logging(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
+        let mut instance = linker.instance(name)?;
+        // Ignore duplicate registration errors if another provider already linked logging.
+        let _ = instance.func_wrap("log", host_wasi_log);
         Ok(())
     }
 
@@ -1406,6 +1416,88 @@ mod with_runtime {
     }
 
     
+    fn host_wasi_log(
+        mut store: StoreContextMut<'_, Ctx>,
+        (level, context, message): (u32, String, String),
+    ) -> anyhow::Result<()> {
+        let level_str = match level {
+            0 => "trace",
+            1 => "debug",
+            2 => "info",
+            3 => "warn",
+            4 => "error",
+            5 => "critical",
+            _ => "info",
+        };
+        // Rate-limit based on message/context byte size
+        let bytes = message.as_bytes();
+        let ctx_bytes = context.as_bytes();
+        let total = bytes.len().saturating_add(ctx_bytes.len());
+        {
+            let mut rl = store.data().logger_rate.lock().unwrap();
+            let avail = rl.available();
+            if avail < total {
+                store
+                    .data()
+                    .logger_throttle_waits
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            rl.consume(total);
+        }
+        // Enforce per-job max emission budget (shared with stdio)
+        let cur = store.data().emitted_log_bytes.load(Ordering::Relaxed) as usize;
+        if cur >= store.data().max_log_bytes {
+            return Ok(());
+        }
+        let preview_len = bytes.len().min(LOG_PREVIEW_MAX);
+        let preview_b64 = BASE64_ENGINE.encode(&bytes[..preview_len]);
+        let seq_no = store
+            .data()
+            .partial_seq
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let tick_no = store
+            .data()
+            .logical_tick
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let new_total = store
+            .data()
+            .emitted_log_bytes
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed)
+            .saturating_add(bytes.len() as u64) as usize;
+        let truncated = new_total > store.data().max_log_bytes;
+        store
+            .data()
+            .log_count
+            .fetch_add(1, Ordering::Relaxed);
+
+        let payload = serde_json::json!({
+            "jobId": store.data().job_id,
+            "task": store.data().task,
+            "seq": seq_no,
+            "kind": "log",
+            "stream": "wasi-logging",
+            "level": level_str,
+            "context": context,
+            "tick": tick_no,
+            "bytesLen": bytes.len(),
+            "previewB64": preview_b64,
+            "truncated": truncated,
+        });
+        store.data().emitter.emit_partial_json(payload);
+        // Mirror as debug-log for developer visibility (sanitized/preview only)
+        store.data().emitter.emit_debug(serde_json::json!({
+            "event": "compute_guest_log",
+            "jobId": store.data().job_id,
+            "task": store.data().task,
+            "level": level_str,
+            "context": "wasi-logging",
+            "len": bytes.len(),
+            "ts": chrono::Utc::now().timestamp_millis(),
+        }));
+        Ok(())
+    }
 
     fn host_open_partial_sink(
         mut store: StoreContextMut<'_, Ctx>,
@@ -1954,6 +2046,209 @@ mod with_runtime {
             let engine = build_engine().expect("engine");
             let mut linker: Linker<Ctx> = Linker::new(&engine);
             add_wasi_and_host(&mut linker).expect("wasi add ok");
+        }
+
+        #[cfg(all(feature = "wasm_compute", feature = "uicp_wasi_enable"))]
+        #[test]
+        fn wasi_import_surface_excludes_http_and_sockets() {
+            let engine = build_engine().expect("engine");
+            let mut linker: Linker<Ctx> = Linker::new(&engine);
+            add_wasi_and_host(&mut linker).expect("wasi add ok");
+            // Disallowed capabilities should not be present in the linker
+            assert!(
+                linker.instance("wasi:http/outgoing-handler").is_err(),
+                "wasi:http should not be linked"
+            );
+            assert!(
+                linker.instance("wasi:http/types").is_err(),
+                "wasi:http types should not be linked"
+            );
+            assert!(
+                linker.instance("wasi:sockets/tcp").is_err(),
+                "wasi:sockets tcp should not be linked"
+            );
+            assert!(
+                linker.instance("wasi:sockets/udp").is_err(),
+                "wasi:sockets udp should not be linked"
+            );
+        }
+
+        #[cfg(feature = "uicp_wasi_enable")]
+        #[test]
+        fn wasi_logging_bridge_emits_partial_event() {
+            use std::sync::{Arc, Mutex};
+
+            #[derive(Clone)]
+            struct TestEmitter {
+                partials: Arc<Mutex<Vec<serde_json::Value>>>,
+                debugs: Arc<Mutex<Vec<serde_json::Value>>>,
+            }
+            impl Default for TestEmitter {
+                fn default() -> Self {
+                    Self { partials: Arc::new(Mutex::new(Vec::new())), debugs: Arc::new(Mutex::new(Vec::new())) }
+                }
+            }
+            impl TelemetryEmitter for TestEmitter {
+                fn emit_debug(&self, payload: serde_json::Value) {
+                    self.debugs.lock().unwrap().push(payload);
+                }
+                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial_json(&self, payload: serde_json::Value) {
+                    self.partials.lock().unwrap().push(payload);
+                }
+            }
+
+            let captured_partials: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+            let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter {
+                partials: captured_partials.clone(),
+                debugs: Arc::new(Mutex::new(Vec::new())),
+            });
+            let limits = StoreLimitsBuilder::new().memory_size(64 * 1024 * 1024).build();
+            let mut store: Store<Ctx> = Store::new(
+                &build_engine().unwrap(),
+                Ctx {
+                    wasi: WasiCtxBuilder::new().build(),
+                    table: ResourceTable::new(),
+                    emitter: telemetry.clone(),
+                    job_id: "test-job".into(),
+                    task: "csv.parse@1.2.0".into(),
+                    partial_seq: Arc::new(AtomicU64::new(0)),
+                    partial_frames: Arc::new(AtomicU64::new(0)),
+                    invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    rng_seed: [0u8; 32],
+                    logical_tick: Arc::new(AtomicU64::new(0)),
+                    started: Instant::now(),
+                    deadline_ms: 1000,
+                    rng_counter: 0,
+                    log_count: Arc::new(AtomicU64::new(0)),
+                    emitted_log_bytes: Arc::new(AtomicU64::new(0)),
+                    max_log_bytes: 8 * 1024,
+                    initial_fuel: 0,
+                    log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    log_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    logger_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(10, 10))),
+                    partial_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    limits,
+                },
+            );
+
+            // Call the logging shim directly
+            host_wasi_log(store.as_context_mut(), (2u32, "ctx".into(), "hello world".into()))
+                .expect("log ok");
+
+            // Verify a partial event was captured with expected fields
+            let part = captured_partials.lock().unwrap().pop().expect("one partial emitted");
+            assert_eq!(part.get("kind").and_then(|v| v.as_str()), Some("log"));
+            assert_eq!(
+                part.get("stream").and_then(|v| v.as_str()),
+                Some("wasi-logging")
+            );
+            assert_eq!(part.get("level").and_then(|v| v.as_str()), Some("info"));
+        }
+
+        #[cfg(feature = "uicp_wasi_enable")]
+        #[test]
+        fn wasi_logging_guest_component_emits_partial_event() {
+            use std::sync::{Arc, Mutex};
+            use std::path::PathBuf;
+            use std::process::Command as PCommand;
+
+            // Build the tiny log test component
+            let comp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("components")
+                .join("log.test");
+            let manifest = comp_dir.join("Cargo.toml");
+            let status = PCommand::new("cargo")
+                .args(["component", "build", "--release", "--manifest-path"])
+                .arg(&manifest)
+                .status()
+                .expect("spawn cargo component");
+            assert!(status.success(), "cargo component build failed");
+            let wasm = comp_dir
+                .join("target")
+                .join("wasm32-wasi")
+                .join("release")
+                .join("uicp_task_log_test.wasm");
+            assert!(wasm.exists(), "component artifact missing: {}", wasm.display());
+
+            // Capture partials emitted by the host logging bridge
+            #[derive(Clone)]
+            struct TestEmitter {
+                partials: Arc<Mutex<Vec<serde_json::Value>>>,
+            }
+            impl Default for TestEmitter {
+                fn default() -> Self {
+                    Self { partials: Arc::new(Mutex::new(Vec::new())) }
+                }
+            }
+            impl TelemetryEmitter for TestEmitter {
+                fn emit_debug(&self, _payload: serde_json::Value) {}
+                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial_json(&self, payload: serde_json::Value) {
+                    self.partials.lock().unwrap().push(payload);
+                }
+            }
+
+            let engine = build_engine().expect("engine");
+            let mut linker: Linker<Ctx> = Linker::new(&engine);
+            add_wasi_and_host(&mut linker).expect("wasi+host add ok");
+            let component = Component::from_file(&engine, &wasm).expect("component");
+
+            // Minimal job context
+            let tele: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter::default());
+            let limits = StoreLimitsBuilder::new().memory_size(64 * 1024 * 1024).build();
+            let mut store: Store<Ctx> = Store::new(
+                &engine,
+                Ctx {
+                    wasi: WasiCtxBuilder::new().build(),
+                    table: ResourceTable::new(),
+                    emitter: tele.clone(),
+                    job_id: "log-guest".into(),
+                    task: "uicp:task-log-test".into(),
+                    partial_seq: Arc::new(AtomicU64::new(0)),
+                    partial_frames: Arc::new(AtomicU64::new(0)),
+                    invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    rng_seed: [0u8; 32],
+                    logical_tick: Arc::new(AtomicU64::new(0)),
+                    started: Instant::now(),
+                    deadline_ms: 1000,
+                    rng_counter: 0,
+                    log_count: Arc::new(AtomicU64::new(0)),
+                    emitted_log_bytes: Arc::new(AtomicU64::new(0)),
+                    max_log_bytes: 8 * 1024,
+                    initial_fuel: 0,
+                    log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    log_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    logger_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(10, 10))),
+                    partial_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    limits,
+                },
+            );
+
+            let instance = linker.instantiate(&mut store, &component).expect("instantiate");
+            let func: wasmtime::component::TypedFunc<(String,), ()> =
+                instance.get_typed_func(&mut store, "task#run").expect("get run");
+            func.call(&mut store, ("log-guest".to_string(),)).expect("call run");
+
+            let captured = tele
+                .as_any()
+                .downcast_ref::<TestEmitter>()
+                .unwrap()
+                .partials
+                .lock()
+                .unwrap()
+                .clone();
+            assert!(
+                captured.iter().any(|p| p.get("stream").and_then(|v| v.as_str()) == Some("wasi-logging")),
+                "expected at least one wasi-logging partial"
+            );
         }
     }
 

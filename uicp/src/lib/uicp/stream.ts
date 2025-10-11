@@ -1,80 +1,86 @@
+import { extractEventsFromChunk } from '../llm/ollama';
+import { parseJsonLoose } from '../llm/json';
 import { enqueueBatch } from './queue';
 import type { ApplyOutcome } from './adapter';
 import type { Batch } from './schemas';
 
 // Minimal streaming aggregator for Ollama Cloud/OpenAI SSE chunks.
-// It collects commentary-channel text until [DONE], then tries to parse a UICP batch from the buffer.
-// If a valid batch is found, it enqueues it for application via the per-window queue.
+// It tracks per-channel content plus tool_call deltas and, on flush, prefers
+// structured tool arguments before falling back to the textual buffers.
 
-export type OllamaChunk = {
-  choices?: Array<{
-    message?: {
-      channel?: string;
-      content?: string;
-      thinking?: string;
-    };
-    delta?: {
-      channel?: string;
-      content?: string;
-      thinking?: string;
-    };
-  }>;
+const extractBatch = (data: unknown): Batch | undefined => {
+  if (Array.isArray(data)) {
+    return data as Batch;
+  }
+  if (data && typeof data === 'object') {
+    const candidate = (data as { batch?: unknown }).batch;
+    if (Array.isArray(candidate)) {
+      return candidate as Batch;
+    }
+  }
+  return undefined;
 };
 
-const tryParseJson = (s: string): unknown | undefined => {
+const parseBatchFromBuffer = (buffer: string): Batch | undefined => {
+  if (!buffer.trim()) return undefined;
   try {
-    return JSON.parse(s);
+    const parsed = parseJsonLoose<unknown>(buffer);
+    return extractBatch(parsed);
   } catch {
     return undefined;
   }
 };
 
-const tryExtractBatch = (data: unknown): Batch | undefined => {
-  if (Array.isArray(data)) {
-    // Possibly an array of envelopes
-    return data as Batch;
-  }
-  if (data && typeof data === 'object' && 'batch' in (data as Record<string, unknown>)) {
-    const b = (data as { batch?: unknown }).batch;
-    if (Array.isArray(b)) return b as Batch;
-  }
-  return undefined;
-};
-
-const extractChannelContent = (payload: OllamaChunk): { channel?: string; content?: string } | undefined => {
-  const first = payload.choices?.[0];
-  if (!first) return undefined;
-  const node = first.delta ?? first.message;
-  if (!node) return undefined;
-  const channel = node.channel;
-  const content = (node.content ?? node.thinking) as string | undefined;
-  return { channel, content };
-};
-
-// Optional onBatch allows the caller to gate application (e.g., Full Control)
 export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<ApplyOutcome | void> | ApplyOutcome | void) => {
   let commentaryBuffer = '';
   let finalBuffer = '';
+  const toolBuffers = new Map<string, string>();
+  const toolOrder: string[] = [];
+  let lastToolError: unknown;
+
+  const appendToolArguments = (rawName: string | undefined, chunk: string) => {
+    if (!rawName || !chunk) return;
+    const name = rawName.toLowerCase();
+    if (!toolBuffers.has(name)) {
+      toolBuffers.set(name, chunk);
+      toolOrder.push(name);
+    } else {
+      toolBuffers.set(name, `${toolBuffers.get(name)!}${chunk}`);
+    }
+  };
 
   const processDelta = async (raw: string) => {
-    // Each delta should be a JSON object string, but chunks may be partial. Try to parse; if not, treat as plain text.
-    const parsed = tryParseJson(raw) as OllamaChunk | undefined;
-    if (parsed && typeof parsed === 'object') {
-      const info = extractChannelContent(parsed);
-      if (!info) return;
-      const channel = info.channel ? info.channel.toLowerCase() : undefined;
-      if (info.content) {
-        if (!channel || channel === 'commentary') {
-          commentaryBuffer += info.content;
-        } else if (channel === 'final' || channel === 'json') {
-          finalBuffer += info.content;
-        }
+    let chunk: unknown = raw;
+    if (typeof raw === 'string') {
+      try {
+        chunk = JSON.parse(raw);
+      } catch {
+        chunk = raw;
       }
+    }
+    const events = extractEventsFromChunk(chunk);
+    if (events.length === 0 && typeof raw === 'string') {
+      commentaryBuffer += raw;
       return;
     }
 
-    // Fallback: treat raw as plain text snippet for commentary
-    commentaryBuffer += raw;
+    for (const event of events) {
+      if (event.type === 'tool_call') {
+        appendToolArguments(event.name, event.arguments);
+        continue;
+      }
+      if (event.type !== 'content') continue;
+      const channel = event.channel?.toLowerCase();
+      if (!channel || channel === 'commentary' || channel === 'assistant' || channel === 'text') {
+        commentaryBuffer += event.text;
+      } else if (channel === 'final' || channel === 'json') {
+        finalBuffer += event.text;
+      } else if (channel === 'analysis' || channel === 'thought' || channel === 'reasoning') {
+        commentaryBuffer += event.text;
+      } else {
+        commentaryBuffer += event.text;
+      }
+    }
   };
 
   const flush = async () => {
@@ -82,36 +88,63 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     const secondary = commentaryBuffer.trim();
     finalBuffer = '';
     commentaryBuffer = '';
-    if (!primary && !secondary) return;
 
-    // Try full parse first
-    let candidate = primary ? tryParseJson(primary) : undefined;
-
-    // If that fails, try to locate the first JSON array in the buffer
-    if (candidate === undefined) {
-      const target = primary || secondary;
-      const start = target.indexOf('[');
-      const end = target.lastIndexOf(']');
-      if (start >= 0 && end > start) {
-        const slice = target.slice(start, end + 1);
-        candidate = tryParseJson(slice);
+    const parseTool = (): Batch | undefined => {
+      if (toolBuffers.size === 0) return undefined;
+      const preferred = ['emit_batch', 'emit_plan'];
+      const ordered = [...preferred, ...toolOrder.filter((name) => !preferred.includes(name))];
+      for (const name of ordered) {
+        const payload = toolBuffers.get(name);
+        if (!payload || !payload.trim()) continue;
+        try {
+          const parsed = parseJsonLoose<unknown>(payload);
+          const batch = extractBatch(parsed);
+          if (batch) {
+            return batch;
+          }
+        } catch (err) {
+          lastToolError = err;
+        }
       }
+      return undefined;
+    };
+
+    const toolBatch = parseTool();
+    const toolError = lastToolError;
+    toolBuffers.clear();
+    toolOrder.length = 0;
+    lastToolError = undefined;
+
+    if (!toolBatch && !primary && !secondary) {
+      return;
     }
 
-    const batch = tryExtractBatch(candidate as unknown);
-    if (batch && Array.isArray(batch) && batch.length > 0) {
-      try {
-        // Bubble queue results so streaming runs fail immediately instead of logging-and-continuing.
-        const outcome = onBatch ? await onBatch(batch) : await enqueueBatch(batch);
-        const applied = outcome ?? { success: true, applied: batch.length, errors: [] };
-        if (!applied.success) {
-          const details = applied.errors.join('; ');
-          throw new Error(details || 'enqueueBatch reported failure');
-        }
-      } catch (err) {
-        console.error('enqueueBatch failed', err);
-        throw err instanceof Error ? err : new Error(String(err));
+    const batch =
+      toolBatch ??
+      parseBatchFromBuffer(primary) ??
+      parseBatchFromBuffer(secondary);
+
+    if (!batch) {
+      if (toolError) {
+        throw toolError instanceof Error ? toolError : new Error(String(toolError));
       }
+      return;
+    }
+
+    if (!Array.isArray(batch) || batch.length === 0) {
+      return;
+    }
+
+    try {
+      const outcome = onBatch ? await onBatch(batch) : await enqueueBatch(batch);
+      const applied = outcome ?? { success: true, applied: batch.length, errors: [] };
+      if (!applied.success) {
+        const details = applied.errors.join('; ');
+        throw new Error(details || 'enqueueBatch reported failure');
+      }
+    } catch (err) {
+      console.error('enqueueBatch failed', err);
+      throw err instanceof Error ? err : new Error(String(err));
     }
   };
 

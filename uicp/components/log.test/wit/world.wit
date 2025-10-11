@@ -1,0 +1,12 @@
+package uicp:task-log-test@0.1.0;
+
+interface task {
+  /// Emit a few log lines via wasi:logging
+  run: func(job: string);
+}
+
+world entry {
+  import wasi:logging/logging@0.2.0;
+  export task;
+}
+

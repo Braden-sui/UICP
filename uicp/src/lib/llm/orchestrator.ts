@@ -1,18 +1,9 @@
 import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
 import type { StreamEvent } from './ollama';
+import { parseJsonLoose } from './json';
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
 import { createId } from '../utils';
-
-const toJsonSafe = (s: string) =>
-  s
-    // Strip UTF-8 BOM if present
-    .replace(/\uFEFF/g, '')
-    // Remove common prefaces some models prepend in JSON mode
-    .replace(/^\s*(?:json|assistant|commentary)\s*:?[\t\s-]*\n?/i, '')
-    // Remove code fences
-    .replace(/```(?:json)?/gi, '')
-    .trim();
 
 const readEnvMs = (key: string, fallback: number): number => {
   // Vite exposes env via import.meta.env; coerce string → number if valid
@@ -59,75 +50,49 @@ async function collectJsonFromChannels<T = unknown>(
   options?: { timeoutMs?: number; primaryChannels?: string[]; fallbackChannels?: string[] },
 ): Promise<{ data: T; channelUsed?: string }> {
   const iterator = stream[Symbol.asyncIterator]();
-  const primaryChannels =
-    options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['json', 'assistant', 'commentary', 'final'];
-  // Treat provider-tagged "text" and reasoning channels as fallback inputs. Some
-  // upstreams still emit Harmony-era channel names like "analysis" or "final".
-  // Accumulate them and salvage parse at flush time so valid JSON isn’t dropped.
+  const primaryChannels = options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['json', 'final'];
   const fallbackChannels =
-    options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? ['text', 'analysis', 'thought', 'reasoning'];
+    options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? ['assistant', 'commentary', 'text', 'analysis', 'thought', 'reasoning'];
   const primarySet = new Set(primaryChannels);
   const fallbackSet = new Set(fallbackChannels);
+  const toolBuffers = new Map<string, string>();
+  const toolOrder: string[] = [];
   let primaryBuf = '';
   let fallbackBuf = '';
   let primaryChannelUsed: string | undefined;
   let fallbackChannelUsed: string | undefined;
+  let lastToolError: unknown;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const timeoutMs = options?.timeoutMs ?? 35_000;
   const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
 
-  const parseBuffer = (input: string) => {
-    const raw = toJsonSafe(input);
-    // First attempt: direct parse
-    try {
-      const first = JSON.parse(raw) as unknown;
-      if (typeof first === 'string') {
-        // Some providers wrap JSON as a string; attempt to parse again
-        try {
-          return JSON.parse(first) as T;
-        } catch {
-          // fall through to slicing salvage below
-        }
-      } else {
-        return first as T;
-      }
-    } catch {
-      // continue to salvage
+  const appendToolArguments = (rawName: string | undefined, chunk: string) => {
+    if (!rawName || !chunk) return;
+    const name = rawName.toLowerCase();
+    if (!toolBuffers.has(name)) {
+      toolBuffers.set(name, chunk);
+      toolOrder.push(name);
+    } else {
+      toolBuffers.set(name, `${toolBuffers.get(name)!}${chunk}`);
     }
+  };
 
-    // Salvage: take the first balanced JSON object/array from the buffer
-    const firstBrace = raw.indexOf('{');
-    const firstBracket = raw.indexOf('[');
-    const startIndex = [firstBrace, firstBracket].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? -1;
-    const lastBrace = raw.lastIndexOf('}');
-    const lastBracket = raw.lastIndexOf(']');
-    const endIndex = Math.max(lastBrace, lastBracket);
-    if (startIndex >= 0 && endIndex > startIndex) {
-      const slice = raw.slice(startIndex, endIndex + 1).trim();
+  const parseFromToolBuffers = (): { data: T; channelUsed: string } | undefined => {
+    if (toolBuffers.size === 0) return undefined;
+    const preferred = ['emit_plan', 'emit_batch'];
+    const ordered = [...preferred, ...toolOrder.filter((name) => !preferred.includes(name))];
+    for (const name of ordered) {
+      const payload = toolBuffers.get(name);
+      if (!payload || payload.trim().length === 0) continue;
       try {
-        const second = JSON.parse(slice) as unknown;
-        if (typeof second === 'string') {
-          // Double-encoded JSON: parse inner string
-          return JSON.parse(second) as T;
-        }
-        return second as T;
-      } catch (e2) {
-        // Last-ditch: if slice is a quoted JSON string, parse as string then parse inner
-        if ((slice.startsWith('"') && slice.endsWith('"')) || (slice.startsWith("'") && slice.endsWith("'"))) {
-          try {
-            const unquoted = JSON.parse(slice) as unknown;
-            if (typeof unquoted === 'string') {
-              return JSON.parse(unquoted) as T;
-            }
-          } catch {
-            // give up
-          }
-        }
-        throw e2;
+        const parsed = parseJsonLoose<T>(payload);
+        return { data: parsed, channelUsed: `tool:${name}` };
+      } catch (err) {
+        lastToolError = err;
       }
     }
-    throw new Error('No JSON payload found in stream');
+    return undefined;
   };
 
   const consume = (async () => {
@@ -137,8 +102,13 @@ async function collectJsonFromChannels<T = unknown>(
         if (done) break;
         const event = value as StreamEvent;
         if (event.type === 'done') break;
+        if (event.type === 'tool_call') {
+          appendToolArguments(event.name, event.arguments);
+          continue;
+        }
         if (event.type === 'return') {
           const channel = (event.channel ?? 'return').toLowerCase();
+          const name = typeof event.name === 'string' ? event.name.toLowerCase() : undefined;
           if (typeof iterator.return === 'function') {
             try {
               await iterator.return();
@@ -146,7 +116,8 @@ async function collectJsonFromChannels<T = unknown>(
               // ignore iterator return errors
             }
           }
-          return { data: event.result as T, channelUsed: channel };
+          const used = name ? `return:${name}` : channel;
+          return { data: event.result as T, channelUsed: used };
         }
         if (event.type !== 'content') continue;
         const channel = event.channel?.toLowerCase();
@@ -154,9 +125,9 @@ async function collectJsonFromChannels<T = unknown>(
         const isFallback = channel ? fallbackSet.has(channel) : false;
         if (isPrimary) {
           primaryBuf += event.text;
-          primaryChannelUsed = channel ?? primaryChannels[0] ?? 'commentary';
+          primaryChannelUsed = channel ?? primaryChannels[0] ?? 'json';
           try {
-            const parsed = parseBuffer(primaryBuf);
+            const parsed = parseJsonLoose<T>(primaryBuf);
             if (typeof iterator.return === 'function') {
               try {
                 await iterator.return();
@@ -164,26 +135,33 @@ async function collectJsonFromChannels<T = unknown>(
                 // ignore iterator return errors
               }
             }
-            return { data: parsed as T, channelUsed: primaryChannelUsed };
+            return { data: parsed, channelUsed: primaryChannelUsed };
           } catch {
-            // continue accumulating until buffer parses
+            // Keep aggregating until we have a parsable payload.
           }
         } else if (isFallback) {
           fallbackBuf += event.text;
           fallbackChannelUsed = channel;
         }
       }
+      const toolResult = parseFromToolBuffers();
+      if (toolResult) {
+        return toolResult;
+      }
       if (primaryBuf.trim().length) {
         return {
-          data: parseBuffer(primaryBuf),
-          channelUsed: primaryChannelUsed ?? primaryChannels[0] ?? 'commentary',
+          data: parseJsonLoose<T>(primaryBuf),
+          channelUsed: primaryChannelUsed ?? primaryChannels[0] ?? 'json',
         };
       }
       if (fallbackBuf.trim().length) {
         return {
-          data: parseBuffer(fallbackBuf),
+          data: parseJsonLoose<T>(fallbackBuf),
           channelUsed: fallbackChannelUsed ?? fallbackChannels[0] ?? 'commentary',
         };
+      }
+      if (lastToolError) {
+        throw lastToolError instanceof Error ? lastToolError : new Error(String(lastToolError));
       }
       throw new Error('Model did not emit parsable JSON on expected channels');
     } finally {

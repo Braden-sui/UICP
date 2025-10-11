@@ -54,6 +54,40 @@ describe('uicp stream aggregator', () => {
     expect(batch[0].op).toBe('window.create');
   });
 
+  it('uses tool_call arguments when present', async () => {
+    const onBatch = vi.fn(async (_b: Batch) => {});
+    const agg = createOllamaAggregator(onBatch);
+
+    const toolCallChunk = {
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                id: 'tool-0',
+                function: {
+                  name: 'emit_batch',
+                  arguments: JSON.stringify({
+                    batch: [{ op: 'window.create', params: { title: 'Via Tool' } }],
+                  }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    await agg.processDelta(JSON.stringify(toolCallChunk));
+    await agg.flush();
+
+    expect(onBatch).toHaveBeenCalledTimes(1);
+    const batch = onBatch.mock.calls[0][0] as Batch;
+    expect(Array.isArray(batch)).toBe(true);
+    expect(batch[0].op).toBe('window.create');
+    expect((batch[0] as any).params.title).toBe('Via Tool');
+  });
+
   it('extracts first JSON array from noisy buffer', async () => {
     const onBatch = vi.fn(async (_b: Batch) => {});
     const agg = createOllamaAggregator(onBatch);

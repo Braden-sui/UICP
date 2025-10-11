@@ -194,6 +194,7 @@ type StreamRequestOptions = {
   signal?: AbortSignal;
   format?: 'json' | string;
   responseFormat?: unknown;
+  toolChoice?: unknown;
 };
 
 export function streamOllamaCompletion(
@@ -297,6 +298,9 @@ export function streamOllamaCompletion(
       }
       if (options?.responseFormat !== undefined) {
         requestPayload.response_format = options.responseFormat;
+      }
+      if (options?.toolChoice !== undefined) {
+        requestPayload.tool_choice = options.toolChoice;
       }
 
       // Mark this requestId as the active in-flight chat stream

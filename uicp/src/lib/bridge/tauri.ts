@@ -51,6 +51,21 @@ export async function initializeTauriBridge() {
               }, Math.min(waitMs, 15000));
             }
           }
+          // Forward compute guest stdio/log debug events into UI debug bus as compute_log
+          if (ev === 'compute_guest_stdio' || ev === 'compute_guest_log') {
+            const jobId = typeof rec['jobId'] === 'string' ? (rec['jobId'] as string) : undefined;
+            const task = typeof rec['task'] === 'string' ? (rec['task'] as string) : undefined;
+            const channel = typeof rec['channel'] === 'string' ? (rec['channel'] as string) : undefined;
+            const level = typeof rec['level'] === 'string' ? (rec['level'] as string) : undefined;
+            const message = typeof rec['message'] === 'string' ? (rec['message'] as string) : undefined;
+            emitUiDebug('compute_log', {
+              jobId,
+              task,
+              stream: channel ?? 'wasi-logging',
+              level,
+              message,
+            });
+          }
           // eslint-disable-next-line no-console
           console.debug(`[tauri:${String(ev)}]`, obj);
         } catch {

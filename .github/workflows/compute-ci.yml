@@ -34,10 +34,21 @@ jobs:
         run: |
           cargo check --features "wasm_compute uicp_wasi_enable"
 
+      - name: Assert engine versions pinned
+        run: |
+          echo "Checking Wasmtime versions in lockfile..."
+          awk '/name = "wasmtime"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep '22.0.1'
+          awk '/name = "wasmtime-wasi"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep '22.0.1'
+
       - name: Rust tests compile (no run)
         working-directory: uicp/src-tauri
         run: |
           cargo test --features "wasm_compute uicp_wasi_enable" --no-run
+
+      - name: Rust tests (compute host)
+        working-directory: uicp/src-tauri
+        run: |
+          cargo test --features "wasm_compute uicp_wasi_enable" -- --nocapture
 
       - name: Node install
         working-directory: uicp
@@ -68,6 +79,11 @@ jobs:
 
       - name: cargo-component metadata (table.query)
         working-directory: uicp/components/table.query
+        run: |
+          cargo component metadata
+
+      - name: cargo-component metadata (log.test)
+        working-directory: uicp/components/log.test
         run: |
           cargo component metadata
 

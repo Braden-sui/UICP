@@ -16,6 +16,19 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
   const [open, setOpen] = useState<boolean>(defaultOpen ?? false);
   const rootRef = useRef<HTMLDivElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
+  type LogEntry = {
+    ts: number;
+    jobId?: string;
+    task?: string;
+    seq?: number;
+    stream?: string;
+    level?: string;
+    truncated?: boolean;
+    message?: string;
+  };
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [filterJobId, setFilterJobId] = useState<string>('');
+  const [filterLevel, setFilterLevel] = useState<string>('');
 
   useEffect(() => {
     // Preserve existing behavior: auto-open in dev when caller did not specify.
@@ -42,6 +55,29 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
       closeBtnRef.current?.focus();
     }
   }, [open]);
+
+  // Subscribe to UI debug bus for compute logs (emitted by Tauri bridge)
+  useEffect(() => {
+    const onUiDebug = (evt: Event) => {
+      const detail = (evt as CustomEvent<Record<string, unknown>>).detail;
+      if (!detail || typeof detail !== 'object') return;
+      const event = String(detail.event ?? '');
+      if (event !== 'compute_log') return;
+      const entry: LogEntry = {
+        ts: Number(detail.ts ?? Date.now()),
+        jobId: typeof detail.jobId === 'string' ? (detail.jobId as string) : undefined,
+        task: typeof detail.task === 'string' ? (detail.task as string) : undefined,
+        seq: typeof detail.seq === 'number' ? (detail.seq as number) : undefined,
+        stream: typeof detail.stream === 'string' ? (detail.stream as string) : undefined,
+        level: typeof detail.level === 'string' ? (detail.level as string) : undefined,
+        truncated: typeof detail.truncated === 'boolean' ? (detail.truncated as boolean) : undefined,
+        message: typeof detail.message === 'string' ? (detail.message as string) : undefined,
+      };
+      setLogs((prev) => [entry, ...prev].slice(0, 200));
+    };
+    window.addEventListener('ui-debug-log', onUiDebug);
+    return () => window.removeEventListener('ui-debug-log', onUiDebug);
+  }, []);
 
   // Compute hooks unconditionally before early return to satisfy Rules of Hooks
   const entries = Object.values(jobs).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -231,6 +267,67 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
             ))}
           </tbody>
         </table>
+      )}
+      {(
+        logs.length > 0 || filterJobId || filterLevel
+      ) && (
+        <div className="mt-3 rounded border border-slate-200 bg-white">
+          <div className="mb-2 flex items-center justify-between border-b border-slate-100 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500">
+            <span>Compute logs</span>
+            <span className="font-mono lowercase text-slate-400">{logs.length} entries</span>
+          </div>
+          <div className="flex items-center gap-2 border-b border-slate-100 px-2 py-1">
+            <input
+              aria-label="Filter jobId"
+              placeholder="job id"
+              className="w-36 rounded border border-slate-200 px-2 py-1 text-[11px]"
+              value={filterJobId}
+              onChange={(e) => setFilterJobId(e.target.value)}
+            />
+            <select
+              aria-label="Filter level"
+              className="w-28 rounded border border-slate-200 px-2 py-1 text-[11px]"
+              value={filterLevel}
+              onChange={(e) => setFilterLevel(e.target.value)}
+            >
+              <option value="">all levels</option>
+              <option value="trace">trace</option>
+              <option value="debug">debug</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+              <option value="critical">critical</option>
+            </select>
+            <button
+              type="button"
+              className="ml-auto rounded border border-slate-300 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+              onClick={() => setLogs([])}
+              aria-label="Clear logs"
+            >
+              Clear logs
+            </button>
+          </div>
+          <ul className="max-h-40 space-y-1 overflow-auto p-2">
+            {logs
+              .filter((d) => (filterJobId ? d.jobId?.includes(filterJobId) : true))
+              .filter((d) => (filterLevel ? d.level === filterLevel : true))
+              .slice(0, 60)
+              .map((d, i) => (
+              <li key={`devtools-clog-${d.ts}-${i}`} className="flex flex-col gap-0.5 rounded border border-slate-200 bg-slate-50 px-2 py-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] text-slate-500">{new Date(d.ts).toLocaleTimeString()}</span>
+                  <span className="font-mono text-[10px] text-slate-400">{d.jobId ?? ''}#{d.seq ?? 0}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500">
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5">{d.stream ?? 'stdout'}</span>
+                  {d.level && <span className="rounded bg-slate-100 px-1.5 py-0.5">{d.level}</span>}
+                  {d.truncated && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">truncated</span>}
+                </div>
+                {d.message && <div className="whitespace-pre-wrap break-words text-[11px] text-slate-700">{d.message}</div>}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );

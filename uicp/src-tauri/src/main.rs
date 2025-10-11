@@ -358,6 +358,8 @@ struct ChatCompletionRequest {
     format: Option<serde_json::Value>,
     #[serde(rename = "response_format")]
     response_format: Option<serde_json::Value>,
+    #[serde(rename = "tool_choice")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 #[tauri::command]
@@ -775,6 +777,7 @@ async fn chat_completion(
         tools,
         format,
         response_format,
+        tool_choice,
     } = request;
 
     if messages.is_empty() {
@@ -807,6 +810,9 @@ async fn chat_completion(
     }
     if let Some(response_format_val) = response_format {
         body["response_format"] = response_format_val;
+    }
+    if let Some(tool_choice_val) = tool_choice {
+        body["tool_choice"] = tool_choice_val;
     }
 
     let base = get_ollama_base_url(&state).await?;
