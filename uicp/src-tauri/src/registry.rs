@@ -487,6 +487,12 @@ fn verify_installed_modules(target: &Path) -> Result<()> {
             continue;
         }
         let path = target.join(&entry.filename);
+        // In dev setups (e.g., UICP_MODULES_DIR pointed at a workspace folder), it's
+        // common to have a manifest present before the built .wasm artifacts exist.
+        // Don't emit scary errors when the file simply isn't there yet; just skip.
+        if !path.exists() {
+            continue;
+        }
         match verify_digest(&path, &entry.digest_sha256) {
             Ok(true) => {}
             Ok(false) => {

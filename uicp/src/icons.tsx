@@ -1,59 +1,101 @@
 import type { SVGProps } from 'react';
 
-// Inline icons keep DockChat dependencies minimal.
+/**
+ * Premium Icon Set - Unified Design System
+ *
+ * Design principles:
+ * - Consistent 1.75 stroke width for premium feel
+ * - Rounded caps and joins for modern aesthetic
+ * - Balanced proportions with 2px corner radius where applicable
+ * - Subtle dual-tone effects using opacity for depth
+ * - Icons designed on 24x24 grid with consistent padding
+ */
+
+// PaperclipIcon: Attachment with refined curves and consistent stroke
 export const PaperclipIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
-    <path d="M21 12.5L12.5 21a5 5 0 0 1-7.07-7.07l9-9a3 3 0 1 1 4.24 4.24l-9 9a1 1 0 0 1-1.41-1.41l8.3-8.3" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-export const SendIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
-    <path d="M4 4l16 8-16 8 4-8-4-8z" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-export const StopIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
-    <rect x="7" y="7" width="10" height="10" rx="2" />
-  </svg>
-);
-// LogsIcon: document with lines representing log entries.
-export const LogsIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
-    <path d="M8 3h6l4 4v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" strokeLinejoin="round" />
-    <path d="M14 3v4h4" strokeLinejoin="round" />
-    <path d="M8.75 9.5h6.5" strokeLinecap="round" />
-    <path d="M8.75 12.5h6.5" strokeLinecap="round" />
-    <path d="M8.75 15.5h4.5" strokeLinecap="round" />
-  </svg>
-);
-
-// NotepadIcon: lined page with a pencil marker for the local notes utility.
-export const NotepadIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
-    <rect x="5.5" y="3" width="13" height="18" rx="2" />
-    <path d="M9 7h6" strokeLinecap="round" />
-    <path d="M9 11h6" strokeLinecap="round" />
-    <path d="M9 15h4.5" strokeLinecap="round" />
-    <path d="M15.75 16.5l2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M16.5 15.75l-1.25 3.75 3.75-1.25" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-// GaugeIcon: simple speedometer used for telemetry dashboards.
-export const GaugeIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
-    <path d="M4 16a8 8 0 1 1 16 0" strokeLinejoin="round" />
-    <path d="M12 8v4" strokeLinecap="round" />
-    <path d="M12 12l3 3" strokeLinecap="round" strokeLinejoin="round" />
-    <circle cx="12" cy="16" r="1.5" />
-  </svg>
-);
-
-export const GearIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...props}>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" {...props}>
     <path
-      d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zm0-5.5 1.2 2.6a6.5 6.5 0 0 1 2.7 1.1L18.7 5l1.8 3.1-2.5 1.7a6.6 6.6 0 0 1 0 2.4l2.5 1.7-1.8 3.1-2.8-1.7a6.5 6.5 0 0 1-2.7 1.1L12 21l-1.2-2.6a6.5 6.5 0 0 1-2.7-1.1L5.3 19 3.5 15.9l2.5-1.7a6.6 6.6 0 0 1 0-2.4L3.5 10.1 5.3 7l2.8 1.7a6.5 6.5 0 0 1 2.7-1.1z"
+      d="M21.5 11.5L11.5 21.5a5.5 5.5 0 0 1-7.78-7.78l10-10a3.5 3.5 0 1 1 4.95 4.95l-10 10a1.5 1.5 0 0 1-2.12-2.12l9-9"
+      strokeLinecap="round"
       strokeLinejoin="round"
+      opacity="0.9"
     />
+  </svg>
+);
+
+// SendIcon: Modern paper plane with refined geometry
+export const SendIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+    <g strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3l7.5 18 2.5-8 8-2.5L3 3z" opacity="0.9" />
+      <path d="M10.5 10.5l10-7.5" opacity="0.6" />
+    </g>
+  </svg>
+);
+
+// StopIcon: Rounded square with premium corners
+export const StopIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" {...props}>
+    <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" opacity="0.9" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+// LogsIcon: Document with refined log entries and modern folded corner
+export const LogsIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+    <g strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7.5 3h7l5 5v11a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 19V5.5A2.5 2.5 0 0 1 7.5 3z" opacity="0.9" />
+      <path d="M14.5 3v4.5h4.5" opacity="0.6" />
+      <path d="M8.5 10h7" opacity="0.85" />
+      <path d="M8.5 13.5h7" opacity="0.85" />
+      <path d="M8.5 17h5" opacity="0.85" />
+    </g>
+  </svg>
+);
+
+// NotepadIcon: Elegant notepad with refined pencil accent
+export const NotepadIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+    <g strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="2.5" width="14" height="19" rx="2.5" opacity="0.9" />
+      <path d="M8.5 7h7" opacity="0.75" />
+      <path d="M8.5 11h7" opacity="0.75" />
+      <path d="M8.5 15h5" opacity="0.75" />
+      {/* Premium pencil accent with dual-tone for depth */}
+      <path d="M16 17l3.5 3.5" opacity="0.9" />
+      <path d="M17 16l-1.5 4.5 4.5-1.5" opacity="0.65" fill="currentColor" />
+    </g>
+  </svg>
+);
+
+// GaugeIcon: Modern speedometer with refined needle and arc
+export const GaugeIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+    <g strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 16.5a9 9 0 1 1 18 0" opacity="0.9" />
+      {/* Refined tick marks for premium look */}
+      <path d="M5.5 13L6 14" opacity="0.5" strokeWidth="2" />
+      <path d="M9 8.5L9.5 9.5" opacity="0.5" strokeWidth="2" />
+      <path d="M15 8.5L14.5 9.5" opacity="0.5" strokeWidth="2" />
+      <path d="M18.5 13L18 14" opacity="0.5" strokeWidth="2" />
+      {/* Dynamic needle */}
+      <path d="M12 7.5V12" opacity="0.85" />
+      <path d="M12 12l3.5 3.5" opacity="0.85" />
+      <circle cx="12" cy="16.5" r="1.75" fill="currentColor" opacity="0.9" />
+    </g>
+  </svg>
+);
+
+// GearIcon: Premium settings gear with refined tooth geometry
+export const GearIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+    <g strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      {/* Outer gear teeth with consistent spacing */}
+      <path
+        d="M12 2.5l1 2.5a7 7 0 0 1 2.8 1.2l2.7-1 1.5 2.6-2.3 1.8a7 7 0 0 1 0 2.8l2.3 1.8-1.5 2.6-2.7-1a7 7 0 0 1-2.8 1.2l-1 2.5-1-2.5a7 7 0 0 1-2.8-1.2l-2.7 1-1.5-2.6 2.3-1.8a7 7 0 0 1 0-2.8L4 9.8l1.5-2.6 2.7 1A7 7 0 0 1 11 5l1-2.5z"
+        opacity="0.9"
+      />
+      {/* Inner circle for depth */}
+      <circle cx="12" cy="12" r="3.5" opacity="0.75" />
+    </g>
   </svg>
 );

@@ -48,14 +48,14 @@ The adapter maintains per-window DOM islands under `#workspace-root`. Commands a
 
 To keep planner output pure HTML, the adapter wires simple event actions via attributes:
 
-- `data-state-scope` + `data-state-key` on `<input>`/`<textarea>` bind values into the in-memory state store on `input`/`change`.
-  - Example: `<input data-state-scope="window" data-state-key="note_title">`
-- `data-command` on any clickable or form element carries JSON for a batch of envelopes to enqueue on `click`/`submit`.
-  - The JSON is evaluated with shallow template tokens:
-    - `{{value}}` – current control value (for inputs)
-    - `{{form.FIELD}}` – nearest form field by `name`
-    - `{{windowId}}`, `{{componentId}}` – inferred from DOM ancestry
-  - Example: `<button data-command='[{"op":"dom.set","params":{"windowId":"win","target":"#status","html":"Saved: {{form.title}}"}}]'>Save</button>`
+* `data-state-scope` + `data-state-key` on `<input>`/`<textarea>` bind values into the in-memory state store on `input`/`change`.
+  * Example: `<input data-state-scope="window" data-state-key="note_title">`
+* `data-command` on any clickable or form element carries JSON for a batch of envelopes to enqueue on `click`/`submit`.
+  * The JSON is evaluated with shallow template tokens:
+    * `{{value}}` – current control value (for inputs)
+    * `{{form.FIELD}}` – nearest form field by `name`
+    * `{{windowId}}`, `{{componentId}}` – inferred from DOM ancestry
+  * Example: `<button data-command='[{"op":"dom.set","params":{"windowId":"win","target":"#status","html":"Saved: {{form.title}}"}}]'>Save</button>`
 
 These hooks let models build functional apps without emitting JavaScript. All generated HTML remains subject to the sanitizer.
 
@@ -63,11 +63,11 @@ These hooks let models build functional apps without emitting JavaScript. All ge
 
 The system enforces these hard limits:
 
-- **MAX_OPS_PER_BATCH**: 64 operations per batch
-- **MAX_HTML_PER_OP**: 64KB HTML per operation
-- **MAX_TOTAL_HTML_PER_BATCH**: 128KB total HTML across all operations in batch
-- **MAX_DATA_COMMAND_LEN**: 32KB for data-command attribute JSON
-- **MAX_TEMPLATE_TOKENS**: 16 template token substitutions per element
+* **MAX_OPS_PER_BATCH**: 64 operations per batch
+* **MAX_HTML_PER_OP**: 64KB HTML per operation
+* **MAX_TOTAL_HTML_PER_BATCH**: 128KB total HTML across all operations in batch
+* **MAX_DATA_COMMAND_LEN**: 32KB for data-command attribute JSON
+* **MAX_TEMPLATE_TOKENS**: 16 template token substitutions per element
 
 Exceeding these limits will cause validation errors.
 
@@ -76,21 +76,22 @@ Exceeding these limits will cause validation errors.
 `api.call` is side-effectful and runs best-effort on the frontend:
 
 ### Simple text intent
-- `uicp://intent` with body: `{ text: string, windowId?: string }`
-- Dispatches a new chat message through the app pipeline with `text`
-- The bridge automatically merges it with the most recent user ask:
+* `uicp://intent` with body: `{ text: string, windowId?: string }`
+* Dispatches a new chat message through the app pipeline with `text`
+* The bridge automatically merges it with the most recent user ask:
   `"<last user message>\n\nAdditional details: <text>"`
 
 ### Structured clarifier form
-- `uicp://intent` with body: `{ textPrompt?: string, fields?: [...], title?, submit?, cancel?, windowId?, width?, height?, description? }`
-- Renders an interactive form window with specified fields
-- On submit, dispatches structured data back to chat pipeline
-- Body MUST have `textPrompt` OR `fields` (or both)
-- Body MUST NOT have `text` field (incompatible with structured format)
-- Supported field types: "text", "textarea", "select"
-- Field spec: `{ name: string, label: string, placeholder?: string, type?: string, options?: string[], defaultValue?: string }`
+* `uicp://intent` with body: `{ textPrompt?: string, fields?: [...], title?, submit?, cancel?, windowId?, width?, height?, description? }`
+* Renders an interactive form window with specified fields
+* On submit, dispatches structured data back to chat pipeline
+* Body MUST have `textPrompt` OR `fields` (or both)
+* Body MUST NOT have `text` field (incompatible with structured format)
+* Supported field types: "text", "textarea", "select"
+* Field spec: `{ name: string, label: string, placeholder?: string, type?: string, options?: string[], defaultValue?: string }`
 
 Example structured clarifier:
+
 ```json
 {
   "op": "api.call",
@@ -111,14 +112,14 @@ Example structured clarifier:
 ```
 
 ### File operations
-- `tauri://fs/writeTextFile`
-  - Body: `{ path: string, contents: string, directory?: "Desktop" | "Document" | ... }`
-  - Writes `contents` to `path` under the given base directory (defaults to Desktop)
+* `tauri://fs/writeTextFile`
+  * Body: `{ path: string, contents: string, directory?: "Desktop" | "Document" | ... }`
+  * Writes `contents` to `path` under the given base directory (defaults to Desktop)
 
 ### HTTP requests
-- `http://` or `https://`
-  - Performs a `fetch` with optional JSON `body` and `headers`
-  - Errors are logged; no response is surfaced to the planner
+* `http://` or `https://`
+  * Performs a `fetch` with optional JSON `body` and `headers`
+  * Errors are logged; no response is surfaced to the planner
 
 Unknown schemes are treated as no-ops (success result), preserving idempotency sequencing.
 
@@ -147,27 +148,27 @@ Planner/Actor prompts live under `src/prompts/`. The provider (`lib/llm/provider
 
 `createOllamaAggregator(onBatch?)` collects streaming deltas from the commentary channel. It accumulates text and, on flush, attempts to parse buffered JSON. When a valid batch is found:
 
-- If `onBatch` is provided, it is called and may decide whether to auto-apply (`enqueueBatch`) or surface a preview (e.g., based on Full Control).
-- If `onBatch` is not provided, the aggregator calls `enqueueBatch(batch)` by default.
+* If `onBatch` is provided, it is called and may decide whether to auto-apply (`enqueueBatch`) or surface a preview (e.g., based on Full Control).
+* If `onBatch` is not provided, the aggregator calls `enqueueBatch(batch)` by default.
 
 The Tauri bridge installs an aggregator with a gating callback that:
 
-- Suppresses auto-apply when the orchestrator is running (prevents duplicates) using an app-level `suppressAutoApply` flag.
-- Auto-applies when Full Control is ON and not locked.
-- Otherwise, sets a pending plan for preview in the chat state.
+* Suppresses auto-apply when the orchestrator is running (prevents duplicates) using an app-level `suppressAutoApply` flag.
+* Auto-applies when Full Control is ON and not locked.
+* Otherwise, sets a pending plan for preview in the chat state.
 
 ### STOP / Cancel
 
-- The chat layer's STOP enqueues `txn.cancel` through the queue (clears pending work) and locks Full Control.
-- The streaming transport supports best-effort cancellation: when the async iterator returned by `streamOllamaCompletion()` is closed, the frontend calls the Tauri command `cancel_chat(requestId)` to abort the backend HTTP request.
+* The chat layer's STOP enqueues `txn.cancel` through the queue (clears pending work) and locks Full Control.
+* The streaming transport supports best-effort cancellation: when the async iterator returned by `streamOllamaCompletion()` is closed, the frontend calls the Tauri command `cancel_chat(requestId)` to abort the backend HTTP request.
 
 ### Planner/Actor timeouts
-- Default planner timeout: 120s; actor: 180s. Both are overridable via Vite env at build time:
-  - `VITE_PLANNER_TIMEOUT_MS=120000`
-  - `VITE_ACTOR_TIMEOUT_MS=180000`
+* Default planner timeout: 120s; actor: 180s. Both are overridable via Vite env at build time:
+  * `VITE_PLANNER_TIMEOUT_MS=120000`
+  * `VITE_ACTOR_TIMEOUT_MS=180000`
 The early-stop parser returns as soon as a complete JSON batch is observed, so long timeouts do not add latency when outputs finish early.
 
 ## Window Lifecycle Helpers
-- `registerWindowLifecycle(listener)` subscribes to created/updated/destroyed events emitted by the adapter when windows change.
-- `listWorkspaceWindows()` returns the current window ids and titles for menu initialisation.
-- `closeWorkspaceWindow(id)` closes a workspace window and emits the matching lifecycle event.
+* `registerWindowLifecycle(listener)` subscribes to created/updated/destroyed events emitted by the adapter when windows change.
+* `listWorkspaceWindows()` returns the current window ids and titles for menu initialisation.
+* `closeWorkspaceWindow(id)` closes a workspace window and emits the matching lifecycle event.

@@ -16,6 +16,7 @@ Build guidance (local):
    At runtime, point the app to your modules dir with `UICP_MODULES_DIR`.
 
 Notes
+
 - Determinism: avoid ambient WASI random/clock; use host `uicp:host@1.0.0` imports when needed.
 - Streaming: `uicp:host/control.open-partial-sink(jobId)` yields a `wasi:io/streams.output-stream` for CBOR/JSON frames.
 - csv.parse v1: filesystem is OFF; pass CSV via a `data:` URI in `input.source` (e.g., `data:text/csv,foo%2Cbar%0A1%2C2`).

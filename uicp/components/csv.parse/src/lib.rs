@@ -8,6 +8,8 @@ use bindings::uicp::host::control;
 use bindings::wasi::clocks::monotonic_clock;
 use bindings::wasi::io::streams::OutputStream;
 use ciborium::value::{Integer, Value};
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine as _;
 
 struct Component;
 
@@ -90,7 +92,7 @@ fn parse_data_uri(s: &str) -> Option<Vec<u8>> {
     // Expect "data:text/csv;base64,<payload>" or "data:text/csv,<payload>"
     let (_, rest) = s.split_once(',')?;
     if s.contains(";base64,") {
-        base64::decode(rest).ok()
+        BASE64_ENGINE.decode(rest).ok()
     } else {
         percent_decode(rest)
     }
