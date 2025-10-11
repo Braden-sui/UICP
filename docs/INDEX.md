@@ -16,6 +16,8 @@ This index lists the recommended reading order for onboarding and executing work
 - docs/model-usage.md
   - Current request/response expectations for DeepSeek/Qwen/Kimi.
   - Cloud vs local endpoints and streaming.
+- docs/Model Formatting Req.md
+  - JSON-only planner/actor contract, sample payloads, and validation limits.
 
 ## Prompts (Canonical IO)
 - docs/prompts/gui.md (human-readable guide)

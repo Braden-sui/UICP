@@ -29,7 +29,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'DeepSeek V3.1',
     description: 'Legacy planner prompt tuned for DeepSeek reasoning mode.',
     defaultModel: 'deepseek-v3.1:671b',
-    capabilities: { channels: ['commentary'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent) => [
       { role: 'system', content: plannerPrompt.trim() },
       { role: 'user', content: intent },
@@ -40,7 +40,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'Kimi K2',
     description: 'Planner prompt for Kimi-k2:1t.',
     defaultModel: 'kimi-k2:1t',
-    capabilities: { channels: ['commentary'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent) => [
       { role: 'system', content: plannerPrompt.trim() },
       { role: 'user', content: intent },
@@ -54,7 +54,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     label: 'Qwen3-Coder 480B',
     description: 'Legacy actor prompt tuned for Qwen tool calling.',
     defaultModel: 'qwen3-coder:480b',
-    capabilities: { channels: ['commentary'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
       { role: 'user', content: planJson },
@@ -65,7 +65,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     label: 'Kimi K2',
     description: 'Actor prompt for Kimi-k2:1t.',
     defaultModel: 'kimi-k2:1t',
-    capabilities: { channels: ['commentary'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
       { role: 'user', content: planJson },

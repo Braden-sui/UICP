@@ -60,12 +60,12 @@ async function collectJsonFromChannels<T = unknown>(
 ): Promise<{ data: T; channelUsed?: string }> {
   const iterator = stream[Symbol.asyncIterator]();
   const primaryChannels =
-    options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['json', 'assistant', 'commentary'];
-  // Treat provider-tagged 'text' as a fallback channel. Some upstreams stream
-  // JSON-looking content without a channel or with kind=text despite containing
-  // the JSON payload we want. We’ll accumulate it and attempt salvage parse at
-  // flush time so valid JSON isn’t dropped.
-  const fallbackChannels = options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? ['text'];
+    options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['json', 'assistant', 'commentary', 'final'];
+  // Treat provider-tagged "text" and reasoning channels as fallback inputs. Some
+  // upstreams still emit Harmony-era channel names like "analysis" or "final".
+  // Accumulate them and salvage parse at flush time so valid JSON isn’t dropped.
+  const fallbackChannels =
+    options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? ['text', 'analysis', 'thought', 'reasoning'];
   const primarySet = new Set(primaryChannels);
   const fallbackSet = new Set(fallbackChannels);
   let primaryBuf = '';

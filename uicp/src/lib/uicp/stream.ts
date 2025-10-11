@@ -66,7 +66,7 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
       if (info.content) {
         if (!channel || channel === 'commentary') {
           commentaryBuffer += info.content;
-        } else if (channel === 'final') {
+        } else if (channel === 'final' || channel === 'json') {
           finalBuffer += info.content;
         }
       }

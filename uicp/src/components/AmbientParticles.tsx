@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * AmbientParticles Component
@@ -24,11 +24,39 @@ interface Particle {
   opacity: number;
 }
 
+// Accessibility: respect user motion preferences and keep animations subtle.
+// We avoid React re-render churn by drawing particles via DOM once on mount.
 const AmbientParticles = () => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [prefersReduced, setPrefersReduced] = useState(false);
+
+  // Detect reduced motion preference once and subscribe to changes.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('matchMedia' in window)) return;
+    try {
+      const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+      setPrefersReduced(!!mq.matches);
+      const onChange = (e: MediaQueryListEvent) => setPrefersReduced(!!e.matches);
+      // Modern browsers: addEventListener, fallback to addListener for older engines.
+      if ('addEventListener' in mq) mq.addEventListener('change', onChange);
+      // @ts-expect-error legacy API support
+      else mq.addListener?.(onChange);
+      return () => {
+        if ('removeEventListener' in mq) mq.removeEventListener('change', onChange);
+        // @ts-expect-error legacy API support
+        else mq.removeListener?.(onChange);
+      };
+    } catch {
+      // Fail closed (no crash) if matchMedia is unavailable.
+      setPrefersReduced(false);
+    }
+  }, []);
 
   useEffect(() => {
     // Generate particles with randomized properties for natural movement
+    // Honor reduced motion: skip dynamic particles entirely.
+    if (prefersReduced) return;
+
     const particles: Particle[] = Array.from({ length: 15 }, (_, i) => ({
       id: i,
       x: Math.random() * 100, // percentage
@@ -65,7 +93,7 @@ const AmbientParticles = () => {
     return () => {
       container.innerHTML = '';
     };
-  }, []);
+  }, [prefersReduced]);
 
   return (
     <>
@@ -73,39 +101,49 @@ const AmbientParticles = () => {
       <div
         ref={containerRef}
         className="pointer-events-none fixed inset-0 z-[1]"
+        data-testid="ambient-particles-container"
         aria-hidden="true"
       />
 
       {/* Ambient shimmer overlay for subtle light effects */}
-      <div
-        className="pointer-events-none fixed inset-0 z-[1] opacity-30"
-        style={{
-          background: `
-            radial-gradient(circle at 20% 30%, rgba(139,92,246,0.03), transparent 50%),
-            radial-gradient(circle at 80% 70%, rgba(236,72,153,0.03), transparent 50%),
-            radial-gradient(circle at 50% 50%, rgba(99,102,241,0.02), transparent 60%)
-          `,
-          animation: 'shimmer-pulse 15s ease-in-out infinite',
-        }}
-        aria-hidden="true"
-      />
+      {!prefersReduced && (
+        <div
+          className="pointer-events-none fixed inset-0 z-[1] opacity-30"
+          style={{
+            background: `
+              radial-gradient(circle at 20% 30%, rgba(139,92,246,0.03), transparent 50%),
+              radial-gradient(circle at 80% 70%, rgba(236,72,153,0.03), transparent 50%),
+              radial-gradient(circle at 50% 50%, rgba(99,102,241,0.02), transparent 60%)
+            `,
+            animation: 'shimmer-pulse 15s ease-in-out infinite',
+          }}
+          aria-hidden="true"
+        />
+      )}
 
       {/* Light rays effect for depth */}
-      <div
-        className="pointer-events-none fixed inset-0 z-[1] opacity-20"
-        style={{
-          background: `
-            linear-gradient(45deg, transparent 40%, rgba(255,255,255,0.03) 50%, transparent 60%),
-            linear-gradient(-45deg, transparent 40%, rgba(255,255,255,0.02) 50%, transparent 60%)
-          `,
-          backgroundSize: '200% 200%',
-          animation: 'light-rays 25s linear infinite',
-        }}
-        aria-hidden="true"
-      />
+      {!prefersReduced && (
+        <div
+          className="pointer-events-none fixed inset-0 z-[1] opacity-20"
+          style={{
+            background: `
+              linear-gradient(45deg, transparent 40%, rgba(255,255,255,0.03) 50%, transparent 60%),
+              linear-gradient(-45deg, transparent 40%, rgba(255,255,255,0.02) 50%, transparent 60%)
+            `,
+            backgroundSize: '200% 200%',
+            animation: 'light-rays 25s linear infinite',
+          }}
+          aria-hidden="true"
+        />
+      )}
 
       {/* CSS animations for particles and ambient effects */}
       <style>{`
+        /* Respect user motion preferences globally for this component */
+        @media (prefers-reduced-motion: reduce) {
+          .ambient-particle { animation: none !important; }
+        }
+
         @keyframes float-particle {
           0%, 100% {
             transform: translate(0, 0) scale(1);

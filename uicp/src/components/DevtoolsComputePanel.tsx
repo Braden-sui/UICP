@@ -1,13 +1,47 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { summarizeComputeJobs, useComputeStore } from '../state/compute';
 
-const DevtoolsComputePanel = () => {
+type DevtoolsComputePanelProps = {
+  /**
+   * Optional default open state for tests or embeds.
+   * In dev builds, the panel auto-opens unless explicitly overridden.
+   */
+  defaultOpen?: boolean;
+};
+
+// Devtools panel for compute job visibility during development.
+// Accessibility: treat as a lightweight dialog with ESC to close and focus management.
+const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
   const jobs = useComputeStore((s) => s.jobs);
-  const [open, setOpen] = useState<boolean>(false);
+  const [open, setOpen] = useState<boolean>(defaultOpen ?? false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (import.meta.env.DEV) setOpen(true);
-  }, []);
+    // Preserve existing behavior: auto-open in dev when caller did not specify.
+    if (defaultOpen == null && import.meta.env.DEV) setOpen(true);
+  }, [defaultOpen]);
+
+  // Close on Escape for keyboard users.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // Move focus to the panel when it opens for assistive tech. Restore by letting user control subsequent focus.
+  useEffect(() => {
+    if (open) {
+      // Prefer focusing the close button for immediate keyboard accessibility.
+      closeBtnRef.current?.focus();
+    }
+  }, [open]);
 
   // Compute hooks unconditionally before early return to satisfy Rules of Hooks
   const entries = Object.values(jobs).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -89,10 +123,24 @@ const DevtoolsComputePanel = () => {
   if (!open) return null;
 
   return (
-    <div className="pointer-events-auto fixed bottom-4 left-4 z-50 max-h-[40vh] w-[min(500px,90vw)] overflow-auto rounded-lg border border-slate-200 bg-white/95 p-3 text-sm shadow-lg">
+    <div
+      ref={rootRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="compute-jobs-title"
+      tabIndex={-1}
+      className="pointer-events-auto fixed bottom-4 left-4 z-50 max-h-[40vh] w-[min(500px,90vw)] overflow-auto rounded-lg border border-slate-200 bg-white/95 p-3 text-sm shadow-lg"
+    >
       <div className="mb-2 flex items-center justify-between">
-        <div className="font-semibold">Compute Jobs</div>
-        <button className="rounded border px-2 py-1 text-xs" onClick={() => setOpen(false)}>
+        <div id="compute-jobs-title" className="font-semibold">
+          Compute Jobs
+        </div>
+        <button
+          ref={closeBtnRef}
+          className="rounded border px-2 py-1 text-xs"
+          aria-label="Close compute jobs panel"
+          onClick={() => setOpen(false)}
+        >
           Close
         </button>
       </div>

@@ -13,7 +13,7 @@ Docs
 - [x] docs/architecture.md:103 — “enqueue_command: placeholder for the tool queue.” Resolved: docs now describe the queue persistence behavior.
 - [x] docs/compute/host-skeleton.rs:72 — Placeholder types in host sketch. Resolved: marked as illustrative example of current types.
 - [x] docs/setup.md:100 — “non‑Wasm placeholder path” toggle. Resolved: clarified legacy/debug usage and removed placeholder wording.
-- [x] docs/harmony-samples.md:169 — “analysis content is placeholder.” Resolved: language now says “illustrative”, keeping guidance on minimal analysis.
+- [x] docs/legacy/harmony-samples.md:169 — “analysis content is placeholder.” Resolved: language now says “illustrative”, keeping guidance on minimal analysis.
 - [x] .agent-policy.yml — Tier mapping file committed; spec operationalized.
 
 Integration Tests (scaffolds)
