@@ -353,6 +353,7 @@ mod with_runtime {
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     };
+    use std::any::Any;
     use std::io::Cursor;
     use wasmtime::{
         component::{Component, Linker, Resource, ResourceTable},
@@ -433,6 +434,7 @@ mod with_runtime {
         fn emit_debug(&self, payload: serde_json::Value);
         fn emit_partial(&self, event: crate::ComputePartialEvent);
         fn emit_partial_json(&self, payload: serde_json::Value);
+        fn as_any(&self) -> &dyn Any;
     }
 
     enum UiEvent {
@@ -1443,63 +1445,7 @@ mod with_runtime {
                     }
                     Err(err) => {
                         let any = anyhow::Error::from(err);
-                        let (code, msg) = map_trap_error(&any);
-                        finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
-                        epoch_pump.abort();
-                    }
                 }
-            }
-
-            #[cfg(not(feature = "uicp_bindgen"))]
-            {
-                let inst_res: Result<wasmtime::component::Instance, _> =
-                    linker.instantiate(&mut store, &component);
-                match inst_res {
-                    Ok(instance) => {
-                        // Call appropriate export using typed API.
-                        let task_name = spec.task.split('@').next().unwrap_or("");
-                        if let Some(delay) = artificial_delay_ms {
-                            sleep(TokioDuration::from_millis(delay)).await;
-                        }
-                        let call_res: anyhow::Result<serde_json::Value> = match task_name {
-                            "csv.parse" => {
-                                let parsed = extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
-                                if let Err(err) = parsed {
-                                    Err(err)
-                                } else {
-                                    let (src, has_header) = parsed.unwrap();
-                                    let resolved_res = resolve_csv_source(&spec, &src)
-                                        .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)));
-                                    if let Err(err) = resolved_res {
-                                        Err(err)
-                                    } else {
-                                        let resolved = resolved_res.unwrap();
-                                        // Typed `result` from WIT surfaces as the standard Rust `Result`.
-                                        let func_res: Result<
-                                            wasmtime::component::TypedFunc<
-                                                (String, String, bool),
-                                                (Result<Vec<Vec<String>>, String>,),
-                                            >,
-                                            _,
-                                        > = instance.get_typed_func(&mut store, "csv#run");
-                                        match func_res {
-                                            Err(e) => Err(anyhow::Error::from(e)),
-                                            Ok(func) => match func
-                                                .call_async(&mut store, (spec.job_id.clone(), resolved, has_header))
-                                                .await
-                                            {
-                                                Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
-                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                                Err(e) => Err(anyhow::Error::from(e)),
-                                            },
-                                        }
-                                    }
-                                }
-                            }
-                            "table.query" => {
-                                let parsed = extract_table_query_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
-                                if let Err(err) = parsed {
-                                    Err(err)
                                 } else {
                                     let (rows, select, where_opt) = parsed.unwrap();
                                     let func_res: Result<
@@ -1983,7 +1929,7 @@ mod with_runtime {
         let out_hash = hex::encode(hasher.finalize());
         if let Some(map) = metrics.as_object_mut() {
             map.insert("outputHash".into(), serde_json::json!(out_hash));
-            map.entry("queueMs".into())
+            map.entry("queueMs".to_string())
                 .or_insert_with(|| serde_json::json!(queue_wait_ms));
         } else {
             metrics = serde_json::json!({
@@ -2356,8 +2302,11 @@ mod with_runtime {
             );
 
             // Call the logging shim directly
-            host_wasi_log(store.as_context_mut(), (2u32, "ctx".into(), "hello world".into()))
+            {
+                use wasmtime::AsContextMut;
+                host_wasi_log(store.as_context_mut(), (2u32, "ctx".into(), "hello world".into()))
                 .expect("log ok");
+            }
 
             // Verify a partial event was captured with expected fields
             let part = captured_partials.lock().unwrap().pop().expect("one partial emitted");
@@ -2411,6 +2360,7 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
+                fn as_any(&self) -> &dyn Any { self }
             }
 
             let engine = build_engine().expect("engine");

@@ -43,6 +43,7 @@ tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 tempfile = "3.10"
+tauri = { version = "2.4.1", features = ["test"] }
 
 [[bin]]
 name = "harness"
