@@ -9,7 +9,7 @@ const DevtoolsComputePanel = () => {
     if (import.meta.env.DEV) setOpen(true);
   }, []);
 
-  if (!open) return null;
+  // Compute hooks unconditionally before early return to satisfy Rules of Hooks
   const entries = Object.values(jobs).sort((a, b) => b.updatedAt - a.updatedAt);
   const summary = useMemo(() => summarizeComputeJobs(jobs), [jobs]);
   const indicatorChips = useMemo(() => {
@@ -85,6 +85,8 @@ const DevtoolsComputePanel = () => {
     summary.partialsSeen,
     summary.total,
   ]);
+
+  if (!open) return null;
 
   return (
     <div className="pointer-events-auto fixed bottom-4 left-4 z-50 max-h-[40vh] w-[min(500px,90vw)] overflow-auto rounded-lg border border-slate-200 bg-white/95 p-3 text-sm shadow-lg">

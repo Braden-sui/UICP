@@ -65,6 +65,13 @@ pub fn modules_dir(app: &AppHandle) -> PathBuf {
 /// or missing files, and a bundled copy is present under the app resources,
 /// copy the bundled directory into place.
 pub fn install_bundled_modules_if_missing(app: &AppHandle) -> Result<()> {
+    // In dev, when UICP_MODULES_DIR is provided, assume the developer manages
+    // modules directly in that directory and avoid touching files (which would
+    // trigger Tauri's file watcher and cause rebuild loops).
+    if std::env::var("UICP_MODULES_DIR").is_ok() {
+        return Ok(());
+    }
+
     let target = resolve_modules_dir(app);
     let manifest_path = target.join("manifest.json");
 

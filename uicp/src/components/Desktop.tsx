@@ -171,8 +171,12 @@ export const Desktop = () => {
   const notepadIconVisual = useMemo(() => <NotepadIcon className="h-8 w-8" />, []);
 
   const closeWindow = useCallback((id: string) => {
+    // Ask adapter to destroy the window and purge persisted commands.
     closeWorkspaceWindow(id);
-  }, []);
+    // UI fallback: optimistically remove from local store in case lifecycle
+    // events are delayed or suppressed so the menu updates immediately.
+    removeWorkspaceWindow(id);
+  }, [removeWorkspaceWindow]);
 
   const menus = useMemo<DesktopMenu[]>(() => {
     const entries = Object.values(workspaceWindows)

@@ -52,6 +52,11 @@ const DesktopWindow = ({
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (!isOpen || event.button !== 0) return;
+      // Ignore pointer-downs that originate on interactive controls (e.g., Hide button)
+      const origin = event.target as HTMLElement | null;
+      if (origin && origin.closest('button, a, input, textarea, select, [role="button"], [data-no-drag]')) {
+        return;
+      }
       pointerState.current = {
         pointerId: event.pointerId,
         offsetX: event.clientX - position.x,
@@ -120,7 +125,7 @@ const DesktopWindow = ({
   const chromeClasses = useMemo(
     () =>
       clsx(
-        'flex items-center justify-center rounded-t-2xl px-4 py-2 text-sm font-semibold text-slate-700',
+        'relative flex items-center justify-center rounded-t-2xl px-4 py-2 text-sm font-semibold text-slate-700',
         'bg-gradient-to-b from-white/90 to-white/80 backdrop-blur-xl backdrop-saturate-150',
         'border-t border-x border-white/60',
         'shadow-[inset_0_1px_0_0_rgba(255,255,255,0.8),inset_0_-1px_0_0_rgba(255,255,255,0.4)]',
@@ -128,6 +133,14 @@ const DesktopWindow = ({
       ),
     [dragging],
   );
+  // Ensure we only call onClose when provided to avoid runtime errors
+  const handleClose = useCallback(() => {
+    try {
+      _onClose?.();
+    } catch {
+      // no-op
+    }
+  }, [_onClose]);
 
   return (
     <div className="pointer-events-none absolute inset-0 z-40" aria-hidden={!isOpen}>
@@ -167,6 +180,22 @@ const DesktopWindow = ({
             <span id={titleId} className="truncate text-center">
               {title}
             </span>
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                // prevent drag capture on the chrome bar
+                e.stopPropagation();
+              }}
+              onClick={handleClose}
+              aria-label="Hide window"
+              data-no-drag
+              className={clsx(
+                'absolute right-2 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-[11px] font-semibold text-slate-500',
+                'hover:bg-white/70 hover:text-slate-700 active:scale-95 focus:outline-none focus:ring-2 focus:ring-slate-300',
+              )}
+            >
+              Hide
+            </button>
           </div>
           <div className="flex-1 overflow-y-auto bg-gradient-to-b from-white/80 via-white/75 to-white/70 px-4 py-3 text-sm text-slate-700 shadow-[inset_0_2px_8px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(0,0,0,0.05)]">
             {children}

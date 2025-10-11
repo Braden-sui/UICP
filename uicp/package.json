@@ -28,7 +28,8 @@
         "modules:build": "npm run modules:build:csv && npm run modules:build:table",
         "modules:publish": "npm run modules:update:csv && npm run modules:update:table",
         "modules:verify": "node scripts/verify-modules.mjs --manifest src-tauri/modules/manifest.json --dir src-tauri/modules",
-        "dev:wasm": "cross-env UICP_MODULES_DIR=src-tauri/modules tauri dev",
+        "dev:wasm": "node scripts/dev-wasm.mjs",
+        "dev:wasm:runtime": "cross-env UICP_MODULES_DIR=src-tauri/modules TAURI_FEATURES=wasm_compute,uicp_wasi_enable tauri dev --no-default-features --features tauri2,wasm_compute,uicp_wasi_enable",
         "tauri:dev": "tauri dev",
         "tauri:build": "tauri build",
         "postinstall": "node scripts/postinstall.cjs"

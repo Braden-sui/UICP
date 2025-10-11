@@ -1,4 +1,4 @@
-﻿import type { Batch, Envelope, OperationParamMap } from "./schemas";
+import type { Batch, Envelope, OperationParamMap } from "./schemas";
 import { createFrameCoalescer, createId } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
@@ -608,6 +608,13 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
 
 // Replay persisted commands from database to restore workspace state
 export const replayWorkspace = async (): Promise<{ applied: number; errors: string[] }> => {
+  // Guard against calling invoke before Tauri is ready
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hasTauri = typeof (window as any).__TAURI__ !== 'undefined';
+  if (!hasTauri) {
+    return { applied: 0, errors: [] };
+  }
+
   try {
     const commands = await invoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
     const errors: string[] = [];
@@ -765,7 +772,8 @@ const executeWindowCreate = (
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.setAttribute("aria-label", "Close window");
-    closeButton.textContent = "Ãƒâ€”";
+    // Use a proper multiplication sign for close (avoid mojibake)
+    closeButton.textContent = "×";
     closeButton.className = "flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-base text-slate-500 shadow-sm backdrop-blur-sm transition-all duration-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 hover:scale-110 active:scale-95";
     const stopPointerPropagation = (event: Event) => {
       event.stopPropagation();

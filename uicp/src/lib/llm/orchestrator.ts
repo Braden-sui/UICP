@@ -61,7 +61,11 @@ async function collectJsonFromChannels<T = unknown>(
   const iterator = stream[Symbol.asyncIterator]();
   const primaryChannels =
     options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['json', 'assistant', 'commentary'];
-  const fallbackChannels = options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? [];
+  // Treat provider-tagged 'text' as a fallback channel. Some upstreams stream
+  // JSON-looking content without a channel or with kind=text despite containing
+  // the JSON payload we want. We’ll accumulate it and attempt salvage parse at
+  // flush time so valid JSON isn’t dropped.
+  const fallbackChannels = options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? ['text'];
   const primarySet = new Set(primaryChannels);
   const fallbackSet = new Set(fallbackChannels);
   let primaryBuf = '';
