@@ -37,8 +37,8 @@ jobs:
       - name: Assert engine versions pinned
         run: |
           echo "Checking Wasmtime versions in lockfile..."
-          awk '/name = "wasmtime"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep '22.0.1'
-          awk '/name = "wasmtime-wasi"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep '22.0.1'
+          awk '/name = "wasmtime"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '24\.'
+          awk '/name = "wasmtime-wasi"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '24\.'
 
       - name: Rust tests compile (no run)
         working-directory: uicp/src-tauri
@@ -59,7 +59,7 @@ jobs:
         working-directory: uicp
         run: |
           npm run -s gen:io
-          git diff --exit-code src/compute/generated
+          git diff --exit-code src/compute/types.gen.ts
 
       - name: Unit tests (TS)
         working-directory: uicp

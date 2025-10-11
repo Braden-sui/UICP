@@ -32,7 +32,7 @@ Legend
   - `StoreLimits` attached; memory cap derived from `mem_limit_mb`
 
 - [~] Version pin and upgrade gate
-  - Current: Wasmtime and wasmtime-wasi are pinned via lockfile to `22.0.1` (Cargo.lock). Preview 2 is in use. CI enforces pinned versions.
+  - Current: Wasmtime and wasmtime-wasi are pinned via lockfile to `24.0.4` (Cargo.lock). Preview 2 is in use. CI enforces pinned versions.
   - Next: Add golden-run gate before allowing engine upgrades.
 
 - [x] Resource enforcement
@@ -159,7 +159,7 @@ Legend
   - File: `uicp/package.json` (`modules:build:*`, `modules:update:*`, `modules:verify`)
 
   - [~] Guest ABI contract
-    - World: `world command` exports `csv` and `table` interfaces sharing `common.rows`; lives at `uicp/src-tauri/wit/command.wit` and mirrors component crates under `uicp/components/*`.【F:uicp/src-tauri/wit/command.wit†L1-L25】【F:uicp/components/csv_parse/src/lib.rs†L1-L74】
+    - World: `world command` exports `csv` and `table` interfaces sharing `common.rows`; lives at `uicp/src-tauri/wit/command.wit` and mirrors component crates under `uicp/components/*`.【F:uicp/src-tauri/wit/command.wit†L1-L25】【F:uicp/components/csv.parse/src/lib.rs†L1-L74】
     - TODO: freeze the ABI by documenting request/response schemas, error semantics, and host imports in `docs/compute/README.md` and a dedicated WIT changelog. Include examples for partial CBOR envelopes and cancellation contracts.
     - TODO: ensure host shims match the WIT files (`uicp:host/control`, `logger`, `rng`, `clock`) and add conformance tests using `wit-bindgen` generated bindings once the host exposes these imports.
     - TODO: add regression tests that diff the checked-in WIT files versus generated TypeScript/Rust bindings (`npm run gen:io`) so drift is caught in CI.

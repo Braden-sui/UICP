@@ -7,9 +7,18 @@
   - Windows-focused MVP; Linux/macOS support is incomplete.
   - Mock mode defaults on; cloud calls and compute features are experimental.
 
-# Generative Desktop
+# UICP Desktop
 
-Local-first Tauri UI that exposes a clean desktop canvas and a DockChat surface. DockChat is the only control that users touch while the agent drives the UI through UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
+Local‑first Tauri desktop that exposes a clean workspace canvas and a DockChat surface. DockChat is the only user control; the agent drives the UI via validated UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
+
+## Vision
+
+Build a trustworthy, local‑first generative desktop where models describe intent and the system performs safe, declarative UI updates. The agent never emits inline JS; it speaks in validated commands that the adapter applies deterministically and can replay. The compute plane executes Wasm tasks locally (capability‑scoped, feature‑gated) so common data work stays offline. Everything fails loud with typed errors, streaming is cancellable, and state changes are auditable via logs and persisted commands. Longer‑term, integrate Claude Code and the Codex CLI directly into the desktop to enable agentic coding and real code implementation with reviewable diffs and tests.
+
+Non‑goals for the MVP
+- Production hardening and enterprise security
+- Backward‑compat shims for breaking changes
+- Broad OS support beyond Windows until core flows are stable
 
 Key runtime guardrails
 - Environment Snapshot is prepended to planner/actor prompts (agent flags, open windows, last trace, and a trimmed DOM summary) to boost context-awareness.
@@ -33,6 +42,16 @@ The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When
 When running standalone (without Tauri), this project still uses port `1420` as configured in `uicp/vite.config.ts`.
 Open `http://127.0.0.1:1420`.
 
+## Project Structure
+
+- `uicp/` — desktop app (React + Tailwind + Tauri)
+  - `src/` UI, state, LLM orchestration (TypeScript)
+  - `src-tauri/` Rust backend (SQLite, streaming, commands)
+  - `components/` Wasm tasks (WIT + cargo-component), published into `src-tauri/modules`
+  - `tests/` Vitest unit, Playwright e2e harness
+- `docs/` — architecture, prompts, compute runtime docs
+- `.github/workflows/` — CI for UI and compute host
+
 ## Commands
 
 - `npm run dev` – start Vite in development mode
@@ -40,9 +59,17 @@ Open `http://127.0.0.1:1420`.
 - `npm run build` – typecheck + bundle for production
 - `npm run tauri:build` – build the desktop app bundle
 - `npm run lint` – ESLint over `src`
+- `npm run format` – Prettier write
 - `npm run typecheck` – strict TS compile
 - `npm run test` – Vitest unit suite (`tests/unit`)
 - `npm run test:e2e` - Playwright smoke (`tests/e2e/specs`), builds with MOCK mode then runs preview
+
+Compute modules and runtime
+- `npm run dev:wasm` – Tauri dev with `UICP_MODULES_DIR` on PATH for faster inner loop
+- `npm run dev:wasm:runtime` – Tauri dev with compute host features (`wasm_compute,uicp_wasi_enable`)
+- `npm run modules:build` – build Wasm components under `uicp/components/*`
+- `npm run modules:publish` – copy built components into `uicp/src-tauri/modules` and update manifest
+- `npm run gen:io` – regenerate TypeScript bindings from WIT into `uicp/src/compute/types.gen.ts`
 
 ## Environment
 
@@ -53,6 +80,13 @@ Open `http://127.0.0.1:1420`.
 | `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend)
 | `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window. |
 | `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window. |
+
+Configuration (.env)
+- `USE_DIRECT_CLOUD` — `1` to use Ollama Cloud, `0` for local daemon
+- `OLLAMA_API_KEY` — required when `USE_DIRECT_CLOUD=1`
+- `PLANNER_MODEL` — default planner model id (e.g., `deepseek-v3.1:671b`)
+- `ACTOR_MODEL` — default actor model id (e.g., `qwen3-coder:480b`)
+See `.env.example` at repo root.
 
 Environment Snapshot
 - Included by default in planner/actor prompts; no flag required. It lists agent state and open windows (with a trimmed DOM summary) to help models target updates instead of recreating UI.
@@ -77,14 +111,62 @@ Environment Snapshot
 - `src/lib/uicp` - Zod schemas, DOM adapter, per-window FIFO queue with idempotency and txn.cancel, and documentation.
 - `src/lib/mock.ts` – deterministic planner outputs for common prompts.
 
-- - Compute plane: Feature-gated Wasm host (see `docs/compute/README.md`).
+- Compute plane: Optional Wasm host behind Tauri feature flags (`wasm_compute`, `uicp_wasi_enable`). See `docs/compute/README.md`.
   - Workspace-scoped cache: `JobSpec.workspaceId` (default `"default"`) scopes cache keys and reads.
-  - Clear Cache: Agent Settings window exposes a "Clear Cache" button (clears the `default` workspace by default).
-  - When a task is not suitable for local compute, external APIs remain first-class via `api.call`.
+  - Clear Cache: Agent Settings exposes "Clear Cache" for the active workspace.
+  - External APIs remain first‑class via `api.call` when a task is not suitable for local compute.
+
+Backend (Rust)
+- Tauri 2 runtime with SQLite persistence and WAL, guarded streaming, per-request deadlines, idempotency keys, and a per-host circuit breaker.
+- Compute host uses Wasmtime (WASI Preview 2) when enabled; capability-based IO; guest logs forwarded to UI debug bus.
 
 ## Testing
 
 1. `npm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation.
 2. `npm run test:e2e` drives the notepad flow end-to-end in Playwright. The config builds with `VITE_MOCK_MODE=true` and starts preview automatically. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
 
-CI (`.github/workflows/ci.yml`) now pins every action to a specific commit and runs lint, typecheck, unit tests, (optional) e2e, build, CycloneDX SBOM generation, Trivy vulnerability scans, Gitleaks secret detection, plus a dedicated Rust suite. Dependabot watches GitHub Actions, npm, and Cargo lockfiles weekly.
+Rust (compute host)
+- From `uicp/src-tauri`: `cargo test --features "wasm_compute uicp_wasi_enable" -- --nocapture`
+- Build only: `cargo check --features "wasm_compute uicp_wasi_enable"`
+
+CI
+- UI: `.github/workflows/ci.yml` runs lint, typecheck, unit, e2e (mock), build, SBOM generation, Trivy, and Gitleaks.
+- Compute: `.github/workflows/compute-ci.yml` builds the Rust host, checks/pins Wasmtime, validates WIT packages, runs Rust tests, regenerates TS bindings, and executes a Playwright compute harness.
+
+## In Development
+
+Project status and execution plans
+- Master checklist for compute runtime: `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`
+- Architecture overview: `docs/architecture.md`
+- MVP scope/status: `docs/MVP checklist.md`
+- Coverage and recent fixes: `docs/compute/TEST_COVERAGE_SUMMARY.md`, `docs/compute/TEST_FIXES_SUMMARY.md`
+
+Key workstreams (high level)
+- Compute plane (Wasmtime, WASI Preview 2)
+  - Capability gates for fs/net; stricter preopens; HTTP allowlist (scaffold)
+  - Determinism probes (clock/RNG/float), epoch deadlines, memory limits
+  - Module registry hardening: digest/signature verification, strict CI verify
+- UI/Adapter
+  - Devtools Compute Panel and Metrics Panel
+  - Plan preview vs. auto‑apply gating; STOP and cancel propagation
+  - Logs panel improvements with compute guest stdio previews
+- Agentic coding
+  - Integrate Claude Code and Codex CLI into the desktop to enable actual code implementation in a future phase
+- Persistence
+  - Command persistence, replay ordering and compaction
+  - Workspace‑scoped compute cache with canonicalized keys
+- CI and Contracts
+  - WIT binding regeneration guard; component metadata checks; pinned Wasmtime
+
+See also: `docs/INDEX.md` for onboarding and reading order.
+
+## Requirements
+
+- Node 20, npm 10
+- Tauri CLI 2 (`@tauri-apps/cli`), Rust toolchain
+- For components: `cargo-component` and `wit-component` if building Wasm modules locally
+
+## Security
+
+- Never commit secrets. Use `.env` locally; `OLLAMA_API_KEY` is required for cloud calls when enabled.
+- All planner HTML is sanitized before DOM insertion.

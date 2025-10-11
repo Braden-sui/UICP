@@ -17,6 +17,7 @@ use tauri::{
     Listener, Manager,
 };
 use tempfile::TempDir;
+use tokio_rusqlite::Connection as AsyncConn;
 
 /// Test harness that provisions an in-memory (tempdir-backed) app instance capable of running
 /// real compute jobs against the Wasm runtime.
@@ -65,8 +66,23 @@ impl ComputeTestHarness {
 
         let db_path = data_dir.join("data.db");
 
+        // Initialize resident async SQLite connections for tests
+        let db_rw = tauri::async_runtime::block_on(AsyncConn::open(&db_path))
+            .expect("open sqlite rw (harness)");
+        let db_ro = tauri::async_runtime::block_on(AsyncConn::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ))
+        .expect("open sqlite ro (harness)");
+        tauri::async_runtime::block_on(async {
+            db_rw.call(|c| crate::configure_sqlite(c)).await.unwrap();
+            db_ro.call(|c| crate::configure_sqlite(c)).await.unwrap();
+        });
+
         let state = AppState {
             db_path: db_path.clone(),
+            db_ro,
+            db_rw,
             last_save_ok: RwLock::new(true),
             ollama_key: RwLock::new(None),
             use_direct_cloud: RwLock::new(true),

@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::Context;
 use chrono::Utc;
 use rusqlite::{params, Connection};
@@ -7,7 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
-use crate::{configure_sqlite, AppState};
+use crate::AppState;
 
 /// Canonicalize JSON deterministically (keys sorted, stable formatting).
 pub fn canonicalize_input(value: &Value) -> String {
@@ -210,37 +208,32 @@ mod tests {
     }
 }
 
-fn db_path(app: &AppHandle) -> PathBuf {
-    let state: State<'_, AppState> = app.state();
-    state.db_path.clone()
-}
-
 /// Fetch cached final event payload by key, scoped to a workspace.
 pub async fn lookup(
     app: &AppHandle,
     workspace_id: &str,
     key: &str,
 ) -> anyhow::Result<Option<Value>> {
-    let path = db_path(app);
     let key = key.to_string();
     let ws = workspace_id.to_string();
-    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
-        let conn = Connection::open(path).context("open sqlite for compute_cache lookup")?;
-        configure_sqlite(&conn).context("configure sqlite for compute_cache lookup")?;
-        let mut stmt = conn
-            .prepare("SELECT value_json FROM compute_cache WHERE workspace_id = ?1 AND key = ?2")
-            .context("prepare cache select")?;
-        let mut rows = stmt.query(params![ws, key]).context("exec cache select")?;
-        if let Some(row) = rows.next()? {
-            let json_str: String = row.get(0)?;
-            let val: Value = serde_json::from_str(&json_str).context("parse cached value")?;
-            Ok(Some(val))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .context("join cache lookup")??;
+    let state: State<'_, AppState> = app.state();
+    let res = state
+        .db_ro
+        .call(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT value_json FROM compute_cache WHERE workspace_id = ?1 AND key = ?2")
+                .context("prepare cache select")?;
+            let mut rows = stmt.query(params![ws, key]).context("exec cache select")?;
+            if let Some(row) = rows.next()? {
+                let json_str: String = row.get(0)?;
+                let val: Value = serde_json::from_str(&json_str).context("parse cached value")?;
+                Ok(Some(val))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .context("cache lookup")?;
     Ok(res)
 }
 
@@ -281,19 +274,18 @@ pub async fn store(
     if *state.safe_mode.read().await {
         return Ok(());
     }
-    let path = db_path(app);
     let key = key.to_string();
     let ws = workspace_id.to_string();
     let task = task.to_string();
     let env_hash = env_hash.to_string();
     let json = serde_json::to_string(value).context("serialize cache value")?;
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let conn = Connection::open(path).context("open sqlite for compute_cache store")?;
-        configure_sqlite(&conn).context("configure sqlite for compute_cache store")?;
-        let now = Utc::now().timestamp();
-        upsert_cache_row(&conn, &ws, &key, &task, &env_hash, &json, now)
-    })
-    .await
-    .context("join cache store")??;
+    state
+        .db_rw
+        .call(move |conn| {
+            let now = Utc::now().timestamp();
+            upsert_cache_row(conn, &ws, &key, &task, &env_hash, &json, now)
+        })
+        .await
+        .context("cache store")??;
     Ok(())
 }

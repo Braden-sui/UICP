@@ -1,0 +1,141 @@
+                        let task_name = spec.task.split('@').next().unwrap_or("");
+                        if let Some(delay) = artificial_delay_ms {
+                            sleep(TokioDuration::from_millis(delay)).await;
+                        }
+                        let call_res: anyhow::Result<serde_json::Value> = match task_name {
+                            "csv.parse" => {
+                                let src_has = extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                if let Err(err) = src_has {
+                                    Err(err)
+                                } else {
+                                    let (src, has_header) = src_has.unwrap();
+                                    let resolved_res = resolve_csv_source(&spec, &src)
+                                        .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)));
+                                    if let Err(err) = resolved_res {
+                                        Err(err)
+                                    } else {
+                                        let resolved = resolved_res.unwrap();
+                                        // WIT `result<T, E>` comes through Wasmtime as the standard Rust `Result<T, E>`.
+                                        let func_res: Result<
+                                            wasmtime::component::TypedFunc<
+                                                (String, String, bool),
+                                                (Result<Vec<Vec<String>>, String>,),
+                                            >,
+                                            _,
+                                        > = instance.get_typed_func(&mut store, "csv#run");
+                                        match func_res {
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                            Ok(func) => match func
+                                                .call_async(&mut store, (spec.job_id.clone(), resolved, has_header))
+                                                .await
+                                            {
+                                                Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
+                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                                Err(e) => Err(anyhow::Error::from(e)),
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                            "table.query" => {
+                                let parsed = extract_table_query_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                if let Err(err) = parsed {
+                                    Err(err)
+                                } else {
+                                    let (rows, select, where_opt) = parsed.unwrap();
+                                    let func_res: Result<
+                                        wasmtime::component::TypedFunc<
+                                            (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                            (Result<Vec<Vec<String>>, String>,),
+                                        >,
+                                        _,
+                                    > = instance.get_typed_func(&mut store, "table#run");
+                                    match func_res {
+                                        Err(e) => Err(anyhow::Error::from(e)),
+                                        Ok(func) => match func
+                                            .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
+                                            .await
+                                        {
+                                            Ok((Ok(out),)) => Ok(serde_json::json!(out)),
+                                            Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                        },
+                                    }
+                                }
+                            }
+                            _ => Err(anyhow::anyhow!("unknown task for this world")),
+                        };
+                        match call_res {
+                            Ok(output_json) => {
+                                let metrics = collect_metrics(&store);
+                                finalize_ok_with_metrics(
+                                    &app,
+                                    &spec,
+                                    output_json,
+                                    metrics,
+                                    queue_wait_ms,
+                                )
+                                .await;
+                            }
+                            Err(err) => {
+                                let (code, msg) = map_trap_error(&err);
+                                let message = if msg.is_empty() { err.to_string() } else { msg };
+                                finalize_error(&app, &spec, code, &message, started, queue_wait_ms)
+                                    .await;
+                            }
+                        }
+                        epoch_pump.abort();
+                    }
+                    Err(err) => {
+                        let any = anyhow::Error::from(err);
+                }
+                                } else {
+                                    let (rows, select, where_opt) = parsed.unwrap();
+                                    let func_res: Result<
+                                        wasmtime::component::TypedFunc<
+                                            (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                            (Result<Vec<Vec<String>>, String>,),
+                                        >,
+                                        _,
+                                    > = instance.get_typed_func(&mut store, "table#run");
+                                    match func_res {
+                                        Err(e) => Err(anyhow::Error::from(e)),
+                                        Ok(func) => match func
+                                            .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
+                                            .await
+                                        {
+                                            Ok((Ok(out),)) => Ok(serde_json::json!(out)),
+                                            Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                        },
+                                    }
+                                }
+                            }
+                            _ => Err(anyhow::anyhow!("unknown task for this world")),
+                        };
+                        match call_res {
+                            Ok(output_json) => {
+                                let metrics = collect_metrics(&store);
+                                finalize_ok_with_metrics(
+                                    &app,
+                                    &spec,
+                                    output_json,
+                                    metrics,
+                                    queue_wait_ms,
+                                )
+                                .await;
+                            }
+                            Err(err) => {
+                                let (code, msg) = map_trap_error(&err);
+                                let message = if msg.is_empty() { err.to_string() } else { msg };
+                                finalize_error(&app, &spec, code, &message, started, queue_wait_ms)
+                                    .await;
+                            }
+                        }
+                        epoch_pump.abort();
+                    }
+                    Err(err) => {
+                        let any = anyhow::Error::from(err);
+                        let (code, msg) = map_trap_error(&any);
+                        finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
+                        epoch_pump.abort();

@@ -17,6 +17,7 @@ use keyring::Entry;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Url};
 use rusqlite::{params, Connection, OptionalExtension};
+use tokio_rusqlite::Connection as AsyncConn;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
@@ -168,6 +169,8 @@ fn emit_problem_detail(
 
 pub struct AppState {
     db_path: PathBuf,
+    db_ro: AsyncConn,
+    db_rw: AsyncConn,
     last_save_ok: RwLock<bool>,
     ollama_key: RwLock<Option<String>>,
     use_direct_cloud: RwLock<bool>,
@@ -474,73 +477,67 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
     if *state.safe_mode.read().await {
         return Ok(());
     }
-    let db_path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let conn = Connection::open(db_path).context("open sqlite persist command")?;
-        configure_sqlite(&conn).context("configure sqlite persist command")?;
-        let now = Utc::now().timestamp();
-        let args_json = serde_json::to_string(&cmd.args).context("serialize command args")?;
-        conn.execute(
-            "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
-            params![cmd.id, "default", cmd.tool, args_json, now],
-        )
-        .context("insert tool_call")?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))?
-    .map_err(|e| format!("DB error: {e:?}"))?;
+    let id = cmd.id.clone();
+    let tool = cmd.tool.clone();
+    let args_json = serde_json::to_string(&cmd.args).map_err(|e| format!("{e}"))?;
+    state
+        .db_rw
+        .call(move |conn| {
+            let now = Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+                params![id, "default", tool, args_json, now],
+            )
+            .context("insert tool_call")
+        })
+        .await
+        .map_err(|e| format!("DB error: {e:?}"))?;
     Ok(())
 }
 
 #[tauri::command]
 async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<CommandRequest>, String> {
-    let db_path = state.db_path.clone();
-    let commands = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<CommandRequest>> {
-        let conn = Connection::open(db_path).context("open sqlite get commands")?;
-        configure_sqlite(&conn).context("configure sqlite get commands")?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, tool, args_json FROM tool_call
-                 WHERE workspace_id = ?1
-                 ORDER BY created_at ASC",
-            )
-            .context("prepare tool_call select")?;
-        let rows = stmt
-            .query_map(params!["default"], |row| {
-                let id: String = row.get(0)?;
-                let tool: String = row.get(1)?;
-                let args_json: String = row.get(2)?;
-                let args = serde_json::from_str(&args_json)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                Ok(CommandRequest { id, tool, args })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))?
-    .map_err(|e| format!("DB error: {e:?}"))?;
+    let commands = state
+        .db_ro
+        .call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, tool, args_json FROM tool_call
+                     WHERE workspace_id = ?1
+                     ORDER BY created_at ASC",
+                )
+                .context("prepare tool_call select")?;
+            let rows = stmt
+                .query_map(params!["default"], |row| {
+                    let id: String = row.get(0)?;
+                    let tool: String = row.get(1)?;
+                    let args_json: String = row.get(2)?;
+                    let args = serde_json::from_str(&args_json)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Ok(CommandRequest { id, tool, args })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, anyhow::Error>(rows)
+        })
+        .await
+        .map_err(|e| format!("DB error: {e:?}"))?;
     Ok(commands)
 }
 
 #[tauri::command]
 async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), String> {
-    let db_path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let conn = Connection::open(db_path).context("open sqlite clear commands")?;
-        configure_sqlite(&conn).context("configure sqlite clear commands")?;
-        conn.execute(
-            "DELETE FROM tool_call WHERE workspace_id = ?1",
-            params!["default"],
-        )
-        .context("delete tool_calls")?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))?
-    .map_err(|e| format!("DB error: {e:?}"))?;
+    state
+        .db_rw
+        .call(|conn| {
+            conn.execute(
+                "DELETE FROM tool_call WHERE workspace_id = ?1",
+                params!["default"],
+            )
+            .context("delete tool_calls")
+        })
+        .await
+        .map_err(|e| format!("DB error: {e:?}"))?;
     Ok(())
 }
 
@@ -549,110 +546,104 @@ async fn delete_window_commands(
     state: State<'_, AppState>,
     window_id: String,
 ) -> Result<(), String> {
-    let db_path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let mut conn = Connection::open(db_path).context("open sqlite delete window commands")?;
-        configure_sqlite(&conn).context("configure sqlite delete window commands")?;
-        // Try JSON1-powered delete; fallback to manual filter if JSON1 is unavailable.
-        let sql = "DELETE FROM tool_call
-             WHERE workspace_id = ?1
-             AND (
-                 (tool = 'window.create' AND json_extract(args_json, '$.id') = ?2)
-                 OR json_extract(args_json, '$.windowId') = ?2
-             )";
-        match conn.execute(sql, params!["default", window_id.clone()]) {
-            Ok(_) => Ok(()),
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such function: json_extract") => {
-                // Fallback: fetch and filter in Rust.
-                let mut stmt = conn
-                    .prepare("SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1")
-                    .context("prepare select for manual delete")?;
-                let rows = stmt
-                    .query_map(params!["default"], |row| {
-                        let id: String = row.get(0)?;
-                        let tool: String = row.get(1)?;
-                        let args_json: String = row.get(2)?;
-                        Ok((id, tool, args_json))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                // Ensure stmt is dropped before starting a transaction to avoid overlapping borrows.
-                drop(stmt);
-                let mut to_delete: Vec<String> = Vec::new();
-                for (id, tool, args_json) in rows.into_iter() {
-                    let parsed: serde_json::Value = serde_json::from_str(&args_json).unwrap_or(serde_json::json!({}));
-                    let id_match = if tool == "window.create" {
-                        parsed.get("id").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
-                    } else {
-                        parsed.get("windowId").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
-                    };
-                    if id_match { to_delete.push(id); }
-                }
-                if !to_delete.is_empty() {
-                    let tx = conn.transaction()?;
-                    for id in to_delete {
-                        tx.execute("DELETE FROM tool_call WHERE id = ?1", params![id])?;
+    state
+        .db_rw
+        .call(move |conn| {
+            // Try JSON1-powered delete; fallback to manual filter if JSON1 is unavailable.
+            let sql = "DELETE FROM tool_call
+                 WHERE workspace_id = ?1
+                 AND (
+                     (tool = 'window.create' AND json_extract(args_json, '$.id') = ?2)
+                     OR json_extract(args_json, '$.windowId') = ?2
+                 )";
+            match conn.execute(sql, params!["default", window_id.clone()]) {
+                Ok(_) => Ok(()),
+                Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such function: json_extract") => {
+                    let mut stmt = conn
+                        .prepare("SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1")
+                        .context("prepare select for manual delete")?;
+                    let rows = stmt
+                        .query_map(params!["default"], |row| {
+                            let id: String = row.get(0)?;
+                            let tool: String = row.get(1)?;
+                            let args_json: String = row.get(2)?;
+                            Ok((id, tool, args_json))
+                        })?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    drop(stmt);
+                    let mut to_delete: Vec<String> = Vec::new();
+                    for (id, tool, args_json) in rows.into_iter() {
+                        let parsed: serde_json::Value = serde_json::from_str(&args_json)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                        let id_match = if tool == "window.create" {
+                            parsed.get("id").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
+                        } else {
+                            parsed.get("windowId").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
+                        };
+                        if id_match { to_delete.push(id); }
                     }
-                    tx.commit()?;
+                    if !to_delete.is_empty() {
+                        let tx = conn.transaction()?;
+                        for id in to_delete {
+                            tx.execute("DELETE FROM tool_call WHERE id = ?1", params![id])?;
+                        }
+                        tx.commit()?;
+                    }
+                    Ok(())
                 }
-                Ok(())
+                Err(e) => Err::<(), anyhow::Error>(e.into()),
             }
-            Err(e) => Err(e.into()),
-        }
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))?
-    .map_err(|e| format!("DB error: {e:?}"))?;
+        })
+        .await
+        .map_err(|e| format!("DB error: {e:?}"))?;
     Ok(())
 }
 
 #[tauri::command]
 async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePayload>, String> {
-    let db_path = state.db_path.clone();
-    let windows = tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(db_path).context("open sqlite load workspace")?;
-        configure_sqlite(&conn).context("configure sqlite load workspace")?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
-                 COALESCE(height, 480), COALESCE(z_index, 0)
-                 FROM window WHERE workspace_id = ?1 ORDER BY z_index ASC, created_at ASC",
-            )
-            .context("prepare window select")?;
-        let rows = stmt
-            .query_map(params!["default"], |row| {
-                Ok(WindowStatePayload {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    x: row.get::<_, f64>(2)?,
-                    y: row.get::<_, f64>(3)?,
-                    width: row.get::<_, f64>(4)?,
-                    height: row.get::<_, f64>(5)?,
-                    z_index: row.get::<_, i64>(6)?,
-                    content: None,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok::<_, anyhow::Error>(if rows.is_empty() {
-            vec![WindowStatePayload {
-                id: uuid::Uuid::new_v4().to_string(),
-                title: "Welcome".into(),
-                x: 60.0,
-                y: 60.0,
-                width: 720.0,
-                height: 420.0,
-                z_index: 0,
-                content: Some(
-                    "<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>".into(),
-                ),
-            }]
-        } else {
-            rows
+    let windows = state
+        .db_ro
+        .call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
+                     COALESCE(height, 480), COALESCE(z_index, 0)
+                     FROM window WHERE workspace_id = ?1 ORDER BY z_index ASC, created_at ASC",
+                )
+                .context("prepare window select")?;
+            let rows = stmt
+                .query_map(params!["default"], |row| {
+                    Ok(WindowStatePayload {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        x: row.get::<_, f64>(2)?,
+                        y: row.get::<_, f64>(3)?,
+                        width: row.get::<_, f64>(4)?,
+                        height: row.get::<_, f64>(5)?,
+                        z_index: row.get::<_, i64>(6)?,
+                        content: None,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, anyhow::Error>(if rows.is_empty() {
+                vec![WindowStatePayload {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    title: "Welcome".into(),
+                    x: 60.0,
+                    y: 60.0,
+                    width: 720.0,
+                    height: 420.0,
+                    z_index: 0,
+                    content: Some(
+                        "<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>".into(),
+                    ),
+                }]
+            } else {
+                rows
+            })
         })
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))?
-    .map_err(|e| format!("DB error: {e:?}"))?;
+        .await
+        .map_err(|e| format!("DB error: {e:?}"))?;
 
     Ok(windows)
 }
@@ -663,48 +654,46 @@ async fn save_workspace(
     state: State<'_, AppState>,
     windows: Vec<WindowStatePayload>,
 ) -> Result<(), String> {
-    let db_path = state.db_path.clone();
-    let save_res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let mut conn = Connection::open(db_path).context("open sqlite save workspace")?;
-        configure_sqlite(&conn).context("configure sqlite save workspace")?;
-        let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM window WHERE workspace_id = ?1",
-            params!["default"],
-        )?;
-        let now = Utc::now().timestamp();
-        for (index, win) in windows.iter().enumerate() {
-            let z_index = if win.z_index < 0 {
-                index as i64
-            } else {
-                win.z_index.max(index as i64)
-            };
+    let save_res = state
+        .db_rw
+        .call(move |conn| {
+            let tx = conn.transaction()?;
             tx.execute(
-                "INSERT INTO window (id, workspace_id, title, size, x, y, width, height, z_index, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-                params![
-                    win.id,
-                    "default",
-                    &win.title,
-                    derive_size_token(win.width, win.height),
-                    win.x,
-                    win.y,
-                    win.width,
-                    win.height,
-                    z_index,
-                    now,
-                ],
+                "DELETE FROM window WHERE workspace_id = ?1",
+                params!["default"],
             )?;
-        }
-        tx.execute(
-            "UPDATE workspace SET updated_at = ?1 WHERE id = ?2",
-            params![now, "default"],
-        )?;
-        tx.commit()?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))?;
+            let now = Utc::now().timestamp();
+            for (index, win) in windows.iter().enumerate() {
+                let z_index = if win.z_index < 0 {
+                    index as i64
+                } else {
+                    win.z_index.max(index as i64)
+                };
+                tx.execute(
+                    "INSERT INTO window (id, workspace_id, title, size, x, y, width, height, z_index, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                    params![
+                        win.id,
+                        "default",
+                        &win.title,
+                        derive_size_token(win.width, win.height),
+                        win.x,
+                        win.y,
+                        win.width,
+                        win.height,
+                        z_index,
+                        now,
+                    ],
+                )?;
+            }
+            tx.execute(
+                "UPDATE workspace SET updated_at = ?1 WHERE id = ?2",
+                params![now, "default"],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await;
 
     match save_res {
         Ok(_) => {
@@ -1825,8 +1814,34 @@ fn main() {
 
     let db_path = DB_PATH.clone();
 
+    // Initialize resident async SQLite connections (one writer, one read-only)
+    let db_rw = tauri::async_runtime::block_on(AsyncConn::open(&db_path))
+        .expect("open sqlite rw connection");
+    let db_ro = tauri::async_runtime::block_on(AsyncConn::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ))
+    .expect("open sqlite ro connection");
+    // Configure connections once on startup
+    tauri::async_runtime::block_on(async {
+        db_rw
+            .call(|c| crate::configure_sqlite(c))
+            .await
+            .expect("configure sqlite rw");
+        db_ro
+            .call(|c| crate::configure_sqlite(c))
+            .await
+            .expect("configure sqlite ro");
+        // Best-effort hygiene
+        let _ = db_rw
+            .call(|c| c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);"))
+            .await;
+    });
+
     let state = AppState {
         db_path: db_path.clone(),
+        db_ro,
+        db_rw,
         last_save_ok: RwLock::new(true),
         ollama_key: RwLock::new(None),
         use_direct_cloud: RwLock::new(true), // default to cloud mode
@@ -2148,22 +2163,21 @@ async fn health_quick_check(app: tauri::AppHandle) -> Result<serde_json::Value, 
 
 async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<serde_json::Value> {
     let state: State<'_, AppState> = app.state();
-    let db_path = state.db_path.clone();
-    let status = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        let conn = Connection::open(db_path).context("open sqlite for quick_check")?;
-        configure_sqlite(&conn).context("configure sqlite for quick_check")?;
-        let mut stmt = conn
-            .prepare("PRAGMA quick_check")
-            .context("prepare quick_check")?;
-        let mut rows = stmt.query([]).context("exec quick_check")?;
-        let mut results = Vec::new();
-        while let Some(row) = rows.next()? {
-            let s: String = row.get(0)?;
-            results.push(s);
-        }
-        Ok(results.join(", "))
-    })
-    .await??;
+    let status = state
+        .db_ro
+        .call(|conn| {
+            let mut stmt = conn
+                .prepare("PRAGMA quick_check")
+                .context("prepare quick_check")?;
+            let mut rows = stmt.query([]).context("exec quick_check")?;
+            let mut results = Vec::new();
+            while let Some(row) = rows.next()? {
+                let s: String = row.get(0)?;
+                results.push(s);
+            }
+            Ok::<_, anyhow::Error>(results.join(", "))
+        })
+        .await?;
 
     let ok = status.to_lowercase().contains("ok");
     if !ok {
@@ -2181,19 +2195,17 @@ async fn clear_compute_cache(
 ) -> Result<(), String> {
     let ws = workspace_id.unwrap_or_else(|| "default".into());
     let state: State<'_, AppState> = app.state();
-    let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let conn = Connection::open(path).context("open sqlite for clear_compute_cache")?;
-        configure_sqlite(&conn).context("configure sqlite for clear_compute_cache")?;
-        conn.execute(
-            "DELETE FROM compute_cache WHERE workspace_id = ?1",
-            params![ws],
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("{e}"))?
-    .map_err(|e| format!("{e:?}"))
+    state
+        .db_rw
+        .call(move |conn| {
+            conn.execute(
+                "DELETE FROM compute_cache WHERE workspace_id = ?1",
+                params![ws],
+            )
+            .context("clear compute_cache")
+        })
+        .await
+        .map_err(|e| format!("{e:?}"))
 }
 
 #[tauri::command]
@@ -2202,24 +2214,22 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
     if *state.safe_mode.read().await {
         return Ok(());
     }
-    let db_path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let conn = Connection::open(db_path).context("open sqlite for checkpoint")?;
-        configure_sqlite(&conn).context("configure sqlite for checkpoint")?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
-            [],
-        )?;
-        let now = Utc::now().timestamp();
-        conn.execute(
-            "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
-            params![hash, now],
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("{e}"))?
-    .map_err(|e| format!("{e:?}"))
+    state
+        .db_rw
+        .call(move |conn| {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
+                [],
+            )?;
+            let now = Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
+                params![hash, now],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("{e:?}"))
 }
 
 #[tauri::command]
@@ -2229,21 +2239,20 @@ async fn determinism_probe(
     recomputed_hash: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let state: State<'_, AppState> = app.state();
-    let db_path = state.db_path.clone();
-    let samples = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<String>> {
-        let conn = Connection::open(db_path).context("open sqlite for determinism probe")?;
-        configure_sqlite(&conn).context("configure sqlite for determinism probe")?;
-        let mut stmt = conn
-            .prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")
-            .context("prepare select checkpoints")?;
-        let rows = stmt
-            .query_map(params![n as i64], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
-    .await
-    .map_err(|e| format!("{e}"))?
-    .map_err(|e| format!("{e:?}"))?;
+    let limit = n as i64;
+    let samples = state
+        .db_ro
+        .call(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")
+                .context("prepare select checkpoints")?;
+            let rows = stmt
+                .query_map(params![limit], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, anyhow::Error>(rows)
+        })
+        .await
+        .map_err(|e| format!("{e:?}"))?;
 
     let mut drift = false;
     if let Some(current) = recomputed_hash {
@@ -2431,20 +2440,17 @@ async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
 #[tauri::command]
 async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let state: State<'_, AppState> = app.state();
-    let db_path = state.db_path.clone();
     let logs_dir = LOGS_DIR.clone();
     let integrity = reindex_and_integrity(&app).await.unwrap_or(false);
-    let counts = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
-        let conn = Connection::open(db_path)?;
-        configure_sqlite(&conn)?;
-        let tool_calls: i64 = conn.query_row("SELECT COUNT(*) FROM tool_call", [], |r| r.get(0))?;
-        let cache_rows: i64 =
-            conn.query_row("SELECT COUNT(*) FROM compute_cache", [], |r| r.get(0))?;
-        Ok(serde_json::json!({"tool_call": tool_calls, "compute_cache": cache_rows}))
-    })
-    .await
-    .map_err(|e| format!("{e}"))?
-    .map_err(|e| format!("{e:?}"))?;
+    let counts = state
+        .db_ro
+        .call(|conn| {
+            let tool_calls: i64 = conn.query_row("SELECT COUNT(*) FROM tool_call", [], |r| r.get(0))?;
+            let cache_rows: i64 = conn.query_row("SELECT COUNT(*) FROM compute_cache", [], |r| r.get(0))?;
+            Ok::<_, anyhow::Error>(serde_json::json!({"tool_call": tool_calls, "compute_cache": cache_rows}))
+        })
+        .await
+        .map_err(|e| format!("{e:?}"))?;
 
     let bundle = serde_json::json!({
         "integrity_ok": integrity,
@@ -2466,34 +2472,38 @@ async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, Str
 
 async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
     let state: State<'_, AppState> = app.state();
-    let db_path = state.db_path.clone();
-    let status = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        let conn = Connection::open(db_path)?;
-        configure_sqlite(&conn)?;
-        conn.execute("REINDEX", [])?;
-        let mut stmt = conn.prepare("PRAGMA integrity_check")?;
-        let mut rows = stmt.query([])?;
-        let mut results = Vec::new();
-        while let Some(row) = rows.next()? {
-            let s: String = row.get(0)?;
-            results.push(s);
-        }
-        Ok(results.join(", "))
-    })
-    .await??;
+    let status = state
+        .db_rw
+        .call(|conn| {
+            conn.execute("REINDEX", [])?;
+            let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+            let mut rows = stmt.query([])?;
+            let mut results = Vec::new();
+            while let Some(row) = rows.next()? {
+                let s: String = row.get(0)?;
+                results.push(s);
+            }
+            Ok::<_, anyhow::Error>(results.join(", "))
+        })
+        .await?;
     Ok(status.to_lowercase().contains("ok"))
 }
 
 async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64>> {
     let state: State<'_, AppState> = app.state();
-    let db_path = state.db_path.clone();
-    let ts = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<i64>> {
-        let conn = Connection::open(db_path)?;
-        configure_sqlite(&conn)?;
-        conn.execute("CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)", [])?;
-        let ts: Option<i64> = conn.query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0)).optional()?;
-        Ok(ts)
-    }).await??;
+    let ts = state
+        .db_rw
+        .call(|conn| {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
+                [],
+            )?;
+            let ts: Option<i64> = conn
+                .query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0))
+                .optional()?;
+            Ok::<_, anyhow::Error>(ts)
+        })
+        .await?;
     Ok(ts)
 }
 
@@ -2504,17 +2514,16 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
     }
     let since = ts_opt.unwrap();
     let state: State<'_, AppState> = app.state();
-    let db_path = state.db_path.clone();
-    let deleted = tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
-        let conn = Connection::open(db_path)?;
-        configure_sqlite(&conn)?;
-        // Drop trailing incomplete rows after the last checkpoint
-        let n = conn.execute(
-            "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
-            params![since],
-        )?;
-        Ok(n as i64)
-    }).await??;
+    let deleted = state
+        .db_rw
+        .call(move |conn| {
+            let n = conn.execute(
+                "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
+                params![since],
+            )?;
+            Ok::<_, anyhow::Error>(n as i64)
+        })
+        .await?;
     Ok(deleted)
 }
 
@@ -2525,18 +2534,16 @@ async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i
     }
     let since = ts_opt.unwrap();
     let state: State<'_, AppState> = app.state();
-    let db_path = state.db_path.clone();
-    let truncated = tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
-        let conn = Connection::open(db_path)?;
-        configure_sqlite(&conn)?;
-        // Truncate tool_call beyond checkpoint
-        let n = conn.execute(
-            "DELETE FROM tool_call WHERE created_at > ?1",
-            params![since],
-        )?;
-        Ok(n as i64)
-    })
-    .await??;
+    let truncated = state
+        .db_rw
+        .call(move |conn| {
+            let n = conn.execute(
+                "DELETE FROM tool_call WHERE created_at > ?1",
+                params![since],
+            )?;
+            Ok::<_, anyhow::Error>(n as i64)
+        })
+        .await?;
     Ok(truncated)
 }
 
