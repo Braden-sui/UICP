@@ -166,7 +166,7 @@ Troubleshooting
 Drift Guard
 -----------
 
-- CI workflow `.github/workflows/compute-ci.yml` includes a `Regenerate WIT bindings` step that runs `npm run gen:io` followed by `git diff --exit-code src/compute/generated`, ensuring ABI changes are synchronized with generated bindings before merge.
+- CI workflow `.github/workflows/compute-ci.yml` includes a `Regenerate WIT bindings` step that runs `npm run gen:io` followed by `git diff --exit-code src/compute/types.gen.ts`, ensuring ABI changes are synchronized with generated bindings before merge.
 
 
 

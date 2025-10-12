@@ -2198,16 +2198,13 @@ mod with_runtime {
             let engine = build_engine().expect("engine");
             let mut linker: Linker<Ctx> = Linker::new(&engine);
             add_wasi_and_host(&mut linker).expect("wasi add ok");
-            // Positive check: logging is linked (duplicate registration should fail)
-            {
-                let mut inst = linker
-                    .instance("wasi:logging/logging")
-                    .expect("logging namespace available");
-                let dup = inst.func_wrap("log", host_wasi_log);
-                assert!(dup.is_err(), "wasi:logging/logging must already be linked");
-            }
+            // Positive: logging already linked; creating a new instance should fail
+            assert!(
+                linker.instance("wasi:logging/logging").is_err(),
+                "wasi:logging/logging should already be linked"
+            );
 
-            // Best-effort negative checks: ensure we did not pre-populate HTTP or sockets namespaces.
+            // Negative checks: ensure HTTP and sockets namespaces are not pre-linked.
             // Creating a placeholder function should succeed if the namespace was not pre-linked.
             {
                 let mut http = linker

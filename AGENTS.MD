@@ -71,7 +71,6 @@ leave helpful annotations in the code for the human and future agents to read
 * Every change carries tests. New behavior without tests is a reject.
 * No hidden magic. Every major decision leaves an audit trail: rationale, invariants, blast radius, rollback.
 
-kee
 
 ## 2) Operating modes
 

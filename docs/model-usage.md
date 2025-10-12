@@ -9,17 +9,17 @@
 - Keys are user-provided and stored locally in `.env` (MVP).
 
 ## Default Models
-- Primary: `qwen3-coder:480b-cloud`
-- Fallback (post-MVP): `qwen3-coder:480b`
+- Planner: `deepseek-v3.1:671b` (profile: `deepseek`)
+- Actor: `qwen3-coder:480b` (profile: `qwen`)
 
 ## Example Request (Python, from docs)
 ```python
 headers = {
-    'Authorization': '<api key>'
+    'Authorization': f"Bearer {os.environ['OLLAMA_API_KEY']}"
 }
 
 payload = {
-    "model": "qwen3-coder:480b-cloud",
+    "model": "qwen3-coder:480b",
     "messages": [
         {"role": "system", "content": "You are Gui, an AI UI conductor."},
         {"role": "user", "content": "Create a dashboard"}

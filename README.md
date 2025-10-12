@@ -38,9 +38,7 @@ npm run dev            # Vite dev server (web)
 npm run tauri:dev
 ```
 
-The dev server expects the Tauri shell to proxy at `http://localhost:1420`. When running standalone, open the Vite dev URL (`http://localhost:5173`).
-When running standalone (without Tauri), this project still uses port `1420` as configured in `uicp/vite.config.ts`.
-Open `http://127.0.0.1:1420`.
+The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.ts`). When running standalone (without Tauri), open `http://127.0.0.1:1420`.
 
 ## Project Structure
 

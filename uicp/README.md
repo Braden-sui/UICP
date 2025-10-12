@@ -10,7 +10,7 @@ npm install
 npm run dev
 ```
 
-The Vite dev server defaults to `http://localhost:5173`. Tauri uses the same build when running `npm run tauri:dev`.
+The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Tauri uses the same build when running `npm run tauri:dev`.
 
 ## Scripts
 
