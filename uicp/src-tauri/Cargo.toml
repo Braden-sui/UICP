@@ -5,6 +5,7 @@ description = "UICP Local-First Desktop App"
 authors = ["UICP Team"]
 edition = "2021"
 default-run = "uicp"
+license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"

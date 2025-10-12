@@ -170,3 +170,7 @@ See also: `docs/INDEX.md` for onboarding and reading order.
 
 - Never commit secrets. Use `.env` locally; `OLLAMA_API_KEY` is required for cloud calls when enabled.
 - All planner HTML is sanitized before DOM insertion.
+
+## License
+
+This project is licensed under the Apache License, Version 2.0. See the `LICENSE` file at the repository root for details.
