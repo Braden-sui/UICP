@@ -79,14 +79,16 @@ Compute modules and runtime
 | `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window. |
 | `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window. |
 
-Configuration (.env)
+### Configuration (.env)
+
 - `USE_DIRECT_CLOUD` — `1` to use Ollama Cloud, `0` for local daemon
 - `OLLAMA_API_KEY` — required when `USE_DIRECT_CLOUD=1`
 - `PLANNER_MODEL` — default planner model id (e.g., `deepseek-v3.1:671b`)
 - `ACTOR_MODEL` — default actor model id (e.g., `qwen3-coder:480b`)
-See `.env.example` at repo root.
+- See `.env.example` at repo root.
 
-Environment Snapshot
+### Environment Snapshot
+
 - Included by default in planner/actor prompts; no flag required. It lists agent state and open windows (with a trimmed DOM summary) to help models target updates instead of recreating UI.
 - Size budget: target ~16 KB (hard cap 32 KB). Truncation rules are documented in `docs/architecture.md` (drop excess windows; no file contents; deterministic ordering).
 
@@ -98,6 +100,32 @@ Environment Snapshot
 - **Persistence** – Selections persist via Zustand storage (`uicp-app` key) and apply to the next intent immediately.
 - **Cloud endpoint** – Uses Ollama Cloud native API: `POST https://ollama.com/api/chat` (SSE streaming). Local daemon uses OpenAI-compatible `/v1/chat/completions`.
 - **Model IDs** – Use colon tags (e.g., `deepseek-v3.1:671b`, `qwen3-coder:480b`). Ensure your Ollama Cloud API key has access to the selected models.
+
+## Built-in Developer Tools
+
+UICP includes debugging and observability tools built directly into the desktop.
+
+### Logs Panel
+
+- **Real-time event stream** - Chat messages, backend debug events, and system telemetry
+- **Event aggregation** - Streaming deltas are aggregated to reduce noise
+- **Access**: Desktop shortcut or menu bar
+
+### Metrics Panel
+
+- **Intent telemetry** - Recent planner/actor execution with timing and status
+- **Compute job summary** - Active, completed, failed, and cached job counts
+- **Devtools analytics** - UI-side performance metrics
+- **Access**: Desktop shortcut or menu bar
+
+### Agent Settings
+
+- **Model selection** - Switch planner/actor profiles (DeepSeek, Kimi, Qwen)
+- **Modules info** - View WebAssembly modules directory and count
+- **Cache control** - Clear workspace-scoped compute cache
+- **Module verification** - Validate installed WASM modules
+
+These tools provide visibility into the system's operation and help with debugging during development.
 
 ## Architecture
 

@@ -119,7 +119,14 @@ async function main() {
     const base = e.taskName.replace(/\./g, '-');
     const inName = pascal(`${base}-input`);
     const outName = pascal(`${base}-output`);
-    const line = '  | { task: `' + e.taskName + '@${string}`; input: ' + inName + '; output: ' + outName + ' }';
+    const line =
+      '  | { task: `' +
+      e.taskName +
+      '@${string}`; input: ' +
+      inName +
+      '; output: ' +
+      outName +
+      ' }';
     outSrc += (i === 0 ? '' : '\n') + line;
   }
   outSrc += `;\n`;
@@ -128,5 +135,3 @@ async function main() {
 }
 
 await main();
-
-

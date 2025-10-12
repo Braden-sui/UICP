@@ -1,24 +1,21 @@
 #![cfg(any(test, feature = "compute_harness"))]
 
-use crate::{
-    ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR,
-};
+use crate::{ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR};
 use anyhow::{Context, Result};
+use reqwest::Client;
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
-use reqwest::Client;
-use tokio::sync::{RwLock, Semaphore};
 use tauri::{
     test::{mock_builder, mock_context, noop_assets, MockRuntime},
     Listener, Manager,
 };
 use tempfile::TempDir;
+use tokio::sync::{RwLock, Semaphore};
 use tokio_rusqlite::Connection as AsyncConn;
- 
 
 /// Test harness that provisions an in-memory (tempdir-backed) app instance capable of running
 /// real compute jobs against the Wasm runtime.
@@ -57,7 +54,9 @@ impl ComputeTestHarness {
         })
     }
 
-    fn build_app(data_dir: &Path) -> Result<(tauri::App<MockRuntime>, tauri::WebviewWindow<MockRuntime>)> {
+    fn build_app(
+        data_dir: &Path,
+    ) -> Result<(tauri::App<MockRuntime>, tauri::WebviewWindow<MockRuntime>)> {
         std::fs::create_dir_all(data_dir).context("create data dir root")?;
         std::env::set_var("UICP_DATA_DIR", data_dir);
         if std::env::var("UICP_MODULES_DIR").is_err() {
@@ -81,30 +80,34 @@ impl ComputeTestHarness {
         tauri::async_runtime::block_on(async {
             // Writer: full configuration (unwrap both layers: tokio_rusqlite and rusqlite)
             db_rw
-                .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                    use std::time::Duration;
-                    c.busy_timeout(Duration::from_millis(5_000))
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    c.pragma_update(None, "journal_mode", "WAL")
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    c.pragma_update(None, "synchronous", "NORMAL")
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    c.pragma_update(None, "foreign_keys", "ON")
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    Ok(())
-                })
+                .call(
+                    |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                        use std::time::Duration;
+                        c.busy_timeout(Duration::from_millis(5_000))
+                            .map_err(tokio_rusqlite::Error::from)?;
+                        c.pragma_update(None, "journal_mode", "WAL")
+                            .map_err(tokio_rusqlite::Error::from)?;
+                        c.pragma_update(None, "synchronous", "NORMAL")
+                            .map_err(tokio_rusqlite::Error::from)?;
+                        c.pragma_update(None, "foreign_keys", "ON")
+                            .map_err(tokio_rusqlite::Error::from)?;
+                        Ok(())
+                    },
+                )
                 .await
                 .expect("configure sqlite rw");
             // Reader: non-writing pragmas only
             db_ro
-                .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                    use std::time::Duration;
-                    c.busy_timeout(Duration::from_millis(5_000))
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    c.pragma_update(None, "foreign_keys", "ON")
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    Ok(())
-                })
+                .call(
+                    |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                        use std::time::Duration;
+                        c.busy_timeout(Duration::from_millis(5_000))
+                            .map_err(tokio_rusqlite::Error::from)?;
+                        c.pragma_update(None, "foreign_keys", "ON")
+                            .map_err(tokio_rusqlite::Error::from)?;
+                        Ok(())
+                    },
+                )
                 .await
                 .expect("configure sqlite ro");
         });
@@ -183,7 +186,8 @@ impl ComputeTestHarness {
                     .map(|id| id == handler_job_id)
                     .unwrap_or(false)
                 {
-                    if let Some(sender) = handler_tx.lock().ok().and_then(|mut guard| guard.take()) {
+                    if let Some(sender) = handler_tx.lock().ok().and_then(|mut guard| guard.take())
+                    {
                         let _ = sender.send(value);
                     }
                 }
@@ -191,7 +195,9 @@ impl ComputeTestHarness {
         });
 
         let state: tauri::State<'_, AppState> = self.app.state();
-        if let Err(err) = crate::commands::compute_call(self.app.handle().clone(), state, spec.clone()).await {
+        if let Err(err) =
+            crate::commands::compute_call(self.app.handle().clone(), state, spec.clone()).await
+        {
             self.app.unlisten(listener_id);
             return Err(anyhow::anyhow!(err));
         }

@@ -5,19 +5,19 @@ pub use policy::{
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
-pub mod registry;
 pub mod compute;
 pub mod compute_cache;
 pub mod core;
+pub mod registry;
 
 pub use core::{
-    AppState, DATA_DIR, FILES_DIR, LOGS_DIR, files_dir_path, configure_sqlite, init_database,
-    ensure_default_workspace, emit_or_log, remove_compute_job,
+    configure_sqlite, emit_or_log, ensure_default_workspace, files_dir_path, init_database,
+    remove_compute_job, AppState, DATA_DIR, FILES_DIR, LOGS_DIR,
 };
 
 pub mod commands;
 pub use commands::{
-    compute_call, compute_cancel, copy_into_files, clear_compute_cache, get_modules_info,
+    clear_compute_cache, compute_call, compute_cancel, copy_into_files, get_modules_info,
     load_workspace, save_workspace,
 };
 use serde_json::Value;
@@ -50,7 +50,11 @@ fn canonicalize_for_key(value: &Value) -> String {
                 out.push('[');
                 let mut first = true;
                 for v in arr {
-                    if !first { out.push(','); } else { first = false; }
+                    if !first {
+                        out.push(',');
+                    } else {
+                        first = false;
+                    }
                     write(v, out);
                 }
                 out.push(']');
@@ -61,7 +65,11 @@ fn canonicalize_for_key(value: &Value) -> String {
                 let mut keys: Vec<_> = map.keys().collect();
                 keys.sort();
                 for k in keys {
-                    if !first { out.push(','); } else { first = false; }
+                    if !first {
+                        out.push(',');
+                    } else {
+                        first = false;
+                    }
                     write(&Value::String(k.to_string()), out);
                     out.push(':');
                     write(map.get(k).unwrap(), out);
@@ -75,7 +83,11 @@ fn canonicalize_for_key(value: &Value) -> String {
     out
 }
 
-#[cfg(any(all(feature = "wasm_compute", feature = "uicp_wasi_enable"), test, feature = "compute_harness"))]
+#[cfg(any(
+    all(feature = "wasm_compute", feature = "uicp_wasi_enable"),
+    test,
+    feature = "compute_harness"
+))]
 pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
     let canonical = canonicalize_for_key(input);
     let mut hasher = Sha2_256::new();
@@ -88,10 +100,18 @@ pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-#[cfg(any(all(feature = "wasm_compute", feature = "uicp_wasi_enable"), test, feature = "compute_harness"))]
+#[cfg(any(
+    all(feature = "wasm_compute", feature = "uicp_wasi_enable"),
+    test,
+    feature = "compute_harness"
+))]
 mod harness;
 
-#[cfg(any(all(feature = "wasm_compute", feature = "uicp_wasi_enable"), test, feature = "compute_harness"))]
+#[cfg(any(
+    all(feature = "wasm_compute", feature = "uicp_wasi_enable"),
+    test,
+    feature = "compute_harness"
+))]
 pub mod test_support {
     pub use crate::harness::ComputeTestHarness;
 }

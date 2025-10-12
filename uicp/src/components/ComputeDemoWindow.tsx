@@ -5,9 +5,18 @@ import { createId } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { invoke } from '@tauri-apps/api/core';
 
-// Dialog plugin is optional. Provide a stub that fails gracefully if called.
-const openDialog = async (_opts: { multiple?: boolean }): Promise<string | null> => {
-  throw new Error('Dialog plugin unavailable');
+// Try to use Tauri dialog plugin if available; otherwise fail gracefully.
+const openDialog = async (opts: { multiple?: boolean }): Promise<string | null> => {
+  try {
+    // Dynamically import so browser-only builds don’t fail.
+    const mod = await import('@tauri-apps/plugin-dialog');
+    const sel = await mod.open({ multiple: !!opts.multiple, directory: false });
+    if (typeof sel === 'string') return sel;
+    if (Array.isArray(sel) && sel.length > 0 && typeof sel[0] === 'string') return sel[0] as string;
+    return null;
+  } catch {
+    throw new Error('Dialog plugin unavailable');
+  }
 };
 
 type DemoResult = { ok: boolean; message: string };

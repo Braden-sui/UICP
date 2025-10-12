@@ -35,6 +35,31 @@ export async function initializeTauriBridge() {
   }
   started = true;
 
+  // Expose compute helpers immediately to avoid races with async listener setup.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).uicpComputeCall = async (spec: JobSpec) => {
+    try {
+      pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
+      prunePending();
+      useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
+      const finalSpec = { ...spec, workspaceId: (spec as any).workspaceId ?? 'default' } as JobSpec;
+      await invoke('compute_call', { spec: finalSpec });
+    } catch (error) {
+      pendingBinds.delete(spec.jobId);
+      useComputeStore.getState().markFinal(spec.jobId, false, undefined, undefined, ComputeError.CapabilityDenied);
+      throw error;
+    }
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).uicpComputeCancel = async (jobId: string) => {
+    try {
+      await invoke('compute_cancel', { jobId });
+    } catch {
+      // ignore cancellation errors
+    }
+  };
+
   // Dev-only: enable backend debug logs and mirror key events to DevTools
   if ((import.meta as any)?.env?.DEV) {
     try {
@@ -468,10 +493,10 @@ export async function initializeTauriBridge() {
     pendingBinds.delete(final.jobId);
   };
 
-  const setupTestComputeFallback = (
+  function setupTestComputeFallback(
     computeFn: (spec: JobSpec) => Promise<unknown>,
     cancelFn?: (jobId: string) => void,
-  ) => {
+  ) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).uicpComputeCall = async (spec: JobSpec) => {
       try {
@@ -501,33 +526,9 @@ export async function initializeTauriBridge() {
         // ignore cancellation stub errors
       }
     };
-  };
+  }
 
-  // Expose a helper for callers to submit jobs and remember bindings.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).uicpComputeCall = async (spec: JobSpec) => {
-    try {
-      pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
-      prunePending();
-      useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
-      const finalSpec = { ...spec, workspaceId: (spec as any).workspaceId ?? 'default' } as JobSpec;
-      await invoke('compute_call', { spec: finalSpec });
-    } catch (error) {
-      pendingBinds.delete(spec.jobId);
-      useComputeStore.getState().markFinal(spec.jobId, false, undefined, undefined, ComputeError.CapabilityDenied);
-      throw error;
-    }
-  };
-
-  // Expose a helper to cancel a running compute job by id.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).uicpComputeCancel = async (jobId: string) => {
-    try {
-      await invoke('compute_cancel', { jobId });
-    } catch {
-      // ignore cancellation errors
-    }
-  };
+  // (uicpComputeCall / uicpComputeCancel already installed above)
 
   unsubs.push(
     await listen('compute.result.partial', (event) => {

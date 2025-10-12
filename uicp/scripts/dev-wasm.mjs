@@ -10,13 +10,21 @@ function withCargoInPath(baseEnv) {
   const cargoHome = env.CARGO_HOME || path.join(os.homedir(), '.cargo');
   const cargoBin = path.join(cargoHome, 'bin');
   const current = env[pathKey] || '';
-  const parts = current.split(sep).map((p) => p.trim()).filter(Boolean);
-  const hasCargo = parts.some((p) => (isWin ? p.toLowerCase() : p) === (isWin ? cargoBin.toLowerCase() : cargoBin));
+  const parts = current
+    .split(sep)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const hasCargo = parts.some(
+    (p) => (isWin ? p.toLowerCase() : p) === (isWin ? cargoBin.toLowerCase() : cargoBin),
+  );
   if (!hasCargo) env[pathKey] = current ? `${cargoBin}${sep}${current}` : cargoBin;
   return env;
 }
 
-const env = withCargoInPath({ ...process.env, UICP_MODULES_DIR: process.env.UICP_MODULES_DIR || 'src-tauri/modules' });
+const env = withCargoInPath({
+  ...process.env,
+  UICP_MODULES_DIR: process.env.UICP_MODULES_DIR || 'src-tauri/modules',
+});
 
 const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const child = spawn(npxCmd, ['tauri', 'dev'], { stdio: 'inherit', env });

@@ -4,19 +4,21 @@ use std::time::Duration;
 
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
-use tokio_rusqlite::Connection as AsyncConn;
 use sha2::{Digest, Sha256};
+use tokio_rusqlite::Connection as AsyncConn;
 
 async fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let conn = AsyncConn::open(db_path).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(tokio_rusqlite::Error::from) })
-        .await?;
-    conn.call(|c| -> tokio_rusqlite::Result<()> { c.execute_batch(
-        r#"
+    conn.call(|c| -> tokio_rusqlite::Result<()> {
+        configure_sqlite(c).map_err(tokio_rusqlite::Error::from)
+    })
+    .await?;
+    conn.call(|c| -> tokio_rusqlite::Result<()> {
+        c.execute_batch(
+            r#"
         CREATE TABLE IF NOT EXISTS workspace (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -71,7 +73,10 @@ async fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             created_at INTEGER NOT NULL
         );
         "#,
-    ).map_err(Into::into) }).await?;
+        )
+        .map_err(Into::into)
+    })
+    .await?;
     Ok(())
 }
 
@@ -85,9 +90,10 @@ fn configure_sqlite(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 async fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
     let conn = AsyncConn::open(db_path).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(tokio_rusqlite::Error::from) })
-        .await?;
+    conn.call(|c| -> tokio_rusqlite::Result<()> {
+        configure_sqlite(c).map_err(tokio_rusqlite::Error::from)
+    })
+    .await?;
     let now = Utc::now().timestamp();
     conn
         .call(move |c| -> tokio_rusqlite::Result<()> {
@@ -112,9 +118,10 @@ async fn cmd_persist(db: &PathBuf, id: &str, tool: &str, args_json: &str) -> any
     init_database(db).await?; // idempotent
     ensure_default_workspace(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(tokio_rusqlite::Error::from) })
-        .await?;
+    conn.call(|c| -> tokio_rusqlite::Result<()> {
+        configure_sqlite(c).map_err(tokio_rusqlite::Error::from)
+    })
+    .await?;
     let id = id.to_string();
     let tool = tool.to_string();
     let args = args_json.to_string();
@@ -135,9 +142,10 @@ async fn cmd_persist(db: &PathBuf, id: &str, tool: &str, args_json: &str) -> any
 async fn cmd_log_hash(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(tokio_rusqlite::Error::from) })
-        .await?;
+    conn.call(|c| -> tokio_rusqlite::Result<()> {
+        configure_sqlite(c).map_err(tokio_rusqlite::Error::from)
+    })
+    .await?;
     let hex = conn
         .call(|c| -> tokio_rusqlite::Result<String> {
             let mut stmt = c
@@ -172,40 +180,42 @@ async fn cmd_log_hash(db: &PathBuf) -> anyhow::Result<i32> {
 }
 
 fn last_checkpoint_ts(conn: &rusqlite::Connection) -> rusqlite::Result<Option<i64>> {
-    conn
-        .query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0))
-        .optional()
+    conn.query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| {
+        r.get(0)
+    })
+    .optional()
 }
 
 async fn cmd_save_checkpoint(db: &PathBuf, hash: &str) -> anyhow::Result<i32> {
     init_database(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(tokio_rusqlite::Error::from) })
-        .await?;
+    conn.call(|c| -> tokio_rusqlite::Result<()> {
+        configure_sqlite(c).map_err(tokio_rusqlite::Error::from)
+    })
+    .await?;
     let hash = hash.to_string();
-    conn
-        .call(move |c| -> tokio_rusqlite::Result<()> {
-            let now = Utc::now().timestamp();
-            c.execute(
-                "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
-                params![hash, now],
-            )
-            .map(|_| ())
-            .map_err(Into::into)
-        })
-        .await?;
+    conn.call(move |c| -> tokio_rusqlite::Result<()> {
+        let now = Utc::now().timestamp();
+        c.execute(
+            "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
+            params![hash, now],
+        )
+        .map(|_| ())
+        .map_err(Into::into)
+    })
+    .await?;
     Ok(0)
 }
 
 async fn cmd_compact_log(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
+    conn.call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
         .await?;
     let since = conn
-        .call(|c| -> tokio_rusqlite::Result<Option<i64>> { last_checkpoint_ts(c).map_err(tokio_rusqlite::Error::from) })
+        .call(|c| -> tokio_rusqlite::Result<Option<i64>> {
+            last_checkpoint_ts(c).map_err(tokio_rusqlite::Error::from)
+        })
         .await?
         .unwrap_or(0);
     let deleted = conn
@@ -287,8 +297,7 @@ async fn main() {
 async fn cmd_materialize(db: &PathBuf, key: &str) -> anyhow::Result<i32> {
     init_database(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
+    conn.call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
         .await?;
     let key_s = key.to_string();
     let value: Option<String> = conn
@@ -316,8 +325,7 @@ async fn cmd_materialize(db: &PathBuf, key: &str) -> anyhow::Result<i32> {
 async fn cmd_count_missing(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
+    conn.call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
         .await?;
     let count: i64 = conn
         .call(|c| -> tokio_rusqlite::Result<i64> {
@@ -336,12 +344,13 @@ async fn cmd_count_missing(db: &PathBuf) -> anyhow::Result<i32> {
 async fn cmd_quick_check(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
+    conn.call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(Into::into) })
         .await?;
     let status: String = conn
         .call(|c| -> tokio_rusqlite::Result<String> {
-            let mut stmt = c.prepare("PRAGMA quick_check").map_err(tokio_rusqlite::Error::from)?;
+            let mut stmt = c
+                .prepare("PRAGMA quick_check")
+                .map_err(tokio_rusqlite::Error::from)?;
             let mut rows = stmt.query([]).map_err(tokio_rusqlite::Error::from)?;
             let mut results = Vec::new();
             while let Some(row) = rows.next().map_err(tokio_rusqlite::Error::from)? {
@@ -359,12 +368,15 @@ async fn cmd_quick_check(db: &PathBuf) -> anyhow::Result<i32> {
 async fn cmd_fk_check(db: &PathBuf) -> anyhow::Result<i32> {
     init_database(db).await?;
     let conn = AsyncConn::open(db).await?;
-    conn
-        .call(|c| -> tokio_rusqlite::Result<()> { configure_sqlite(c).map_err(tokio_rusqlite::Error::from) })
-        .await?;
+    conn.call(|c| -> tokio_rusqlite::Result<()> {
+        configure_sqlite(c).map_err(tokio_rusqlite::Error::from)
+    })
+    .await?;
     let violations: u64 = conn
         .call(|c| -> tokio_rusqlite::Result<u64> {
-            let mut stmt = c.prepare("PRAGMA foreign_key_check").map_err(tokio_rusqlite::Error::from)?;
+            let mut stmt = c
+                .prepare("PRAGMA foreign_key_check")
+                .map_err(tokio_rusqlite::Error::from)?;
             let mut rows = stmt.query([]).map_err(tokio_rusqlite::Error::from)?;
             let mut v = 0u64;
             while let Some(_row) = rows.next().map_err(tokio_rusqlite::Error::from)? {

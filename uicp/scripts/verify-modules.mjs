@@ -39,8 +39,17 @@ async function main() {
     try {
       const buf = await readFile(p);
       const hex = sha256hex(buf);
-      if (!entry.digest_sha256 || !entry.digest_sha256.toLowerCase || entry.digest_sha256.toLowerCase() !== hex) {
-        failures.push({ filename: entry.filename, reason: 'digest_mismatch', expected: entry.digest_sha256, actual: hex });
+      if (
+        !entry.digest_sha256 ||
+        !entry.digest_sha256.toLowerCase ||
+        entry.digest_sha256.toLowerCase() !== hex
+      ) {
+        failures.push({
+          filename: entry.filename,
+          reason: 'digest_mismatch',
+          expected: entry.digest_sha256,
+          actual: hex,
+        });
       }
     } catch (err) {
       failures.push({ filename: entry.filename, reason: 'missing', error: String(err) });
@@ -57,4 +66,3 @@ main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-

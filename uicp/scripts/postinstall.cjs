@@ -15,7 +15,7 @@ function ensureRollupNativeBinding() {
   }
   const entries = readdirSync(baseDir, { withFileTypes: true });
   const staging = entries.find(
-    (entry) => entry.isDirectory() && entry.name.startsWith('.rollup-win32-x64-msvc')
+    (entry) => entry.isDirectory() && entry.name.startsWith('.rollup-win32-x64-msvc'),
   );
   if (!staging) {
     return;
@@ -32,4 +32,3 @@ function ensureRollupNativeBinding() {
 }
 
 ensureRollupNativeBinding();
-

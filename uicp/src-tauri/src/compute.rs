@@ -14,9 +14,9 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use tokio::sync::OwnedSemaphorePermit;
 #[cfg(feature = "wasm_compute")]
 use tokio::sync::mpsc;
+use tokio::sync::OwnedSemaphorePermit;
 
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
@@ -255,7 +255,10 @@ mod helper_tests {
             capabilities: crate::ComputeCapabilitiesSpec::default(),
             replayable: true,
             workspace_id: "default".into(),
-            provenance: crate::ComputeProvenanceSpec { env_hash: "test-env".into(), agent_trace_id: None },
+            provenance: crate::ComputeProvenanceSpec {
+                env_hash: "test-env".into(),
+                agent_trace_id: None,
+            },
         }
     }
 
@@ -345,31 +348,30 @@ mod helper_tests {
 mod with_runtime {
     use super::*;
     use bytes::Bytes;
-    use ciborium::value::Value;
     use chrono::Utc;
+    use ciborium::value::Value;
+    use dashmap::DashMap;
+    use once_cell::sync::Lazy;
     use serde_json;
     use sha2::{Digest, Sha256};
+    use std::any::Any;
     use std::convert::TryFrom;
+    use std::io::Cursor;
     use std::sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     };
-    use std::any::Any;
-    use std::io::Cursor;
-    use once_cell::sync::Lazy;
-    use dashmap::DashMap;
+    use tokio::sync::mpsc::error::TryRecvError;
+    use tokio::time::{sleep, Duration as TokioDuration};
     use wasmtime::{
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
+    use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
         DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
         Subscribe, WasiCtx, WasiCtxBuilder, WasiView,
     };
-    use wasmtime_wasi::StdoutStream as WasiStdoutStream;
-    use tokio::time::{sleep, Duration as TokioDuration};
-    use tokio::sync::mpsc::error::TryRecvError;
-    
 
     const DEFAULT_FUEL: u64 = 1_000_000;
     const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
@@ -384,7 +386,7 @@ mod with_runtime {
     const AIMD_INC: f64 = 1.10; // increase factor
     const AIMD_DEC: f64 = 0.75; // decrease factor
     const WAITS_HI: u64 = 3; // waits per sample considered high
-    // Per-channel min/max bounds
+                             // Per-channel min/max bounds
     const RL_BYTES_MIN: usize = 64 * 1024; // 64 KiB/s
     const RL_BYTES_MAX: usize = 1024 * 1024; // 1 MiB/s (stdout/stderr)
     const LOGGER_BYTES_MIN: usize = 16 * 1024; // 16 KiB/s
@@ -461,7 +463,9 @@ mod with_runtime {
         fn emit_debug(&self, payload: serde_json::Value) {
             loop {
                 let tx = self.tx.lock().unwrap();
-                if tx.try_send(UiEvent::Debug(payload.clone())).is_ok() { break; }
+                if tx.try_send(UiEvent::Debug(payload.clone())).is_ok() {
+                    break;
+                }
                 drop(tx);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -469,7 +473,9 @@ mod with_runtime {
         fn emit_partial(&self, event: crate::ComputePartialEvent) {
             loop {
                 let tx = self.tx.lock().unwrap();
-                if tx.try_send(UiEvent::PartialEvent(event.clone())).is_ok() { break; }
+                if tx.try_send(UiEvent::PartialEvent(event.clone())).is_ok() {
+                    break;
+                }
                 drop(tx);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -477,12 +483,16 @@ mod with_runtime {
         fn emit_partial_json(&self, payload: serde_json::Value) {
             loop {
                 let tx = self.tx.lock().unwrap();
-                if tx.try_send(UiEvent::PartialJson(payload.clone())).is_ok() { break; }
+                if tx.try_send(UiEvent::PartialJson(payload.clone())).is_ok() {
+                    break;
+                }
                 drop(tx);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     struct PartialStreamShared {
@@ -537,16 +547,14 @@ mod with_runtime {
         }
 
         fn log_reject(&self, err: &PartialFrameError, len: usize) {
-            self.shared
-                .emitter
-                .emit_debug(serde_json::json!({
-                    "event": "compute_partial_reject",
-                    "jobId": self.shared.job_id,
-                    "task": self.shared.task,
-                    "reason": err.to_string(),
-                    "len": len,
-                    "ts": Utc::now().timestamp_millis(),
-                }));
+            self.shared.emitter.emit_debug(serde_json::json!({
+                "event": "compute_partial_reject",
+                "jobId": self.shared.job_id,
+                "task": self.shared.task,
+                "reason": err.to_string(),
+                "len": len,
+                "ts": Utc::now().timestamp_millis(),
+            }));
         }
     }
 
@@ -569,9 +577,7 @@ mod with_runtime {
             }
             match self.process_frame(bytes.as_ref()) {
                 Ok(event) => {
-                    self.shared
-                        .partial_frames
-                        .fetch_add(1, Ordering::Relaxed);
+                    self.shared.partial_frames.fetch_add(1, Ordering::Relaxed);
                     self.shared.emitter.emit_partial(event);
                 }
                 Err(err) => {
@@ -694,16 +700,14 @@ mod with_runtime {
                     let preview_b64 = BASE64_ENGINE.encode(&to_emit[..preview_len]);
                     let seq_no = self.shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
                     let tick_no = self.shared.tick.fetch_add(1, Ordering::Relaxed) + 1;
-                    let new_total = self
-                        .shared
-                        .emitted_bytes
-                        .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
-                        .saturating_add(to_emit.len() as u64) as usize;
+                    let new_total =
+                        self.shared
+                            .emitted_bytes
+                            .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
+                            .saturating_add(to_emit.len() as u64) as usize;
                     let truncated = new_total > self.shared.max_bytes;
 
-                    self.shared
-                        .log_count
-                        .fetch_add(1, Ordering::Relaxed);
+                    self.shared.log_count.fetch_add(1, Ordering::Relaxed);
 
                     // Emit structured partial log event
                     self.shared.emitter.emit_partial_json(serde_json::json!({
@@ -719,18 +723,17 @@ mod with_runtime {
                     }));
 
                     // Mirror as debug-log for developer visibility
-                    let output = truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
-                    self.shared
-                        .emitter
-                        .emit_debug(serde_json::json!({
-                            "event": "compute_guest_stdio",
-                            "jobId": self.shared.job_id,
-                            "task": self.shared.task,
-                            "channel": self.channel,
-                            "len": to_emit.len(),
-                            "message": output,
-                            "ts": Utc::now().timestamp_millis(),
-                        }));
+                    let output =
+                        truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
+                    self.shared.emitter.emit_debug(serde_json::json!({
+                        "event": "compute_guest_stdio",
+                        "jobId": self.shared.job_id,
+                        "task": self.shared.task,
+                        "channel": self.channel,
+                        "len": to_emit.len(),
+                        "message": output,
+                        "ts": Utc::now().timestamp_millis(),
+                    }));
                 } else {
                     break;
                 }
@@ -820,11 +823,9 @@ mod with_runtime {
                     "frame sequence out of order (expected {}, got {})",
                     expected, got
                 ),
-                Self::PayloadTooLarge(len) => write!(
-                    f,
-                    "embedded payload exceeds limit (len={})",
-                    len
-                ),
+                Self::PayloadTooLarge(len) => {
+                    write!(f, "embedded payload exceeds limit (len={})", len)
+                }
             }
         }
     }
@@ -909,7 +910,12 @@ mod with_runtime {
 
     impl RateLimiterBytes {
         fn new(capacity: usize, refill_per_sec: usize) -> Self {
-            Self { capacity, refill_per_sec, tokens: capacity as f64, last: Instant::now() }
+            Self {
+                capacity,
+                refill_per_sec,
+                tokens: capacity as f64,
+                last: Instant::now(),
+            }
         }
         fn refill(&mut self) {
             let elapsed = self.last.elapsed().as_secs_f64();
@@ -930,14 +936,18 @@ mod with_runtime {
         fn set_rate_per_sec(&mut self, rate: usize) {
             self.refill_per_sec = rate.max(1);
         }
-        fn rate_per_sec(&self) -> usize { self.refill_per_sec }
+        fn rate_per_sec(&self) -> usize {
+            self.refill_per_sec
+        }
         fn set_capacity(&mut self, cap: usize) {
             self.capacity = cap.max(1);
             if self.tokens > self.capacity as f64 {
                 self.tokens = self.capacity as f64;
             }
         }
-        fn capacity(&self) -> usize { self.capacity }
+        fn capacity(&self) -> usize {
+            self.capacity
+        }
     }
 
     struct RateLimiterEvents {
@@ -948,7 +958,12 @@ mod with_runtime {
     }
     impl RateLimiterEvents {
         fn new(capacity: u32, refill_per_sec: u32) -> Self {
-            Self { capacity: capacity as f64, refill_per_sec: refill_per_sec as f64, tokens: capacity as f64, last: Instant::now() }
+            Self {
+                capacity: capacity as f64,
+                refill_per_sec: refill_per_sec as f64,
+                tokens: capacity as f64,
+                last: Instant::now(),
+            }
         }
         fn refill(&mut self) {
             let elapsed = self.last.elapsed().as_secs_f64();
@@ -974,14 +989,18 @@ mod with_runtime {
         fn set_rate_per_sec(&mut self, rate: u32) {
             self.refill_per_sec = (rate.max(1)) as f64;
         }
-        fn rate_per_sec(&self) -> u32 { self.refill_per_sec as u32 }
+        fn rate_per_sec(&self) -> u32 {
+            self.refill_per_sec as u32
+        }
         fn set_capacity(&mut self, cap: u32) {
             self.capacity = (cap.max(1)) as f64;
             if self.tokens > self.capacity {
                 self.tokens = self.capacity;
             }
         }
-        fn capacity(&self) -> u32 { self.capacity as u32 }
+        fn capacity(&self) -> u32 {
+            self.capacity as u32
+        }
     }
 
     impl WasiView for Ctx {
@@ -1148,15 +1167,23 @@ mod with_runtime {
                     }
                     for ev in batch.drain(..) {
                         match ev {
-                            UiEvent::Debug(v) => { let _ = app_for_ui.emit("debug-log", v); }
-                            UiEvent::PartialEvent(e) => { let _ = app_for_ui.emit("compute.result.partial", e); }
-                            UiEvent::PartialJson(v) => { let _ = app_for_ui.emit("compute.result.partial", v); }
+                            UiEvent::Debug(v) => {
+                                let _ = app_for_ui.emit("debug-log", v);
+                            }
+                            UiEvent::PartialEvent(e) => {
+                                let _ = app_for_ui.emit("compute.result.partial", e);
+                            }
+                            UiEvent::PartialJson(v) => {
+                                let _ = app_for_ui.emit("compute.result.partial", v);
+                            }
                         }
                     }
                 }
             });
             let _ = drain;
-            let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(QueueingEmitter { tx: Mutex::new(tx_ui) });
+            let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(QueueingEmitter {
+                tx: Mutex::new(tx_ui),
+            });
             let partial_seq = Arc::new(AtomicU64::new(0));
             let partial_frames = Arc::new(AtomicU64::new(0));
             let invalid_partials = Arc::new(AtomicU64::new(0));
@@ -1200,9 +1227,12 @@ mod with_runtime {
                         let cur_log = log_waits_c.load(Ordering::Relaxed);
                         let cur_logger = logger_waits_c.load(Ordering::Relaxed);
                         let cur_partial = partial_waits_c.load(Ordering::Relaxed);
-                        let d_log = cur_log.saturating_sub(last_log); last_log = cur_log;
-                        let d_logger = cur_logger.saturating_sub(last_logger); last_logger = cur_logger;
-                        let d_partial = cur_partial.saturating_sub(last_partial); last_partial = cur_partial;
+                        let d_log = cur_log.saturating_sub(last_log);
+                        last_log = cur_log;
+                        let d_logger = cur_logger.saturating_sub(last_logger);
+                        last_logger = cur_logger;
+                        let d_partial = cur_partial.saturating_sub(last_partial);
+                        last_partial = cur_partial;
                         ewma_log = 0.7 * ewma_log + 0.3 * (d_log as f64);
                         ewma_logger = 0.7 * ewma_logger + 0.3 * (d_logger as f64);
                         ewma_partial = 0.7 * ewma_partial + 0.3 * (d_partial as f64);
@@ -1225,10 +1255,14 @@ mod with_runtime {
                             let cur = rl.rate_per_sec();
                             if ewma_logger >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
-                                rl.set_rate_per_sec(next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX));
+                                rl.set_rate_per_sec(
+                                    next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX),
+                                );
                             } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
                                 let next = ((cur as f64) * AIMD_INC).round() as usize;
-                                rl.set_rate_per_sec(next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX));
+                                rl.set_rate_per_sec(
+                                    next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX),
+                                );
                             }
                         }
                         // partial events
@@ -1381,13 +1415,16 @@ mod with_runtime {
                 match inst_res {
                     Ok(instance) => {
                         let task_name = spec.task.split('@').next().unwrap_or("");
-                        let artificial_delay_ms = std::env::var("UICP_TEST_COMPUTE_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok());
+                        let artificial_delay_ms = std::env::var("UICP_TEST_COMPUTE_DELAY_MS")
+                            .ok()
+                            .and_then(|v| v.parse::<u64>().ok());
                         if let Some(delay) = artificial_delay_ms {
                             sleep(TokioDuration::from_millis(delay)).await;
                         }
                         let call_res: anyhow::Result<serde_json::Value> = match task_name {
                             "csv.parse" => {
-                                let src_has = extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                let src_has =
+                                    extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
                                 if let Err(err) = src_has {
                                     Err(err)
                                 } else {
@@ -1409,7 +1446,10 @@ mod with_runtime {
                                         match func_res {
                                             Err(e) => Err(anyhow::Error::from(e)),
                                             Ok(func) => match func
-                                                .call_async(&mut store, (spec.job_id.clone(), resolved, has_header))
+                                                .call_async(
+                                                    &mut store,
+                                                    (spec.job_id.clone(), resolved, has_header),
+                                                )
                                                 .await
                                             {
                                                 Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
@@ -1421,14 +1461,20 @@ mod with_runtime {
                                 }
                             }
                             "table.query" => {
-                                let parsed = extract_table_query_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
+                                let parsed = extract_table_query_input(&spec.input)
+                                    .map_err(|e| anyhow::anyhow!(e));
                                 if let Err(err) = parsed {
                                     Err(err)
                                 } else {
                                     let (rows, select, where_opt) = parsed.unwrap();
                                     let func_res: Result<
                                         wasmtime::component::TypedFunc<
-                                            (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                            (
+                                                String,
+                                                Vec<Vec<String>>,
+                                                Vec<u32>,
+                                                Option<(u32, String)>,
+                                            ),
                                             (Result<Vec<Vec<String>>, String>,),
                                         >,
                                         _,
@@ -1436,7 +1482,10 @@ mod with_runtime {
                                     match func_res {
                                         Err(e) => Err(anyhow::Error::from(e)),
                                         Ok(func) => match func
-                                            .call_async(&mut store, (spec.job_id.clone(), rows, select, where_opt))
+                                            .call_async(
+                                                &mut store,
+                                                (spec.job_id.clone(), rows, select, where_opt),
+                                            )
                                             .await
                                         {
                                             Ok((Ok(out),)) => Ok(serde_json::json!(out)),
@@ -1537,7 +1586,6 @@ mod with_runtime {
         Ok(())
     }
 
-    
     fn host_wasi_log(
         store: StoreContextMut<'_, Ctx>,
         (level, context, message): (u32, String, String),
@@ -1594,10 +1642,7 @@ mod with_runtime {
             .fetch_add(bytes.len() as u64, Ordering::Relaxed)
             .saturating_add(bytes.len() as u64) as usize;
         let truncated = new_total > store.data().max_log_bytes;
-        store
-            .data()
-            .log_count
-            .fetch_add(1, Ordering::Relaxed);
+        store.data().log_count.fetch_add(1, Ordering::Relaxed);
 
         let payload = serde_json::json!({
             "jobId": store.data().job_id,
@@ -1724,8 +1769,6 @@ mod with_runtime {
         }
         Ok((out,))
     }
-
-    
 
     fn derive_rng_block(seed: &[u8; 32], counter: u64) -> [u8; 32] {
         let mut hasher = Sha256::new();
@@ -1969,10 +2012,7 @@ mod with_runtime {
         // Optional fuel metrics if enabled
         if store.data().initial_fuel > 0 {
             if let Ok(remaining) = store.get_fuel() {
-                let used = store
-                    .data()
-                    .initial_fuel
-                    .saturating_sub(remaining);
+                let used = store.data().initial_fuel.saturating_sub(remaining);
                 if let Some(obj) = metrics.as_object_mut() {
                     obj.insert("fuelUsed".into(), serde_json::json!(used));
                 }
@@ -2154,23 +2194,35 @@ mod with_runtime {
             assert!(rl.available() >= 1024);
             rl.consume(800);
             let after_consume = rl.available();
-            assert!(after_consume <= 224, "expected ~224 tokens left, got {}", after_consume);
+            assert!(
+                after_consume <= 224,
+                "expected ~224 tokens left, got {}",
+                after_consume
+            );
             std::thread::sleep(std::time::Duration::from_millis(250));
             rl.consume(0); // trigger refill calculation
-            assert!(rl.available() > after_consume, "tokens should have refilled");
+            assert!(
+                rl.available() > after_consume,
+                "tokens should have refilled"
+            );
         }
 
         #[test]
         fn rate_limiter_events_refills_over_time() {
             let mut rl = RateLimiterEvents::new(10, 10); // 10 events/s
-            // Consume 10 events
+                                                         // Consume 10 events
             let mut taken = 0;
-            while rl.try_take_event() { taken += 1; }
+            while rl.try_take_event() {
+                taken += 1;
+            }
             assert_eq!(taken, 10);
             // No tokens immediately
             assert!(rl.peek_tokens() < 1.0);
             std::thread::sleep(std::time::Duration::from_millis(120));
-            assert!(rl.peek_tokens() >= 1.0, "should have at least one token after 120ms");
+            assert!(
+                rl.peek_tokens() >= 1.0,
+                "should have at least one token after 120ms"
+            );
         }
 
         // WASI deny-by-default proofs
@@ -2181,7 +2233,10 @@ mod with_runtime {
             let mut linker: Linker<Ctx> = Linker::new(&engine);
             let err = add_wasi_and_host(&mut linker).expect_err("expected wasi disabled error");
             let msg = err.to_string().to_lowercase();
-            assert!(msg.contains("wasi") && msg.contains("disabled"), "unexpected error: {msg}");
+            assert!(
+                msg.contains("wasi") && msg.contains("disabled"),
+                "unexpected error: {msg}"
+            );
         }
 
         #[cfg(all(feature = "wasm_compute", feature = "uicp_wasi_enable"))]
@@ -2260,7 +2315,10 @@ mod with_runtime {
             }
             impl Default for TestEmitter {
                 fn default() -> Self {
-                    Self { partials: Arc::new(Mutex::new(Vec::new())), debugs: Arc::new(Mutex::new(Vec::new())) }
+                    Self {
+                        partials: Arc::new(Mutex::new(Vec::new())),
+                        debugs: Arc::new(Mutex::new(Vec::new())),
+                    }
                 }
             }
             impl TelemetryEmitter for TestEmitter {
@@ -2271,15 +2329,20 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
-                fn as_any(&self) -> &dyn Any { self }
+                fn as_any(&self) -> &dyn Any {
+                    self
+                }
             }
 
-            let captured_partials: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+            let captured_partials: Arc<Mutex<Vec<serde_json::Value>>> =
+                Arc::new(Mutex::new(Vec::new()));
             let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter {
                 partials: captured_partials.clone(),
                 debugs: Arc::new(Mutex::new(Vec::new())),
             });
-            let limits = StoreLimitsBuilder::new().memory_size(64 * 1024 * 1024).build();
+            let limits = StoreLimitsBuilder::new()
+                .memory_size(64 * 1024 * 1024)
+                .build();
             let mut store: Store<Ctx> = Store::new(
                 &build_engine().unwrap(),
                 Ctx {
@@ -2314,12 +2377,19 @@ mod with_runtime {
             // Call the logging shim directly
             {
                 use wasmtime::AsContextMut;
-                host_wasi_log(store.as_context_mut(), (2u32, "ctx".into(), "hello world".into()))
+                host_wasi_log(
+                    store.as_context_mut(),
+                    (2u32, "ctx".into(), "hello world".into()),
+                )
                 .expect("log ok");
             }
 
             // Verify a partial event was captured with expected fields
-            let part = captured_partials.lock().unwrap().pop().expect("one partial emitted");
+            let part = captured_partials
+                .lock()
+                .unwrap()
+                .pop()
+                .expect("one partial emitted");
             assert_eq!(part.get("kind").and_then(|v| v.as_str()), Some("log"));
             assert_eq!(
                 part.get("stream").and_then(|v| v.as_str()),
@@ -2331,9 +2401,9 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn wasi_logging_guest_component_emits_partial_event() {
-            use std::sync::{Arc, Mutex};
             use std::path::PathBuf;
             use std::process::Command as PCommand;
+            use std::sync::{Arc, Mutex};
 
             // Build the tiny log test component
             let comp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2352,7 +2422,11 @@ mod with_runtime {
                 .join("wasm32-wasi")
                 .join("release")
                 .join("uicp_task_log_test.wasm");
-            assert!(wasm.exists(), "component artifact missing: {}", wasm.display());
+            assert!(
+                wasm.exists(),
+                "component artifact missing: {}",
+                wasm.display()
+            );
 
             // Capture partials emitted by the host logging bridge
             #[derive(Clone)]
@@ -2361,7 +2435,9 @@ mod with_runtime {
             }
             impl Default for TestEmitter {
                 fn default() -> Self {
-                    Self { partials: Arc::new(Mutex::new(Vec::new())) }
+                    Self {
+                        partials: Arc::new(Mutex::new(Vec::new())),
+                    }
                 }
             }
             impl TelemetryEmitter for TestEmitter {
@@ -2370,7 +2446,9 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
-                fn as_any(&self) -> &dyn Any { self }
+                fn as_any(&self) -> &dyn Any {
+                    self
+                }
             }
 
             let engine = build_engine().expect("engine");
@@ -2380,7 +2458,9 @@ mod with_runtime {
 
             // Minimal job context
             let tele: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter::default());
-            let limits = StoreLimitsBuilder::new().memory_size(64 * 1024 * 1024).build();
+            let limits = StoreLimitsBuilder::new()
+                .memory_size(64 * 1024 * 1024)
+                .build();
             let mut store: Store<Ctx> = Store::new(
                 &engine,
                 Ctx {
@@ -2412,10 +2492,14 @@ mod with_runtime {
                 },
             );
 
-            let instance = linker.instantiate(&mut store, &component).expect("instantiate");
-            let func: wasmtime::component::TypedFunc<(String,), ()> =
-                instance.get_typed_func(&mut store, "task#run").expect("get run");
-            func.call(&mut store, ("log-guest".to_string(),)).expect("call run");
+            let instance = linker
+                .instantiate(&mut store, &component)
+                .expect("instantiate");
+            let func: wasmtime::component::TypedFunc<(String,), ()> = instance
+                .get_typed_func(&mut store, "task#run")
+                .expect("get run");
+            func.call(&mut store, ("log-guest".to_string(),))
+                .expect("call run");
 
             let captured = tele
                 .as_any()
@@ -2426,65 +2510,55 @@ mod with_runtime {
                 .unwrap()
                 .clone();
             assert!(
-                captured.iter().any(|p| p.get("stream").and_then(|v| v.as_str()) == Some("wasi-logging")),
+                captured
+                    .iter()
+                    .any(|p| p.get("stream").and_then(|v| v.as_str()) == Some("wasi-logging")),
                 "expected at least one wasi-logging partial"
             );
         }
     }
 
-// -----------------------------------------------------------------------------
-// Non-wasm unit tests for helpers
-// -----------------------------------------------------------------------------
-#[cfg(test)]
-mod helper_tests {
-    use super::*;
+    // -----------------------------------------------------------------------------
+    // Non-wasm unit tests for helpers
+    // -----------------------------------------------------------------------------
+    #[cfg(test)]
+    mod helper_tests {
+        use super::*;
 
-    #[test]
-    fn extract_csv_input_supports_has_header_variants() {
-        let v1 = serde_json::json!({"source":"x","hasHeader":true});
-        let (s1, h1) = extract_csv_input(&v1).unwrap();
-        assert_eq!(s1, "x");
-        assert!(h1);
+        #[test]
+        fn extract_csv_input_supports_has_header_variants() {
+            let v1 = serde_json::json!({"source":"x","hasHeader":true});
+            let (s1, h1) = extract_csv_input(&v1).unwrap();
+            assert_eq!(s1, "x");
+            assert!(h1);
 
-        let v2 = serde_json::json!({"source":"y","has-header":false});
-        let (s2, h2) = extract_csv_input(&v2).unwrap();
-        assert_eq!(s2, "y");
-        assert!(!h2);
-    }
+            let v2 = serde_json::json!({"source":"y","has-header":false});
+            let (s2, h2) = extract_csv_input(&v2).unwrap();
+            assert_eq!(s2, "y");
+            assert!(!h2);
+        }
 
-    #[test]
-    fn extract_table_query_input_parses_rows_select_and_where() {
-        let v = serde_json::json!({
-            "rows": [["a","b"],["c","d"]],
-            "select": [1u32,0u32],
-            "where_contains": {"col": 0u32, "needle": "a"}
-        });
-        let (rows, sel, where_opt) = extract_table_query_input(&v).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(sel, vec![1u32, 0u32]);
-        assert_eq!(where_opt, Some((0u32, "a".into())));
-    }
+        #[test]
+        fn extract_table_query_input_parses_rows_select_and_where() {
+            let v = serde_json::json!({
+                "rows": [["a","b"],["c","d"]],
+                "select": [1u32,0u32],
+                "where_contains": {"col": 0u32, "needle": "a"}
+            });
+            let (rows, sel, where_opt) = extract_table_query_input(&v).unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0], vec!["a".to_string(), "b".to_string()]);
+            assert_eq!(sel, vec![1u32, 0u32]);
+            assert_eq!(where_opt, Some((0u32, "a".into())));
+        }
     }
 
     #[test]
     fn derive_job_seed_is_stable_and_unique_per_env() {
-        let a1 = derive_job_seed(
-            "00000000-0000-4000-8000-000000000001",
-            "env-a",
-        );
-        let a2 = derive_job_seed(
-            "00000000-0000-4000-8000-000000000001",
-            "env-a",
-        );
-        let b = derive_job_seed(
-            "00000000-0000-4000-8000-000000000002",
-            "env-a",
-        );
-        let c = derive_job_seed(
-            "00000000-0000-4000-8000-000000000001",
-            "env-b",
-        );
+        let a1 = derive_job_seed("00000000-0000-4000-8000-000000000001", "env-a");
+        let a2 = derive_job_seed("00000000-0000-4000-8000-000000000001", "env-a");
+        let b = derive_job_seed("00000000-0000-4000-8000-000000000002", "env-a");
+        let c = derive_job_seed("00000000-0000-4000-8000-000000000001", "env-b");
         assert_eq!(a1, a2, "seed must be deterministic for same (job, env)");
         assert_ne!(a1, b, "seed must vary across job ids");
         assert_ne!(a1, c, "seed must vary across env hashes");

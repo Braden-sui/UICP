@@ -5,7 +5,8 @@
 
 use serde_json::json;
 use uicp::{
-    test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec,
+    test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
+    ComputeProvenanceSpec,
 };
 use uuid::Uuid;
 
@@ -102,4 +103,3 @@ async fn kill_replay_produces_identical_output_hash() {
         );
     }
 }
-

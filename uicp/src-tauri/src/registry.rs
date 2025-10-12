@@ -237,12 +237,13 @@ fn try_repair_manifest(target: &Path, bundled: &Option<PathBuf>) -> Result<()> {
     };
 
     // Load bundled manifest if available.
-    let bundled_entries: Option<Vec<ModuleEntry>> = bundled
-        .as_ref()
-        .and_then(|dir| {
-            let p = dir.join("manifest.json");
-            fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<ModuleManifest>(&s).ok()).map(|m| m.entries)
-        });
+    let bundled_entries: Option<Vec<ModuleEntry>> = bundled.as_ref().and_then(|dir| {
+        let p = dir.join("manifest.json");
+        fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| serde_json::from_str::<ModuleManifest>(&s).ok())
+            .map(|m| m.entries)
+    });
 
     let mut updated = false;
     for entry in manifest.entries.iter_mut() {
@@ -251,7 +252,10 @@ fn try_repair_manifest(target: &Path, bundled: &Option<PathBuf>) -> Result<()> {
         }
         // Try bundled digest first
         if let Some(ref entries) = bundled_entries {
-            if let Some(src) = entries.iter().find(|e| e.task == entry.task && e.version == entry.version) {
+            if let Some(src) = entries
+                .iter()
+                .find(|e| e.task == entry.task && e.version == entry.version)
+            {
                 if is_valid_digest_hex(&src.digest_sha256) {
                     entry.digest_sha256 = src.digest_sha256.clone();
                     updated = true;
@@ -315,7 +319,10 @@ pub fn load_manifest<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ModuleMani
 }
 
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
-pub fn find_module<R: Runtime>(app: &tauri::AppHandle<R>, task_at_version: &str) -> Result<Option<ModuleRef>> {
+pub fn find_module<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    task_at_version: &str,
+) -> Result<Option<ModuleRef>> {
     let (task, version) = task_at_version
         .split_once('@')
         .unwrap_or((task_at_version, ""));

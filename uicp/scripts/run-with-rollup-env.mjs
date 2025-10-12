@@ -9,9 +9,7 @@ import { spawn } from 'node:child_process';
 const [, , command, ...args] = process.argv;
 
 if (!command) {
-  console.error(
-    'Usage: node scripts/run-with-rollup-env.mjs <command> [..args]',
-  );
+  console.error('Usage: node scripts/run-with-rollup-env.mjs <command> [..args]');
   process.exit(1);
 }
 

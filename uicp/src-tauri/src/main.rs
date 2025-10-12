@@ -17,7 +17,6 @@ use keyring::Entry;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Url};
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio_rusqlite::Connection as AsyncConn;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
@@ -29,13 +28,14 @@ use tokio::{
     sync::{RwLock, Semaphore},
     time::{interval, timeout},
 };
+use tokio_rusqlite::Connection as AsyncConn;
 use tokio_stream::StreamExt;
 
+mod commands;
 mod compute;
 mod compute_cache;
 mod policy;
 mod registry;
-mod commands;
 
 pub use policy::{
     enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
@@ -273,7 +273,11 @@ async fn compute_call(
         .acquire_owned()
         .await
         .map_err(|e| e.to_string())?;
-    let queue_wait_ms = queued_at.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let queue_wait_ms = queued_at
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
     // Pass a normalized cache policy down to the host
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
@@ -471,7 +475,8 @@ async fn test_api_key(
         })
     }
 }
-
+     // EASTER EGG ^.^ - IF YOU SEE THIS, THANK YOU FROM THE BOTTOM OF MY FUCKING HEART FOR EVEN READING MY FILES. THIS IS THE FIRST
+     // TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY 2 DAY. 
 #[tauri::command]
 async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
     // Freeze writes in Safe Mode
@@ -563,9 +568,13 @@ async fn delete_window_commands(
                  )";
             match conn.execute(sql, params!["default", window_id.clone()]) {
                 Ok(_) => Ok(()),
-                Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such function: json_extract") => {
+                Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                    if msg.contains("no such function: json_extract") =>
+                {
                     let mut stmt = conn
-                        .prepare("SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1")
+                        .prepare(
+                            "SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1",
+                        )
                         .map_err(tokio_rusqlite::Error::from)?;
                     let rows = stmt
                         .query_map(params!["default"], |row| {
@@ -583,11 +592,21 @@ async fn delete_window_commands(
                         let parsed: serde_json::Value = serde_json::from_str(&args_json)
                             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                         let id_match = if tool == "window.create" {
-                            parsed.get("id").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
+                            parsed
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s == window_id)
+                                .unwrap_or(false)
                         } else {
-                            parsed.get("windowId").and_then(|v| v.as_str()).map(|s| s == window_id).unwrap_or(false)
+                            parsed
+                                .get("windowId")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s == window_id)
+                                .unwrap_or(false)
                         };
-                        if id_match { to_delete.push(id); }
+                        if id_match {
+                            to_delete.push(id);
+                        }
                     }
                     if !to_delete.is_empty() {
                         let tx = conn.transaction().map_err(tokio_rusqlite::Error::from)?;
@@ -612,11 +631,13 @@ async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePay
     let windows = state
         .db_ro
         .call(|conn| -> tokio_rusqlite::Result<Vec<WindowStatePayload>> {
-            let mut stmt = conn.prepare(
-                "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
                  COALESCE(height, 480), COALESCE(z_index, 0)
                  FROM window WHERE workspace_id = ?1 ORDER BY z_index ASC, created_at ASC",
-            ).map_err(tokio_rusqlite::Error::from)?;
+                )
+                .map_err(tokio_rusqlite::Error::from)?;
             let rows = stmt
                 .query_map(params!["default"], |row| {
                     Ok(WindowStatePayload {
@@ -643,7 +664,8 @@ async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePay
                     height: 420.0,
                     z_index: 0,
                     content: Some(
-                        "<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>".into(),
+                        "<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>"
+                            .into(),
                     ),
                 }]
             } else {
@@ -712,7 +734,10 @@ async fn save_workspace(
             emit_or_log(
                 &window.app_handle(),
                 "save-indicator",
-                SaveIndicatorPayload { ok: true, timestamp: Utc::now().timestamp() },
+                SaveIndicatorPayload {
+                    ok: true,
+                    timestamp: Utc::now().timestamp(),
+                },
             );
             Ok(())
         }
@@ -721,7 +746,10 @@ async fn save_workspace(
             emit_or_log(
                 &window.app_handle(),
                 "save-indicator",
-                SaveIndicatorPayload { ok: false, timestamp: Utc::now().timestamp() },
+                SaveIndicatorPayload {
+                    ok: false,
+                    timestamp: Utc::now().timestamp(),
+                },
             );
             Err(format!("DB error: {err:?}"))
         }
@@ -1227,12 +1255,28 @@ async fn chat_completion(
                     let mut carry = String::new();
                     let mut event_buf = String::new();
 
+                    const DEBUG_PREVIEW_CHARS: usize = 512;
+                    let preview_payload = |input: &str| -> (String, bool) {
+                        let mut iter = input.chars();
+                        let mut out = String::new();
+                        for _ in 0..DEBUG_PREVIEW_CHARS {
+                            match iter.next() {
+                                Some(ch) => out.push(ch),
+                                None => return (out, false),
+                            }
+                        }
+                        if iter.next().is_some() {
+                            out.push('…');
+                            (out, true)
+                        } else {
+                            (out, false)
+                        }
+                    };
+
                     // Helper to process a complete SSE payload line (assembled in event_buf)
-                    let process_payload = |
-                        payload_str: &str,
-                        app_handle: &tauri::AppHandle,
-                        rid: &str,
-                    | {
+                    let process_payload = |payload_str: &str,
+                                           app_handle: &tauri::AppHandle,
+                                           rid: &str| {
                         if payload_str == "[DONE]" {
                             if debug_on {
                                 let ev = serde_json::json!({
@@ -1243,16 +1287,16 @@ async fn chat_completion(
                                 tokio::spawn(append_trace(ev.clone()));
                                 tokio::spawn(emit_debug(ev));
                             }
-                            emit_or_log(app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                            emit_or_log(
+                                app_handle,
+                                "ollama-completion",
+                                serde_json::json!({ "done": true }),
+                            );
                             return;
                         }
                         match serde_json::from_str::<serde_json::Value>(payload_str) {
                             Ok(val) => {
-                                if val
-                                    .get("done")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false)
-                                {
+                                if val.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
                                     if debug_on {
                                         let ev = serde_json::json!({
                                             "ts": Utc::now().timestamp_millis(),
@@ -1262,15 +1306,23 @@ async fn chat_completion(
                                         tokio::spawn(append_trace(ev.clone()));
                                         tokio::spawn(emit_debug(ev));
                                     }
-                                    emit_or_log(app_handle, "ollama-completion", serde_json::json!({ "done": true }));
+                                    emit_or_log(
+                                        app_handle,
+                                        "ollama-completion",
+                                        serde_json::json!({ "done": true }),
+                                    );
                                     return;
                                 }
                                 if debug_on {
+                                    let (preview, truncated) = preview_payload(payload_str);
                                     let ev = serde_json::json!({
                                         "ts": Utc::now().timestamp_millis(),
                                         "event": "delta_json",
                                         "requestId": rid,
                                         "len": payload_str.len(),
+                                        "payload": val.clone(),
+                                        "preview": preview,
+                                        "truncated": truncated,
                                     });
                                     tokio::spawn(append_trace(ev.clone()));
                                     tokio::spawn(emit_debug(ev));
@@ -1283,11 +1335,14 @@ async fn chat_completion(
                             }
                             Err(_) => {
                                 if debug_on {
+                                    let (preview, truncated) = preview_payload(payload_str);
                                     let ev = serde_json::json!({
                                         "ts": Utc::now().timestamp_millis(),
                                         "event": "delta_text",
                                         "requestId": rid,
                                         "len": payload_str.len(),
+                                        "text": preview,
+                                        "truncated": truncated,
                                     });
                                     tokio::spawn(append_trace(ev.clone()));
                                     tokio::spawn(emit_debug(ev));
@@ -1390,14 +1445,22 @@ async fn chat_completion(
                                                 // blank line terminates one SSE event
                                                 if !event_buf.is_empty() {
                                                     let payload = std::mem::take(&mut event_buf);
-                                                    process_payload(&payload, &app_handle, &rid_for_task);
+                                                    process_payload(
+                                                        &payload,
+                                                        &app_handle,
+                                                        &rid_for_task,
+                                                    );
                                                 }
                                                 continue;
                                             }
                                             if let Some(stripped) = trimmed.strip_prefix("data:") {
                                                 let content = stripped.trim();
                                                 if content == "[DONE]" {
-                                                    process_payload("[DONE]", &app_handle, &rid_for_task);
+                                                    process_payload(
+                                                        "[DONE]",
+                                                        &app_handle,
+                                                        &rid_for_task,
+                                                    );
                                                     // reset event buffer
                                                     event_buf.clear();
                                                     continue;
@@ -1830,10 +1893,12 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             // Best-effort: run optimize and compact WAL periodically
             let _ = state
                 .db_rw
-                .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                    c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);")
-                        .map_err(tokio_rusqlite::Error::from)
-                })
+                .call(
+                    |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                        c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);")
+                            .map_err(tokio_rusqlite::Error::from)
+                    },
+                )
                 .await;
         }
     });
@@ -1858,36 +1923,42 @@ fn main() {
     tauri::async_runtime::block_on(async {
         // Writer: full configuration
         let _ = db_rw
-            .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                use std::time::Duration;
-                c.busy_timeout(Duration::from_millis(5_000))
-                    .map_err(tokio_rusqlite::Error::from)?;
-                c.pragma_update(None, "journal_mode", "WAL")
-                    .map_err(tokio_rusqlite::Error::from)?;
-                c.pragma_update(None, "synchronous", "NORMAL")
-                    .map_err(tokio_rusqlite::Error::from)?;
-                c.pragma_update(None, "foreign_keys", "ON")
-                    .map_err(tokio_rusqlite::Error::from)?;
-                Ok(())
-            })
+            .call(
+                |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    use std::time::Duration;
+                    c.busy_timeout(Duration::from_millis(5_000))
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "journal_mode", "WAL")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "synchronous", "NORMAL")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "foreign_keys", "ON")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    Ok(())
+                },
+            )
             .await;
         // Read-only: set a subset that does not require writes
         let _ = db_ro
-            .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                use std::time::Duration;
-                c.busy_timeout(Duration::from_millis(5_000))
-                    .map_err(tokio_rusqlite::Error::from)?;
-                c.pragma_update(None, "foreign_keys", "ON")
-                    .map_err(tokio_rusqlite::Error::from)?;
-                Ok(())
-            })
+            .call(
+                |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    use std::time::Duration;
+                    c.busy_timeout(Duration::from_millis(5_000))
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "foreign_keys", "ON")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    Ok(())
+                },
+            )
             .await;
         // Best-effort hygiene
         let _ = db_rw
-            .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);")
-                    .map_err(tokio_rusqlite::Error::from)
-            })
+            .call(
+                |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);")
+                        .map_err(tokio_rusqlite::Error::from)
+                },
+            )
             .await;
     });
 
@@ -1934,6 +2005,7 @@ fn main() {
     tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Ensure base data directories exist
             if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) {
@@ -2125,10 +2197,7 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
     }
     let mut dest: PathBuf = dest_dir.join(&fname);
     if dest.exists() {
-        let stem = dest
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
+        let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
         let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ts = chrono::Utc::now().timestamp();
         let new_name = if ext.is_empty() {
@@ -2142,7 +2211,10 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
     fs::copy(p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
 
     // Return ws:/ path for use with compute tasks
-    Ok(format!("ws:/files/{}", dest.file_name().and_then(|s| s.to_str()).unwrap_or(&fname)))
+    Ok(format!(
+        "ws:/files/{}",
+        dest.file_name().and_then(|s| s.to_str()).unwrap_or(&fname)
+    ))
 }
 
 #[tauri::command]
@@ -2221,7 +2293,9 @@ async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<s
     let status = state
         .db_ro
         .call(|conn| -> tokio_rusqlite::Result<String> {
-            let mut stmt = conn.prepare("PRAGMA quick_check").map_err(tokio_rusqlite::Error::from)?;
+            let mut stmt = conn
+                .prepare("PRAGMA quick_check")
+                .map_err(tokio_rusqlite::Error::from)?;
             let mut rows = stmt.query([]).map_err(tokio_rusqlite::Error::from)?;
             let mut results = Vec::new();
             while let Some(row) = rows.next().map_err(tokio_rusqlite::Error::from)? {
@@ -2299,8 +2373,8 @@ async fn determinism_probe(
     let samples = state
         .db_ro
         .call(move |conn| -> tokio_rusqlite::Result<Vec<String>> {
-            let mut stmt = conn
-                .prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")?;
+            let mut stmt =
+                conn.prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")?;
             let rows = stmt
                 .query_map(params![limit], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -2536,7 +2610,9 @@ async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
         .call(|conn| -> tokio_rusqlite::Result<String> {
             conn.execute("REINDEX", [])
                 .map_err(tokio_rusqlite::Error::from)?;
-            let mut stmt = conn.prepare("PRAGMA integrity_check").map_err(tokio_rusqlite::Error::from)?;
+            let mut stmt = conn
+                .prepare("PRAGMA integrity_check")
+                .map_err(tokio_rusqlite::Error::from)?;
             let mut rows = stmt.query([]).map_err(tokio_rusqlite::Error::from)?;
             let mut results = Vec::new();
             while let Some(row) = rows.next().map_err(tokio_rusqlite::Error::from)? {

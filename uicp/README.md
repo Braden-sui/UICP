@@ -14,24 +14,24 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 
 ## Scripts
 
-| script | purpose |
-| --- | --- |
-| `npm run dev` | Start Vite dev server |
-| `npm run build` | Typecheck + bundle for production |
-| `npm run lint` | ESLint (flat config) over `src/` |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run test` | Vitest unit suite |
-| `npm run test:e2e` | Playwright flow (builds + preview with MOCK mode) |
+| script              | purpose                                           |
+| ------------------- | ------------------------------------------------- |
+| `npm run dev`       | Start Vite dev server                             |
+| `npm run build`     | Typecheck + bundle for production                 |
+| `npm run lint`      | ESLint (flat config) over `src/`                  |
+| `npm run typecheck` | `tsc --noEmit`                                    |
+| `npm run test`      | Vitest unit suite                                 |
+| `npm run test:e2e`  | Playwright flow (builds + preview with MOCK mode) |
 
 ## Environment
 
-| variable | default | description |
-| --- | --- | --- |
-| `VITE_DEV_MODE` | `true` | Enables dev-only UX touches |
-| `VITE_MOCK_MODE` | `true` | Use deterministic planner + mock API for offline & tests |
-| `E2E_ORCHESTRATOR` | unset | When `1`, opt-in E2E spec for orchestrator (requires real backend) |
-| `VITE_PLANNER_TIMEOUT_MS` | `120000` | Planner stream timeout (ms); early-stop parses sooner |
-| `VITE_ACTOR_TIMEOUT_MS` | `180000` | Actor stream timeout (ms); early-stop parses sooner |
+| variable                  | default  | description                                                        |
+| ------------------------- | -------- | ------------------------------------------------------------------ |
+| `VITE_DEV_MODE`           | `true`   | Enables dev-only UX touches                                        |
+| `VITE_MOCK_MODE`          | `true`   | Use deterministic planner + mock API for offline & tests           |
+| `E2E_ORCHESTRATOR`        | unset    | When `1`, opt-in E2E spec for orchestrator (requires real backend) |
+| `VITE_PLANNER_TIMEOUT_MS` | `120000` | Planner stream timeout (ms); early-stop parses sooner              |
+| `VITE_ACTOR_TIMEOUT_MS`   | `180000` | Actor stream timeout (ms); early-stop parses sooner                |
 
 ## Architecture Highlights
 

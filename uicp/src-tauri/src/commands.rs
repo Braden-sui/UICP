@@ -1,9 +1,7 @@
-use tauri::{Emitter, Manager, State, Runtime};
+use tauri::{Emitter, Manager, Runtime, State};
 // use anyhow::Context;
 
-use crate::{
-    compute, compute_cache, registry, AppState, ComputeJobSpec, enforce_compute_policy,
-};
+use crate::{compute, compute_cache, enforce_compute_policy, registry, AppState, ComputeJobSpec};
 use std::time::Instant;
 fn emit_or_log_generic<R: Runtime, T>(app_handle: &tauri::AppHandle<R>, event: &str, payload: T)
 where
@@ -80,7 +78,11 @@ pub async fn compute_call<R: Runtime>(
         .acquire_owned()
         .await
         .map_err(|e| e.to_string())?;
-    let queue_wait_ms = queued_at.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let queue_wait_ms = queued_at
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
     let join = compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms);
@@ -136,7 +138,9 @@ pub async fn compute_cancel<R: Runtime>(
     Ok(())
 }
 
-pub async fn get_modules_info<R: Runtime>(app: tauri::AppHandle<R>) -> Result<serde_json::Value, String> {
+pub async fn get_modules_info<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<serde_json::Value, String> {
     let dir = registry::modules_dir(&app);
     let manifest = dir.join("manifest.json");
     let exists = manifest.exists();
@@ -185,10 +189,7 @@ pub async fn copy_into_files(src_path: String) -> Result<String, String> {
     }
     let mut dest: PathBuf = dest_dir.join(&fname);
     if dest.exists() {
-        let stem = dest
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
+        let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
         let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ts = chrono::Utc::now().timestamp();
         let new_name = if ext.is_empty() {

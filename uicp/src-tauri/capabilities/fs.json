@@ -3,11 +3,6 @@
   "identifier": "fs-desktop-write",
   "description": "Allow the main window to persist files to the user's Desktop via the Tauri fs plugin.",
   "local": true,
-  "windows": [
-    "main"
-  ],
-  "permissions": [
-    "fs:default",
-    "fs:allow-desktop-write"
-  ]
+  "windows": ["main"],
+  "permissions": ["fs:default", "fs:allow-desktop-write"]
 }

@@ -11,9 +11,9 @@ use dirs::document_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection};
-use tokio_rusqlite::Connection as AsyncConn;
-use tauri::{async_runtime::JoinHandle, Emitter, Manager, State, Runtime};
+use tauri::{async_runtime::JoinHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::{RwLock, Semaphore};
+use tokio_rusqlite::Connection as AsyncConn;
 
 // ----------------------------------------------------------------------------
 // Constants and paths
@@ -140,12 +140,14 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
 
     match conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
         Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => {}
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
     match conn.execute("ALTER TABLE window ADD COLUMN height REAL DEFAULT 480", []) {
         Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => {}
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
     migrate_compute_cache(&conn).context("migrate compute_cache schema")?;
@@ -192,7 +194,8 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
             [],
         ) {
             Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
             Err(err) => return Err(err.into()),
         }
     }

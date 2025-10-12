@@ -7,10 +7,10 @@ Two reference tasks are planned for V1:
 
 Build guidance (local):
 
-1) Install `cargo-component` (toolchain).
-2) Components implement their WIT world under `components/<task>/wit/world.wit` (world `entry`).
-3) Build to a component-model Wasm: `cargo component build --release -Zunstable-options`.
-4) Copy the resulting `*.wasm` to `<dataDir>/modules/` and update `<dataDir>/modules/manifest.json` with `task`, `version`, `filename`, and `digest_sha256` (sha256 of wasm bytes).
+1. Install `cargo-component` (toolchain).
+2. Components implement their WIT world under `components/<task>/wit/world.wit` (world `entry`).
+3. Build to a component-model Wasm: `cargo component build --release -Zunstable-options`.
+4. Copy the resulting `*.wasm` to `<dataDir>/modules/` and update `<dataDir>/modules/manifest.json` with `task`, `version`, `filename`, and `digest_sha256` (sha256 of wasm bytes).
    Or run:
    `node scripts/update-manifest.mjs --manifest uicp/src-tauri/modules/manifest.json --task csv.parse --version 1.2.0 --wasm <path/to/wasm> --filename csv.parse@1.2.0.wasm --copy --outdir uicp/src-tauri/modules`
    At runtime, point the app to your modules dir with `UICP_MODULES_DIR`.
