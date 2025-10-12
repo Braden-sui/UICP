@@ -1,10 +1,18 @@
 use tauri::{Emitter, Manager, State, Runtime};
-use anyhow::Context;
+// use anyhow::Context;
 
 use crate::{
-    compute, compute_cache, registry, AppState, ComputeJobSpec, emit_or_log, enforce_compute_policy,
+    compute, compute_cache, registry, AppState, ComputeJobSpec, enforce_compute_policy,
 };
 use std::time::Instant;
+fn emit_or_log_generic<R: Runtime, T>(app_handle: &tauri::AppHandle<R>, event: &str, payload: T)
+where
+    T: serde::Serialize + Clone,
+{
+    if let Err(err) = app_handle.emit(event, payload) {
+        eprintln!("Failed to emit {event}: {err}");
+    }
+}
 
 pub async fn compute_call<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -25,7 +33,7 @@ pub async fn compute_call<R: Runtime>(
 
     // --- Policy enforcement ---
     if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log(&app_handle, "compute.result.final", &deny);
+        emit_or_log_generic(&app_handle, "compute.result.final", &deny);
         return Ok(());
     }
 
@@ -49,7 +57,7 @@ pub async fn compute_call<R: Runtime>(
                     *metrics = serde_json::json!({ "cacheHit": true });
                 }
             }
-            emit_or_log(&app_handle, "compute.result.final", cached);
+            emit_or_log_generic(&app_handle, "compute.result.final", cached);
             return Ok(());
         } else if cache_mode == "readonly" {
             let payload = crate::ComputeFinalErr {
@@ -59,7 +67,7 @@ pub async fn compute_call<R: Runtime>(
                 code: "Runtime.Fault".into(),
                 message: "Cache miss under ReadOnly cache policy".into(),
             };
-            emit_or_log(&app_handle, "compute.result.final", &payload);
+            emit_or_log_generic(&app_handle, "compute.result.final", &payload);
             return Ok(());
         }
     }
@@ -220,17 +228,16 @@ pub async fn clear_compute_cache<R: Runtime>(
 ) -> Result<(), String> {
     let ws = workspace_id.unwrap_or_else(|| "default".into());
     let state: State<'_, AppState> = app.state();
-    let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let conn = rusqlite::Connection::open(path).context("open sqlite for clear_compute_cache")?;
-        crate::configure_sqlite(&conn).context("configure sqlite for clear_compute_cache")?;
-        conn.execute(
-            "DELETE FROM compute_cache WHERE workspace_id = ?1",
-            rusqlite::params![ws],
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("{e}"))?
-    .map_err(|e| format!("{e:?}"))
+    state
+        .db_rw
+        .call(move |conn| -> tokio_rusqlite::Result<()> {
+            conn.execute(
+                "DELETE FROM compute_cache WHERE workspace_id = ?1",
+                rusqlite::params![ws],
+            )
+            .map_err(tokio_rusqlite::Error::from)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("{e:?}"))
 }

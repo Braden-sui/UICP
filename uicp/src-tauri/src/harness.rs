@@ -1,7 +1,7 @@
 #![cfg(any(test, feature = "compute_harness"))]
 
 use crate::{
-    compute_call, compute_cancel, ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR,
+    ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR,
 };
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -81,27 +81,31 @@ impl ComputeTestHarness {
         tauri::async_runtime::block_on(async {
             // Writer: full configuration (unwrap both layers: tokio_rusqlite and rusqlite)
             db_rw
-                .call(|c| {
+                .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
                     use std::time::Duration;
-                    c.busy_timeout(Duration::from_millis(5_000))?;
-                    c.pragma_update(None, "journal_mode", "WAL")?;
-                    c.pragma_update(None, "synchronous", "NORMAL")?;
-                    c.pragma_update(None, "foreign_keys", "ON")?;
-                    Ok::<_, rusqlite::Error>(())
+                    c.busy_timeout(Duration::from_millis(5_000))
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "journal_mode", "WAL")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "synchronous", "NORMAL")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "foreign_keys", "ON")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    Ok(())
                 })
                 .await
-                .expect("tokio-rusqlite call")
                 .expect("configure sqlite rw");
             // Reader: non-writing pragmas only
             db_ro
-                .call(|c| {
+                .call(|c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
                     use std::time::Duration;
-                    c.busy_timeout(Duration::from_millis(5_000))?;
-                    c.pragma_update(None, "foreign_keys", "ON")?;
-                    Ok::<_, rusqlite::Error>(())
+                    c.busy_timeout(Duration::from_millis(5_000))
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "foreign_keys", "ON")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    Ok(())
                 })
                 .await
-                .expect("tokio-rusqlite call")
                 .expect("configure sqlite ro");
         });
 
@@ -187,7 +191,7 @@ impl ComputeTestHarness {
         });
 
         let state: tauri::State<'_, AppState> = self.app.state();
-        if let Err(err) = compute_call(self.app.handle().clone(), state, spec.clone()).await {
+        if let Err(err) = crate::commands::compute_call(self.app.handle().clone(), state, spec.clone()).await {
             self.app.unlisten(listener_id);
             return Err(anyhow::anyhow!(err));
         }
@@ -210,7 +214,7 @@ impl ComputeTestHarness {
     /// Issue a cancellation for a running job.
     pub async fn cancel_job(&self, job_id: &str) -> Result<()> {
         let state: tauri::State<'_, AppState> = self.app.state();
-        compute_cancel(self.app.handle().clone(), state, job_id.to_string())
+        crate::commands::compute_cancel(self.app.handle().clone(), state, job_id.to_string())
             .await
             .map_err(|err| anyhow::anyhow!(err))
     }

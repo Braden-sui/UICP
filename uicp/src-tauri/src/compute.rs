@@ -460,7 +460,7 @@ mod with_runtime {
     impl TelemetryEmitter for QueueingEmitter {
         fn emit_debug(&self, payload: serde_json::Value) {
             loop {
-                let mut tx = self.tx.lock().unwrap();
+                let tx = self.tx.lock().unwrap();
                 if tx.try_send(UiEvent::Debug(payload.clone())).is_ok() { break; }
                 drop(tx);
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -468,7 +468,7 @@ mod with_runtime {
         }
         fn emit_partial(&self, event: crate::ComputePartialEvent) {
             loop {
-                let mut tx = self.tx.lock().unwrap();
+                let tx = self.tx.lock().unwrap();
                 if tx.try_send(UiEvent::PartialEvent(event.clone())).is_ok() { break; }
                 drop(tx);
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -476,7 +476,7 @@ mod with_runtime {
         }
         fn emit_partial_json(&self, payload: serde_json::Value) {
             loop {
-                let mut tx = self.tx.lock().unwrap();
+                let tx = self.tx.lock().unwrap();
                 if tx.try_send(UiEvent::PartialJson(payload.clone())).is_ok() { break; }
                 drop(tx);
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1539,7 +1539,7 @@ mod with_runtime {
 
     
     fn host_wasi_log(
-        mut store: StoreContextMut<'_, Ctx>,
+        store: StoreContextMut<'_, Ctx>,
         (level, context, message): (u32, String, String),
     ) -> anyhow::Result<()> {
         let level_str = match level {
