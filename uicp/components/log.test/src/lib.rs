@@ -1,6 +1,8 @@
 #[allow(warnings)]
 mod bindings;
 
+use bindings::export;
+use bindings::exports;
 use bindings::exports::uicp::task_log_test::task::Guest as TaskGuest;
 use bindings::wasi::logging::logging;
 
@@ -13,4 +15,4 @@ impl TaskGuest for Component {
     }
 }
 
-bindings::__export_entry_impl!(Component with_types_in bindings);
+export!(Component);
