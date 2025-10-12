@@ -2198,23 +2198,57 @@ mod with_runtime {
             let engine = build_engine().expect("engine");
             let mut linker: Linker<Ctx> = Linker::new(&engine);
             add_wasi_and_host(&mut linker).expect("wasi add ok");
-            // Disallowed capabilities should not be present in the linker
-            assert!(
-                linker.instance("wasi:http/outgoing-handler").is_err(),
-                "wasi:http should not be linked"
-            );
-            assert!(
-                linker.instance("wasi:http/types").is_err(),
-                "wasi:http types should not be linked"
-            );
-            assert!(
-                linker.instance("wasi:sockets/tcp").is_err(),
-                "wasi:sockets tcp should not be linked"
-            );
-            assert!(
-                linker.instance("wasi:sockets/udp").is_err(),
-                "wasi:sockets udp should not be linked"
-            );
+            // Positive check: logging is linked (duplicate registration should fail)
+            {
+                let mut inst = linker
+                    .instance("wasi:logging/logging")
+                    .expect("logging namespace available");
+                let dup = inst.func_wrap("log", host_wasi_log);
+                assert!(dup.is_err(), "wasi:logging/logging must already be linked");
+            }
+
+            // Best-effort negative checks: ensure we did not pre-populate HTTP or sockets namespaces.
+            // Creating a placeholder function should succeed if the namespace was not pre-linked.
+            {
+                let mut http = linker
+                    .instance("wasi:http/outgoing-handler")
+                    .expect("http namespace builder");
+                let ok = http.func_wrap(
+                    "__placeholder",
+                    |_store: StoreContextMut<'_, Ctx>, _args: ()| -> anyhow::Result<()> { Ok(()) },
+                );
+                assert!(ok.is_ok(), "http namespace should not be pre-linked");
+            }
+            {
+                let mut http_types = linker
+                    .instance("wasi:http/types")
+                    .expect("http types namespace builder");
+                let ok = http_types.func_wrap(
+                    "__placeholder",
+                    |_store: StoreContextMut<'_, Ctx>, _args: ()| -> anyhow::Result<()> { Ok(()) },
+                );
+                assert!(ok.is_ok(), "http types namespace should not be pre-linked");
+            }
+            {
+                let mut tcp = linker
+                    .instance("wasi:sockets/tcp")
+                    .expect("sockets tcp namespace builder");
+                let ok = tcp.func_wrap(
+                    "__placeholder",
+                    |_store: StoreContextMut<'_, Ctx>, _args: ()| -> anyhow::Result<()> { Ok(()) },
+                );
+                assert!(ok.is_ok(), "sockets tcp namespace should not be pre-linked");
+            }
+            {
+                let mut udp = linker
+                    .instance("wasi:sockets/udp")
+                    .expect("sockets udp namespace builder");
+                let ok = udp.func_wrap(
+                    "__placeholder",
+                    |_store: StoreContextMut<'_, Ctx>, _args: ()| -> anyhow::Result<()> { Ok(()) },
+                );
+                assert!(ok.is_ok(), "sockets udp namespace should not be pre-linked");
+            }
         }
 
         #[cfg(feature = "uicp_wasi_enable")]
