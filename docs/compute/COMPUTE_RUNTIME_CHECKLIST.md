@@ -93,10 +93,10 @@ Legend
     - Implemented stdio/logger capture to structured log partials; UI renders log previews in `LogsPanel` via `compute_log` UI debug events.【F:uicp/src/lib/bridge/tauri.ts】【F:uicp/src/components/LogsPanel.tsx】
     - Tests: add fixtures that stream valid/malformed CBOR and interleaved stdio ordering. (planned)
 
-  - [ ] Metrics finishing pass
-    - Extend `collect_metrics()` to record `fuelUsed` (via `Store::get_fuel` once metering is enabled) and `memPeakMb` from `StoreLimits`, alongside existing duration/deadline data.【F:uicp/src-tauri/src/compute.rs†L824-L858】
-    - Wire `log_count` increments inside the logger shim, propagate `partialFrames`/`invalidPartialsDropped`, and persist metrics in cache writes (`compute_cache::store`).
-    - Emit metrics for terminal error envelopes (`finalize_error`) to keep UI/telemetry parity with success cases.【F:uicp/src-tauri/src/compute.rs†L702-L765】
+  - [x] Metrics finishing pass
+    - Implemented: `collect_metrics()` now records `fuelUsed` (when fuel metering enabled) and `memPeakMb` via a custom resource limiter that tracks peak memory growth; existing duration/deadline data preserved.
+    - Implemented: `logCount`, `partialFrames`, `invalidPartialsDropped`, and throttle wait counters are propagated and persisted in cache writes.
+    - Implemented: error-path metrics included in terminal error envelopes and bridged to UI; frontend schemas updated to parse error metrics and store them.
 
 -------------------------------------------------------------------------------
 
@@ -219,9 +219,9 @@ Legend
 - [x] Structured events
   - `debug-log`, `compute.result.final`, `compute.debug` telemetry; replay telemetry
 
-- [~] Per-task metrics
+  - [~] Per-task metrics
   - Final Ok envelopes include duration, deadline budget, log/partial counters, and `outputHash`; cache persistence keeps metrics (`uicp/src-tauri/src/compute.rs:842`).
-  - TODO: add mem/fuel capture, expose metrics in UI dashboards, and include error-path metrics.
+  - Update: mem/fuel capture and error-path metrics implemented; remaining work is UI polish and additional dashboards/tests.
 
   - [~] Logs/trace capture
     - Implemented: `wasi:logging/logging` bridged to structured `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream:"wasi-logging", level, context, tick, bytesLen, previewB64, truncated }`. Per-job byte budgets and rate limits applied. Mirrored as `debug-log` with `compute_guest_log` for dev visibility.

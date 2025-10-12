@@ -1,21 +1,14 @@
-# Complete Test Audit - Zero Performative Tests
+# Complete Test Audit (Reference)
 
 ## Executive Summary
 
-Audited **100% of test suites** across Rust and TypeScript codebases.
-
-**Result: ALL TESTS ARE REAL**
-
-- Rust: 58 unit tests + 19 integration tests = **77 real tests**
-- TypeScript: 24 test files (sampled 20) = **~150+ real tests**
-- **Performative tests fixed: 7** (all in compute/persistence integration)
-- **Performative tests remaining: 0**
+This document enumerates representative tests across Rust and TypeScript and highlights how they exercise production code paths. Use local runs and CI outputs for current counts and pass/fail status.
 
 ---
 
-## Rust Unit Tests (58 tests) - ALL REAL ✅
+## Rust Unit Tests (examples)
 
-### compute.rs (15 tests)
+### compute.rs
 **Validates actual runtime behavior:**
 - `sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir` - Real path traversal prevention
 - `sanitize_ws_files_path_rejects_symlink_escape` (Unix) - Real symlink escape detection
@@ -33,7 +26,7 @@ Audited **100% of test suites** across Rust and TypeScript codebases.
 - `extract_table_query_input_parses_rows_select_and_where` - Real input parsing
 - `derive_job_seed_is_stable_and_unique_per_env` - Real SHA256 hashing
 
-### compute_cache.rs (5 tests)
+### compute_cache.rs
 **Validates actual cache logic:**
 - `canonicalize_is_stable_and_key_sorted` - Real JSON canonicalization with object key sorting
 - `compute_key_changes_with_input_and_env` - Real SHA256 cache key derivation
@@ -41,13 +34,13 @@ Audited **100% of test suites** across Rust and TypeScript codebases.
 - `upsert_scopes_to_workspace_and_preserves_created_at` - Real SQLite upsert logic
 - Tests call actual `canonicalize_input()` and `compute_key()` functions
 
-### registry.rs (13 tests)
+### registry.rs
 **Validates actual module verification:**
 - Ed25519 signature verification tests - Real cryptographic validation
 - Module manifest parsing - Real JSON schema validation
 - Module installation logic - Real file I/O and validation
 
-### main.rs (6 tests)
+### main.rs
 **Validates actual normalization:**
 - `cloud_keeps_colon_tags` - Real string manipulation
 - `cloud_strips_trailing_cloud_suffix` - Real suffix removal
@@ -58,9 +51,9 @@ Audited **100% of test suites** across Rust and TypeScript codebases.
 
 ---
 
-## Rust Integration Tests (19 tests) - ALL REAL ✅
+## Rust Integration Tests (examples)
 
-### integration_compute/negative_execution.rs (12 tests) - FIXED
+### integration_compute/negative_execution.rs
 **Before:** Hardcoded math, no real function calls
 **After:** All call `enforce_compute_policy()` from production
 
@@ -78,7 +71,7 @@ Tests now validate:
 - `fs_workspace_paths_are_allowed` - Tests ws:/ prefix acceptance
 - Network test REMOVED (web browsing feature will change policy)
 
-### integration_compute/smoke_test.rs (3 tests) - FIXED
+### integration_compute/smoke_test.rs
 **Before:** Rolling own SHA256, not calling production code
 **After:** All call `compute_cache::compute_key()`
 
@@ -87,38 +80,38 @@ Tests now validate:
 - `cache_key_changes_with_different_inputs` - Tests variation
 - `cache_key_changes_with_different_env` - Tests env_hash inclusion
 
-### integration_compute/concurrency_cap.rs (2 tests) - ALREADY GOOD
+### integration_compute/concurrency_cap.rs
 - `concurrency_cap_enforces_queue_with_n_equals_2` - Real tokio::sync::Semaphore
 - `concurrency_cap_spec_validation` - Real acquire/release behavior
 
-### integration_compute/kill_replay_shakedown.rs (1 test) - TOOL VALIDATION (ACCEPTABLE)
+### integration_compute/kill_replay_shakedown.rs (tool validation)
 - `kill_replay_produces_identical_output_hash` - Validates harness binary (tool test)
 
-### integration_persistence/ (16 tests) - COMPLETELY REFACTORED
+### integration_persistence/ (refactored)
 
-**Deleted 5 harness-only tests** (only tested test tools):
+Deleted harness-only tests that targeted helper tooling instead of production code:
 - ❌ concurrency_visibility.rs
 - ❌ persist_apply_roundtrip.rs
 - ❌ replay_with_missing_results.rs
 - ❌ schema_migration_guard.rs
 - ❌ sqlite_fault_injection.rs
 
-**Created 3 new modules testing production DB operations:**
+Created modules testing production DB operations:
 
-#### workspace_persistence.rs (4 tests)
+#### workspace_persistence.rs
 - `workspace_save_load_roundtrip` - Real save/load SQL from production
 - `workspace_foreign_key_cascade_delete` - Real FK constraint testing
 - `concurrent_workspace_writes_last_write_wins` - Real UPDATE ordering
 - All use production schema and SQL queries
 
-#### command_persistence.rs (5 tests)
+#### command_persistence.rs
 - `persist_command_stores_in_tool_call_table` - Real INSERT validation
 - `get_workspace_commands_returns_ordered_by_created_at` - Real ORDER BY
 - `clear_workspace_commands_deletes_all_for_workspace` - Real DELETE scoping
 - `incomplete_commands_have_null_result` - Real NULL handling
 - All mimic production Tauri command SQL
 
-#### schema_integrity.rs (7 tests)
+#### schema_integrity.rs
 - `foreign_key_constraint_prevents_orphaned_windows` - Real FK enforcement
 - `foreign_key_check_detects_violations` - PRAGMA foreign_key_check
 - `quick_check_validates_db_integrity` - PRAGMA quick_check
@@ -129,9 +122,9 @@ Tests now validate:
 
 ---
 
-## TypeScript Unit Tests (~150+ tests in 24 files) - ALL REAL ✅
+## TypeScript Unit Tests (examples)
 
-**Sampled 20 of 24 files** - all validate real logic:
+Examples across files demonstrate real logic coverage:
 
 ### State Management (3 files)
 **compute.store.test.ts** - Tests Zustand store mutations

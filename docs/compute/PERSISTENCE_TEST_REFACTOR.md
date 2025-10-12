@@ -24,14 +24,14 @@ All 5 original persistence tests were **performative** - they only tested a test
 
 Deleted harness-based tests and created **3 new test modules** that test production DB schema directly:
 
-### 1. workspace_persistence.rs (4 tests)
+### 1. workspace_persistence.rs
 Tests `save_workspace` / `load_workspace` DB operations:
 - `workspace_save_load_roundtrip` - Validates window save/load using production schema
 - `workspace_foreign_key_cascade_delete` - Tests FK CASCADE on workspace deletion
 - `concurrent_workspace_writes_last_write_wins` - Validates UPDATE ordering
 - All tests use production schema and SQL queries
 
-### 2. command_persistence.rs (5 tests)
+### 2. command_persistence.rs
 Tests `persist_command` / `get_workspace_commands` DB operations:
 - `persist_command_stores_in_tool_call_table` - Validates command INSERT
 - `get_workspace_commands_returns_ordered_by_created_at` - Tests ORDER BY logic
@@ -39,7 +39,7 @@ Tests `persist_command` / `get_workspace_commands` DB operations:
 - `incomplete_commands_have_null_result` - Validates result_json NULL handling
 - All tests mimic production Tauri command SQL
 
-### 3. schema_integrity.rs (7 tests)
+### 3. schema_integrity.rs
 Tests database schema constraints and integrity:
 - `foreign_key_constraint_prevents_orphaned_windows` - FK enforcement
 - `foreign_key_check_detects_violations` - PRAGMA foreign_key_check
@@ -59,9 +59,9 @@ Tests database schema constraints and integrity:
 
 ### Created (4 files)
 - ✅ `integration_persistence.rs` - Module entry point
-- ✅ `workspace_persistence.rs` - 4 tests for workspace operations
-- ✅ `command_persistence.rs` - 5 tests for command operations
-- ✅ `schema_integrity.rs` - 7 tests for schema constraints
+- ✅ `workspace_persistence.rs` - workspace operations
+- ✅ `command_persistence.rs` - command operations
+- ✅ `schema_integrity.rs` - schema constraints
 
 ## What These Tests NOW Catch
 
@@ -104,11 +104,6 @@ cd uicp/src-tauri
 cargo test --test integration_persistence
 ```
 
-## Test Count
+## Notes on Test Counts
 
-**Before**: 5 tests (all testing harness, not production)
-**After**: 16 tests (all testing production DB schema)
-
-- workspace_persistence: 4 tests
-- command_persistence: 5 tests  
-- schema_integrity: 7 tests
+Counts evolve as the codebase changes. Refer to local `cargo test` runs and CI for the current numbers and results.

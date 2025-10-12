@@ -63,9 +63,15 @@ npm ci
 npm run tauri:dev
 ```
 
-### Wasm compute (optional, now default-enabled)
+### Ports
 
-If you enabled the `wasm_compute` feature (default in this repo), you need to build and publish the task components and point the app at the module directory during development:
+- Dev server (Vite): `http://127.0.0.1:1420` (see `uicp/vite.config.ts`).
+- Tauri dev: proxies to the same dev server on port `1420`.
+- Preview (Playwright e2e): `http://127.0.0.1:4173` (see `uicp/playwright.config.ts`).
+
+### Wasm compute (optional)
+
+When you enable the `wasm_compute` feature, build and publish task components and point the app at the module directory during development:
 
 1) Install toolchain for components
 
@@ -88,16 +94,15 @@ cd uicp
 npm run modules:publish
 ```
 
-4) Run Tauri with the module directory set for dev
+4) Run Tauri with the compute runtime enabled (features) and the module directory set for dev
 
 ```bash
 cd uicp
-npm run dev:wasm
+npm run dev:wasm:runtime
 ```
 
 Notes
 - The runtime resolves modules from the app data dir by default: `~/Documents/UICP/modules`. During dev we override with `UICP_MODULES_DIR=src-tauri/modules`.
-- To run without typed Wasm exports (legacy/debug mode), set `UICP_COMPUTE_TYPED_ONLY=0`. Production builds keep typed mode enabled.
 - Agent Settings shows the resolved modules directory and provides buttons to copy the path or open the folder.
 
 ## Tests

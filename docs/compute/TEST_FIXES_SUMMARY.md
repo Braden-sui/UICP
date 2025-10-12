@@ -6,7 +6,7 @@ Initial tests were performative - they asserted hardcoded math instead of callin
 
 ## Fixes Applied
 
-### negative_execution.rs - COMPLETELY REWRITTEN
+### negative_execution.rs - rewritten to exercise production policy
 
 **Before (Useless)**:
 ```rust
@@ -25,7 +25,7 @@ assert!(result.is_some());
 assert_eq!(result.unwrap().code, "Compute.CapabilityDenied");
 ```
 
-**New Tests (12 total, all call real code)**:
+Representative cases (all call real code):
 1. `timeout_below_minimum_is_denied` - Calls `enforce_compute_policy()` with 500ms
 2. `timeout_above_maximum_is_denied` - Calls `enforce_compute_policy()` with 150000ms  
 3. `timeout_above_30s_without_long_run_is_denied` - Tests capability requirement
@@ -39,7 +39,7 @@ assert_eq!(result.unwrap().code, "Compute.CapabilityDenied");
 11. `fs_workspace_paths_are_allowed` - Tests `ws:/files/*` acceptance
 12. ~~`network_access_is_denied_by_default`~~ - REMOVED (web browsing will allow network)
 
-### smoke_test.rs - FIXED
+### smoke_test.rs - switched to production key logic
 
 **Before (Useless)**:
 ```rust
@@ -58,16 +58,16 @@ let key2 = uicp::compute_cache_key(task, &input2, env_hash);
 assert_eq!(key1, key2);
 ```
 
-**New Tests (3 total, all call real code)**:
+Representative cases (all call real code):
 1. `cache_key_is_deterministic_for_identical_inputs` - Calls `compute_cache::compute_key()`
 2. `cache_key_changes_with_different_inputs` - Tests different source/hasHeader
 3. `cache_key_changes_with_different_env` - Tests env_hash variation
 
-### concurrency_cap.rs - ALREADY GOOD
+### concurrency_cap.rs - validates real semaphore behavior
 
 This test was already real - it spawns actual tokio tasks and uses real Semaphore logic.
 
-### kill_replay_shakedown.rs - ALREADY GOOD
+### kill_replay_shakedown.rs - validates harness and DB flow
 
 This test was already real - it runs the actual harness binary, manipulates DB, verifies hashes.
 
@@ -108,12 +108,9 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
 - Actual FS/Net access attempts from guest code
 - Cancellation signal propagation
 
-## Test Count
+## Notes on Counts
 
-**Before**: 5 tests (all performative)
-**After**: 15 tests calling real production code (12 policy + 3 cache)
-
-**Note**: Network access test removed in preparation for web browsing feature.
+Counts change over time. Use local runs and CI to confirm current totals. Network-access test was removed in preparation for a future web-browsing capability.
 
 ## Verification
 
@@ -123,4 +120,4 @@ cd uicp/src-tauri
 cargo test --features "wasm_compute uicp_wasi_enable" --test integration_compute
 ```
 
-Expected: All tests pass and call real code paths.
+Expectation: Tests should call real code paths; verify by running the suite locally and checking CI.

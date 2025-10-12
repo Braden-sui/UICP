@@ -69,6 +69,14 @@ Compute modules and runtime
 - `npm run modules:publish` – copy built components into `uicp/src-tauri/modules` and update manifest
 - `npm run gen:io` – regenerate TypeScript bindings from WIT into `uicp/src/compute/types.gen.ts`
 
+## Documentation
+
+- Compute runtime details: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md
+- WIL Architecture and Protocol:
+  - docs/ARCHITECTURE.md — Planner/Actor contracts, parsing, files.
+  - docs/compute/WIL_QUICKSTART.md — Allowed templates and examples.
+  - docs/WIL_REFACTOR.md — Tracking log and backlog.
+
 ## Environment
 
 | variable | default | notes |
