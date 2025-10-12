@@ -13,5 +13,4 @@ impl TaskGuest for Component {
     }
 }
 
-bindings::export!(Component);
-
+bindings::__export_entry_impl!(Component with_types_in bindings);
