@@ -443,7 +443,34 @@ export async function initializeTauriBridge() {
       const toast = formatComputeErrorToast(final as any);
       useAppStore.getState().pushToast(toast);
       useChatStore.getState().pushSystemMessage(toast.message, 'compute_final_error');
-      useComputeStore.getState().markFinal(final.jobId, false, undefined, final.message, final.code);
+      const m = (final as any).metrics as {
+        durationMs?: number;
+        fuelUsed?: number;
+        memPeakMb?: number;
+        cacheHit?: boolean;
+        deadlineMs?: number;
+        remainingMsAtFinish?: number;
+        logCount?: number;
+        partialFrames?: number;
+        invalidPartialsDropped?: number;
+        logThrottleWaits?: number;
+        loggerThrottleWaits?: number;
+        partialThrottleWaits?: number;
+      } | undefined;
+      useComputeStore.getState().markFinal(final.jobId, false, {
+        durationMs: m?.durationMs,
+        fuelUsed: m?.fuelUsed,
+        memPeakMb: m?.memPeakMb,
+        cacheHit: m?.cacheHit,
+        deadlineMs: m?.deadlineMs,
+        remainingMsAtFinish: m?.remainingMsAtFinish,
+        logCount: m?.logCount,
+        partialFrames: m?.partialFrames,
+        invalidPartialsDropped: m?.invalidPartialsDropped,
+        logThrottleWaits: m?.logThrottleWaits,
+        loggerThrottleWaits: m?.loggerThrottleWaits,
+        partialThrottleWaits: m?.partialThrottleWaits,
+      }, final.message, final.code);
       pendingBinds.delete(final.jobId);
       return;
     }

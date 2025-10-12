@@ -1,9 +1,17 @@
 import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
 import type { StreamEvent } from './ollama';
-import { parseJsonLoose } from './json';
+// JSON parsing removed for WIL-only mode
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
 import { createId } from '../utils';
+import { parseUtterance } from '../wil/parse';
+import { toOp } from '../wil/map';
+import { cfg } from '../config';
+import { collectTextFromChannels } from '../orchestrator/collectTextFromChannels';
+import { parseWILBatch } from '../orchestrator/parseWILBatch';
+import { composeClarifier } from '../orchestrator/clarifier';
+import { enforcePlannerCap } from '../orchestrator/plannerCap';
+import { composeClarifier } from '../orchestrator/clarifier';
 
 const readEnvMs = (key: string, fallback: number): number => {
   // Vite exposes env via import.meta.env; coerce string → number if valid
@@ -45,155 +53,16 @@ export type RunIntentResult = {
   failures?: { planner?: string; actor?: string };
 };
 
-async function collectJsonFromChannels<T = unknown>(
-  stream: AsyncIterable<StreamEvent>,
-  options?: { timeoutMs?: number; primaryChannels?: string[]; fallbackChannels?: string[] },
-): Promise<{ data: T; channelUsed?: string }> {
-  const iterator = stream[Symbol.asyncIterator]();
-  const primaryChannels = options?.primaryChannels?.map((c) => c.toLowerCase()) ?? ['json', 'final'];
-  const fallbackChannels =
-    options?.fallbackChannels?.map((c) => c.toLowerCase()) ?? ['assistant', 'commentary', 'text', 'analysis', 'thought', 'reasoning'];
-  const primarySet = new Set(primaryChannels);
-  const fallbackSet = new Set(fallbackChannels);
-  const toolBuffers = new Map<string, string>();
-  const toolOrder: string[] = [];
-  let primaryBuf = '';
-  let fallbackBuf = '';
-  let primaryChannelUsed: string | undefined;
-  let fallbackChannelUsed: string | undefined;
-  let lastToolError: unknown;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  const timeoutMs = options?.timeoutMs ?? 35_000;
-  const timeoutError = new Error(`LLM timeout after ${timeoutMs}ms`);
-
-  const appendToolArguments = (rawName: string | undefined, chunk: string) => {
-    if (!rawName || !chunk) return;
-    const name = rawName.toLowerCase();
-    if (!toolBuffers.has(name)) {
-      toolBuffers.set(name, chunk);
-      toolOrder.push(name);
-    } else {
-      toolBuffers.set(name, `${toolBuffers.get(name)!}${chunk}`);
-    }
-  };
-
-  const parseFromToolBuffers = (): { data: T; channelUsed: string } | undefined => {
-    if (toolBuffers.size === 0) return undefined;
-    const preferred = ['emit_plan', 'emit_batch'];
-    const ordered = [...preferred, ...toolOrder.filter((name) => !preferred.includes(name))];
-    for (const name of ordered) {
-      const payload = toolBuffers.get(name);
-      if (!payload || payload.trim().length === 0) continue;
-      try {
-        const parsed = parseJsonLoose<T>(payload);
-        return { data: parsed, channelUsed: `tool:${name}` };
-      } catch (err) {
-        lastToolError = err;
-      }
-    }
-    return undefined;
-  };
-
-  const consume = (async () => {
-    try {
-      while (true) {
-        const { value, done } = await iterator.next();
-        if (done) break;
-        const event = value as StreamEvent;
-        if (event.type === 'done') break;
-        if (event.type === 'tool_call') {
-          appendToolArguments(event.name, event.arguments);
-          continue;
-        }
-        if (event.type === 'return') {
-          const channel = (event.channel ?? 'return').toLowerCase();
-          const name = typeof event.name === 'string' ? event.name.toLowerCase() : undefined;
-          if (typeof iterator.return === 'function') {
-            try {
-              await iterator.return();
-            } catch {
-              // ignore iterator return errors
-            }
-          }
-          const used = name ? `return:${name}` : channel;
-          return { data: event.result as T, channelUsed: used };
-        }
-        if (event.type !== 'content') continue;
-        const channel = event.channel?.toLowerCase();
-        const isPrimary = !channel || primarySet.has(channel);
-        const isFallback = channel ? fallbackSet.has(channel) : false;
-        if (isPrimary) {
-          primaryBuf += event.text;
-          primaryChannelUsed = channel ?? primaryChannels[0] ?? 'json';
-          try {
-            const parsed = parseJsonLoose<T>(primaryBuf);
-            if (typeof iterator.return === 'function') {
-              try {
-                await iterator.return();
-              } catch {
-                // ignore iterator return errors
-              }
-            }
-            return { data: parsed, channelUsed: primaryChannelUsed };
-          } catch {
-            // Keep aggregating until we have a parsable payload.
-          }
-        } else if (isFallback) {
-          fallbackBuf += event.text;
-          fallbackChannelUsed = channel;
-        }
-      }
-      const toolResult = parseFromToolBuffers();
-      if (toolResult) {
-        return toolResult;
-      }
-      if (primaryBuf.trim().length) {
-        return {
-          data: parseJsonLoose<T>(primaryBuf),
-          channelUsed: primaryChannelUsed ?? primaryChannels[0] ?? 'json',
-        };
-      }
-      if (fallbackBuf.trim().length) {
-        return {
-          data: parseJsonLoose<T>(fallbackBuf),
-          channelUsed: fallbackChannelUsed ?? fallbackChannels[0] ?? 'commentary',
-        };
-      }
-      if (lastToolError) {
-        throw lastToolError instanceof Error ? lastToolError : new Error(String(lastToolError));
-      }
-      throw new Error('Model did not emit parsable JSON on expected channels');
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-    }
-  })();
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      reject(timeoutError);
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([consume, timeoutPromise]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-    if (timedOut && typeof iterator.return === 'function') {
-      try {
-        await iterator.return();
-      } catch {
-        // ignore iterator return errors
-      }
-    }
+const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error: unknown): string => {
+  const reason = toError(error).message.replace(/\s+/g, ' ').trim();
+  const snippet = reason.length > 400 ? `${reason.slice(0, 400)}...` : reason;
+  if (toolName === 'emit_plan') {
+    return `Your previous response did not follow the Planner contract. Output plain text sections (Summary, Steps, Risks, ActorHints). No JSON. No WIL. Last error: ${snippet}`;
   }
-}
+  return `Your previous response did not follow the Actor contract. Output WIL only, one command per line. No JSON or commentary. Stop on first nop:. Last error: ${snippet}`;
+};
+
+// JSON collectors removed in WIL-only mode.
 
 export async function planWithProfile(
   intent: string,
@@ -201,16 +70,34 @@ export async function planWithProfile(
 ): Promise<{ plan: Plan; channelUsed?: string }> {
   const client = getPlannerClient();
   const profile = getPlannerProfile(options?.profileKey);
+  // WIL planner: collect plain text outline and emit empty-batch plan
+  if (cfg.wilOnly || profile.key === 'wil') {
+    const stream = client.streamIntent(intent, { profileKey: profile.key });
+    const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
+    if (!text || text.trim().length === 0) {
+      throw new Error('planner_empty');
+    }
+    const outline = parsePlannerOutline(text || intent);
+    const plan = validatePlan({
+      summary: outline.summary,
+      risks: outline.risks && outline.risks.length ? outline.risks : undefined,
+      batch: [],
+      actor_hints: outline.actorHints && outline.actorHints.length ? outline.actorHints : undefined,
+    });
+    return { plan, channelUsed: 'text' };
+  }
   let lastErr: unknown;
+  let extraSystem: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const stream = client.streamIntent(intent, { profileKey: profile.key });
+      const stream = client.streamIntent(intent, { profileKey: profile.key, extraSystem });
       const { data, channelUsed } = await collectJsonFromChannels(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS,
       });
       return { plan: validatePlan(data), channelUsed };
     } catch (err) {
       lastErr = err;
+      extraSystem = buildStructuredRetryMessage('emit_plan', err);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -272,19 +159,63 @@ export async function actWithProfile(
   const profile = getActorProfile(options?.profileKey);
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
   let lastErr: unknown;
+  let extraSystem: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const stream = client.streamPlan(planJson, { profileKey: profile.key });
+      if (cfg.wilOnly || profile.key === 'wil') {
+        const stream = client.streamPlan(planJson, { profileKey: profile.key, extraSystem });
+        const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
+        if (!text || text.trim().length === 0) {
+          throw new Error('actor_nop: invalid WIL line');
+        }
+        const items = parseWILBatch(text);
+        const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
+        if (nop) throw new Error(`actor_nop: ${nop.nop}`);
+        const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
+        return { batch: validateBatch(ops), channelUsed: 'text' };
+      }
+
+      const stream = client.streamPlan(planJson, { profileKey: profile.key, extraSystem });
       const { data, channelUsed } = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS,
       });
       const payload = Array.isArray(data) ? data : (data as { batch?: unknown })?.batch;
+      if (!Array.isArray(payload)) {
+        const summary = data && typeof data === 'object' ? `keys=${Object.keys(data as Record<string, unknown>).join(',')}` : String(data);
+        throw new Error(`emit_batch must return an object with a batch array. Received ${summary || 'empty payload'}.`);
+      }
       return { batch: validateBatch(payload as unknown), channelUsed };
     } catch (err) {
       lastErr = err;
+      extraSystem = buildStructuredRetryMessage('emit_batch', err);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+function parsePlannerOutline(text: string): { summary: string; risks?: string[]; actorHints?: string[] } {
+  const lines = (text || '').split(/\r?\n/);
+  let section: 'summary' | 'steps' | 'risks' | 'actorHints' | 'appNotes' | null = null;
+  let summary = '';
+  const risks: string[] = [];
+  const actorHints: string[] = [];
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const lower = line.toLowerCase();
+    if (lower.startsWith('summary:')) { section = 'summary'; summary = line.slice(8).trim(); continue; }
+    if (lower.startsWith('steps:')) { section = 'steps'; continue; }
+    if (lower.startsWith('risks:')) { section = 'risks'; continue; }
+    if (lower.startsWith('actorhints:')) { section = 'actorHints'; continue; }
+    if (lower.startsWith('appnotes:')) { section = 'appNotes'; continue; }
+    if (section === 'summary' && !summary) { summary = line; continue; }
+    if (section === 'risks') { risks.push(line.replace(/^[-•]\s*/, '')); continue; }
+    if (section === 'actorHints') { actorHints.push(line.replace(/^[-•]\s*/, '')); continue; }
+  }
+
+  if (!summary) summary = 'Plan';
+  return { summary, risks, actorHints };
 }
 
 // Legacy aliases (default to configured profiles).
@@ -359,36 +290,74 @@ export async function runIntent(
   // Step 2: Act
   let batch: Batch;
   let actorChannelUsed: string | undefined;
+  let clarifierAttempted = false;
   try {
     const out = await actWithProfile(plan, { profileKey: options?.actorProfileKey });
     batch = out.batch;
     actorChannelUsed = out.channelUsed;
   } catch (err) {
     const failure = toError(err);
-    // Actor failed: return a safe error window batch to surface failure without partial apply
-    notice = 'actor_fallback';
-    failures.actor = failure.message;
-    console.error('actor failed', { traceId, error: failure });
-    const errorWin: Envelope<'window.create'> = {
-      op: 'window.create',
-      idempotencyKey: createId('idemp'),
-      traceId,
-      txnId,
-      params: { id: createId('window'), title: 'Action Failed', width: 520, height: 320, x: 80, y: 80 },
-    };
-    const safeMessage = escapeHtml(failure.message);
-    const errorDom: Envelope<'dom.set'> = {
-      op: 'dom.set',
-      idempotencyKey: createId('idemp'),
-      traceId,
-      txnId,
-      params: {
-        windowId: errorWin.params.id!,
-        target: '#root',
-        html: `<div class="space-y-2"><h2 class="text-base font-semibold text-slate-800">Unable to apply plan</h2><p class="text-sm text-slate-600">The actor failed to produce a valid batch for this intent.</p><pre class="rounded bg-slate-100 p-2 text-xs text-slate-700">${safeMessage}</pre></div>`,
-      },
-    };
-    batch = validateBatch([errorWin, errorDom]);
+    const isActorNop = /^actor_nop:\s*/i.test(failure.message);
+    if (isActorNop && !clarifierAttempted) {
+      const reason = failure.message.replace(/^actor_nop:\s*/i, '').trim() || 'missing details';
+      // Propose multiple-choice defaults for common cases
+      const choicesByReason: Record<string, string[]> = {
+        'missing window id': ['win-notes', 'win-app', 'win-main'],
+        'invalid url': ['https://example.com', 'https://uicp.local/ready'],
+      };
+      const lower = reason.toLowerCase();
+      const opts =
+        lower.includes('missing window id') ? choicesByReason['missing window id'] : lower.includes('invalid url') ? choicesByReason['invalid url'] : undefined;
+      const questions = [{ key: 'missing', prompt: `Provide missing details to continue (${reason})`, options: opts, defaultIndex: opts ? 0 : undefined }];
+      const caps = enforcePlannerCap(clarifierAttempted ? 1 : 0, questions.length);
+      notice = 'planner_fallback';
+      failures.actor = reason;
+      clarifierAttempted = true;
+      if (!caps.ok) {
+        // Over caps: return with empty batch; UI surfaces reason
+        batch = validateBatch([]);
+      } else {
+        const clarifier = composeClarifier(questions as any);
+        try {
+          const out2 = await planWithProfile(`${text}\n\n${clarifier}`, { profileKey: options?.plannerProfileKey });
+          plan = out2.plan;
+          plannerChannelUsed = out2.channelUsed ?? plannerChannelUsed;
+        } catch (replanErr) {
+          console.error('clarifier replan failed', replanErr);
+        }
+        batch = validateBatch([]);
+      }
+    } else if (isActorNop) {
+      notice = 'planner_fallback';
+      failures.actor = failure.message.replace(/^actor_nop:\s*/i, '').trim();
+      console.error('actor emitted nop; routing back to planner', { traceId, error: failure });
+      batch = validateBatch([]);
+    } else {
+      // Actor failed: return a safe error window batch to surface failure without partial apply
+      notice = 'actor_fallback';
+      failures.actor = failure.message;
+      console.error('actor failed', { traceId, error: failure });
+      const errorWin: Envelope<'window.create'> = {
+        op: 'window.create',
+        idempotencyKey: createId('idemp'),
+        traceId,
+        txnId,
+        params: { id: createId('window'), title: 'Action Failed', width: 520, height: 320, x: 80, y: 80 },
+      };
+      const safeMessage = escapeHtml(failure.message);
+      const errorDom: Envelope<'dom.set'> = {
+        op: 'dom.set',
+        idempotencyKey: createId('idemp'),
+        traceId,
+        txnId,
+        params: {
+          windowId: errorWin.params.id!,
+          target: '#root',
+          html: `<div class="space-y-2"><h2 class="text-base font-semibold text-slate-800">Unable to apply plan</h2><p class="text-sm text-slate-600">The actor failed to produce a valid batch for this intent.</p><pre class="rounded bg-slate-100 p-2 text-xs text-slate-700">${safeMessage}</pre></div>`,
+        },
+      };
+      batch = validateBatch([errorWin, errorDom]);
+    }
   }
 
   // Step 3: Stamp idempotency keys when missing

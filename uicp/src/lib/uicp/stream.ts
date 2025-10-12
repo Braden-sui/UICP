@@ -1,12 +1,12 @@
 import { extractEventsFromChunk } from '../llm/ollama';
-import { parseJsonLoose } from '../llm/json';
 import { enqueueBatch } from './queue';
+import { cfg } from '../config';
 import type { ApplyOutcome } from './adapter';
-import type { Batch } from './schemas';
+import { validateBatch, type Batch } from './schemas';
+import { parseWILBatch } from '../orchestrator/parseWILBatch';
 
-// Minimal streaming aggregator for Ollama Cloud/OpenAI SSE chunks.
-// It tracks per-channel content plus tool_call deltas and, on flush, prefers
-// structured tool arguments before falling back to the textual buffers.
+// Streaming aggregator for Ollama/OpenAI-like SSE chunks (WIL-only path).
+// Tracks per-channel content and, on flush, parses WIL lines into a typed batch.
 
 const extractBatch = (data: unknown): Batch | undefined => {
   if (Array.isArray(data)) {
@@ -21,33 +21,17 @@ const extractBatch = (data: unknown): Batch | undefined => {
   return undefined;
 };
 
-const parseBatchFromBuffer = (buffer: string): Batch | undefined => {
-  if (!buffer.trim()) return undefined;
-  try {
-    const parsed = parseJsonLoose<unknown>(buffer);
-    return extractBatch(parsed);
-  } catch {
-    return undefined;
-  }
+const parseBatchFromText = (buffer: string): Batch | undefined => {
+  const items = parseWILBatch(buffer);
+  const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
+  if (ops.length === 0) return undefined;
+  return validateBatch(ops);
 };
 
 export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<ApplyOutcome | void> | ApplyOutcome | void) => {
   let commentaryBuffer = '';
   let finalBuffer = '';
-  const toolBuffers = new Map<string, string>();
-  const toolOrder: string[] = [];
-  let lastToolError: unknown;
-
-  const appendToolArguments = (rawName: string | undefined, chunk: string) => {
-    if (!rawName || !chunk) return;
-    const name = rawName.toLowerCase();
-    if (!toolBuffers.has(name)) {
-      toolBuffers.set(name, chunk);
-      toolOrder.push(name);
-    } else {
-      toolBuffers.set(name, `${toolBuffers.get(name)!}${chunk}`);
-    }
-  };
+  // tool_call aggregation no longer used in WIL-only path
 
   const processDelta = async (raw: string) => {
     let chunk: unknown = raw;
@@ -65,20 +49,30 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     }
 
     for (const event of events) {
-      if (event.type === 'tool_call') {
-        appendToolArguments(event.name, event.arguments);
-        continue;
-      }
+      if (event.type === 'tool_call') continue;
       if (event.type !== 'content') continue;
       const channel = event.channel?.toLowerCase();
       if (!channel || channel === 'commentary' || channel === 'assistant' || channel === 'text') {
         commentaryBuffer += event.text;
+        // Backpressure guard: trim commentary buffer to last N KB
+        const limit = Math.max(16, cfg.wilMaxBufferKb) * 1024;
+        if (commentaryBuffer.length > limit) {
+          commentaryBuffer = commentaryBuffer.slice(-limit);
+        }
       } else if (channel === 'final' || channel === 'json') {
         finalBuffer += event.text;
       } else if (channel === 'analysis' || channel === 'thought' || channel === 'reasoning') {
         commentaryBuffer += event.text;
+        const limit = Math.max(16, cfg.wilMaxBufferKb) * 1024;
+        if (commentaryBuffer.length > limit) {
+          commentaryBuffer = commentaryBuffer.slice(-limit);
+        }
       } else {
         commentaryBuffer += event.text;
+        const limit = Math.max(16, cfg.wilMaxBufferKb) * 1024;
+        if (commentaryBuffer.length > limit) {
+          commentaryBuffer = commentaryBuffer.slice(-limit);
+        }
       }
     }
   };
@@ -89,45 +83,13 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     finalBuffer = '';
     commentaryBuffer = '';
 
-    const parseTool = (): Batch | undefined => {
-      if (toolBuffers.size === 0) return undefined;
-      const preferred = ['emit_batch', 'emit_plan'];
-      const ordered = [...preferred, ...toolOrder.filter((name) => !preferred.includes(name))];
-      for (const name of ordered) {
-        const payload = toolBuffers.get(name);
-        if (!payload || !payload.trim()) continue;
-        try {
-          const parsed = parseJsonLoose<unknown>(payload);
-          const batch = extractBatch(parsed);
-          if (batch) {
-            return batch;
-          }
-        } catch (err) {
-          lastToolError = err;
-        }
-      }
-      return undefined;
-    };
-
-    const toolBatch = parseTool();
-    const toolError = lastToolError;
-    toolBuffers.clear();
-    toolOrder.length = 0;
-    lastToolError = undefined;
-
-    if (!toolBatch && !primary && !secondary) {
+    if (!primary && !secondary) {
       return;
     }
 
-    const batch =
-      toolBatch ??
-      parseBatchFromBuffer(primary) ??
-      parseBatchFromBuffer(secondary);
+    const batch = parseBatchFromText(primary) ?? parseBatchFromText(secondary);
 
     if (!batch) {
-      if (toolError) {
-        throw toolError instanceof Error ? toolError : new Error(String(toolError));
-      }
       return;
     }
 

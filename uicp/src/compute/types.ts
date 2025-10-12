@@ -77,6 +77,10 @@ export const finalOkSchema = z.object({
       logCount: z.number().int().nonnegative().optional(),
       partialFrames: z.number().int().nonnegative().optional(),
       invalidPartialsDropped: z.number().int().nonnegative().optional(),
+      logThrottleWaits: z.number().int().nonnegative().optional(),
+      loggerThrottleWaits: z.number().int().nonnegative().optional(),
+      partialThrottleWaits: z.number().int().nonnegative().optional(),
+      rngCounter: z.number().int().nonnegative().optional(),
       outputHash: z.string().optional(),
     })
     .optional(),
@@ -88,6 +92,22 @@ export const finalErrSchema = z.object({
   task: z.string(),
   code: computeErrorCode,
   message: z.string(),
+  metrics: z
+    .object({
+      durationMs: z.number().int().nonnegative().optional(),
+      fuelUsed: z.number().int().nonnegative().optional(),
+      memPeakMb: z.number().int().nonnegative().optional(),
+      cacheHit: z.boolean().optional(),
+      deadlineMs: z.number().int().nonnegative().optional(),
+      remainingMsAtFinish: z.number().int().nonnegative().optional(),
+      logCount: z.number().int().nonnegative().optional(),
+      partialFrames: z.number().int().nonnegative().optional(),
+      invalidPartialsDropped: z.number().int().nonnegative().optional(),
+      logThrottleWaits: z.number().int().nonnegative().optional(),
+      loggerThrottleWaits: z.number().int().nonnegative().optional(),
+      partialThrottleWaits: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 export const finalEventSchema = z.union([finalOkSchema, finalErrSchema]);

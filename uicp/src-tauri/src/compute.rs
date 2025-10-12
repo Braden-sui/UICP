@@ -398,6 +398,54 @@ mod with_runtime {
 
     // removed unused is_typed_only helper
 
+    #[derive(Debug)]
+    struct LimitsWithPeak {
+        inner: StoreLimits,
+        mem_peak_bytes: usize,
+    }
+
+    impl LimitsWithPeak {
+        fn new(mem_limit_bytes: usize) -> Self {
+            let inner = StoreLimitsBuilder::new()
+                .instances(1)
+                .tables(32)
+                .memory_size(mem_limit_bytes)
+                .build();
+            Self {
+                inner,
+                mem_peak_bytes: 0,
+            }
+        }
+
+        fn mem_peak_mb(&self) -> u64 {
+            // Round up to the nearest MiB
+            ((self.mem_peak_bytes as u64) + 1_048_575) / 1_048_576
+        }
+    }
+
+    impl wasmtime::ResourceLimiter for LimitsWithPeak {
+        fn memory_growing(
+            &mut self,
+            current: usize,
+            desired: usize,
+            maximum: Option<usize>,
+        ) -> anyhow::Result<bool> {
+            if desired > self.mem_peak_bytes {
+                self.mem_peak_bytes = desired;
+            }
+            self.inner.memory_growing(current, desired, maximum)
+        }
+
+        fn table_growing(
+            &mut self,
+            current: u32,
+            desired: u32,
+            maximum: Option<u32>,
+        ) -> anyhow::Result<bool> {
+            self.inner.table_growing(current, desired, maximum)
+        }
+    }
+
     /// Execution context for a single job store.
     struct Ctx {
         wasi: WasiCtx,
@@ -429,7 +477,7 @@ mod with_runtime {
         logger_throttle_waits: Arc<AtomicU64>,
         partial_rate: Arc<Mutex<RateLimiterEvents>>,
         partial_throttle_waits: Arc<AtomicU64>,
-        limits: StoreLimits,
+        limits: LimitsWithPeak,
     }
 
     const MAX_PARTIAL_FRAME_BYTES: usize = 64 * 1024;
@@ -1103,6 +1151,7 @@ mod with_runtime {
                         "Module not found for task",
                         started,
                         queue_wait_ms,
+                        None,
                     )
                     .await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
@@ -1113,7 +1162,7 @@ mod with_runtime {
                 Err(err) => {
                     let any = anyhow::Error::from(err);
                     let (code, msg) = map_trap_error(&any);
-                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
+                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms, None).await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -1127,7 +1176,7 @@ mod with_runtime {
                 Err(err) => {
                     let any = anyhow::Error::from(err);
                     let (code, msg) = map_trap_error(&any);
-                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
+                    finalize_error(&app, &spec, code, &msg, started, queue_wait_ms, None).await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
                     crate::remove_compute_job(&app, &spec.job_id).await;
@@ -1143,11 +1192,7 @@ mod with_runtime {
             let mem_limit_bytes = mem_limit_mb
                 .saturating_mul(1_048_576)
                 .min(usize::MAX as u64) as usize;
-            let limits = StoreLimitsBuilder::new()
-                .instances(1)
-                .tables(32)
-                .memory_size(mem_limit_bytes)
-                .build();
+            let limits = LimitsWithPeak::new(mem_limit_bytes);
             let deadline_ms = spec.timeout_ms.unwrap_or(30_000).min(u32::MAX as u64);
 
             let ui_capacity: usize = if spec.task.contains("log") { 512 } else { 256 };
@@ -1512,8 +1557,17 @@ mod with_runtime {
                             Err(err) => {
                                 let (code, msg) = map_trap_error(&err);
                                 let message = if msg.is_empty() { err.to_string() } else { msg };
-                                finalize_error(&app, &spec, code, &message, started, queue_wait_ms)
-                                    .await;
+                                let m = collect_metrics(&store);
+                                finalize_error(
+                                    &app,
+                                    &spec,
+                                    code,
+                                    &message,
+                                    started,
+                                    queue_wait_ms,
+                                    Some(m),
+                                )
+                                .await;
                             }
                         }
                         epoch_pump.abort();
@@ -1521,7 +1575,9 @@ mod with_runtime {
                     Err(err) => {
                         let any = anyhow::Error::from(err);
                         let (code, msg) = map_trap_error(&any);
-                        finalize_error(&app, &spec, code, &msg, started, queue_wait_ms).await;
+                        let m = collect_metrics(&store);
+                        finalize_error(&app, &spec, code, &msg, started, queue_wait_ms, Some(m))
+                            .await;
                         epoch_pump.abort();
                     }
                 }
@@ -1541,9 +1597,6 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
-        // Register wasi:logging bridge to structured partial events (rate-limited)
-        register_wasi_logging(linker, "wasi:logging/logging")?;
-        register_wasi_logging(linker, "wasi:logging/logging@0.2.0")?;
         add_uicp_host(linker)?;
         Ok(())
     }
@@ -1562,121 +1615,17 @@ mod with_runtime {
         register_rng_interface(linker, "uicp:host/rng@1.0.0")?;
         Ok(())
     }
+    let elapsed = ctx.started.elapsed().as_millis() as u64;
+    let deadline = ctx.deadline_ms as u64;
+    let remaining = deadline.saturating_sub(elapsed);
+    Ok((remaining.min(u32::MAX as u64) as u32,))
+}
 
-    fn register_wasi_logging(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
-        let mut instance = linker.instance(name)?;
-        // Ignore duplicate registration errors if another provider already linked logging.
-        let _ = instance.func_wrap("log", host_wasi_log);
-        Ok(())
-    }
-
-    fn register_control_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
-        let mut instance = linker.instance(name)?;
-        instance.func_wrap("open-partial-sink", host_open_partial_sink)?;
-        instance.func_wrap("should-cancel", host_should_cancel)?;
-        instance.func_wrap("deadline-ms", host_deadline_ms)?;
-        instance.func_wrap("remaining-ms", host_remaining_ms)?;
-        Ok(())
-    }
-
-    fn register_rng_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
-        let mut instance = linker.instance(name)?;
-        instance.func_wrap("next-u64", host_rng_next_u64)?;
-        instance.func_wrap("fill", host_rng_fill)?;
-        Ok(())
-    }
-
-    fn host_wasi_log(
-        store: StoreContextMut<'_, Ctx>,
-        (level, context, message): (u32, String, String),
-    ) -> anyhow::Result<()> {
-        let level_str = match level {
-            0 => "trace",
-            1 => "debug",
-            2 => "info",
-            3 => "warn",
-            4 => "error",
-            5 => "critical",
-            _ => "info",
-        };
-        // Rate-limit based on message/context byte size
-        let bytes = message.as_bytes();
-        let ctx_bytes = context.as_bytes();
-        let total = bytes.len().saturating_add(ctx_bytes.len());
-        {
-            loop {
-                let mut rl = store.data().logger_rate.lock().unwrap();
-                let avail = rl.available();
-                if avail >= total {
-                    rl.consume(total);
-                    break;
-                }
-                drop(rl);
-                store
-                    .data()
-                    .logger_throttle_waits
-                    .fetch_add(1, Ordering::Relaxed);
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-        // Enforce per-job max emission budget (shared with stdio)
-        let cur = store.data().emitted_log_bytes.load(Ordering::Relaxed) as usize;
-        if cur >= store.data().max_log_bytes {
-            return Ok(());
-        }
-        let preview_len = bytes.len().min(LOG_PREVIEW_MAX);
-        let preview_b64 = BASE64_ENGINE.encode(&bytes[..preview_len]);
-        let seq_no = store
-            .data()
-            .partial_seq
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let tick_no = store
-            .data()
-            .logical_tick
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let new_total = store
-            .data()
-            .emitted_log_bytes
-            .fetch_add(bytes.len() as u64, Ordering::Relaxed)
-            .saturating_add(bytes.len() as u64) as usize;
-        let truncated = new_total > store.data().max_log_bytes;
-        store.data().log_count.fetch_add(1, Ordering::Relaxed);
-
-        let payload = serde_json::json!({
-            "jobId": store.data().job_id,
-            "task": store.data().task,
-            "seq": seq_no,
-            "kind": "log",
-            "stream": "wasi-logging",
-            "level": level_str,
-            "context": context,
-            "tick": tick_no,
-            "bytesLen": bytes.len(),
-            "previewB64": preview_b64,
-            "truncated": truncated,
-        });
-        store.data().emitter.emit_partial_json(payload);
-        // Mirror as debug-log for developer visibility (sanitized/preview only)
-        store.data().emitter.emit_debug(serde_json::json!({
-            "event": "compute_guest_log",
-            "jobId": store.data().job_id,
-            "task": store.data().task,
-            "level": level_str,
-            "context": "wasi-logging",
-            "len": bytes.len(),
-            "ts": chrono::Utc::now().timestamp_millis(),
-        }));
-        Ok(())
-    }
-
-    fn host_open_partial_sink(
-        mut store: StoreContextMut<'_, Ctx>,
-        (job,): (String,),
-    ) -> anyhow::Result<(Resource<WasiOutputStream>,)> {
-        {
-            let ctx = store.data();
+fn host_rng_next_u64(
+    mut store: StoreContextMut<'_, Ctx>,
+    (job,): (String,),
+) -> anyhow::Result<(u64,)> {
+    if job != store.data().job_id {
             if job != ctx.job_id {
                 log_job_mismatch(ctx, "open-partial-sink", &job);
                 return Err(anyhow::anyhow!("partial sink job id mismatch"));
@@ -1844,14 +1793,25 @@ mod with_runtime {
         message: &str,
         started: Instant,
         queue_wait_ms: u64,
+        metrics_opt: Option<serde_json::Value>,
     ) {
         let ms = started.elapsed().as_millis() as i64;
+        let mut metrics = if let Some(mut m) = metrics_opt {
+            if let Some(map) = m.as_object_mut() {
+                map.entry("queueMs".to_string())
+                    .or_insert_with(|| serde_json::json!(queue_wait_ms));
+            }
+            Some(m)
+        } else {
+            Some(serde_json::json!({ "durationMs": ms, "queueMs": queue_wait_ms }))
+        };
         let payload = crate::ComputeFinalErr {
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
             code: code.into(),
             message: message.into(),
+            metrics: metrics.clone(),
         };
         // Surface a debug-log entry for observability with a unique error code per event
         let _ = app.emit(
@@ -1871,13 +1831,7 @@ mod with_runtime {
                 &spec.input,
                 &spec.provenance.env_hash,
             );
-            let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
-            if let Some(map) = obj.as_object_mut() {
-                map.insert(
-                    "metrics".into(),
-                    serde_json::json!({ "durationMs": ms, "queueMs": queue_wait_ms }),
-                );
-            }
+            let obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
             let _ = crate::compute_cache::store(
                 app,
                 &spec.workspace_id,
@@ -2005,10 +1959,18 @@ mod with_runtime {
             "invalidPartialsDropped": store.data().invalid_partial_frames.load(Ordering::Relaxed),
             "remainingMsAtFinish": remaining,
             "rngSeedHex": hex::encode(store.data().rng_seed),
+            "rngCounter": store.data().rng_counter,
             "logThrottleWaits": store.data().log_throttle_waits.load(Ordering::Relaxed),
             "partialThrottleWaits": store.data().partial_throttle_waits.load(Ordering::Relaxed),
             "loggerThrottleWaits": store.data().logger_throttle_waits.load(Ordering::Relaxed),
         });
+        // Peak memory in MiB (if any growth occurred)
+        let mem_peak = store.data().limits.mem_peak_mb();
+        if mem_peak > 0 {
+            if let Some(obj) = metrics.as_object_mut() {
+                obj.insert("memPeakMb".into(), serde_json::json!(mem_peak));
+            }
+        }
         // Optional fuel metrics if enabled
         if store.data().initial_fuel > 0 {
             if let Ok(remaining) = store.get_fuel() {
@@ -2340,9 +2302,7 @@ mod with_runtime {
                 partials: captured_partials.clone(),
                 debugs: Arc::new(Mutex::new(Vec::new())),
             });
-            let limits = StoreLimitsBuilder::new()
-                .memory_size(64 * 1024 * 1024)
-                .build();
+            let limits = LimitsWithPeak::new(64 * 1024 * 1024);
             let mut store: Store<Ctx> = Store::new(
                 &build_engine().unwrap(),
                 Ctx {
@@ -2379,7 +2339,9 @@ mod with_runtime {
                 use wasmtime::AsContextMut;
                 host_wasi_log(
                     store.as_context_mut(),
-                    (2u32, "ctx".into(), "hello world".into()),
+                    2,
+                    "ctx".into(),
+                    "hello world".into(),
                 )
                 .expect("log ok");
             }
@@ -2404,6 +2366,7 @@ mod with_runtime {
             use std::path::PathBuf;
             use std::process::Command as PCommand;
             use std::sync::{Arc, Mutex};
+            use tokio::runtime::Runtime;
 
             // Build the tiny log test component
             let comp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2417,16 +2380,17 @@ mod with_runtime {
                 .status()
                 .expect("spawn cargo component");
             assert!(status.success(), "cargo component build failed");
-            let wasm = comp_dir
-                .join("target")
-                .join("wasm32-wasi")
-                .join("release")
-                .join("uicp_task_log_test.wasm");
-            assert!(
-                wasm.exists(),
-                "component artifact missing: {}",
-                wasm.display()
-            );
+            let artifact = "uicp_task_log_test.wasm";
+            let wasm = ["wasm32-wasip1", "wasm32-wasi", "wasm32-wasi-preview1"]
+                .into_iter()
+                .map(|triple| comp_dir.join("target").join(triple).join("release").join(artifact))
+                .find(|candidate| candidate.exists())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "component artifact missing: expected {:?} under target/{{wasm32-wasip1, wasm32-wasi}}/release",
+                        artifact
+                    )
+                });
 
             // Capture partials emitted by the host logging bridge
             #[derive(Clone)]
@@ -2458,17 +2422,203 @@ mod with_runtime {
 
             // Minimal job context
             let tele: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter::default());
-            let limits = StoreLimitsBuilder::new()
-                .memory_size(64 * 1024 * 1024)
-                .build();
+            let limits = LimitsWithPeak::new(64 * 1024 * 1024);
+            let rt = Runtime::new().expect("tokio runtime");
+            let tele_exec = tele.clone();
+            let mut linker = linker;
+            rt.block_on(async {
+                let mut store: Store<Ctx> = Store::new(
+                    &engine,
+                    Ctx {
+                        wasi: WasiCtxBuilder::new().build(),
+                        table: ResourceTable::new(),
+                        emitter: tele_exec,
+                        job_id: "log-guest".into(),
+                        task: "uicp:task-log-test".into(),
+                        partial_seq: Arc::new(AtomicU64::new(0)),
+                        partial_frames: Arc::new(AtomicU64::new(0)),
+                        invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                        rng_seed: [0u8; 32],
+                        logical_tick: Arc::new(AtomicU64::new(0)),
+                        started: Instant::now(),
+                        deadline_ms: 1000,
+                        rng_counter: 0,
+                        log_count: Arc::new(AtomicU64::new(0)),
+                        emitted_log_bytes: Arc::new(AtomicU64::new(0)),
+                        max_log_bytes: 8 * 1024,
+                        initial_fuel: 0,
+                        log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                        log_throttle_waits: Arc::new(AtomicU64::new(0)),
+                        logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                        logger_throttle_waits: Arc::new(AtomicU64::new(0)),
+                        partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(10, 10))),
+                        partial_throttle_waits: Arc::new(AtomicU64::new(0)),
+                        limits,
+                    },
+                );
+
+                let instance = linker
+                    .instantiate_async(&mut store, &component)
+                    .await
+                    .expect("instantiate");
+                let func: wasmtime::component::TypedFunc<(String,), ()> = instance
+                    .get_typed_func(&mut store, "task#run")
+                    .expect("get run");
+                func.call_async(&mut store, ("log-guest".to_string(),))
+                    .await
+                    .expect("call run");
+            });
+
+            let captured = tele
+                .as_any()
+                .downcast_ref::<TestEmitter>()
+                .unwrap()
+                .partials
+                .lock()
+                .unwrap()
+                .clone();
+            assert!(
+                captured
+                    .iter()
+                    .any(|p| p.get("stream").and_then(|v| v.as_str()) == Some("wasi-logging")),
+                "expected at least one wasi-logging partial"
+            );
+        }
+
+        #[cfg(feature = "uicp_wasi_enable")]
+        #[test]
+        fn rng_next_and_fill_increment_counter() {
+            use wasmtime::AsContextMut;
+            #[derive(Clone, Default)]
+            struct NullEmitter;
+            impl TelemetryEmitter for NullEmitter {
+                fn emit_debug(&self, _payload: serde_json::Value) {}
+                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                fn as_any(&self) -> &dyn Any { self }
+            }
+            let engine = build_engine().expect("engine");
             let mut store: Store<Ctx> = Store::new(
                 &engine,
                 Ctx {
                     wasi: WasiCtxBuilder::new().build(),
                     table: ResourceTable::new(),
-                    emitter: tele.clone(),
-                    job_id: "log-guest".into(),
-                    task: "uicp:task-log-test".into(),
+                    emitter: Arc::new(NullEmitter::default()),
+                    job_id: "rng-job".into(),
+                    task: "rng.task".into(),
+                    partial_seq: Arc::new(AtomicU64::new(0)),
+                    partial_frames: Arc::new(AtomicU64::new(0)),
+                    invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    rng_seed: [1u8; 32],
+                    logical_tick: Arc::new(AtomicU64::new(0)),
+                    started: Instant::now(),
+                    deadline_ms: 1000,
+                    rng_counter: 0,
+                    log_count: Arc::new(AtomicU64::new(0)),
+                    emitted_log_bytes: Arc::new(AtomicU64::new(0)),
+                    max_log_bytes: 8 * 1024,
+                    initial_fuel: 0,
+                    log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    log_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    logger_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(10, 10))),
+                    partial_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    limits: LimitsWithPeak::new(64 * 1024 * 1024),
+                },
+            );
+
+            // First next_u64 advances counter by 1
+            let (a,) = host_rng_next_u64(store.as_context_mut(), ("rng-job".into(),)).unwrap();
+            assert_ne!(a, 0);
+            assert_eq!(store.data().rng_counter, 1);
+
+            // Fill 16 bytes should advance counter at least once more
+            let (bytes,) = host_rng_fill(store.as_context_mut(), ("rng-job".into(), 16u32)).unwrap();
+            assert_eq!(bytes.len(), 16);
+            assert!(store.data().rng_counter >= 2);
+
+            // Subsequent next_u64 should differ
+            let (b,) = host_rng_next_u64(store.as_context_mut(), ("rng-job".into(),)).unwrap();
+            assert_ne!(a, b);
+        }
+
+        #[cfg(feature = "uicp_wasi_enable")]
+        #[test]
+        fn deadline_remaining_monotonic_nonnegative() {
+            use wasmtime::AsContextMut;
+            #[derive(Clone, Default)]
+            struct NullEmitter;
+            impl TelemetryEmitter for NullEmitter {
+                fn emit_debug(&self, _payload: serde_json::Value) {}
+                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                fn as_any(&self) -> &dyn Any { self }
+            }
+            let engine = build_engine().expect("engine");
+            let mut store: Store<Ctx> = Store::new(
+                &engine,
+                Ctx {
+                    wasi: WasiCtxBuilder::new().build(),
+                    table: ResourceTable::new(),
+                    emitter: Arc::new(NullEmitter::default()),
+                    job_id: "clock-job".into(),
+                    task: "clock.task".into(),
+                    partial_seq: Arc::new(AtomicU64::new(0)),
+                    partial_frames: Arc::new(AtomicU64::new(0)),
+                    invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    rng_seed: [0u8; 32],
+                    logical_tick: Arc::new(AtomicU64::new(0)),
+                    started: Instant::now(),
+                    deadline_ms: 50,
+                    rng_counter: 0,
+                    log_count: Arc::new(AtomicU64::new(0)),
+                    emitted_log_bytes: Arc::new(AtomicU64::new(0)),
+                    max_log_bytes: 8 * 1024,
+                    initial_fuel: 0,
+                    log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    log_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                    logger_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(10, 10))),
+                    partial_throttle_waits: Arc::new(AtomicU64::new(0)),
+                    limits: LimitsWithPeak::new(64 * 1024 * 1024),
+                },
+            );
+            let (r1,) = host_remaining_ms(store.as_context_mut(), ("clock-job".into(),)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let (r2,) = host_remaining_ms(store.as_context_mut(), ("clock-job".into(),)).unwrap();
+            assert!(r2 <= r1);
+            assert!(r2 <= 50);
+        }
+
+        #[cfg(feature = "uicp_wasi_enable")]
+        #[test]
+        fn collect_metrics_accumulates_counters_and_mempeak() {
+            use wasmtime::{AsContextMut, ResourceLimiter};
+            #[derive(Clone, Default)]
+            struct TestEmitter { debugs: Arc<Mutex<Vec<serde_json::Value>>> }
+            impl TelemetryEmitter for TestEmitter {
+                fn emit_debug(&self, payload: serde_json::Value) { self.debugs.lock().unwrap().push(payload); }
+                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                fn as_any(&self) -> &dyn Any { self }
+            }
+
+            let engine = build_engine().expect("engine");
+            let tele: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter::default());
+            let limits = LimitsWithPeak::new(64 * 1024 * 1024);
+            let mut store: Store<Ctx> = Store::new(
+                &engine,
+                Ctx {
+                    wasi: WasiCtxBuilder::new().build(),
+                    table: ResourceTable::new(),
+                    emitter: tele,
+                    job_id: "metrics-job".into(),
+                    task: "metrics.task".into(),
                     partial_seq: Arc::new(AtomicU64::new(0)),
                     partial_frames: Arc::new(AtomicU64::new(0)),
                     invalid_partial_frames: Arc::new(AtomicU64::new(0)),
@@ -2492,29 +2642,23 @@ mod with_runtime {
                 },
             );
 
-            let instance = linker
-                .instantiate(&mut store, &component)
-                .expect("instantiate");
-            let func: wasmtime::component::TypedFunc<(String,), ()> = instance
-                .get_typed_func(&mut store, "task#run")
-                .expect("get run");
-            func.call(&mut store, ("log-guest".to_string(),))
-                .expect("call run");
+            // Increment log count twice
+            host_wasi_log(store.as_context_mut(), 2, "ctx".into(), "line-1".into()).unwrap();
+            host_wasi_log(store.as_context_mut(), 2, "ctx".into(), "line-2".into()).unwrap();
 
-            let captured = tele
-                .as_any()
-                .downcast_ref::<TestEmitter>()
-                .unwrap()
-                .partials
-                .lock()
-                .unwrap()
-                .clone();
-            assert!(
-                captured
-                    .iter()
-                    .any(|p| p.get("stream").and_then(|v| v.as_str()) == Some("wasi-logging")),
-                "expected at least one wasi-logging partial"
-            );
+            // Simulate memory growth to 5 MiB
+            {
+                let ctx = store.data_mut();
+                ctx.limits
+                    .memory_growing(0, 5 * 1024 * 1024, Some(64 * 1024 * 1024))
+                    .expect("memory growth simulated");
+            }
+
+            let m = collect_metrics(&store);
+            assert_eq!(m.get("logCount").and_then(|v| v.as_i64()), Some(2));
+            // memPeakMb should be at least 5
+            let mem_peak = m.get("memPeakMb").and_then(|v| v.as_i64()).unwrap_or(0);
+            assert!(mem_peak >= 5);
         }
     }
 
@@ -2590,7 +2734,7 @@ mod no_runtime {
 
             tokio::select! {
                 _ = rx_cancel.changed() => {
-                    let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: error_codes::CANCELLED.into(), message: "Job cancelled by user".into() };
+                    let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: error_codes::CANCELLED.into(), message: "Job cancelled by user".into(), metrics: Some(serde_json::json!({"queueMs": queue_wait_ms})) };
                     let _ = app.emit("compute.result.final", payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
@@ -2600,6 +2744,7 @@ mod no_runtime {
                         task: spec.task.clone(),
                         code: error_codes::RUNTIME_FAULT.into(),
                         message: "Wasm compute runtime disabled in this build; recompile with feature wasm_compute".into(),
+                        metrics: Some(serde_json::json!({ "queueMs": queue_wait_ms })),
                     };
                     let _ = app.emit("debug-log", serde_json::json!({
                         "event": "compute_disabled",

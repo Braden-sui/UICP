@@ -1,6 +1,9 @@
 #[allow(warnings)]
 mod bindings;
 
+use bindings::export;
+use bindings::exports;
+
 // Call the export macro via the module path to ensure `self` resolves to `bindings`
 use bindings::exports::uicp::task_log_test::task::Guest as TaskGuest;
 use bindings::wasi::logging::logging;
@@ -14,4 +17,4 @@ impl TaskGuest for Component {
     }
 }
 
-bindings::export!(Component);
+export!(Component);

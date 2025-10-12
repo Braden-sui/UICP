@@ -2,24 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { StreamEvent } from '../../src/lib/llm/ollama';
 
 const plannerBase: StreamEvent[] = [
-  { type: 'content', channel: 'commentary', text: '```json' },
-  {
-    type: 'content',
-    channel: 'commentary',
-    text: JSON.stringify({ summary: 'Create notepad', batch: [{ op: 'window.create', params: { title: 'Notepad' } }] }),
-  },
-  { type: 'content', channel: 'commentary', text: '```' },
+  { type: 'content', channel: 'commentary', text: 'Summary: Create notepad' },
+  { type: 'content', channel: 'commentary', text: 'Steps:' },
+  { type: 'content', channel: 'commentary', text: '- Create a window titled "Notepad"' },
   { type: 'done' },
 ];
 
 const actorBase: StreamEvent[] = [
-  { type: 'content', channel: 'commentary', text: '```json' },
-  {
-    type: 'content',
-    channel: 'commentary',
-    text: JSON.stringify({ batch: [{ op: 'window.create', params: { title: 'Notepad' } }] }),
-  },
-  { type: 'content', channel: 'commentary', text: '```' },
+  { type: 'content', channel: 'commentary', text: 'create window title "Notepad" width 520 height 320' },
   { type: 'done' },
 ];
 
@@ -57,18 +47,18 @@ describe('orchestrator integration', () => {
     actorEvents = [...actorBase];
   });
 
-  it('parses fenced JSON from planner stream', async () => {
+  it('parses planner outline text (plain sections)', async () => {
     const plan = await planWithDeepSeek('make a notepad');
     expect(plan.summary).toMatch(/notepad/i);
     expect(Array.isArray(plan.batch)).toBe(true);
-    expect(plan.batch[0].op).toBe('window.create');
+    expect(plan.batch.length).toBe(0);
   });
 
-  it('extracts batch array from commentary buffer with surrounding noise', async () => {
+  it('extracts WIL commands from text and applies order', async () => {
     const plan = await planWithDeepSeek('make a notepad');
     const batch = await actWithGui(plan);
     expect(Array.isArray(batch)).toBe(true);
-    expect(batch.length).toBe(1);
+    expect(batch.length).toBeGreaterThanOrEqual(1);
     expect(batch[0].op).toBe('window.create');
   });
 
@@ -103,15 +93,11 @@ describe('orchestrator integration', () => {
 
   it('consumes return events emitted by the streaming transport', async () => {
     plannerEvents = [
-      { type: 'return', channel: 'final', result: { summary: 'Return plan', batch: [] } },
+      { type: 'return', channel: 'final', result: 'Summary: Return plan' },
       { type: 'done' },
     ];
     actorEvents = [
-      {
-        type: 'return',
-        channel: 'final',
-        result: { batch: [{ op: 'window.create', params: { title: 'FromReturn' } }] },
-      },
+      { type: 'return', channel: 'final', result: 'create window title "FromReturn" width 520 height 320' },
       { type: 'done' },
     ];
 

@@ -65,7 +65,7 @@ strip = true
 [features]
 default = ["tauri2"]
 tauri2 = []
-wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi"]
+wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:tempfile"]
 uicp_wasi_enable = []
 uicp_bindgen = []
 compute_harness = ["dep:tempfile", "tauri/test"]

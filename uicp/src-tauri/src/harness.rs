@@ -1,4 +1,8 @@
-#![cfg(any(test, feature = "compute_harness"))]
+#![cfg(any(
+    test,
+    feature = "compute_harness",
+    all(feature = "wasm_compute", feature = "uicp_wasi_enable")
+))]
 
 use crate::{ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR};
 use anyhow::{Context, Result};

@@ -63,6 +63,8 @@ pub struct ComputeFinalErr {
     pub task: String,
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<serde_json::Value>,
 }
 
 /// Terminal success envelope emitted back to the UI.
@@ -109,6 +111,7 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
             task: spec.task.clone(),
             code: "Compute.CapabilityDenied".into(),
             message: "timeoutMs outside allowed range (1000-120000)".into(),
+            metrics: None,
         });
     }
     if timeout > 30_000 && !spec.capabilities.long_run {
@@ -118,6 +121,7 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
             task: spec.task.clone(),
             code: "Compute.CapabilityDenied".into(),
             message: "timeoutMs>30000 requires capabilities.longRun".into(),
+            metrics: None,
         });
     }
 
@@ -129,6 +133,7 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
                 task: spec.task.clone(),
                 code: "Compute.CapabilityDenied".into(),
                 message: "memLimitMb outside allowed range (64-1024)".into(),
+                metrics: None,
             });
         }
         if mem > 256 && !spec.capabilities.mem_high {
@@ -138,6 +143,7 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
                 task: spec.task.clone(),
                 code: "Compute.CapabilityDenied".into(),
                 message: "memLimitMb>256 requires capabilities.memHigh".into(),
+                metrics: None,
             });
         }
     }
@@ -149,6 +155,7 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
             task: spec.task.clone(),
             code: "Compute.CapabilityDenied".into(),
             message: "Network is disabled by policy (cap.net required)".into(),
+            metrics: None,
         });
     }
 
@@ -165,6 +172,7 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
             task: spec.task.clone(),
             code: "Compute.CapabilityDenied".into(),
             message: "Filesystem paths must be workspace-scoped (ws:/...)".into(),
+            metrics: None,
         });
     }
 

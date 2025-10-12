@@ -64,6 +64,7 @@ pub async fn compute_call<R: Runtime>(
                 task: spec.task.clone(),
                 code: "Runtime.Fault".into(),
                 message: "Cache miss under ReadOnly cache policy".into(),
+                metrics: None,
             };
             emit_or_log_generic(&app_handle, "compute.result.final", &payload);
             return Ok(());

@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 // Streamed event union returned by the async iterator
 export type StreamEvent =
   | { type: 'content'; channel?: string; text: string }
-  | { type: 'tool_call'; index: number; id?: string; name?: string; arguments: string; isDelta: boolean }
+  | { type: 'tool_call'; index: number; id?: string; name?: string; arguments: unknown; isDelta: boolean }
   | { type: 'return'; channel?: string; name?: string; result: unknown }
   | { type: 'done' };
 
@@ -74,16 +74,14 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     if (!record) return;
     const fnRecord = asRecord(record.function);
     const name = typeof record.name === 'string' ? record.name : typeof fnRecord?.name === 'string' ? fnRecord.name : undefined;
-    const args = typeof record.arguments === 'string'
+    const args = record.arguments !== undefined
       ? record.arguments
-      : typeof fnRecord?.arguments === 'string'
+      : fnRecord?.arguments !== undefined
         ? fnRecord.arguments
-        : typeof record.arguments === 'object'
-          ? JSON.stringify(record.arguments)
-          : '';
+        : undefined;
     const id = typeof record.id === 'string' ? record.id : undefined;
     const index = typeof record.index === 'number' ? record.index : indexFallback;
-    if (!name && !args && !id) return;
+    if (!name && args === undefined && !id) return;
     out.push({ type: 'tool_call', index, id, name, arguments: args, isDelta: true });
   };
 

@@ -16,7 +16,7 @@ const envelopeDefinition = {
   additionalProperties: false,
 } as const;
 
-const planSchema = {
+export const planSchema = {
   type: 'object',
   properties: {
     summary: { type: 'string' },
@@ -40,7 +40,7 @@ const planSchema = {
   },
 } as const;
 
-const batchSchema = {
+export const batchSchema = {
   type: 'object',
   properties: {
     batch: {

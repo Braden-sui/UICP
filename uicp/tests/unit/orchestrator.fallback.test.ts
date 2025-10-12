@@ -21,13 +21,7 @@ describe('orchestrator fallbacks', () => {
         getActorClient: () => ({
           streamPlan: (_planJson: string) =>
             makeStream([
-              { type: 'content', channel: 'commentary', text: '```json' },
-              {
-                type: 'content',
-                channel: 'commentary',
-                text: JSON.stringify({ batch: [{ op: 'window.create', params: { title: 'From Actor Only' } }] }),
-              },
-              { type: 'content', channel: 'commentary', text: '```' },
+              { type: 'content', channel: 'commentary', text: 'create window title "From Actor Only" width 520 height 320' },
               { type: 'done' },
             ]),
         }),
@@ -51,21 +45,23 @@ describe('orchestrator fallbacks', () => {
     }
   });
 
-  it('returns safe error window when actor fails', async () => {
+  it('routes nop back to planner (no batch)', async () => {
     vi.resetModules();
     vi.doMock('../../src/lib/llm/provider', () => {
       return {
         getPlannerClient: () => ({
           streamIntent: (_intent: string) =>
             makeStream([
-              { type: 'content', channel: 'commentary', text: '```json' },
-              { type: 'content', channel: 'commentary', text: JSON.stringify({ summary: 'ok', batch: [] }) },
-              { type: 'content', channel: 'commentary', text: '```' },
+              { type: 'content', channel: 'commentary', text: 'Summary: ok' },
               { type: 'done' },
             ]),
         }),
         getActorClient: () => ({
-          streamPlan: (_planJson: string) => makeStream([]),
+          streamPlan: (_planJson: string) =>
+            makeStream([
+              { type: 'content', channel: 'commentary', text: 'nop: invalid WIL line' },
+              { type: 'done' },
+            ]),
         }),
       };
     });
@@ -73,16 +69,13 @@ describe('orchestrator fallbacks', () => {
     try {
       const { runIntent } = await import('../../src/lib/llm/orchestrator');
       const res = await runIntent('anything', false);
-      expect(res.notice).toBe('actor_fallback');
-      // expect first op to be window.create with Action Failed title
-      expect(res.batch[0].op).toBe('window.create');
-      expect(res.batch.every((env) => env.traceId && env.txnId && env.idempotencyKey)).toBe(true);
+      expect(res.notice).toBe('planner_fallback');
+      expect(Array.isArray(res.batch)).toBe(true);
+      expect(res.batch.length).toBe(0);
       expect(typeof res.traceId).toBe('string');
       expect(res.timings.planMs).toBeGreaterThanOrEqual(0);
       expect(res.timings.actMs).toBeGreaterThanOrEqual(0);
       expect(res.failures?.actor).toBeDefined();
-      const domSet = res.batch.find((env) => env.op === 'dom.set');
-      expect(domSet && typeof domSet.params === 'object' ? (domSet.params as any).html : '').toContain('Unable to apply plan');
     } finally {
       errorSpy.mockRestore();
     }

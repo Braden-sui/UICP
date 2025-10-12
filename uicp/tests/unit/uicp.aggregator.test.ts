@@ -3,20 +3,11 @@ import { createOllamaAggregator } from '../../src/lib/uicp/stream';
 import type { Batch } from '../../src/lib/uicp/schemas';
 
 describe('uicp stream aggregator', () => {
-  it('collects commentary deltas and passes parsed batch to onBatch (object with batch)', async () => {
+  it('collects commentary deltas and passes parsed WIL batch to onBatch', async () => {
     const onBatch = vi.fn(async (_b: Batch) => {});
     const agg = createOllamaAggregator(onBatch);
 
-    const chunk = {
-      choices: [
-        {
-          delta: {
-            channel: 'commentary',
-            content: JSON.stringify({ batch: [{ op: 'window.create', params: { title: 'Note' } }] }),
-          },
-        },
-      ],
-    };
+    const chunk = { choices: [{ delta: { channel: 'commentary', content: 'create window title "Note" width 520 height 320' } }] };
 
     await agg.processDelta(JSON.stringify(chunk));
     await agg.flush();
@@ -36,14 +27,9 @@ describe('uicp stream aggregator', () => {
       JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: 'noise ' } }] }),
     );
 
-    // Final includes the authoritative JSON batch
-    const payload = [
-      { op: 'window.create', params: { title: 'Final Wins' } },
-      { op: 'window.focus', params: { id: 'w1' } },
-    ];
-    await agg.processDelta(
-      JSON.stringify({ choices: [{ delta: { channel: 'final', content: JSON.stringify(payload) } }] }),
-    );
+    // Final includes authoritative WIL lines (two ops)
+    const wil = 'create window title "Final Wins" width 520 height 320\ncreate window title "Another" width 520 height 320';
+    await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'final', content: wil } }] }));
 
     await agg.flush();
 
@@ -54,31 +40,13 @@ describe('uicp stream aggregator', () => {
     expect(batch[0].op).toBe('window.create');
   });
 
-  it('uses tool_call arguments when present', async () => {
+  it('ignores tool_call and still processes WIL lines', async () => {
     const onBatch = vi.fn(async (_b: Batch) => {});
     const agg = createOllamaAggregator(onBatch);
 
-    const toolCallChunk = {
-      choices: [
-        {
-          delta: {
-            tool_calls: [
-              {
-                id: 'tool-0',
-                function: {
-                  name: 'emit_batch',
-                  arguments: JSON.stringify({
-                    batch: [{ op: 'window.create', params: { title: 'Via Tool' } }],
-                  }),
-                },
-              },
-            ],
-          },
-        },
-      ],
-    };
-
-    await agg.processDelta(JSON.stringify(toolCallChunk));
+    // Emit a tool_call and a commentary WIL line; aggregator should use the WIL
+    await agg.processDelta(JSON.stringify({ choices: [{ delta: { tool_calls: [{ function: { name: 'emit_batch', arguments: '{}' } }] } }] }));
+    await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: 'create window title "Via Tool" width 520 height 320' } }] }));
     await agg.flush();
 
     expect(onBatch).toHaveBeenCalledTimes(1);
@@ -88,12 +56,46 @@ describe('uicp stream aggregator', () => {
     expect((batch[0] as any).params.title).toBe('Via Tool');
   });
 
-  it('extracts first JSON array from noisy buffer', async () => {
+  it('accumulates text across multiple deltas', async () => {
     const onBatch = vi.fn(async (_b: Batch) => {});
     const agg = createOllamaAggregator(onBatch);
 
-    const noisy = 'prefix text [ { "op": "window.create", "params": { "title": "Pad" } } ] suffix';
-    await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: noisy } }] }));
+    await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: 'create window title "Mer' } }] }));
+    await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: 'ged" width 520 height 320' } }] }));
+    await agg.flush();
+
+    expect(onBatch).toHaveBeenCalledTimes(1);
+    const batch = onBatch.mock.calls[0][0] as Batch;
+    expect(Array.isArray(batch)).toBe(true);
+    expect(batch.length).toBe(1);
+    expect(batch[0].op).toBe('window.create');
+    expect(batch[0].params).toEqual({ title: 'Merged', width: 520, height: 320 });
+  });
+
+  it('extracts fenced WIL from commentary noise', async () => {
+    const onBatch = vi.fn(async (_b: Batch) => {});
+    const agg = createOllamaAggregator(onBatch);
+
+    const noisy = 'status: working... ```\ncreate window title "Valid" width 520 height 320\n``` trailing text';
+
+    await agg.processDelta(
+      JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: noisy } }] }),
+    );
+
+    await agg.flush();
+
+    expect(onBatch).toHaveBeenCalledTimes(1);
+    const batch = onBatch.mock.calls[0][0] as Batch;
+    expect(batch[0].op).toBe('window.create');
+    expect((batch[0] as any).params.title).toBe('Valid');
+  });
+
+  it('extracts WIL lines from buffer', async () => {
+    const onBatch = vi.fn(async (_b: Batch) => {});
+    const agg = createOllamaAggregator(onBatch);
+
+    const text = 'create window title "Pad" width 520 height 320';
+    await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: text } }] }));
     await agg.flush();
 
     expect(onBatch).toHaveBeenCalledTimes(1);
@@ -106,10 +108,10 @@ describe('uicp stream aggregator', () => {
   it('throws when downstream batch application reports failure', async () => {
     const onBatch = vi.fn(async () => ({ success: false, applied: 0, errors: ['apply failed'] }));
     const agg = createOllamaAggregator(onBatch);
-    const payload = [{ op: 'window.create', params: { title: 'Boom' } }];
+    const payload = 'create window title "Boom" width 520 height 320';
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: JSON.stringify(payload) } }] }));
+      await agg.processDelta(JSON.stringify({ choices: [{ delta: { channel: 'commentary', content: payload } }] }));
       await expect(agg.flush()).rejects.toThrow('apply failed');
       expect(onBatch).toHaveBeenCalledTimes(1);
     } finally {

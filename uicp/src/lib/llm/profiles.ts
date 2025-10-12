@@ -2,7 +2,7 @@ import plannerPrompt from '../../prompts/planner.txt?raw';
 import actorPrompt from '../../prompts/actor.txt?raw';
 import type { ChatMessage, ToolSpec } from './ollama';
 
-export type PlannerProfileKey = 'deepseek' | 'kimi';
+export type PlannerProfileKey = 'deepseek' | 'kimi' | 'wil';
 export type ActorProfileKey = 'qwen' | 'kimi';
 
 export interface PlannerProfile {
@@ -24,6 +24,16 @@ export interface ActorProfile {
 }
 
 const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
+  wil: {
+    key: 'wil',
+    label: 'WIL Deterministic',
+    description: 'Local deterministic planner using the words→intent lexicon (no model call).',
+    capabilities: { channels: ['text'], supportsTools: false },
+    formatMessages: (intent) => [
+      { role: 'system', content: 'WIL deterministic planner: no model messages used.' },
+      { role: 'user', content: intent },
+    ],
+  },
   deepseek: {
     key: 'deepseek',
     label: 'DeepSeek V3.1',
