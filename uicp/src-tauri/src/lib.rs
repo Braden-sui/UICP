@@ -1,13 +1,18 @@
+pub mod action_log;
 pub mod policy;
 
+pub use action_log::{
+    ensure_action_log_schema, parse_pubkey, parse_seed, verify_chain, ActionLogHandle,
+    ActionLogService, ActionLogVerifyReport,
+};
 pub use policy::{
     enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
-pub mod compute_input;
 pub mod compute;
 pub mod compute_cache;
+pub mod compute_input;
 pub mod core;
 pub mod registry;
 

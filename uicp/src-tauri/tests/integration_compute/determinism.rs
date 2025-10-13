@@ -2,7 +2,8 @@
 
 use serde_json::{json, Value};
 use uicp::{
-    test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec,
+    test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
+    ComputeProvenanceSpec,
 };
 
 fn make_job(job_id: &str, env_hash: &str, fuel: Option<u64>) -> ComputeJobSpec {
@@ -34,7 +35,10 @@ fn make_job(job_id: &str, env_hash: &str, fuel: Option<u64>) -> ComputeJobSpec {
 
 fn ensure_success(final_ev: &Value) -> &serde_json::Map<String, Value> {
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(true));
-    assert!(final_ev.get("code").is_none(), "unexpected failure code: {final_ev:?}");
+    assert!(
+        final_ev.get("code").is_none(),
+        "unexpected failure code: {final_ev:?}"
+    );
     final_ev
         .get("metrics")
         .and_then(|m| m.as_object())
@@ -56,10 +60,7 @@ async fn deterministic_runs_match_for_same_env_hash() {
         .await
         .expect("first run should succeed");
     let first_metrics = ensure_success(&first);
-    let first_output = first
-        .get("output")
-        .expect("first output present")
-        .clone();
+    let first_output = first.get("output").expect("first output present").clone();
     let hash1 = first_metrics
         .get("outputHash")
         .and_then(|v| v.as_str())
@@ -80,10 +81,7 @@ async fn deterministic_runs_match_for_same_env_hash() {
         .await
         .expect("second run should succeed");
     let second_metrics = ensure_success(&second);
-    let second_output = second
-        .get("output")
-        .expect("second output present")
-        .clone();
+    let second_output = second.get("output").expect("second output present").clone();
     let hash2 = second_metrics
         .get("outputHash")
         .and_then(|v| v.as_str())
@@ -149,6 +147,9 @@ async fn different_env_hash_changes_seed_dependent_output() {
     if hash1 == hash2 {
         let fuel1 = first_metrics.get("fuelUsed").and_then(|v| v.as_u64());
         let fuel2 = second_metrics.get("fuelUsed").and_then(|v| v.as_u64());
-        assert_ne!(fuel1, fuel2, "at least one metric should reflect seed change");
+        assert_ne!(
+            fuel1, fuel2,
+            "at least one metric should reflect seed change"
+        );
     }
 }

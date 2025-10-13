@@ -244,9 +244,21 @@ pub async fn lookup<R: Runtime>(
     {
         let ms = started.elapsed().as_millis() as i64;
         match &res {
-            Ok(Some(_)) => tracing::info!(target = "uicp", duration_ms = ms, hit = true, "cache lookup ok"),
-            Ok(None) => tracing::info!(target = "uicp", duration_ms = ms, hit = false, "cache lookup ok"),
-            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache lookup failed"),
+            Ok(Some(_)) => tracing::info!(
+                target = "uicp",
+                duration_ms = ms,
+                hit = true,
+                "cache lookup ok"
+            ),
+            Ok(None) => tracing::info!(
+                target = "uicp",
+                duration_ms = ms,
+                hit = false,
+                "cache lookup ok"
+            ),
+            Err(e) => {
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache lookup failed")
+            }
         }
     }
     res
@@ -285,7 +297,8 @@ pub async fn store<R: Runtime>(
     value: &Value,
 ) -> anyhow::Result<()> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compute_cache_store", workspace = %workspace_id, task = %task).entered();
+    let _span = tracing::info_span!("compute_cache_store", workspace = %workspace_id, task = %task)
+        .entered();
     // Freeze writes to persistence in Safe Mode
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
@@ -312,7 +325,9 @@ pub async fn store<R: Runtime>(
         let ms = started.elapsed().as_millis() as i64;
         match &res {
             Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "cache store ok"),
-            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache store failed"),
+            Err(e) => {
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache store failed")
+            }
         }
     }
     res?;

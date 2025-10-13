@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime};
 // Optional signature verification (if caller provides a public key)
+use anyhow::{bail, Result as AnyResult};
 use base64::engine::general_purpose::{
     STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD,
 };
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use anyhow::{bail, Result as AnyResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleEntry {
@@ -72,7 +72,10 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     // trigger Tauri's file watcher and cause rebuild loops).
     if std::env::var("UICP_MODULES_DIR").is_ok() {
         #[cfg(feature = "otel_spans")]
-        tracing::info!(target = "uicp", "skipping module install (UICP_MODULES_DIR set)");
+        tracing::info!(
+            target = "uicp",
+            "skipping module install (UICP_MODULES_DIR set)"
+        );
         return Ok(());
     }
 
@@ -116,7 +119,9 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
         let _ = try_repair_manifest(&target, &bundled);
         #[cfg(feature = "otel_spans")]
         {
-            if let (Some(before), Ok(after)) = (before_snapshot, std::fs::read_to_string(&manifest_path)) {
+            if let (Some(before), Ok(after)) =
+                (before_snapshot, std::fs::read_to_string(&manifest_path))
+            {
                 if before != after {
                     tracing::info!(target = "uicp", path = %manifest_path.display(), "repaired manifest digests");
                 }
@@ -350,7 +355,8 @@ pub fn find_module<R: Runtime>(
         .split_once('@')
         .unwrap_or((task_at_version, ""));
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("registry_find_module", task = %task, version = %version).entered();
+    let _span =
+        tracing::info_span!("registry_find_module", task = %task, version = %version).entered();
     let manifest = load_manifest(app)?;
     let selected = select_manifest_entry(&manifest.entries, task, version)?;
     let Some(entry) = selected else {
@@ -392,8 +398,14 @@ fn require_pubkey_from_env() -> AnyResult<[u8; 32]> {
     let raw = std::env::var("UICP_MODULES_PUBKEY")
         .map_err(|_| anyhow::anyhow!("STRICT_MODULES_VERIFY requires UICP_MODULES_PUBKEY"))?;
     let b64 = BASE64_STANDARD.decode(raw.as_bytes()).ok();
-    let hexed = if b64.is_none() { hex::decode(&raw).ok() } else { None };
-    let bytes = b64.or(hexed).ok_or_else(|| anyhow::anyhow!("invalid UICP_MODULES_PUBKEY (expected base64 or hex)"))?;
+    let hexed = if b64.is_none() {
+        hex::decode(&raw).ok()
+    } else {
+        None
+    };
+    let bytes = b64
+        .or(hexed)
+        .ok_or_else(|| anyhow::anyhow!("invalid UICP_MODULES_PUBKEY (expected base64 or hex)"))?;
     let arr: [u8; 32] = bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("UICP_MODULES_PUBKEY must be 32 bytes (Ed25519)"))?;
@@ -408,11 +420,18 @@ fn enforce_strict_signature(entry: &ModuleEntry) -> AnyResult<()> {
     let sig_status = verify_entry_signature(entry, &pk)?;
     match sig_status {
         SignatureStatus::Verified => Ok(()),
-        SignatureStatus::Missing => bail!("STRICT_MODULES_VERIFY: signature missing for {}@{}", entry.task, entry.version),
-        SignatureStatus::Invalid => bail!("STRICT_MODULES_VERIFY: signature invalid for {}@{}", entry.task, entry.version),
+        SignatureStatus::Missing => bail!(
+            "STRICT_MODULES_VERIFY: signature missing for {}@{}",
+            entry.task,
+            entry.version
+        ),
+        SignatureStatus::Invalid => bail!(
+            "STRICT_MODULES_VERIFY: signature invalid for {}@{}",
+            entry.task,
+            entry.version
+        ),
     }
 }
-
 
 pub fn verify_digest(path: &Path, expected_hex: &str) -> Result<bool> {
     let meta = fs::symlink_metadata(path)
@@ -484,14 +503,19 @@ pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
     use ed25519_dalek::Signer; // WHY: bring Signer trait in scope for SigningKey.sign during tests.
+    use ed25519_dalek::SigningKey;
     use once_cell::sync::Lazy;
     use std::sync::Mutex;
 
     static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-    fn make_entry(task: &str, version: &str, digest_hex: &str, sig_b64: Option<String>) -> ModuleEntry {
+    fn make_entry(
+        task: &str,
+        version: &str,
+        digest_hex: &str,
+        sig_b64: Option<String>,
+    ) -> ModuleEntry {
         ModuleEntry {
             task: task.to_string(),
             version: version.to_string(),
@@ -563,8 +587,8 @@ mod tests {
         const PUBKEY_B64: &str = "ih4HBWNN6fqiMx8ee5NICPwDUzu/4ORtUjo7OTVu4wg=";
 
         let manifest_text = include_str!("../modules/manifest.json");
-        let manifest: ModuleManifest = serde_json::from_str(manifest_text)
-            .expect("bundled manifest parses");
+        let manifest: ModuleManifest =
+            serde_json::from_str(manifest_text).expect("bundled manifest parses");
         let pubkey_bytes = BASE64_STANDARD
             .decode(PUBKEY_B64.as_bytes())
             .expect("decode CI pubkey");
@@ -576,8 +600,8 @@ mod tests {
                 entry.task,
                 entry.version
             );
-            let status = verify_entry_signature(entry, &pubkey_bytes)
-                .expect("signature check succeeds");
+            let status =
+                verify_entry_signature(entry, &pubkey_bytes).expect("signature check succeeds");
             assert_eq!(
                 status,
                 SignatureStatus::Verified,

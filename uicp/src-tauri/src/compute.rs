@@ -20,11 +20,11 @@ use tokio::sync::mpsc;
 use tokio::sync::OwnedSemaphorePermit;
 
 #[cfg(feature = "wasm_compute")]
-use crate::registry;
-#[cfg(feature = "wasm_compute")]
 use crate::compute_input::{
     derive_job_seed, extract_csv_input, extract_table_query_input, resolve_csv_source,
 };
+#[cfg(feature = "wasm_compute")]
+use crate::registry;
 use crate::ComputeJobSpec;
 
 /// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
@@ -50,6 +50,11 @@ pub mod error_codes {
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
+    #[cfg(feature = "uicp_wasi_enable")]
+    use crate::wasi_logging::wasi_logging_shim::add_to_linker as add_logging_to_linker;
+    use crate::wasi_logging::wasi_logging_shim::logging::{
+        Host as WasiLogHost, Level as WasiLogLevel,
+    };
     use bytes::Bytes;
     use chrono::Utc;
     use ciborium::value::Value;
@@ -57,8 +62,6 @@ mod with_runtime {
     use once_cell::sync::Lazy;
     use serde_json;
     use sha2::{Digest, Sha256};
-    #[cfg(feature = "uicp_wasi_enable")]
-    use crate::wasi_logging::wasi_logging_shim::add_to_linker as add_logging_to_linker;
     use std::convert::TryFrom;
     use std::io::Cursor;
     use std::sync::{
@@ -72,7 +75,6 @@ mod with_runtime {
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
-    use crate::wasi_logging::wasi_logging_shim::logging::{Host as WasiLogHost, Level as WasiLogLevel};
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
         DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
@@ -200,12 +202,7 @@ mod with_runtime {
     }
 
     impl WasiLogHost for Ctx {
-        fn log(
-            &mut self,
-            level: WasiLogLevel,
-            context: String,
-            message: String,
-        ) {
+        fn log(&mut self, level: WasiLogLevel, context: String, message: String) {
             let level_str = match level {
                 WasiLogLevel::Trace => "trace",
                 WasiLogLevel::Debug => "debug",
@@ -226,8 +223,7 @@ mod with_runtime {
                     break;
                 }
                 drop(rl);
-                self.logger_throttle_waits
-                    .fetch_add(1, Ordering::Relaxed);
+                self.logger_throttle_waits.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(10));
             }
 
@@ -476,6 +472,8 @@ mod with_runtime {
         // Rate limiting for stdout/stderr (bytes/s)
         log_rate: Arc<Mutex<RateLimiterBytes>>,
         log_throttle_waits: Arc<AtomicU64>,
+        // WHY: Capture durable compute stdout/stderr frames for replay verification.
+        action_log: crate::action_log::ActionLogHandle,
     }
 
     #[derive(Clone)]
@@ -546,11 +544,31 @@ mod with_runtime {
 
                     self.shared.log_count.fetch_add(1, Ordering::Relaxed);
 
+                    // WHY: Append to the durable action_log before UI emission to preserve append-first semantics.
+                    let full_b64 = BASE64_ENGINE.encode(to_emit);
+                    if let Err(err) = self.shared.action_log.append_json(
+                        "compute.log",
+                        &serde_json::json!({
+                            "jobId": self.shared.job_id,
+                            "task": self.shared.task,
+                            "stream": self.channel,
+                            "seq": seq_no,
+                            "tick": tick_no,
+                            "bytesLen": to_emit.len(),
+                            "previewB64": preview_b64,
+                            "lineB64": full_b64,
+                            "truncated": truncated,
+                        }),
+                    ) {
+                        // ERROR: E-UICP-601 Action log append failed — terminate job for loud failure.
+                        panic!("E-UICP-601: action log append failed: {err}");
+                    }
+
                     // Emit structured partial log event
                     self.shared.emitter.emit_partial_json(serde_json::json!({
-                        "jobId": self.shared.job_id,
-                        "task": self.shared.task,
-                        "seq": seq_no,
+                          "jobId": self.shared.job_id,
+                          "task": self.shared.task,
+                          "seq": seq_no,
                         "kind": "log",
                         "stream": self.channel,
                         "tick": tick_no,
@@ -903,7 +921,9 @@ mod with_runtime {
     ) -> JoinHandle<()> {
         tauri_spawn(async move {
             #[cfg(feature = "otel_spans")]
-            let _span = tracing::info_span!("compute_spawn_job", job_id = %spec.job_id, task = %spec.task).entered();
+            let _span =
+                tracing::info_span!("compute_spawn_job", job_id = %spec.job_id, task = %spec.task)
+                    .entered();
             let _permit = permit;
             let started = Instant::now();
 
@@ -1113,6 +1133,11 @@ mod with_runtime {
                 });
             }
 
+            let action_log_handle = {
+                let state: tauri::State<'_, crate::AppState> = app.state();
+                state.action_log.clone()
+            };
+
             let log_shared = Arc::new(GuestLogShared {
                 emitter: telemetry.clone(),
                 job_id: spec.job_id.clone(),
@@ -1126,6 +1151,7 @@ mod with_runtime {
                 buf: Mutex::new(Vec::new()),
                 log_rate: log_rate.clone(),
                 log_throttle_waits: log_throttle_waits.clone(),
+                action_log: action_log_handle,
             });
 
             let mut wasi_builder = WasiCtxBuilder::new();
@@ -1258,42 +1284,50 @@ mod with_runtime {
                         let call_future = async {
                             match task_name {
                                 "csv.parse" => match extract_csv_input(&spec.input) {
-                                    Ok((src, has_header)) => match resolve_csv_source(&spec, &src) {
-                                        Ok(resolved) => {
-                                            let func_res: Result<
-                                                wasmtime::component::TypedFunc<
-                                                (String, String, bool),
-                                                (Result<Vec<Vec<String>>, String>,),
-                                            >,
-                                            _,
-                                        > = instance.get_typed_func(&mut store, "csv#run");
-                                        match func_res {
-                                            Err(e) => Err(anyhow::Error::from(e)),
-                                            Ok(func) => match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), resolved, has_header),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
-                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                                Err(e) => Err(anyhow::Error::from(e)),
-                                            },
+                                    Ok((src, has_header)) => {
+                                        match resolve_csv_source(&spec, &src) {
+                                            Ok(resolved) => {
+                                                let func_res: Result<
+                                                    wasmtime::component::TypedFunc<
+                                                        (String, String, bool),
+                                                        (Result<Vec<Vec<String>>, String>,),
+                                                    >,
+                                                    _,
+                                                > = instance.get_typed_func(&mut store, "csv#run");
+                                                match func_res {
+                                                    Err(e) => Err(anyhow::Error::from(e)),
+                                                    Ok(func) => match func
+                                                        .call_async(
+                                                            &mut store,
+                                                            (
+                                                                spec.job_id.clone(),
+                                                                resolved,
+                                                                has_header,
+                                                            ),
+                                                        )
+                                                        .await
+                                                    {
+                                                        Ok((Ok(rows),)) => {
+                                                            Ok(serde_json::json!(rows))
+                                                        }
+                                                        Ok((Err(msg),)) => {
+                                                            Err(anyhow::Error::msg(msg))
+                                                        }
+                                                        Err(e) => Err(anyhow::Error::from(e)),
+                                                    },
+                                                }
+                                            }
+                                            Err(e) => Err(anyhow::anyhow!(format!(
+                                                "{}: {}",
+                                                e.code, e.message
+                                            ))),
                                         }
                                     }
-                                    Err(e) => Err(anyhow::anyhow!(format!(
-                                        "{}: {}",
-                                        e.code, e.message
-                                    ))),
+                                    Err(e) => {
+                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
+                                    }
                                 },
-                                Err(e) => Err(anyhow::anyhow!(format!(
-                                    "{}: {}",
-                                    e.code, e.message
-                                ))),
-                            },
-                            "table.query" => {
-                                match extract_table_query_input(&spec.input) {
+                                "table.query" => match extract_table_query_input(&spec.input) {
                                     Ok((rows, select, where_opt)) => {
                                         let func_res: Result<
                                             wasmtime::component::TypedFunc<
@@ -1322,14 +1356,13 @@ mod with_runtime {
                                             },
                                         }
                                     }
-                                    Err(e) => Err(anyhow::anyhow!(format!(
-                                        "{}: {}",
-                                        e.code, e.message
-                                    ))),
-                                }
+                                    Err(e) => {
+                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
+                                    }
+                                },
+                                _ => Err(anyhow::anyhow!("unknown task for this world")),
                             }
-                            _ => Err(anyhow::anyhow!("unknown task for this world")),
-                        }};
+                        };
                         tokio::select! {
                             _ = cancel_watch.changed() => {
                                 let metrics = collect_metrics(&store);
@@ -1407,10 +1440,7 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
-        add_logging_to_linker::<_, Ctx>(
-            linker,
-            |state| state,
-        )?;
+        add_logging_to_linker::<_, Ctx>(linker, |state| state)?;
         add_uicp_host(linker)?;
         Ok(())
     }
@@ -1740,14 +1770,7 @@ mod with_runtime {
             "partialThrottleWaits": store.data().partial_throttle_waits.load(Ordering::Relaxed),
             "loggerThrottleWaits": store.data().logger_throttle_waits.load(Ordering::Relaxed),
         });
-        let (
-            stdout_burst,
-            stdout_rate,
-            logger_burst,
-            logger_rate,
-            partial_burst,
-            partial_rate,
-        ) = {
+        let (stdout_burst, stdout_rate, logger_burst, logger_rate, partial_burst, partial_rate) = {
             let ctx = store.data();
             let (stdout_burst, stdout_rate) = {
                 let rl = ctx.log_rate.lock().unwrap();
@@ -1775,18 +1798,12 @@ mod with_runtime {
                 "stdoutRateBytesPerSec".into(),
                 serde_json::json!(stdout_rate),
             );
-            obj.insert(
-                "stdoutBurstBytes".into(),
-                serde_json::json!(stdout_burst),
-            );
+            obj.insert("stdoutBurstBytes".into(), serde_json::json!(stdout_burst));
             obj.insert(
                 "loggerRateBytesPerSec".into(),
                 serde_json::json!(logger_rate),
             );
-            obj.insert(
-                "loggerBurstBytes".into(),
-                serde_json::json!(logger_burst),
-            );
+            obj.insert("loggerBurstBytes".into(), serde_json::json!(logger_burst));
             obj.insert(
                 "partialRateEventsPerSec".into(),
                 serde_json::json!(partial_rate),
@@ -2294,17 +2311,62 @@ mod with_runtime {
                     .expect("call run");
             });
 
-            let captured = tele
-                .partials
-                .lock()
-                .unwrap()
-                .clone();
+            let captured = tele.partials.lock().unwrap().clone();
             assert!(
                 captured
                     .iter()
                     .any(|p| p.get("stream").and_then(|v| v.as_str()) == Some("wasi-logging")),
                 "expected at least one wasi-logging partial"
             );
+        }
+
+        #[cfg(feature = "uicp_wasi_enable")]
+        #[test]
+        fn guest_stdio_frames_land_in_action_log() {
+            use tempfile::tempdir;
+            #[derive(Clone, Default)]
+            struct NullEmitter;
+            impl TelemetryEmitter for NullEmitter {
+                fn emit_debug(&self, _payload: serde_json::Value) {}
+                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial_json(&self, _payload: serde_json::Value) {}
+            }
+
+            let dir = tempdir().expect("tempdir");
+            let db_path = dir.path().join("action.db");
+            let action_log = crate::action_log::ActionLogService::start_with_seed(&db_path, None)
+                .expect("action log");
+
+            let shared = Arc::new(GuestLogShared {
+                emitter: Arc::new(NullEmitter::default()),
+                job_id: "job-stdout-log".into(),
+                task: "task.stdout.log".into(),
+                seq: Arc::new(AtomicU64::new(0)),
+                tick: Arc::new(AtomicU64::new(0)),
+                log_count: Arc::new(AtomicU64::new(0)),
+                emitted_bytes: Arc::new(AtomicU64::new(0)),
+                max_bytes: 8 * 1024,
+                max_len: 512,
+                buf: Mutex::new(Vec::new()),
+                log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(1024, 1024))),
+                log_throttle_waits: Arc::new(AtomicU64::new(0)),
+                action_log,
+            });
+            let stream = GuestLogStream {
+                shared: shared.clone(),
+                channel: "stdout",
+            };
+            stream.emit_message(b"hello action log\n");
+
+            let conn = rusqlite::Connection::open(&db_path).expect("open sqlite");
+            let record_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM action_log WHERE kind = 'compute.log'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("count action log rows");
+            assert_eq!(record_count, 1);
         }
 
         #[cfg(feature = "uicp_wasi_enable")]
@@ -2356,7 +2418,8 @@ mod with_runtime {
             assert_eq!(store.data().rng_counter, 1);
 
             // Fill 16 bytes should advance counter at least once more
-            let (bytes,) = host_rng_fill(store.as_context_mut(), ("rng-job".into(), 16u32)).unwrap();
+            let (bytes,) =
+                host_rng_fill(store.as_context_mut(), ("rng-job".into(), 16u32)).unwrap();
             assert_eq!(bytes.len(), 16);
             assert!(store.data().rng_counter >= 2);
 
@@ -2419,9 +2482,13 @@ mod with_runtime {
         fn collect_metrics_accumulates_counters_and_mempeak() {
             use wasmtime::ResourceLimiter;
             #[derive(Clone, Default)]
-            struct TestEmitter { debugs: Arc<Mutex<Vec<serde_json::Value>>> }
+            struct TestEmitter {
+                debugs: Arc<Mutex<Vec<serde_json::Value>>>,
+            }
             impl TelemetryEmitter for TestEmitter {
-                fn emit_debug(&self, payload: serde_json::Value) { self.debugs.lock().unwrap().push(payload); }
+                fn emit_debug(&self, payload: serde_json::Value) {
+                    self.debugs.lock().unwrap().push(payload);
+                }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
             }
@@ -2485,7 +2552,6 @@ mod with_runtime {
             assert!(mem_peak >= 5);
         }
     }
-
 }
 
 #[cfg(not(feature = "wasm_compute"))]

@@ -31,6 +31,7 @@ use tokio::{
 use tokio_rusqlite::Connection as AsyncConn;
 use tokio_stream::StreamExt;
 
+mod action_log;
 mod commands;
 mod compute;
 mod compute_cache;
@@ -187,6 +188,8 @@ pub struct AppState {
     safe_mode: RwLock<bool>,
     safe_reason: RwLock<Option<String>>,
     circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
+    #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
+    action_log: action_log::ActionLogHandle,
 }
 
 #[derive(Clone, Serialize)]
@@ -491,8 +494,8 @@ async fn test_api_key(
         })
     }
 }
-     // EASTER EGG ^.^ - IF YOU SEE THIS, THANK YOU FROM THE BOTTOM OF MY FUCKING HEART FOR EVEN READING MY FILES. THIS IS THE FIRST
-     // TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY 2 DAY. 
+// EASTER EGG ^.^ - IF YOU SEE THIS, THANK YOU FROM THE BOTTOM OF MY FUCKING HEART FOR EVEN READING MY FILES. THIS IS THE FIRST
+// TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY 2 DAY.
 #[tauri::command]
 async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
@@ -523,7 +526,9 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
         let ms = started.elapsed().as_millis() as i64;
         match &res {
             Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "command persisted"),
-            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "command persist failed"),
+            Err(e) => {
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "command persist failed")
+            }
         }
     }
     res.map_err(|e| format!("DB error: {e:?}"))?;
@@ -564,8 +569,15 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
     {
         let ms = started.elapsed().as_millis() as i64;
         match &res {
-            Ok(v) => tracing::info!(target = "uicp", duration_ms = ms, count = v.len(), "commands loaded"),
-            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands load failed"),
+            Ok(v) => tracing::info!(
+                target = "uicp",
+                duration_ms = ms,
+                count = v.len(),
+                "commands loaded"
+            ),
+            Err(e) => {
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands load failed")
+            }
         }
     }
     let commands = res.map_err(|e| format!("DB error: {e:?}"))?;
@@ -594,7 +606,9 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
         let ms = _started.elapsed().as_millis() as i64;
         match &res {
             Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "commands cleared"),
-            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands clear failed"),
+            Err(e) => {
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands clear failed")
+            }
         }
     }
     res.map_err(|e| format!("DB error: {e:?}"))?;
@@ -1630,6 +1644,8 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
         "#,
     )
     .context("apply migrations")?;
+    action_log::ensure_action_log_schema(&conn)
+        .context("ensure action_log schema (init_database)")?;
 
     match conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
         Ok(_) => {}
@@ -1961,7 +1977,9 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                 let ms = started.elapsed().as_millis() as i64;
                 match &res {
                     Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "db maintenance ok"),
-                    Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "db maintenance failed"),
+                    Err(e) => {
+                        tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "db maintenance failed")
+                    }
                 }
                 drop(span);
             }
@@ -2035,6 +2053,24 @@ fn main() {
             .await;
     });
 
+    let action_log = match action_log::ActionLogService::start(&db_path) {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("Failed to start action log service: {err:?}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(err) = action_log.append_json(
+        "system.boot",
+        &serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "ts": chrono::Utc::now().timestamp(),
+        }),
+    ) {
+        eprintln!("E-UICP-660: failed to append boot action-log entry: {err:?}");
+    }
+
     let state = AppState {
         db_path: db_path.clone(),
         db_ro,
@@ -2060,6 +2096,7 @@ fn main() {
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),
         circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
+        action_log,
     };
 
     if let Err(err) = init_database(&db_path) {
@@ -2453,7 +2490,9 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
         let ms = _started.elapsed().as_millis() as i64;
         match &res {
             Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "checkpoint saved"),
-            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "checkpoint save failed"),
+            Err(e) => {
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "checkpoint save failed")
+            }
         }
     }
     res.map_err(|e| format!("{e:?}"))
@@ -2500,7 +2539,12 @@ async fn determinism_probe(
         enter_safe_mode(&app, "DRIFT").await;
     }
     #[cfg(feature = "otel_spans")]
-    tracing::info!(target = "uicp", drift = drift, sampled = samples.len(), "determinism probe result");
+    tracing::info!(
+        target = "uicp",
+        drift = drift,
+        sampled = samples.len(),
+        "determinism probe result"
+    );
     Ok(serde_json::json!({ "drift": drift, "sampled": samples.len() }))
 }
 

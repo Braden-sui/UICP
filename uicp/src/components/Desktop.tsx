@@ -11,6 +11,7 @@ import { useAppStore, type DesktopShortcutPosition } from '../state/app';
 import AgentSettingsWindow from './AgentSettingsWindow';
 import DevtoolsAnalyticsListener from './DevtoolsAnalyticsListener';
 import { installWorkspaceArtifactCleanup } from '../lib/uicp/cleanup';
+import DesktopClock from './DesktopClock';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
@@ -272,6 +273,7 @@ export const Desktop = () => {
   return (
     <div className="relative flex min-h-screen w-full flex-col items-center justify-center">
       <DevtoolsAnalyticsListener />
+      <DesktopClock />
       <DesktopMenuBar menus={menus} />
       <div
         id="workspace-root"

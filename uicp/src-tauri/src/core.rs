@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::action_log;
 use anyhow::Context;
 use chrono::Utc;
 use dirs::document_dir;
@@ -64,6 +65,7 @@ pub struct AppState {
     pub safe_mode: RwLock<bool>,
     pub safe_reason: RwLock<Option<String>>,
     pub circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
+    pub action_log: action_log::ActionLogHandle,
 }
 
 // ----------------------------------------------------------------------------
@@ -137,6 +139,8 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
         "#,
     )
     .context("apply migrations")?;
+    action_log::ensure_action_log_schema(&conn)
+        .context("ensure action_log schema (init_database)")?;
 
     match conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
         Ok(_) => {}

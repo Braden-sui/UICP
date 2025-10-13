@@ -1,5 +1,6 @@
 #![cfg(any(test, feature = "compute_harness"))]
 
+use crate::action_log::ActionLogService;
 use crate::{ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR};
 use anyhow::{Context, Result};
 use reqwest::Client;
@@ -112,6 +113,9 @@ impl ComputeTestHarness {
                 .expect("configure sqlite ro");
         });
 
+        let action_log =
+            ActionLogService::start(&db_path).context("start action log service (harness)")?;
+
         let state = AppState {
             db_path: db_path.clone(),
             db_ro,
@@ -133,6 +137,7 @@ impl ComputeTestHarness {
             safe_mode: RwLock::new(false),
             safe_reason: RwLock::new(None),
             circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            action_log,
         };
 
         // database initialized above
@@ -229,7 +234,9 @@ impl ComputeTestHarness {
     pub async fn modules_info(&self) -> Result<Value> {
         crate::commands::get_modules_info(self.app.handle().clone())
             .await
-            .map_err(|err| anyhow::anyhow!("E-UICP-410: get_modules_info via harness failed: {err}"))
+            .map_err(|err| {
+                anyhow::anyhow!("E-UICP-410: get_modules_info via harness failed: {err}")
+            })
     }
 
     /// WHY: Allow harness callers to copy fixtures into the workspace files area without reimplementing the command logic.
@@ -266,7 +273,9 @@ impl ComputeTestHarness {
     pub async fn clear_compute_cache(&self, workspace_id: Option<String>) -> Result<()> {
         crate::commands::clear_compute_cache(self.app.handle().clone(), workspace_id)
             .await
-            .map_err(|err| anyhow::anyhow!("E-UICP-415: clear_compute_cache via harness failed: {err}"))
+            .map_err(|err| {
+                anyhow::anyhow!("E-UICP-415: clear_compute_cache via harness failed: {err}")
+            })
     }
 
     /// Return the temp workspace path backing this harness.

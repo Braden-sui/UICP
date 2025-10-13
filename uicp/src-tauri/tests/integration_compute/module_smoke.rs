@@ -5,17 +5,16 @@
 
 use serde_json::json;
 use uicp::{
-    registry,
-    test_support::ComputeTestHarness,
-    ComputeCapabilitiesSpec,
-    ComputeJobSpec,
+    registry, test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
     ComputeProvenanceSpec,
 };
 
 #[tokio::test]
 async fn csv_parse_smoke_when_module_present() {
     // Quick presence check so CI/dev without modules doesn't fail the suite.
-    let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
     let found = match registry::find_module(&app.handle(), "csv.parse@1.2.0") {
         Ok(Some(_)) => true,
         _ => false,
@@ -41,7 +40,10 @@ async fn csv_parse_smoke_when_module_present() {
         capabilities: ComputeCapabilitiesSpec::default(),
         replayable: true,
         workspace_id: "default".into(),
-        provenance: ComputeProvenanceSpec { env_hash: "smoke-env".into(), agent_trace_id: None },
+        provenance: ComputeProvenanceSpec {
+            env_hash: "smoke-env".into(),
+            agent_trace_id: None,
+        },
     };
     let final_ev = h.run_job(spec).await.expect("final event");
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(true));
@@ -49,7 +51,9 @@ async fn csv_parse_smoke_when_module_present() {
 
 #[tokio::test]
 async fn table_query_smoke_when_module_present() {
-    let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
     let found = match registry::find_module(&app.handle(), "table.query@0.1.0") {
         Ok(Some(_)) => true,
         _ => false,
@@ -76,9 +80,11 @@ async fn table_query_smoke_when_module_present() {
         capabilities: ComputeCapabilitiesSpec::default(),
         replayable: true,
         workspace_id: "default".into(),
-        provenance: ComputeProvenanceSpec { env_hash: "smoke-env".into(), agent_trace_id: None },
+        provenance: ComputeProvenanceSpec {
+            env_hash: "smoke-env".into(),
+            agent_trace_id: None,
+        },
     };
     let final_ev = h.run_job(spec).await.expect("final event");
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(true));
 }
-

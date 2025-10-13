@@ -65,20 +65,38 @@ pub fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), Ta
 pub fn extract_table_query_input(
     input: &serde_json::Value,
 ) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), TaskInputError> {
-    let obj = input
-        .as_object()
-        .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query input must be an object"))?;
-    let rows_val = obj
-        .get("rows")
-        .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query input.rows required"))?;
+    let obj = input.as_object().ok_or_else(|| {
+        TaskInputError::new(
+            error_codes::INPUT_INVALID,
+            DETAIL_TABLE_INPUT,
+            "table.query input must be an object",
+        )
+    })?;
+    let rows_val = obj.get("rows").ok_or_else(|| {
+        TaskInputError::new(
+            error_codes::INPUT_INVALID,
+            DETAIL_TABLE_INPUT,
+            "table.query input.rows required",
+        )
+    })?;
     let rows = rows_val
         .as_array()
-        .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query input.rows must be an array"))?
+        .ok_or_else(|| {
+            TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_TABLE_INPUT,
+                "table.query input.rows must be an array",
+            )
+        })?
         .iter()
         .map(|row| {
-            let arr = row
-                .as_array()
-                .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query row must be an array"))?;
+            let arr = row.as_array().ok_or_else(|| {
+                TaskInputError::new(
+                    error_codes::INPUT_INVALID,
+                    DETAIL_TABLE_INPUT,
+                    "table.query row must be an array",
+                )
+            })?;
             Ok(arr
                 .iter()
                 .map(|cell| cell.as_str().unwrap_or("").to_string())
@@ -86,16 +104,32 @@ pub fn extract_table_query_input(
         })
         .collect::<Result<Vec<Vec<String>>, TaskInputError>>()?;
 
-    let select_val = obj
-        .get("select")
-        .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query input.select required"))?;
+    let select_val = obj.get("select").ok_or_else(|| {
+        TaskInputError::new(
+            error_codes::INPUT_INVALID,
+            DETAIL_TABLE_INPUT,
+            "table.query input.select required",
+        )
+    })?;
     let select = select_val
         .as_array()
-        .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query input.select must be an array"))?
+        .ok_or_else(|| {
+            TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_TABLE_INPUT,
+                "table.query input.select must be an array",
+            )
+        })?
         .iter()
         .map(|v| {
             v.as_u64()
-                .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query select entries must be non-negative integers"))
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_TABLE_INPUT,
+                        "table.query select entries must be non-negative integers",
+                    )
+                })
                 .map(|u| u as u32)
         })
         .collect::<Result<Vec<u32>, TaskInputError>>()?;
@@ -104,18 +138,30 @@ pub fn extract_table_query_input(
         if w.is_null() {
             None
         } else {
-            let wobj = w
-                .as_object()
-                .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query where_contains must be an object"))?;
-            let col = wobj
-                .get("col")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query where_contains.col must be u32"))?
-                as u32;
+            let wobj = w.as_object().ok_or_else(|| {
+                TaskInputError::new(
+                    error_codes::INPUT_INVALID,
+                    DETAIL_TABLE_INPUT,
+                    "table.query where_contains must be an object",
+                )
+            })?;
+            let col = wobj.get("col").and_then(|v| v.as_u64()).ok_or_else(|| {
+                TaskInputError::new(
+                    error_codes::INPUT_INVALID,
+                    DETAIL_TABLE_INPUT,
+                    "table.query where_contains.col must be u32",
+                )
+            })? as u32;
             let needle = wobj
                 .get("needle")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| TaskInputError::new(error_codes::INPUT_INVALID, DETAIL_TABLE_INPUT, "table.query where_contains.needle must be string"))?
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_TABLE_INPUT,
+                        "table.query where_contains.needle must be string",
+                    )
+                })?
                 .to_string();
             Some((col, needle))
         }
@@ -146,9 +192,13 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
         ));
     }
     let base = crate::files_dir_path();
-    let base_canonical = base
-        .canonicalize()
-        .map_err(|err| TaskInputError::new(error_codes::IO_DENIED, DETAIL_WS_PATH, format!("files directory unavailable: {err}")))?;
+    let base_canonical = base.canonicalize().map_err(|err| {
+        TaskInputError::new(
+            error_codes::IO_DENIED,
+            DETAIL_WS_PATH,
+            format!("files directory unavailable: {err}"),
+        )
+    })?;
     let mut buf = PathBuf::from(base);
     for seg in rel.split('/') {
         if seg.is_empty() || seg == "." {
@@ -225,10 +275,7 @@ pub fn fs_read_allowed(spec: &ComputeJobSpec, ws_path: &str) -> bool {
 
 /// WHY: Convert workspace references to data URIs eagerly so downstream caching sees canonical input.
 /// INVARIANT: Returns unchanged source for non-`ws:/files/` strings.
-pub fn resolve_csv_source(
-    spec: &ComputeJobSpec,
-    source: &str,
-) -> Result<String, TaskInputError> {
+pub fn resolve_csv_source(spec: &ComputeJobSpec, source: &str) -> Result<String, TaskInputError> {
     if !source.starts_with("ws:/files/") {
         return Ok(source.to_string());
     }
@@ -267,9 +314,7 @@ pub fn derive_job_seed(job_id: &str, env_hash: &str) -> [u8; 32] {
 /// WHY: Normalize task input so caching + runtime share the same canonical payload.
 /// INVARIANT: Unknown tasks pass through unchanged.
 #[cfg_attr(not(any(test, feature = "compute_harness")), allow(dead_code))]
-pub fn canonicalize_task_input(
-    spec: &ComputeJobSpec,
-) -> Result<serde_json::Value, TaskInputError> {
+pub fn canonicalize_task_input(spec: &ComputeJobSpec) -> Result<serde_json::Value, TaskInputError> {
     let task_name = spec.task.split('@').next().unwrap_or("");
     match task_name {
         "csv.parse" => {
@@ -422,12 +467,10 @@ mod tests {
 
         let normalized = canonicalize_task_input(&spec).unwrap();
         assert_eq!(normalized["hasHeader"], json!(true));
-        assert!(
-            normalized["source"]
-                .as_str()
-                .unwrap()
-                .starts_with("data:text/csv;base64,")
-        );
+        assert!(normalized["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:text/csv;base64,"));
     }
 
     #[test]
@@ -442,10 +485,7 @@ mod tests {
         let normalized = canonicalize_task_input(&spec).unwrap();
         assert_eq!(normalized["rows"].as_array().unwrap().len(), 2);
         assert_eq!(normalized["select"], json!([1, 0]));
-        assert_eq!(
-            normalized["where_contains"],
-            json!({"col":1,"needle":"d"})
-        );
+        assert_eq!(normalized["where_contains"], json!({"col":1,"needle":"d"}));
     }
 
     #[test]
