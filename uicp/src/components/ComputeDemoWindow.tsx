@@ -22,8 +22,8 @@ const openDialog = async (opts: { multiple?: boolean }): Promise<string | null> 
 type DemoResult = { ok: boolean; message: string };
 
 const ComputeDemoWindow = () => {
-  const isOpen = useAppStore((s) => (s as any).computeDemoOpen as boolean | undefined) ?? false;
-  const setOpen = useAppStore((s) => (s as any).setComputeDemoOpen as (v: boolean) => void);
+  const isOpen = useAppStore((s) => s.computeDemoOpen);
+  const setOpen = useAppStore((s) => s.setComputeDemoOpen);
   const pushToast = useAppStore((s) => s.pushToast);
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<DemoResult | null>(null);

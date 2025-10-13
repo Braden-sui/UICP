@@ -39,6 +39,17 @@ export const StopIcon = (props: SVGProps<SVGSVGElement>) => (
     <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" opacity="0.9" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+
+// ClarifierIcon: Subtle question badge to denote clarifier-needed
+export const ClarifierIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" {...props}>
+    <g strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="8.5" opacity="0.9" />
+      <path d="M9.75 9.75a2.25 2.25 0 1 1 3.5 1.9c-.62.4-1 .82-1 1.6v.4" opacity="0.9" />
+      <circle cx="12" cy="16.75" r="0.75" fill="currentColor" opacity="0.9" />
+    </g>
+  </svg>
+);
 // LogsIcon: Document with refined log entries and modern folded corner
 export const LogsIcon = (props: SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>

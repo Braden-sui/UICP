@@ -55,7 +55,7 @@ jobs:
       - name: Node install
         working-directory: uicp
         run: |
-          npm ci
+          npm ci --no-optional --ignore-scripts
 
       - name: Regenerate WIT bindings
         working-directory: uicp

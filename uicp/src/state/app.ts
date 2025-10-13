@@ -117,6 +117,8 @@ export type AppState = {
   streaming: boolean;
   agentMode: AgentMode;
   agentStatus: AgentStatus;
+  safeMode: boolean;
+  safeReason?: string;
   // When true, aggregator will not auto-apply or preview parsed batches.
   // Used to prevent duplicate application while orchestrator-driven flows run.
   suppressAutoApply: boolean;
@@ -147,6 +149,7 @@ export type AppState = {
   setStreaming: (value: boolean) => void;
   setSuppressAutoApply: (value: boolean) => void;
   setAgentMode: (mode: AgentMode) => void;
+  setSafeMode: (enabled: boolean, reason?: string) => void;
   openGrantModal: () => void;
   closeGrantModal: () => void;
   setLogsOpen: (value: boolean) => void;
@@ -196,6 +199,8 @@ export const useAppStore = create<AppState>()(
         lastUpdatedAt: null,
         error: undefined,
       },
+      safeMode: false,
+      safeReason: undefined,
       suppressAutoApply: false,
       grantModalOpen: false,
       logsOpen: false,
@@ -220,6 +225,8 @@ export const useAppStore = create<AppState>()(
       setStreaming: (value) => set({ streaming: value }),
       setSuppressAutoApply: (value) => set({ suppressAutoApply: value }),
       setAgentMode: (mode) => set({ agentMode: mode }),
+      setSafeMode: (enabled, reason) =>
+        set({ safeMode: enabled, safeReason: enabled ? reason : undefined }),
       openGrantModal: () => set({ grantModalOpen: true }),
       closeGrantModal: () => set({ grantModalOpen: false }),
       setLogsOpen: (value) => set({ logsOpen: value }),
@@ -405,7 +412,15 @@ export const useAppStore = create<AppState>()(
         actorProfileKey: state.actorProfileKey,
         agentSettingsOpen: state.agentSettingsOpen,
         computeDemoOpen: state.computeDemoOpen,
+        safeMode: state.safeMode,
+        safeReason: state.safeReason,
       }),
     },
   ),
 );
+
+export const selectComputeDemoOpen = (state: AppState) => state.computeDemoOpen;
+export const selectSetComputeDemoOpen = (state: AppState) => state.setComputeDemoOpen;
+export const selectSafeMode = (state: AppState) => state.safeMode;
+export const selectSafeReason = (state: AppState) => state.safeReason;
+export const selectSetSafeMode = (state: AppState) => state.setSafeMode;

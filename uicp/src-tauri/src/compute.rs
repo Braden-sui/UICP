@@ -240,6 +240,7 @@ pub(crate) fn extract_table_query_input(
 #[cfg(test)]
 mod helper_tests {
     use super::*;
+    use anyhow::Result as AnyResult;
     use serde_json::json;
 
     fn base_spec() -> crate::ComputeJobSpec {
@@ -367,6 +368,7 @@ mod with_runtime {
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
+    use crate::wasi_logging::wasi_logging_shim::logging::{self, Host as WasiLogHost, Level as WasiLogLevel};
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
         DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
@@ -478,6 +480,94 @@ mod with_runtime {
         partial_rate: Arc<Mutex<RateLimiterEvents>>,
         partial_throttle_waits: Arc<AtomicU64>,
         limits: LimitsWithPeak,
+    }
+
+    impl WasiLogHost for Ctx {
+        fn log(
+            &mut self,
+            level: WasiLogLevel,
+            context: String,
+            message: String,
+        ) -> anyhow::Result<()> {
+            let level_str = match level {
+                WasiLogLevel::Trace => "trace",
+                WasiLogLevel::Debug => "debug",
+                WasiLogLevel::Info => "info",
+                WasiLogLevel::Warn => "warn",
+                WasiLogLevel::Error => "error",
+                WasiLogLevel::Critical => "critical",
+            };
+
+            let message_bytes = message.as_bytes();
+            let message_len = message_bytes.len();
+            let total = message_len.saturating_add(context.len());
+
+            loop {
+                let mut rl = self.logger_rate.lock().unwrap();
+                if rl.available() >= total {
+                    rl.consume(total);
+                    break;
+                }
+                drop(rl);
+                self.logger_throttle_waits
+                    .fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let emitted = self.emitted_log_bytes.load(Ordering::Relaxed) as usize;
+            if emitted >= self.max_log_bytes {
+                return Ok(());
+            }
+
+            let preview_len = message_len.min(LOG_PREVIEW_MAX);
+            let preview_b64 = if preview_len > 0 {
+                BASE64_ENGINE.encode(&message_bytes[..preview_len])
+            } else {
+                String::new()
+            };
+
+            let seq_no = self
+                .partial_seq
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+            let tick_no = self
+                .logical_tick
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+
+            let new_total = self
+                .emitted_log_bytes
+                .fetch_add(message_len as u64, Ordering::Relaxed)
+                .saturating_add(message_len as u64) as usize;
+            let truncated = new_total > self.max_log_bytes;
+            self.log_count.fetch_add(1, Ordering::Relaxed);
+
+            self.emitter.emit_partial_json(serde_json::json!({
+                "jobId": self.job_id,
+                "task": self.task,
+                "seq": seq_no,
+                "kind": "log",
+                "stream": "wasi-logging",
+                "level": level_str,
+                "context": context,
+                "tick": tick_no,
+                "bytesLen": message_len,
+                "previewB64": preview_b64,
+                "truncated": truncated,
+            }));
+
+            self.emitter.emit_debug(serde_json::json!({
+                "event": "compute_guest_log",
+                "jobId": self.job_id,
+                "task": self.task,
+                "level": level_str,
+                "context": "wasi-logging",
+                "len": message_len,
+                "ts": Utc::now().timestamp_millis(),
+            }));
+
+            Ok(())
+        }
     }
 
     const MAX_PARTIAL_FRAME_BYTES: usize = 64 * 1024;
@@ -1123,6 +1213,8 @@ mod with_runtime {
         queue_wait_ms: u64,
     ) -> JoinHandle<()> {
         tauri_spawn(async move {
+            #[cfg(feature = "otel_spans")]
+            let _span = tracing::info_span!("compute_spawn_job", job_id = %spec.job_id, task = %spec.task).entered();
             let _permit = permit;
             let started = Instant::now();
 
@@ -1144,6 +1236,8 @@ mod with_runtime {
             let module = match registry::find_module(&app, &spec.task) {
                 Ok(Some(m)) => m,
                 Ok(None) => {
+                    #[cfg(feature = "otel_spans")]
+                    tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "module not found");
                     finalize_error(
                         &app,
                         &spec,
@@ -1162,6 +1256,8 @@ mod with_runtime {
                 Err(err) => {
                     let any = anyhow::Error::from(err);
                     let (code, msg) = map_trap_error(&any);
+                    #[cfg(feature = "otel_spans")]
+                    tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, error = %msg, "module resolve error");
                     finalize_error(&app, &spec, code, &msg, started, queue_wait_ms, None).await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
@@ -1176,6 +1272,8 @@ mod with_runtime {
                 Err(err) => {
                     let any = anyhow::Error::from(err);
                     let (code, msg) = map_trap_error(&any);
+                    #[cfg(feature = "otel_spans")]
+                    tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, error = %msg, "component load error");
                     finalize_error(&app, &spec, code, &msg, started, queue_wait_ms, None).await;
                     let state: tauri::State<'_, crate::AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
@@ -1597,6 +1695,7 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
+        logging::add_to_linker::<_, Ctx>(linker, |state| state)?;
         add_uicp_host(linker)?;
         Ok(())
     }
@@ -1615,40 +1714,6 @@ mod with_runtime {
         register_rng_interface(linker, "uicp:host/rng@1.0.0")?;
         Ok(())
     }
-    let elapsed = ctx.started.elapsed().as_millis() as u64;
-    let deadline = ctx.deadline_ms as u64;
-    let remaining = deadline.saturating_sub(elapsed);
-    Ok((remaining.min(u32::MAX as u64) as u32,))
-}
-
-fn host_rng_next_u64(
-    mut store: StoreContextMut<'_, Ctx>,
-    (job,): (String,),
-) -> anyhow::Result<(u64,)> {
-    if job != store.data().job_id {
-            if job != ctx.job_id {
-                log_job_mismatch(ctx, "open-partial-sink", &job);
-                return Err(anyhow::anyhow!("partial sink job id mismatch"));
-            }
-        }
-        let shared = {
-            let ctx = store.data();
-            Arc::new(PartialStreamShared {
-                emitter: ctx.emitter.clone(),
-                job_id: ctx.job_id.clone(),
-                task: ctx.task.clone(),
-                partial_seq: ctx.partial_seq.clone(),
-                partial_frames: ctx.partial_frames.clone(),
-                invalid_partial_frames: ctx.invalid_partial_frames.clone(),
-                partial_rate: ctx.partial_rate.clone(),
-                partial_throttle_waits: ctx.partial_throttle_waits.clone(),
-            })
-        };
-        let stream: WasiOutputStream = Box::new(PartialOutputStream::new(shared));
-        let handle = store.data_mut().table.push(stream)?;
-        Ok((handle,))
-    }
-
     fn host_should_cancel(
         store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
@@ -1684,6 +1749,33 @@ fn host_rng_next_u64(
         let deadline = ctx.deadline_ms as u64;
         let remaining = deadline.saturating_sub(elapsed);
         Ok((remaining.min(u32::MAX as u64) as u32,))
+    }
+
+    fn host_open_partial_sink(
+        mut store: StoreContextMut<'_, Ctx>,
+        (job,): (String,),
+    ) -> anyhow::Result<(Resource<PartialOutputStream>,)> {
+        if job != store.data().job_id {
+            let ctx = store.data();
+            log_job_mismatch(ctx, "open-partial-sink", &job);
+            return Err(anyhow::anyhow!("partial sink job id mismatch"));
+        }
+        let shared = {
+            let ctx = store.data();
+            Arc::new(PartialStreamShared {
+                emitter: ctx.emitter.clone(),
+                job_id: ctx.job_id.clone(),
+                task: ctx.task.clone(),
+                partial_seq: ctx.partial_seq.clone(),
+                partial_frames: ctx.partial_frames.clone(),
+                invalid_partial_frames: ctx.invalid_partial_frames.clone(),
+                partial_rate: ctx.partial_rate.clone(),
+                partial_throttle_waits: ctx.partial_throttle_waits.clone(),
+            })
+        };
+        let stream: WasiOutputStream = Box::new(PartialOutputStream::new(shared));
+        let handle = store.data_mut().table.push(stream)?;
+        Ok((handle,))
     }
 
     fn host_rng_next_u64(
@@ -1813,6 +1905,8 @@ fn host_rng_next_u64(
             message: message.into(),
             metrics: metrics.clone(),
         };
+        #[cfg(feature = "otel_spans")]
+        tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, code = %code, duration_ms = ms, "compute job failed");
         // Surface a debug-log entry for observability with a unique error code per event
         let _ = app.emit(
             "debug-log",
@@ -1859,6 +1953,8 @@ fn host_rng_next_u64(
             output: output.clone(),
             metrics: Some(serde_json::json!({ "durationMs": ms, "queueMs": queue_wait_ms })),
         };
+        #[cfg(feature = "otel_spans")]
+        tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, duration_ms = ms, "compute job completed");
         let _ = app.emit("compute.result.final", payload);
         if spec.replayable && spec.cache == "readwrite" {
             let key = crate::compute_cache::compute_key(
@@ -1919,6 +2015,8 @@ fn host_rng_next_u64(
             output: output.clone(),
             metrics: Some(metrics.clone()),
         };
+        #[cfg(feature = "otel_spans")]
+        tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "compute job completed with metrics");
         let _ = app.emit("compute.result.final", payload);
         if spec.replayable && spec.cache == "readwrite" {
             let key = crate::compute_cache::compute_key(
@@ -2339,7 +2437,7 @@ fn host_rng_next_u64(
                 use wasmtime::AsContextMut;
                 host_wasi_log(
                     store.as_context_mut(),
-                    2,
+                    WasiLogLevel::Info,
                     "ctx".into(),
                     "hello world".into(),
                 )
@@ -2643,8 +2741,20 @@ fn host_rng_next_u64(
             );
 
             // Increment log count twice
-            host_wasi_log(store.as_context_mut(), 2, "ctx".into(), "line-1".into()).unwrap();
-            host_wasi_log(store.as_context_mut(), 2, "ctx".into(), "line-2".into()).unwrap();
+            host_wasi_log(
+                store.as_context_mut(),
+                WasiLogLevel::Info,
+                "ctx".into(),
+                "line-1".into(),
+            )
+            .unwrap();
+            host_wasi_log(
+                store.as_context_mut(),
+                WasiLogLevel::Info,
+                "ctx".into(),
+                "line-2".into(),
+            )
+            .unwrap();
 
             // Simulate memory growth to 5 MiB
             {
@@ -2738,6 +2848,8 @@ mod no_runtime {
                     let _ = app.emit("compute.result.final", payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                    #[cfg(feature = "otel_spans")]
+                    tracing::warn!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "wasm_compute feature disabled; returning fault");
                     let payload = ComputeFinalErr {
                         ok: false,
                         job_id: spec.job_id.clone(),

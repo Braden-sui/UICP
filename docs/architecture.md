@@ -3,7 +3,7 @@ UICP Multi-Agent Architecture (v1)
 Summary
 - Planner: outputs a plain-text outline (Summary, Steps, Risks, ActorHints, AppNotes). No JSON. No WIL.
 - Actor (GUI): emits WIL only, one command per line. No commentary. Stop on first `nop:`.
-- Orchestrator (Tauri/Rust): parses Planner text -> Plan (empty batch); parses Actor WIL -> typed ops; applies UI; enforces caps and telemetry.
+- Orchestrator (Tauri/Rust): parses Planner text -> Plan (empty batch); parses Actor WIL -> typed ops; applies UI; enforces caps and telemetry. On actor `nop`, composes a single batched clarifier and returns `planner_fallback` with no batch.
 - App Agent (sidecar, v1.1): JSON-RPC over stdio to build/run components (deferred in v1.0).
 
 Contracts
@@ -33,8 +33,9 @@ Tests
 - Orchestrator integration & fallbacks: `uicp/tests/unit/orchestrator*.test.ts`
 - Aggregator (WIL): `uicp/tests/unit/uicp.aggregator.test.ts`
 - WIL property-like tests: `uicp/tests/unit/wil/batch.property.test.ts`
+- Extra templates: `uicp/tests/unit/wil/templates.extra.test.ts`
 
 Security & Safety
 - No model JSON in Planner/Actor paths (OWASP LLM02 mitigation). All structure built locally.
 - Typed validation via Zod schemas; HTML sanitized gates; budgets enforced.
-
+- Clarifier caps: one batched turn (<=3 default, 5 hard), multiple-choice defaults where safe.

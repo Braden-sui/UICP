@@ -17,6 +17,8 @@ pub async fn compute_call<R: Runtime>(
     state: State<'_, AppState>,
     spec: ComputeJobSpec,
 ) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("compute_call", job_id = %spec.job_id, task = %spec.task, cache = %spec.cache).entered();
     // Reject duplicate job ids
     if state
         .compute_ongoing
@@ -92,6 +94,8 @@ pub async fn compute_call<R: Runtime>(
         .write()
         .await
         .insert(spec.job_id.clone(), join);
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, wait_ms = queue_wait_ms, "job spawned");
     Ok(())
 }
 
@@ -100,6 +104,8 @@ pub async fn compute_cancel<R: Runtime>(
     state: State<'_, AppState>,
     job_id: String,
 ) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(target = "uicp", job_id = %job_id, "compute cancel requested");
     let app_handle = app.clone();
     let _ = app_handle.emit(
         "compute.debug",

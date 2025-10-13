@@ -209,6 +209,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
             telemetryPatch.error = failureMessages.join('; ');
           }
           app.upsertTelemetry(traceId, telemetryPatch);
+          // Surface clarifier reason when planner_fallback resulted from an actor nop
+          if (notice === 'planner_fallback' && actorFailure) {
+            get().pushSystemMessage(`Clarifier needed: ${actorFailure}`, 'clarifier_needed');
+          }
           const plannerRisks = (safePlan.risks ?? []).filter((risk) => !risk.trim().toLowerCase().startsWith('clarifier:'));
           if (plannerRisks.length > 0) {
             const lines = plannerRisks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');

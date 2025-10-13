@@ -69,6 +69,8 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     // modules directly in that directory and avoid touching files (which would
     // trigger Tauri's file watcher and cause rebuild loops).
     if std::env::var("UICP_MODULES_DIR").is_ok() {
+        #[cfg(feature = "otel_spans")]
+        tracing::info!(target = "uicp", "skipping module install (UICP_MODULES_DIR set)");
         return Ok(());
     }
 
@@ -93,6 +95,8 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                 fs::create_dir_all(&target)
                     .with_context(|| format!("mkdir: {}", target.display()))?;
                 copy_dir_all(src, &target)?;
+                #[cfg(feature = "otel_spans")]
+                tracing::info!(target = "uicp", from = %src.display(), to = %target.display(), "modules installed from bundle");
                 if let Err(err) = verify_installed_modules(&target) {
                     eprintln!("bundled modules verification failed: {err:#}");
                 }
@@ -105,7 +109,16 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     // Attempt a best-effort repair of invalid digests in a pre-existing manifest
     // using either the bundled manifest (preferred) or by hashing existing files.
     if manifest_path.exists() {
+        let before = std::fs::read_to_string(&manifest_path).ok();
         let _ = try_repair_manifest(&target, &bundled);
+        #[cfg(feature = "otel_spans")]
+        {
+            if let (Some(before), Ok(after)) = (before, std::fs::read_to_string(&manifest_path)) {
+                if before != after {
+                    tracing::info!(target = "uicp", path = %manifest_path.display(), "repaired manifest digests");
+                }
+            }
+        }
     }
 
     // Otherwise validate listed files exist; copy missing ones from bundle when possible.
@@ -309,13 +322,20 @@ pub fn load_manifest<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ModuleMani
     let dir = resolve_modules_dir(app);
     let manifest_path = dir.join("manifest.json");
     if !manifest_path.exists() {
+        #[cfg(feature = "otel_spans")]
+        tracing::info!(target = "uicp", path = %manifest_path.display(), "modules manifest missing; returning empty");
         return Ok(ModuleManifest::default());
     }
     // Attempt a best-effort repair before strict parsing.
     let _ = try_repair_manifest(&dir, &bundled_modules_path(app));
     let text = fs::read_to_string(&manifest_path)
         .with_context(|| format!("read manifest: {}", manifest_path.display()))?;
-    parse_manifest(&text)
+    let parsed = parse_manifest(&text);
+    #[cfg(feature = "otel_spans")]
+    if parsed.is_ok() {
+        tracing::info!(target = "uicp", path = %manifest_path.display(), "modules manifest loaded");
+    }
+    parsed
 }
 
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
@@ -326,9 +346,13 @@ pub fn find_module<R: Runtime>(
     let (task, version) = task_at_version
         .split_once('@')
         .unwrap_or((task_at_version, ""));
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("registry_find_module", task = %task, version = %version).entered();
     let manifest = load_manifest(app)?;
     let selected = select_manifest_entry(&manifest.entries, task, version)?;
     let Some(entry) = selected else {
+        #[cfg(feature = "otel_spans")]
+        tracing::info!(target = "uicp", task = %task, version = %version, "module not found in manifest");
         return Ok(None);
     };
     if !is_clean_filename(&entry.filename) {

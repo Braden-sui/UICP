@@ -117,3 +117,7 @@ Tests
 Cleanup
 - [ ] Audit for stale imports referencing `../llm/json` or tool schemas (done for major paths; re-run search before closing).
 - [ ] Remove comments and docs referencing tool calling in Planner/Actor.
+
+Observability (Rust/JS)
+- [x] JS: Add WIL_STATS counters and optional debug logs.
+- [ ] Rust: Feature-gated tracing (`otel_spans`) with spans for planning/acting/apply.

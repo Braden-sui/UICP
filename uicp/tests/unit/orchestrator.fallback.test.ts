@@ -16,7 +16,8 @@ describe('orchestrator fallbacks', () => {
     vi.doMock('../../src/lib/llm/provider', () => {
       return {
         getPlannerClient: () => ({
-          streamIntent: (_intent: string) => makeStream([]),
+          // Return empty text quickly via a return event to trigger planner_fallback
+          streamIntent: (_intent: string) => makeStream([{ type: 'return', channel: 'final', result: '' }, { type: 'done' }]),
         }),
         getActorClient: () => ({
           streamPlan: (_planJson: string) =>

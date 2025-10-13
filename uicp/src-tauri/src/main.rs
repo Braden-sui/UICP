@@ -211,6 +211,14 @@ async fn compute_call(
     state: State<'_, AppState>,
     spec: ComputeJobSpec,
 ) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!(
+        "compute_call",
+        job_id = %spec.job_id,
+        task = %spec.task,
+        cache = %spec.cache
+    )
+    .entered();
     // Reject duplicate job ids
     if state
         .compute_ongoing
@@ -282,6 +290,8 @@ async fn compute_call(
     // Pass a normalized cache policy down to the host
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(target = "uicp", job_id = %spec.job_id, wait_ms = queue_wait_ms, "compute queued permit acquired");
     let join = compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms);
     // Bookkeeping: track the running job so we can cancel/cleanup later.
     state
@@ -298,6 +308,8 @@ async fn compute_cancel(
     job_id: String,
     window: tauri::Window,
 ) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(target = "uicp", job_id = %job_id, "compute_cancel invoked");
     // Emit telemetry: cancel requested
     let app_handle = window.app_handle().clone();
     let _ = app_handle.emit(
@@ -480,6 +492,8 @@ async fn test_api_key(
      // TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY 2 DAY. 
 #[tauri::command]
 async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("persist_command", id = %cmd.id, tool = %cmd.tool).entered();
     // Freeze writes in Safe Mode
     if *state.safe_mode.read().await {
         return Ok(());
@@ -487,7 +501,8 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
     let id = cmd.id.clone();
     let tool = cmd.tool.clone();
     let args_json = serde_json::to_string(&cmd.args).map_err(|e| format!("{e}"))?;
-    state
+    let started = Instant::now();
+    let res = state
         .db_rw
         .call(move |conn| -> tokio_rusqlite::Result<()> {
             let now = Utc::now().timestamp();
@@ -499,14 +514,25 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
             .map(|_| ())
             .map_err(tokio_rusqlite::Error::from)
         })
-        .await
-        .map_err(|e| format!("DB error: {e:?}"))?;
+        .await;
+    #[cfg(feature = "otel_spans")]
+    {
+        let ms = started.elapsed().as_millis() as i64;
+        match &res {
+            Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "command persisted"),
+            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "command persist failed"),
+        }
+    }
+    res.map_err(|e| format!("DB error: {e:?}"))?;
     Ok(())
 }
 
 #[tauri::command]
 async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<CommandRequest>, String> {
-    let commands = state
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("load_commands").entered();
+    let started = Instant::now();
+    let res = state
         .db_ro
         .call(|conn| -> tokio_rusqlite::Result<Vec<CommandRequest>> {
             let mut stmt = conn
@@ -530,14 +556,25 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
                 .map_err(tokio_rusqlite::Error::from)?;
             Ok(rows)
         })
-        .await
-        .map_err(|e| format!("DB error: {e:?}"))?;
+        .await;
+    #[cfg(feature = "otel_spans")]
+    {
+        let ms = started.elapsed().as_millis() as i64;
+        match &res {
+            Ok(v) => tracing::info!(target = "uicp", duration_ms = ms, count = v.len(), "commands loaded"),
+            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands load failed"),
+        }
+    }
+    let commands = res.map_err(|e| format!("DB error: {e:?}"))?;
     Ok(commands)
 }
 
 #[tauri::command]
 async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), String> {
-    state
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("clear_commands").entered();
+    let started = Instant::now();
+    let res = state
         .db_rw
         .call(|conn| -> tokio_rusqlite::Result<()> {
             conn.execute(
@@ -547,8 +584,16 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
             .map(|_| ())
             .map_err(tokio_rusqlite::Error::from)
         })
-        .await
-        .map_err(|e| format!("DB error: {e:?}"))?;
+        .await;
+    #[cfg(feature = "otel_spans")]
+    {
+        let ms = started.elapsed().as_millis() as i64;
+        match &res {
+            Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "commands cleared"),
+            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands clear failed"),
+        }
+    }
+    res.map_err(|e| format!("DB error: {e:?}"))?;
     Ok(())
 }
 
@@ -557,6 +602,8 @@ async fn delete_window_commands(
     state: State<'_, AppState>,
     window_id: String,
 ) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("delete_window_commands", window_id = %window_id).entered();
     state
         .db_rw
         .call(move |conn| {
@@ -1892,7 +1939,10 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             ticker.tick().await;
             let state: State<'_, AppState> = app_handle.state();
             // Best-effort: run optimize and compact WAL periodically
-            let _ = state
+            #[cfg(feature = "otel_spans")]
+            let span = tracing::info_span!("db_maintenance").entered();
+            let started = Instant::now();
+            let res = state
                 .db_rw
                 .call(
                     |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
@@ -1901,11 +1951,28 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                     },
                 )
                 .await;
+            #[cfg(feature = "otel_spans")]
+            {
+                let ms = started.elapsed().as_millis() as i64;
+                match &res {
+                    Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "db maintenance ok"),
+                    Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "db maintenance failed"),
+                }
+                drop(span);
+            }
         }
     });
 }
 
 fn main() {
+    #[cfg(feature = "otel_spans")]
+    {
+        use tracing_subscriber::{fmt, EnvFilter};
+        let _ = fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .try_init();
+        tracing::info!(target = "uicp", "tracing initialized");
+    }
     if let Err(err) = dotenv() {
         eprintln!("Failed to load .env: {err:?}");
     }

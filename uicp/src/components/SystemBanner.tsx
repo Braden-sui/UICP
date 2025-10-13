@@ -1,9 +1,9 @@
-import { useAppStore } from '../state/app';
+import { useAppStore, selectSafeMode, selectSafeReason } from '../state/app';
 import { invoke } from '@tauri-apps/api/core';
 
 const SystemBanner = () => {
-  const safeMode = useAppStore((s) => (s as any).safeMode as boolean | undefined);
-  const safeReason = useAppStore((s) => (s as any).safeReason as string | undefined);
+  const safeMode = useAppStore(selectSafeMode);
+  const safeReason = useAppStore(selectSafeReason);
   // Fallback: hide if the store hasn't been extended yet
   if (!safeMode) return null;
 

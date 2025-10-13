@@ -1,5 +1,5 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import DockChat from "../../src/components/DockChat";
 import { useAppStore } from "../../src/state/app";
 import { useChatStore } from "../../src/state/chat";
@@ -86,7 +86,7 @@ describe("<DockChat /> hotkeys", () => {
   });
 
   it("opens the dock and focuses the textarea when '/' is pressed", async () => {
-    render(<DockChat />);
+    await act(async () => { render(<DockChat />); });
     const input = screen.getByTestId('dockchat-input') as HTMLTextAreaElement;
 
     expect(useAppStore.getState().chatOpen).toBe(false);
@@ -102,7 +102,7 @@ describe("<DockChat /> hotkeys", () => {
 
   it("re-focuses the textarea when '/' is pressed while the dock is already open", async () => {
     useAppStore.setState({ chatOpen: true });
-    render(<DockChat />);
+    await act(async () => { render(<DockChat />); });
     const input = screen.getByTestId('dockchat-input') as HTMLTextAreaElement;
 
     await waitFor(() => {

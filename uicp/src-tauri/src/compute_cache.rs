@@ -214,11 +214,14 @@ pub async fn lookup<R: Runtime>(
     workspace_id: &str,
     key: &str,
 ) -> anyhow::Result<Option<Value>> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("compute_cache_lookup", workspace = %workspace_id).entered();
     let key = key.to_string();
     let ws = workspace_id.to_string();
     let state: State<'_, AppState> = app.state();
     let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
+    let started = std::time::Instant::now();
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = Connection::open(path).context("open sqlite for cache lookup")?;
         crate::configure_sqlite(&conn).context("configure sqlite for cache lookup")?;
         let mut stmt = conn
@@ -234,7 +237,17 @@ pub async fn lookup<R: Runtime>(
         }
     })
     .await
-    .context("cache lookup")?
+    .context("cache lookup")?;
+    #[cfg(feature = "otel_spans")]
+    {
+        let ms = started.elapsed().as_millis() as i64;
+        match &res {
+            Ok(Some(_)) => tracing::info!(target = "uicp", duration_ms = ms, hit = true, "cache lookup ok"),
+            Ok(None) => tracing::info!(target = "uicp", duration_ms = ms, hit = false, "cache lookup ok"),
+            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache lookup failed"),
+        }
+    }
+    res
 }
 
 fn upsert_cache_row(
@@ -269,6 +282,8 @@ pub async fn store<R: Runtime>(
     env_hash: &str,
     value: &Value,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("compute_cache_store", workspace = %workspace_id, task = %task).entered();
     // Freeze writes to persistence in Safe Mode
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
@@ -280,13 +295,23 @@ pub async fn store<R: Runtime>(
     let env_hash = env_hash.to_string();
     let json = serde_json::to_string(value).context("serialize cache value")?;
     let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(path).context("open sqlite for cache store")?;
         crate::configure_sqlite(&conn).context("configure sqlite for cache store")?;
         let now = Utc::now().timestamp();
         upsert_cache_row(&conn, &ws, &key, &task, &env_hash, &json, now)
     })
     .await
-    .context("cache store")??;
+    .context("cache store")?;
+    #[cfg(feature = "otel_spans")]
+    {
+        let ms = started.elapsed().as_millis() as i64;
+        match &res {
+            Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "cache store ok"),
+            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache store failed"),
+        }
+    }
+    res?;
     Ok(())
 }

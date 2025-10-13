@@ -1,0 +1,27 @@
+# Lychee link checker configuration
+# Centralizes defaults used locally and in CI.
+
+method = "GET"            # avoid HEAD 405s on some hosts
+no_progress = true
+timeout = 10               # seconds
+retry_wait_time = 2        # seconds
+max_retries = 2
+max_redirects = 10
+
+# Treat these HTTP statuses as success
+accept = [200, 301, 302, 303, 307, 308]
+
+# Skip links/hosts that are local or intentionally placeholder
+exclude = [
+  "localhost",
+  "127\\.0\\.0\\.1",
+  "^https?://$",
+]
+
+# Skip generated or vendor paths to keep scans fast and stable
+exclude_path = [
+  "**/node_modules/**",
+  "**/.git/**",
+  "uicp/dist/**",
+]
+

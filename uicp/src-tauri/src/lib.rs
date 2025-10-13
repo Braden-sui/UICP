@@ -10,6 +10,9 @@ pub mod compute_cache;
 pub mod core;
 pub mod registry;
 
+#[cfg(feature = "wasm_compute")]
+pub mod wasi_logging;
+
 pub use core::{
     configure_sqlite, emit_or_log, ensure_default_workspace, files_dir_path, init_database,
     remove_compute_job, AppState, DATA_DIR, FILES_DIR, LOGS_DIR,

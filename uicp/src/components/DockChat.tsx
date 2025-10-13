@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
 import { useAppStore, type AgentMode, type AgentPhase } from '../state/app';
-import { PaperclipIcon, SendIcon, StopIcon } from '../icons';
+import { PaperclipIcon, SendIcon, StopIcon, ClarifierIcon } from '../icons';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 import { strings } from '../strings';
 import { LiquidGlass } from '@liquidglass/react';
@@ -191,7 +191,7 @@ export const DockChat = () => {
             {messages.map((message) => (
               <li
                 key={message.id}
-                className={
+                className={clsx(
                   // Use calmer blue for non-error system notices (planner hints, telemetry)
                   // to avoid implying failure where there is none. Keep red for error codes.
                   message.role === 'user'
@@ -205,14 +205,25 @@ export const DockChat = () => {
                           message.errorCode === 'ollama_stream_error'
                         ))
                         ? 'text-red-600'
-                        : 'text-sky-700'
-                }
+                        : message.errorCode === 'clarifier_needed'
+                          ? 'text-amber-700'
+                          : 'text-sky-700',
+                  message.errorCode === 'clarifier_needed' && 'rounded border border-amber-200 bg-amber-50 px-2 py-1'
+                )}
               >
                 <span className="block text-xs uppercase tracking-wide text-slate-400">
                   {message.role}
                   {message.errorCode ? ` - ${message.errorCode}` : ''}
                 </span>
-                <span>{message.content}</span>
+                <span>
+                  {message.errorCode === 'clarifier_needed' && (
+                    <ClarifierIcon
+                      className="mr-1 inline h-4 w-4 text-amber-600 align-[-2px]"
+                      aria-hidden="true"
+                    />
+                  )}
+                  {message.content}
+                </span>
               </li>
             ))}
           </ul>

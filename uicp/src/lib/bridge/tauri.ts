@@ -281,9 +281,7 @@ export async function initializeTauriBridge() {
       const reason = payload?.reason ?? 'Unknown';
       // Extend store at runtime to avoid breaking tests if fields not present.
       try {
-        (useAppStore.getState() as any).safeMode = true;
-        (useAppStore.getState() as any).safeReason = reason;
-        useAppStore.setState({} as any);
+        useAppStore.getState().setSafeMode(true, reason);
       } catch (err) {
         console.error('failed to set safe mode', err);
       }
