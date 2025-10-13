@@ -72,7 +72,6 @@ mod with_runtime {
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
     use crate::wasi_logging::wasi_logging_shim::logging::{Host as WasiLogHost, Level as WasiLogLevel};
-    #[cfg(feature = "uicp_wasi_enable")]
     use crate::wasi_logging::wasi_logging_shim::add_to_linker as add_logging_to_linker;
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
@@ -1407,7 +1406,6 @@ mod with_runtime {
     }
 
     /// Wire core WASI Preview 2 imports only (host shims deferred to M2+).
-    #[cfg(feature = "uicp_wasi_enable")]
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
@@ -2241,7 +2239,6 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
-                #[cfg(any(test, feature = "compute_harness"))]
             }
 
             let engine = build_engine().expect("engine");
@@ -2250,10 +2247,11 @@ mod with_runtime {
             let component = Component::from_file(&engine, &wasm).expect("component");
 
             // Minimal job context
-            let tele: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter::default());
+            let tele = Arc::new(TestEmitter::default());
+            let tele_trait: Arc<dyn TelemetryEmitter> = tele.clone();
             let limits = LimitsWithPeak::new(64 * 1024 * 1024);
             let rt = Runtime::new().expect("tokio runtime");
-            let tele_exec = tele.clone();
+            let tele_exec = tele_trait.clone();
             let linker = linker;
             rt.block_on(async {
                 let mut store: Store<Ctx> = Store::new(
@@ -2300,9 +2298,6 @@ mod with_runtime {
             });
 
             let captured = tele
-                .as_any()
-                .downcast_ref::<TestEmitter>()
-                .unwrap()
                 .partials
                 .lock()
                 .unwrap()
