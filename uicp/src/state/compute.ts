@@ -14,6 +14,7 @@ export type ComputeJob = {
   deadlineMs?: number;
   remainingMsAtFinish?: number;
   logCount?: number;
+  emittedLogBytes?: number;
   partialFrames?: number;
   invalidPartialsDropped?: number;
   logThrottleWaits?: number;
@@ -158,6 +159,7 @@ export type ComputeSummary = {
   logThrottleWaits: number;
   loggerThrottleWaits: number;
   partialThrottleWaits: number;
+  emittedLogBytes: number;
   fuelUsed: number;
   durationP50: number | null;
   durationP95: number | null;
@@ -196,6 +198,7 @@ export const summarizeComputeJobs = (
     0,
   );
   const logCount = list.reduce((acc, job) => acc + (job.logCount ?? 0), 0);
+  const emittedLogBytes = list.reduce((acc, job) => acc + (job.emittedLogBytes ?? 0), 0);
   const logThrottleWaits = list.reduce((acc, job) => acc + (job.logThrottleWaits ?? 0), 0);
   const loggerThrottleWaits = list.reduce((acc, job) => acc + (job.loggerThrottleWaits ?? 0), 0);
   const partialThrottleWaits = list.reduce((acc, job) => acc + (job.partialThrottleWaits ?? 0), 0);
@@ -229,6 +232,7 @@ export const summarizeComputeJobs = (
     partialFrames,
     invalidPartialsDropped,
     logCount,
+    emittedLogBytes,
     logThrottleWaits,
     loggerThrottleWaits,
     partialThrottleWaits,

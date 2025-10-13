@@ -556,6 +556,37 @@ mod tests {
         std::env::remove_var("STRICT_MODULES_VERIFY");
         std::env::remove_var("UICP_MODULES_PUBKEY");
     }
+
+    #[test]
+    fn bundled_manifest_has_valid_signatures() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        const PUBKEY_B64: &str = "ih4HBWNN6fqiMx8ee5NICPwDUzu/4ORtUjo7OTVu4wg=";
+
+        let manifest_text = include_str!("../modules/manifest.json");
+        let manifest: ModuleManifest = serde_json::from_str(manifest_text)
+            .expect("bundled manifest parses");
+        let pubkey_bytes = BASE64_STANDARD
+            .decode(PUBKEY_B64.as_bytes())
+            .expect("decode CI pubkey");
+
+        for entry in manifest.entries.iter() {
+            assert!(
+                entry.signature.is_some(),
+                "{}@{} missing signature",
+                entry.task,
+                entry.version
+            );
+            let status = verify_entry_signature(entry, &pubkey_bytes)
+                .expect("signature check succeeds");
+            assert_eq!(
+                status,
+                SignatureStatus::Verified,
+                "{}@{} signature must verify",
+                entry.task,
+                entry.version
+            );
+        }
+    }
 }
 
 /// Acquire a best-effort exclusive install lock in `dir` using a lock file.

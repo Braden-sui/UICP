@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import type { JobSpec } from '../../src/compute/types';
+import type { JobSpec, ComputeFinalEvent } from '../../src/compute/types';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -11,6 +11,11 @@ type ComputeSpec = JobSpec;
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = resolve(here, '../../..');
 const cargoManifest = join(repoRoot, 'uicp', 'src-tauri', 'Cargo.toml');
+
+// WHY: Track compute finals per job so cache-hit assertions can inspect raw metrics.
+// INVARIANT: Map is cleared before/after each test to avoid stale finals across runs.
+const finalEvents = new Map<string, ComputeFinalEvent>();
+const CACHE_EXPECTED_SPEEDUP_MS = 40;
 
 test.describe('compute harness via headless host', () => {
   let dataDir: string;
@@ -25,6 +30,7 @@ test.describe('compute harness via headless host', () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    finalEvents.clear();
     await page.exposeFunction('uicpNodeRunCompute', async (spec: ComputeSpec) => {
       return new Promise((resolvePromise, rejectPromise) => {
         const child = spawn(
@@ -68,9 +74,19 @@ test.describe('compute harness via headless host', () => {
           if (code === 0) {
             try {
               const trimmed = stdout.trim();
-              resolvePromise(trimmed ? JSON.parse(trimmed) : {});
+              if (!trimmed) {
+                rejectPromise(new Error('E-UICP-5201: compute_harness returned empty final payload'));
+                return;
+              }
+              const parsed = JSON.parse(trimmed) as ComputeFinalEvent;
+              const jobKey = parsed.jobId ?? spec.jobId;
+              finalEvents.set(jobKey, parsed);
+              resolvePromise(parsed);
             } catch (err) {
-              rejectPromise(err);
+              const parseErr = err instanceof Error ? err : new Error(String(err));
+              rejectPromise(
+                new Error(`E-UICP-5202: failed to parse compute_harness output: ${parseErr.message}`),
+              );
             }
           } else {
             rejectPromise(new Error(`compute_harness exited with code ${code}: ${stderr}`));
@@ -121,6 +137,7 @@ test.describe('compute harness via headless host', () => {
       child.kill();
     }
     pending.clear();
+    finalEvents.clear();
   });
 
   test('csv.parse success applies binding and reports cache hit on replay', async ({ page }) => {
@@ -158,6 +175,11 @@ test.describe('compute harness via headless host', () => {
       return store.getState().jobs[jobId];
     }, jobId1);
     expect(firstRun.cacheHit).toBeFalsy();
+    const firstFinal = finalEvents.get(jobId1);
+    expect(firstFinal).toBeDefined();
+    expect(firstFinal?.metrics?.cacheHit ?? false).toBe(false);
+    const firstDuration = firstRun.durationMs ?? 0;
+    expect(firstDuration).toBeGreaterThan(0);
 
     const boundValue = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -203,7 +225,15 @@ test.describe('compute harness via headless host', () => {
       return store.getState().jobs[jobId];
     }, jobId2);
     expect(secondRun.cacheHit).toBeTruthy();
-    expect(secondRun.durationMs).toBeGreaterThanOrEqual(70);
+    const secondFinal = finalEvents.get(jobId2);
+    expect(secondFinal).toBeDefined();
+    expect(secondFinal?.metrics?.cacheHit).toBe(true);
+    const secondDuration = secondRun.durationMs ?? 0;
+    expect(secondDuration).toBeGreaterThan(0);
+    expect(secondDuration).toBeLessThan(firstDuration);
+    const durationGain = firstDuration - secondDuration;
+    // INVARIANT: Cache replay must be measurably faster than the initial miss.
+    expect(durationGain).toBeGreaterThanOrEqual(CACHE_EXPECTED_SPEEDUP_MS);
 
     const replayValue = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

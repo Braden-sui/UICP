@@ -6,13 +6,13 @@ Last updated: please update this header when you change status.
 
 ## Summary
 - Desktop app (React + Tauri) runs with MOCK mode by default; cloud/local model calls are wired through the Rust backend.
-- Compute plane (Wasmtime, feature-gated) is implemented with registry, cache, and policy; E2E CI smoke remains to be added.
+- Compute plane (Wasmtime, feature-gated) is implemented with registry, cache, and policy; compute harness E2E smoke now runs in CI to guard guest/host drift.
 - CI runs lint, typecheck, unit, e2e (mock), build, security scans, and link checking.
 
 ## Now (Current Focus)
 - Stabilize command replay ordering and add regression tests for destroy-before-create/idempotent replay.
 - Add Rust tests for `test_api_key` (cloud vs. local) and verify `api-key-status` events.
-- Wire a minimal E2E compute smoke in CI (submit a demo module, assert final Ok + metrics).
+- Harden compute harness smoke (collect timings, tighten invariants) after initial CI integration.
 
 ## Done (Recently)
 - Docs alignment: ports, endpoints, keyring migration, provider usage, architecture overview.
@@ -41,7 +41,7 @@ Last updated: please update this header when you change status.
 
 ## Test/CI Health
 - UI: lint, typecheck, unit, e2e (mock), build all pass locally when Node 20/npm 10 are used.
-- Compute: Rust tests pass; add CI E2E smoke to gate merges once stable.
+- Compute: Rust tests plus compute harness smoke now run in CI; monitor for flakes while fuel/epoch caps stabilize.
 - Link checks: configured via `.lychee.toml`.
 
 ## Pointers (Authoritative Lists)

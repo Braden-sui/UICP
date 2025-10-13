@@ -57,6 +57,7 @@ mod with_runtime {
     use once_cell::sync::Lazy;
     use serde_json;
     use sha2::{Digest, Sha256};
+    #[cfg(any(test, feature = "compute_harness"))]
     use std::any::Any;
     use std::convert::TryFrom;
     use std::io::Cursor;
@@ -72,6 +73,8 @@ mod with_runtime {
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
     use crate::wasi_logging::wasi_logging_shim::logging::{Host as WasiLogHost, Level as WasiLogLevel};
+    #[cfg(feature = "uicp_wasi_enable")]
+    use crate::wasi_logging::wasi_logging_shim::add_to_linker as add_logging_to_linker;
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
         DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
@@ -101,6 +104,23 @@ mod with_runtime {
     // Bindgen generation is deferred; we directly use typed funcs via `get_typed_func` for now.
 
     // removed unused is_typed_only helper
+
+    trait TelemetryEmitter: Send + Sync {
+        fn emit_debug(&self, payload: serde_json::Value);
+        fn emit_partial(&self, event: crate::ComputePartialEvent);
+        fn emit_partial_json(&self, payload: serde_json::Value);
+        #[cfg(any(test, feature = "compute_harness"))]
+        // WHY: Downcasts are used only in harness/tests to inspect captured payloads without leaking this hook into prod builds.
+        fn as_any(&self) -> &dyn Any;
+    }
+
+    enum UiEvent {
+        Debug(serde_json::Value),
+        PartialEvent(crate::ComputePartialEvent),
+        PartialJson(serde_json::Value),
+    }
+
+    const MAX_STDIO_CHARS: usize = 4_096;
 
     #[derive(Debug)]
     struct LimitsWithPeak {
@@ -272,21 +292,6 @@ mod with_runtime {
     }
 
     const MAX_PARTIAL_FRAME_BYTES: usize = 64 * 1024;
-    const MAX_STDIO_CHARS: usize = 4_096;
-
-    trait TelemetryEmitter: Send + Sync {
-        fn emit_debug(&self, payload: serde_json::Value);
-        fn emit_partial(&self, event: crate::ComputePartialEvent);
-        fn emit_partial_json(&self, payload: serde_json::Value);
-        #[cfg_attr(not(any(test, feature = "compute_harness")), allow(dead_code))]
-        fn as_any(&self) -> &dyn Any;
-    }
-
-    enum UiEvent {
-        Debug(serde_json::Value),
-        PartialEvent(crate::ComputePartialEvent),
-        PartialJson(serde_json::Value),
-    }
 
     struct QueueingEmitter {
         tx: Mutex<mpsc::Sender<UiEvent>>,
@@ -330,6 +335,7 @@ mod with_runtime {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
+        #[cfg(any(test, feature = "compute_harness"))]
         fn as_any(&self) -> &dyn Any {
             self
         }
@@ -1409,7 +1415,7 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
-        crate::wasi_logging::wasi_logging_shim::logging::add_to_linker::<_, Ctx>(
+        add_logging_to_linker::<_, Ctx>(
             linker,
             |state| state,
         )?;
@@ -1820,6 +1826,7 @@ mod with_runtime {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::compute_input::{fs_read_allowed, sanitize_ws_files_path};
 
         #[test]
         fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {
@@ -1974,11 +1981,11 @@ mod with_runtime {
                 ..spec_ok.clone()
             };
             let err = resolve_csv_source(&spec_denied, ws_path).expect_err("cap denied");
-            assert_eq!(err.0, error_codes::CAPABILITY_DENIED);
+            assert_eq!(err.code, error_codes::CAPABILITY_DENIED);
 
             let invalid =
                 resolve_csv_source(&spec_ok, "ws:/files/../secret.csv").expect_err("invalid path");
-            assert_eq!(invalid.0, "IO.Denied");
+            assert_eq!(invalid.code, "IO.Denied");
 
             let _ = std::fs::remove_file(&file_path);
             let _ = std::fs::remove_dir_all(&base);
@@ -2125,6 +2132,7 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
+                #[cfg(any(test, feature = "compute_harness"))]
                 fn as_any(&self) -> &dyn Any {
                     self
                 }
@@ -2173,8 +2181,7 @@ mod with_runtime {
                 use wasmtime::AsContextMut;
                 let mut ctx = store.as_context_mut();
                 ctx.data_mut()
-                    .log(WasiLogLevel::Info, "ctx".into(), "hello world".into())
-                    .expect("log ok");
+                    .log(WasiLogLevel::Info, "ctx".into(), "hello world".into());
             }
 
             // Verify a partial event was captured with expected fields
@@ -2241,6 +2248,7 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
+                #[cfg(any(test, feature = "compute_harness"))]
                 fn as_any(&self) -> &dyn Any {
                     self
                 }
@@ -2256,7 +2264,7 @@ mod with_runtime {
             let limits = LimitsWithPeak::new(64 * 1024 * 1024);
             let rt = Runtime::new().expect("tokio runtime");
             let tele_exec = tele.clone();
-            let mut linker = linker;
+            let linker = linker;
             rt.block_on(async {
                 let mut store: Store<Ctx> = Store::new(
                     &engine,
@@ -2327,6 +2335,7 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                #[cfg(any(test, feature = "compute_harness"))]
                 fn as_any(&self) -> &dyn Any { self }
             }
             let engine = build_engine().expect("engine");
@@ -2386,6 +2395,7 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                #[cfg(any(test, feature = "compute_harness"))]
                 fn as_any(&self) -> &dyn Any { self }
             }
             let engine = build_engine().expect("engine");
@@ -2429,13 +2439,14 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn collect_metrics_accumulates_counters_and_mempeak() {
-            use wasmtime::{AsContextMut, ResourceLimiter};
+            use wasmtime::ResourceLimiter;
             #[derive(Clone, Default)]
             struct TestEmitter { debugs: Arc<Mutex<Vec<serde_json::Value>>> }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) { self.debugs.lock().unwrap().push(payload); }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                #[cfg(any(test, feature = "compute_harness"))]
                 fn as_any(&self) -> &dyn Any { self }
             }
 
@@ -2478,11 +2489,9 @@ mod with_runtime {
                 use wasmtime::AsContextMut;
                 let mut ctx = store.as_context_mut();
                 ctx.data_mut()
-                    .log(WasiLogLevel::Info, "ctx".into(), "line-1".into())
-                    .unwrap();
+                    .log(WasiLogLevel::Info, "ctx".into(), "line-1".into());
                 ctx.data_mut()
-                    .log(WasiLogLevel::Info, "ctx".into(), "line-2".into())
-                    .unwrap();
+                    .log(WasiLogLevel::Info, "ctx".into(), "hello world".into());
             }
 
             // Simulate memory growth to 5 MiB
@@ -2587,4 +2596,3 @@ pub fn spawn_job<R: Runtime>(
         no_runtime::spawn_job(app, spec, permit, queue_wait_ms)
     }
 }
-

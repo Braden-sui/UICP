@@ -4,13 +4,15 @@
       "task": "csv.parse",
       "version": "1.2.0",
       "filename": "csv.parse@1.2.0.wasm",
-      "digest_sha256": "dd3656f7ba5392725cac4dc999643fd212489a0438347985040e046a42bd4eef"
+      "digest_sha256": "dd3656f7ba5392725cac4dc999643fd212489a0438347985040e046a42bd4eef",
+      "signature": "z2Kt6Qe7NlDBWq7tk5hEgnPkgWp4Q6wByXHAQmBfUSWNX/oAWGQyYST3/ETkxhTzYutb62BIIHGFyonStpoUAA=="
     },
     {
       "task": "table.query",
       "version": "0.1.0",
       "filename": "table.query@0.1.0.wasm",
-      "digest_sha256": "2841c2ea7f5a6fcf03522b447fd82cc2f3a31c4b294e4d880601a6ecce78b953"
+      "digest_sha256": "2841c2ea7f5a6fcf03522b447fd82cc2f3a31c4b294e4d880601a6ecce78b953",
+      "signature": "gHkjht3MUfctzTCN+PB4mljvt2sUOSZpjxUqhcv0ziTONRsuFIR9RJSDYbVnjLY6L6bROwyIDhgUF5aXZfzBDA=="
     }
   ]
 }

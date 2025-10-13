@@ -26,6 +26,8 @@ pub mod wasi_logging_shim {
     // WHY: Surface the generated logging interface under a stable module path for compute hostcalls.
     // INVARIANT: Package path `uicp:wasi-log-bridge@0.1.0` must stay in sync with the WIT schema version.
     pub use bindings::imports::logging;
+    #[cfg(feature = "uicp_wasi_enable")]
+    pub use bindings::imports::logging::add_to_linker;
 }
 
 #[cfg(all(test, feature = "wasm_compute"))]

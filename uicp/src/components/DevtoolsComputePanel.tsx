@@ -9,6 +9,23 @@ type DevtoolsComputePanelProps = {
   defaultOpen?: boolean;
 };
 
+const formatBytes = (value?: number | null) => {
+  // WHY: Reduce cognitive load in the devtools panel when guests flood stdout.
+  if (value == null) return 'n/a';
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let next = value / 1024;
+  let unitIdx = 0;
+  while (next >= 1024 && unitIdx < units.length - 1) {
+    next /= 1024;
+    unitIdx += 1;
+  }
+  const precision = next >= 100 ? 0 : next >= 10 ? 1 : 2;
+  return `${next.toFixed(precision)} ${units[unitIdx]}`;
+};
+
+const formatMs = (value?: number | null) => (value == null ? 'n/a' : `${Math.round(value)} ms`);
+
 // Devtools panel for compute job visibility during development.
 // Accessibility: treat as a lightweight dialog with ESC to close and focus management.
 const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
@@ -126,6 +143,39 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
         label: 'Logs',
         value: String(summary.logCount),
         tone: 'bg-indigo-100 text-indigo-700',
+        title: 'Guest log records captured for recent jobs',
+      });
+    }
+    if (summary.emittedLogBytes > 0) {
+      chips.push({
+        label: 'Log bytes',
+        value: formatBytes(summary.emittedLogBytes),
+        tone: 'bg-indigo-50 text-indigo-700',
+        title: 'Total stdout/stderr bytes emitted across jobs',
+      });
+    }
+    if (summary.logThrottleWaits > 0) {
+      chips.push({
+        label: 'stdout/err waits',
+        value: String(summary.logThrottleWaits),
+        tone: 'bg-slate-100 text-slate-700',
+        title: 'Number of stdout/stderr backpressure waits across jobs',
+      });
+    }
+    if (summary.loggerThrottleWaits > 0) {
+      chips.push({
+        label: 'logger waits',
+        value: String(summary.loggerThrottleWaits),
+        tone: 'bg-slate-100 text-slate-700',
+        title: 'Number of wasi:logging throttles across jobs',
+      });
+    }
+    if (summary.partialThrottleWaits > 0) {
+      chips.push({
+        label: 'partial waits',
+        value: String(summary.partialThrottleWaits),
+        tone: 'bg-slate-100 text-slate-700',
+        title: 'Partial stream backpressure counts across jobs',
       });
     }
     if (summary.fuelUsed > 0) {
@@ -149,7 +199,11 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
     summary.cacheRatio,
     summary.fuelUsed,
     summary.invalidPartialsDropped,
+    summary.emittedLogBytes,
     summary.logCount,
+    summary.logThrottleWaits,
+    summary.loggerThrottleWaits,
+    summary.partialThrottleWaits,
     summary.memPeakP95,
     summary.partialFrames,
     summary.partialsSeen,
@@ -207,73 +261,87 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
             </tr>
           </thead>
           <tbody>
-            {entries.map((j) => (
-              <tr key={j.jobId} className="border-b border-slate-100">
-                <td className="truncate px-2 py-1 font-mono text-[11px]">{j.jobId}</td>
-                <td className="truncate px-2 py-1">{j.task}</td>
-                <td className="px-2 py-1">
-                  <span
-                    className={`rounded px-2 py-0.5 text-[10px] ${
-                      j.status === 'done'
-                        ? 'bg-green-50 text-green-700'
-                        : j.status === 'error' || j.status === 'timeout'
-                        ? 'bg-red-50 text-red-700'
-                        : j.status === 'cancelled'
-                        ? 'bg-amber-50 text-amber-700'
-                        : 'bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    {j.status}
-                  </span>
-                </td>
-                <td className="px-2 py-1 text-right">{j.partials}</td>
-                <td className="px-2 py-1">
-                  <div className="flex flex-col gap-0.5">
-                    {j.cacheHit != null ? (
-                      <span
-                        className={`text-[10px] ${
-                          j.cacheHit ? 'text-cyan-700' : 'text-slate-500'
-                        }`}
-                      >
-                        cache: {j.cacheHit ? 'hit' : 'miss'}
-                      </span>
-                    ) : null}
-                    {j.durationMs != null ? (
-                      <span className="text-[10px] text-slate-600">t={Math.round(j.durationMs)}ms</span>
-                    ) : null}
-                    {j.partialFrames != null ? (
-                      <span className="text-[10px] text-sky-700">frames={j.partialFrames}</span>
-                    ) : null}
-                    {j.invalidPartialsDropped ? (
-                      <span className="text-[10px] text-amber-700">invalid={j.invalidPartialsDropped}</span>
-                    ) : null}
-                    {j.logCount ? <span className="text-[10px] text-indigo-700">logs={j.logCount}</span> : null}
-                    {typeof j.logThrottleWaits === 'number' && j.logThrottleWaits > 0 ? (
-                      <span className="text-[10px] text-slate-600">stdout/err waits={j.logThrottleWaits}</span>
-                    ) : null}
-                    {typeof j.loggerThrottleWaits === 'number' && j.loggerThrottleWaits > 0 ? (
-                      <span className="text-[10px] text-slate-600">logger waits={j.loggerThrottleWaits}</span>
-                    ) : null}
-                    {typeof j.partialThrottleWaits === 'number' && j.partialThrottleWaits > 0 ? (
-                      <span className="text-[10px] text-slate-600">partial waits={j.partialThrottleWaits}</span>
-                    ) : null}
-                    {j.fuelUsed != null ? (
-                      <span className="text-[10px] text-amber-700">fuel={j.fuelUsed}</span>
-                    ) : null}
-                    {j.memPeakMb != null ? (
-                      <span className="text-[10px] text-slate-600">mem={Math.round(j.memPeakMb)}MB</span>
-                    ) : null}
-                    {j.deadlineMs != null ? (
-                      <span className="text-[10px] text-slate-500">deadline={j.deadlineMs}ms</span>
-                    ) : null}
-                    {j.remainingMsAtFinish != null ? (
-                      <span className="text-[10px] text-slate-500">remaining={j.remainingMsAtFinish}ms</span>
-                    ) : null}
-                    {j.lastError ? <span className="text-[10px] text-red-700">{j.lastError}</span> : null}
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {entries.map((j) => {
+              const logRecords = j.logCount ?? 0;
+              const emittedBytesLabel = formatBytes(j.emittedLogBytes);
+              const stdoutWaits = j.logThrottleWaits ?? 0;
+              const loggerWaits = j.loggerThrottleWaits ?? 0;
+              const partialWaits = j.partialThrottleWaits ?? 0;
+              const durationLabel = formatMs(j.durationMs);
+              const deadlineLabel = formatMs(j.deadlineMs);
+              const remainingLabel = formatMs(j.remainingMsAtFinish);
+              // INVARIANT: Wait counters default to zero so the panel never hides an overloaded channel.
+              return (
+                <tr key={j.jobId} className="border-b border-slate-100">
+                  <td className="truncate px-2 py-1 font-mono text-[11px]">{j.jobId}</td>
+                  <td className="truncate px-2 py-1">{j.task}</td>
+                  <td className="px-2 py-1">
+                    <span
+                      className={`rounded px-2 py-0.5 text-[10px] ${
+                        j.status === 'done'
+                          ? 'bg-green-50 text-green-700'
+                          : j.status === 'error' || j.status === 'timeout'
+                            ? 'bg-red-50 text-red-700'
+                            : j.status === 'cancelled'
+                              ? 'bg-amber-50 text-amber-700'
+                              : 'bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      {j.status}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 text-right">{j.partials}</td>
+                  <td className="px-2 py-1">
+                    <div className="flex flex-col gap-1">
+                      <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-600">
+                        {j.cacheHit != null ? (
+                          <span className={j.cacheHit ? 'text-cyan-700' : 'text-slate-500'}>
+                            cache:{' '}
+                            <span className="font-semibold">
+                              {j.cacheHit ? 'hit' : 'miss'}
+                            </span>
+                          </span>
+                        ) : null}
+                        {j.partialFrames != null ? (
+                          <span className="text-sky-700">frames={j.partialFrames}</span>
+                        ) : null}
+                        {j.invalidPartialsDropped ? (
+                          <span className="text-amber-700">invalid={j.invalidPartialsDropped}</span>
+                        ) : null}
+                        {j.fuelUsed != null ? (
+                          <span className="text-amber-700">fuel={j.fuelUsed}</span>
+                        ) : null}
+                        {j.memPeakMb != null ? (
+                          <span className="text-slate-600">mem={Math.round(j.memPeakMb)}MB</span>
+                        ) : null}
+                        {j.lastError ? <span className="text-red-700">{j.lastError}</span> : null}
+                      </div>
+                      <div className="grid grid-cols-1 gap-1 text-[10px] text-slate-600 sm:grid-cols-3">
+                        <div className="rounded border border-indigo-200 bg-indigo-50/60 p-1">
+                          <div className="text-[9px] uppercase tracking-wide text-indigo-600">Logs</div>
+                          <div className="font-mono text-[10px] text-indigo-700">
+                            {logRecords} records
+                          </div>
+                          <div className="font-mono text-[10px] text-indigo-600">~{emittedBytesLabel}</div>
+                        </div>
+                        <div className="rounded border border-slate-200 bg-slate-50/80 p-1">
+                          <div className="text-[9px] uppercase tracking-wide text-slate-500">Backpressure waits</div>
+                          <div className="font-mono text-[10px] text-slate-700">stdout: {stdoutWaits}</div>
+                          <div className="font-mono text-[10px] text-slate-700">logger: {loggerWaits}</div>
+                          <div className="font-mono text-[10px] text-slate-700">partial: {partialWaits}</div>
+                        </div>
+                        <div className="rounded border border-amber-200 bg-amber-50/70 p-1">
+                          <div className="text-[9px] uppercase tracking-wide text-amber-600">Deadline</div>
+                          <div className="font-mono text-[10px] text-amber-700">target: {deadlineLabel}</div>
+                          <div className="font-mono text-[10px] text-amber-700">ran: {durationLabel}</div>
+                          <div className="font-mono text-[10px] text-amber-700">remaining: {remainingLabel}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

@@ -26,6 +26,10 @@ jobs:
           profile: minimal
           override: true
 
+      - name: Install wasm32-wasip1 target
+        run: |
+          rustup target add wasm32-wasip1
+
       - name: Install component tools
         run: |
           cargo install cargo-component --locked || true
@@ -35,6 +39,12 @@ jobs:
         working-directory: uicp/src-tauri
         run: |
           cargo check --features "wasm_compute uicp_wasi_enable"
+
+      - name: Build compute harness binary
+        working-directory: uicp/src-tauri
+        run: |
+          # WHY: Precompile the compute_harness binary so Playwright reuses the warmed artifact and we fail fast on feature drift.
+          cargo build --features "wasm_compute,uicp_wasi_enable,compute_harness" -p uicp
 
       - name: Assert engine versions pinned
         run: |
@@ -67,14 +77,23 @@ jobs:
         working-directory: uicp
         run: |
           npm run -s test
+
+      - name: Build web bundle
+        working-directory: uicp
+        run: |
+          # WHY: Ensure the Vite build passes before spawning the preview server for Playwright.
+          npm run -s build
+
       - name: Install Playwright browsers
         working-directory: uicp
         run: |
           npx playwright install chromium --with-deps
-      - name: E2E compute harness
+
+      - name: E2E compute harness smoke
         working-directory: uicp
         run: |
-          npm run -s test:e2e -- --project compute
+          # WHY: Run the headless compute harness smoke to exercise epoch/fuel/fs caps against the real host binary.
+          npm run -s test:e2e -- --grep "compute harness"
 
       - name: Verify WIT packages
         run: |
