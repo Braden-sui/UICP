@@ -65,13 +65,15 @@ mod with_runtime {
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     };
+    use tauri::AppHandle;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::time::{sleep, Duration as TokioDuration};
     use wasmtime::{
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
-    use crate::wasi_logging::wasi_logging_shim::logging::{self, Host as WasiLogHost, Level as WasiLogLevel};
+    use crate::wasi_logging::wasi_logging_shim::logging;
+    use crate::wasi_logging::wasi_logging_shim::logging::{Host as WasiLogHost, Level as WasiLogLevel};
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
         DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
@@ -191,7 +193,7 @@ mod with_runtime {
             level: WasiLogLevel,
             context: String,
             message: String,
-        ) -> anyhow::Result<()> {
+        ) {
             let level_str = match level {
                 WasiLogLevel::Trace => "trace",
                 WasiLogLevel::Debug => "debug",
@@ -219,7 +221,8 @@ mod with_runtime {
 
             let emitted = self.emitted_log_bytes.load(Ordering::Relaxed) as usize;
             if emitted >= self.max_log_bytes {
-                return Ok(());
+                // WHY: Enforce deterministic log budget; once we hit the cap we drop extra frames to keep runtime stable.
+                return;
             }
 
             let preview_len = message_len.min(LOG_PREVIEW_MAX);
@@ -268,8 +271,6 @@ mod with_runtime {
                 "len": message_len,
                 "ts": Utc::now().timestamp_millis(),
             }));
-
-            Ok(())
         }
     }
 
