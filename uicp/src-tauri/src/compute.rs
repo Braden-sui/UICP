@@ -38,8 +38,6 @@ pub mod error_codes {
     pub const RUNTIME_FAULT: &str = "Runtime.Fault";
     pub const RESOURCE_LIMIT: &str = "Compute.Resource.Limit";
     pub const IO_DENIED: &str = "IO.Denied";
-    pub const NONDETERMINISTIC: &str = "Nondeterministic";
-    pub const MODULE_SIGNATURE_INVALID: &str = "Module.SignatureInvalid";
 }
 
 // -----------------------------------------------------------------------------
@@ -48,6 +46,7 @@ pub mod error_codes {
 
 // NOTE: helper input tests now live in `compute_input.rs`.
 
+#[cfg_attr(not(feature = "uicp_wasi_enable"), allow(dead_code))]
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
@@ -79,7 +78,6 @@ mod with_runtime {
         Subscribe, WasiCtx, WasiCtxBuilder, WasiView,
     };
 
-    const DEFAULT_FUEL: u64 = 1_000_000;
     const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
     const EPOCH_TICK_INTERVAL_MS: u64 = 10;
     // Max total bytes we will emit across all stdio log frames per job (deterministic cap)
@@ -280,6 +278,7 @@ mod with_runtime {
         fn emit_debug(&self, payload: serde_json::Value);
         fn emit_partial(&self, event: crate::ComputePartialEvent);
         fn emit_partial_json(&self, payload: serde_json::Value);
+        #[cfg_attr(not(any(test, feature = "compute_harness")), allow(dead_code))]
         fn as_any(&self) -> &dyn Any;
     }
 
@@ -780,12 +779,6 @@ mod with_runtime {
         fn rate_per_sec(&self) -> usize {
             self.refill_per_sec
         }
-        fn set_capacity(&mut self, cap: usize) {
-            self.capacity = cap.max(1);
-            if self.tokens > self.capacity as f64 {
-                self.tokens = self.capacity as f64;
-            }
-        }
         fn capacity(&self) -> usize {
             self.capacity
         }
@@ -832,12 +825,6 @@ mod with_runtime {
         }
         fn rate_per_sec(&self) -> u32 {
             self.refill_per_sec as u32
-        }
-        fn set_capacity(&mut self, cap: u32) {
-            self.capacity = (cap.max(1)) as f64;
-            if self.tokens > self.capacity {
-                self.tokens = self.capacity;
-            }
         }
         fn capacity(&self) -> u32 {
             self.capacity as u32
@@ -896,6 +883,7 @@ mod with_runtime {
     }
 
     /// Build a fresh Engine (used by some unit tests); runtime uses the global ENGINE.
+    #[cfg(any(test, feature = "compute_harness"))]
     fn build_engine() -> anyhow::Result<Engine> {
         let mut cfg = Config::new();
         cfg.wasm_component_model(true)
@@ -922,7 +910,7 @@ mod with_runtime {
             let started = Instant::now();
 
             // Register cancel channel for this job
-            let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
+            let (tx_cancel, rx_cancel) = tokio::sync::watch::channel(false);
             {
                 let state: tauri::State<'_, crate::AppState> = app.state();
                 state
@@ -1245,8 +1233,9 @@ mod with_runtime {
             // Propagate cancel signal into store context
             {
                 let cancelled = store.data().cancelled.clone();
+                let mut rx_cancel_for_ctx = rx_cancel.clone();
                 tokio::spawn(async move {
-                    let _ = rx_cancel.changed().await;
+                    let _ = rx_cancel_for_ctx.changed().await;
                     cancelled.store(true, Ordering::Relaxed);
                 });
             }
@@ -1267,12 +1256,14 @@ mod with_runtime {
                         if let Some(delay) = artificial_delay_ms {
                             sleep(TokioDuration::from_millis(delay)).await;
                         }
-                        let call_res: anyhow::Result<serde_json::Value> = match task_name {
-                            "csv.parse" => match extract_csv_input(&spec.input) {
-                                Ok((src, has_header)) => match resolve_csv_source(&spec, &src) {
-                                    Ok(resolved) => {
-                                        let func_res: Result<
-                                            wasmtime::component::TypedFunc<
+                        let mut cancel_watch = rx_cancel.clone();
+                        let call_future = async {
+                            match task_name {
+                                "csv.parse" => match extract_csv_input(&spec.input) {
+                                    Ok((src, has_header)) => match resolve_csv_source(&spec, &src) {
+                                        Ok(resolved) => {
+                                            let func_res: Result<
+                                                wasmtime::component::TypedFunc<
                                                 (String, String, bool),
                                                 (Result<Vec<Vec<String>>, String>,),
                                             >,
@@ -1340,33 +1331,55 @@ mod with_runtime {
                                 }
                             }
                             _ => Err(anyhow::anyhow!("unknown task for this world")),
-                        };
-                        match call_res {
-                            Ok(output_json) => {
+                        }};
+                        tokio::select! {
+                            _ = cancel_watch.changed() => {
                                 let metrics = collect_metrics(&store);
-                                finalize_ok_with_metrics(
-                                    &app,
-                                    &spec,
-                                    output_json,
-                                    metrics,
-                                    queue_wait_ms,
-                                )
-                                .await;
-                            }
-                            Err(err) => {
-                                let (code, msg) = map_trap_error(&err);
-                                let message = if msg.is_empty() { err.to_string() } else { msg };
-                                let m = collect_metrics(&store);
                                 finalize_error(
                                     &app,
                                     &spec,
-                                    code,
-                                    &message,
+                                    error_codes::CANCELLED,
+                                    "Job cancelled by user",
                                     started,
                                     queue_wait_ms,
-                                    Some(m),
+                                    Some(metrics),
                                 )
                                 .await;
+                                epoch_pump.abort();
+                                let state: tauri::State<'_, crate::AppState> = app.state();
+                                state.compute_cancel.write().await.remove(&spec.job_id);
+                                crate::remove_compute_job(&app, &spec.job_id).await;
+                                return;
+                            }
+                            call_outcome = call_future => {
+                                match call_outcome {
+                                    Ok(output_json) => {
+                                        let metrics = collect_metrics(&store);
+                                        finalize_ok_with_metrics(
+                                            &app,
+                                            &spec,
+                                            output_json,
+                                            metrics,
+                                            queue_wait_ms,
+                                        )
+                                        .await;
+                                    }
+                                    Err(err) => {
+                                        let (code, msg) = map_trap_error(&err);
+                                        let message = if msg.is_empty() { err.to_string() } else { msg };
+                                        let m = collect_metrics(&store);
+                                        finalize_error(
+                                            &app,
+                                            &spec,
+                                            code,
+                                            &message,
+                                            started,
+                                            queue_wait_ms,
+                                            Some(m),
+                                        )
+                                        .await;
+                                    }
+                                }
                             }
                         }
                         epoch_pump.abort();
@@ -1658,53 +1671,6 @@ mod with_runtime {
         }
     }
 
-    async fn finalize_ok<R: Runtime>(
-        app: &AppHandle<R>,
-        spec: &ComputeJobSpec,
-        output: serde_json::Value,
-        started: Instant,
-        queue_wait_ms: u64,
-    ) {
-        let ms = started.elapsed().as_millis() as i64;
-        let payload = crate::ComputeFinalOk {
-            ok: true,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            output: output.clone(),
-            metrics: Some(serde_json::json!({ "durationMs": ms, "queueMs": queue_wait_ms })),
-        };
-        #[cfg(feature = "otel_spans")]
-        tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, duration_ms = ms, "compute job completed");
-        let _ = app.emit("compute.result.final", payload);
-        if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(
-                &spec.task,
-                &spec.input,
-                &spec.provenance.env_hash,
-            );
-            let mut obj = serde_json::json!({ "ok": true, "jobId": spec.job_id, "task": spec.task, "output": output });
-            if let Some(map) = obj.as_object_mut() {
-                map.insert(
-                    "metrics".into(),
-                    serde_json::json!({
-                        "durationMs": ms,
-                        "cacheHit": false,
-                        "queueMs": queue_wait_ms
-                    }),
-                );
-            }
-            let _ = crate::compute_cache::store(
-                app,
-                &spec.workspace_id,
-                &key,
-                &spec.task,
-                &spec.provenance.env_hash,
-                &obj,
-            )
-            .await;
-        }
-    }
-
     async fn finalize_ok_with_metrics<R: Runtime>(
         app: &AppHandle<R>,
         spec: &ComputeJobSpec,
@@ -1760,16 +1726,10 @@ mod with_runtime {
         }
     }
 
-    async fn cleanup_job<R: Runtime>(app: &AppHandle<R>, job_id: &str) {
-        let state: tauri::State<'_, crate::AppState> = app.state();
-        state.compute_cancel.write().await.remove(job_id);
-        crate::remove_compute_job(app, job_id).await;
-    }
-
     fn collect_metrics(store: &wasmtime::Store<Ctx>) -> serde_json::Value {
         let duration_ms = store.data().started.elapsed().as_millis() as i64;
         let remaining = (store.data().deadline_ms as i64 - duration_ms).max(0) as i64;
-            let mut metrics = serde_json::json!({
+        let mut metrics = serde_json::json!({
             "durationMs": duration_ms,
             "deadlineMs": store.data().deadline_ms,
             "logCount": store.data().log_count.load(Ordering::Relaxed),
@@ -1782,6 +1742,62 @@ mod with_runtime {
             "partialThrottleWaits": store.data().partial_throttle_waits.load(Ordering::Relaxed),
             "loggerThrottleWaits": store.data().logger_throttle_waits.load(Ordering::Relaxed),
         });
+        let (
+            stdout_burst,
+            stdout_rate,
+            logger_burst,
+            logger_rate,
+            partial_burst,
+            partial_rate,
+        ) = {
+            let ctx = store.data();
+            let (stdout_burst, stdout_rate) = {
+                let rl = ctx.log_rate.lock().unwrap();
+                (rl.capacity(), rl.rate_per_sec())
+            };
+            let (logger_burst, logger_rate) = {
+                let rl = ctx.logger_rate.lock().unwrap();
+                (rl.capacity(), rl.rate_per_sec())
+            };
+            let (partial_burst, partial_rate) = {
+                let rl = ctx.partial_rate.lock().unwrap();
+                (rl.capacity(), rl.rate_per_sec())
+            };
+            (
+                stdout_burst,
+                stdout_rate,
+                logger_burst,
+                logger_rate,
+                partial_burst,
+                partial_rate,
+            )
+        };
+        if let Some(obj) = metrics.as_object_mut() {
+            obj.insert(
+                "stdoutRateBytesPerSec".into(),
+                serde_json::json!(stdout_rate),
+            );
+            obj.insert(
+                "stdoutBurstBytes".into(),
+                serde_json::json!(stdout_burst),
+            );
+            obj.insert(
+                "loggerRateBytesPerSec".into(),
+                serde_json::json!(logger_rate),
+            );
+            obj.insert(
+                "loggerBurstBytes".into(),
+                serde_json::json!(logger_burst),
+            );
+            obj.insert(
+                "partialRateEventsPerSec".into(),
+                serde_json::json!(partial_rate),
+            );
+            obj.insert(
+                "partialBurstEvents".into(),
+                serde_json::json!(partial_burst),
+            );
+        }
         // Peak memory in MiB (if any growth occurred)
         let mem_peak = store.data().limits.mem_peak_mb();
         if mem_peak > 0 {
@@ -2571,3 +2587,4 @@ pub fn spawn_job<R: Runtime>(
         no_runtime::spawn_job(app, spec, permit, queue_wait_ms)
     }
 }
+

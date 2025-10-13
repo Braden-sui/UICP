@@ -37,6 +37,7 @@ pub struct ModuleManifest {
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct ModuleRef {
+    #[allow(dead_code)]
     pub entry: ModuleEntry,
     pub path: PathBuf,
 }
@@ -621,7 +622,10 @@ fn bundled_modules_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf
 
 #[cfg(not(feature = "tauri2"))]
 fn bundled_modules_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
-    app.path().resource_dir().map(|dir| dir.join("modules"))
+    app.path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("modules"))
 }
 
 fn verify_installed_modules(target: &Path) -> Result<()> {

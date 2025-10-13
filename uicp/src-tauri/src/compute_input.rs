@@ -266,6 +266,7 @@ pub fn derive_job_seed(job_id: &str, env_hash: &str) -> [u8; 32] {
 
 /// WHY: Normalize task input so caching + runtime share the same canonical payload.
 /// INVARIANT: Unknown tasks pass through unchanged.
+#[cfg_attr(not(any(test, feature = "compute_harness")), allow(dead_code))]
 pub fn canonicalize_task_input(
     spec: &ComputeJobSpec,
 ) -> Result<serde_json::Value, TaskInputError> {
