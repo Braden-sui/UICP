@@ -131,7 +131,7 @@ jobs:
       - name: Install GTK dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev libpango1.0-dev
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev libpango1.0-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@5d458579430fc14a04a08a1e7d3694f545e91ce6
@@ -159,7 +159,7 @@ jobs:
       - name: Install GTK dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev libpango1.0-dev
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev libpango1.0-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@5d458579430fc14a04a08a1e7d3694f545e91ce6
