@@ -58,7 +58,6 @@ mod with_runtime {
     use serde_json;
     use sha2::{Digest, Sha256};
     #[cfg(any(test, feature = "compute_harness"))]
-    use std::any::Any;
     use std::convert::TryFrom;
     use std::io::Cursor;
     use std::sync::{
@@ -109,9 +108,6 @@ mod with_runtime {
         fn emit_debug(&self, payload: serde_json::Value);
         fn emit_partial(&self, event: crate::ComputePartialEvent);
         fn emit_partial_json(&self, payload: serde_json::Value);
-        #[cfg(any(test, feature = "compute_harness"))]
-        // WHY: Downcasts are used only in harness/tests to inspect captured payloads without leaking this hook into prod builds.
-        fn as_any(&self) -> &dyn Any;
     }
 
     enum UiEvent {
@@ -2133,9 +2129,6 @@ mod with_runtime {
                     self.partials.lock().unwrap().push(payload);
                 }
                 #[cfg(any(test, feature = "compute_harness"))]
-                fn as_any(&self) -> &dyn Any {
-                    self
-                }
             }
 
             let captured_partials: Arc<Mutex<Vec<serde_json::Value>>> =
@@ -2249,9 +2242,6 @@ mod with_runtime {
                     self.partials.lock().unwrap().push(payload);
                 }
                 #[cfg(any(test, feature = "compute_harness"))]
-                fn as_any(&self) -> &dyn Any {
-                    self
-                }
             }
 
             let engine = build_engine().expect("engine");
@@ -2336,7 +2326,6 @@ mod with_runtime {
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
                 #[cfg(any(test, feature = "compute_harness"))]
-                fn as_any(&self) -> &dyn Any { self }
             }
             let engine = build_engine().expect("engine");
             let mut store: Store<Ctx> = Store::new(
@@ -2396,7 +2385,6 @@ mod with_runtime {
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
                 #[cfg(any(test, feature = "compute_harness"))]
-                fn as_any(&self) -> &dyn Any { self }
             }
             let engine = build_engine().expect("engine");
             let mut store: Store<Ctx> = Store::new(
@@ -2447,7 +2435,6 @@ mod with_runtime {
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
                 #[cfg(any(test, feature = "compute_harness"))]
-                fn as_any(&self) -> &dyn Any { self }
             }
 
             let engine = build_engine().expect("engine");
