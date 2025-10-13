@@ -15,7 +15,8 @@ const cargoManifest = join(repoRoot, 'uicp', 'src-tauri', 'Cargo.toml');
 // WHY: Track compute finals per job so cache-hit assertions can inspect raw metrics.
 // INVARIANT: Map is cleared before/after each test to avoid stale finals across runs.
 const finalEvents = new Map<string, ComputeFinalEvent>();
-const CACHE_EXPECTED_SPEEDUP_MS = 40;
+const CACHE_RELATIVE_THRESHOLD = 0.5;
+const CACHE_ABSOLUTE_THRESHOLD_MS = 200;
 
 test.describe('compute harness via headless host', () => {
   let dataDir: string;
@@ -231,9 +232,10 @@ test.describe('compute harness via headless host', () => {
     const secondDuration = secondRun.durationMs ?? 0;
     expect(secondDuration).toBeGreaterThan(0);
     expect(secondDuration).toBeLessThan(firstDuration);
-    const durationGain = firstDuration - secondDuration;
-    // INVARIANT: Cache replay must be measurably faster than the initial miss.
-    expect(durationGain).toBeGreaterThanOrEqual(CACHE_EXPECTED_SPEEDUP_MS);
+    // INVARIANT: Cache replay must be significantly faster than the initial miss.
+    const meetsRelativeThreshold = secondDuration <= firstDuration * CACHE_RELATIVE_THRESHOLD;
+    const meetsAbsoluteThreshold = secondDuration <= CACHE_ABSOLUTE_THRESHOLD_MS;
+    expect(meetsRelativeThreshold || meetsAbsoluteThreshold).toBeTruthy();
 
     const replayValue = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

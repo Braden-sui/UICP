@@ -57,7 +57,8 @@ mod with_runtime {
     use once_cell::sync::Lazy;
     use serde_json;
     use sha2::{Digest, Sha256};
-    #[cfg(any(test, feature = "compute_harness"))]
+    #[cfg(feature = "uicp_wasi_enable")]
+    use crate::wasi_logging::wasi_logging_shim::add_to_linker as add_logging_to_linker;
     use std::convert::TryFrom;
     use std::io::Cursor;
     use std::sync::{
@@ -72,7 +73,6 @@ mod with_runtime {
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
     use crate::wasi_logging::wasi_logging_shim::logging::{Host as WasiLogHost, Level as WasiLogLevel};
-    use crate::wasi_logging::wasi_logging_shim::add_to_linker as add_logging_to_linker;
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
         DirPerms, FilePerms, HostOutputStream, OutputStream as WasiOutputStream, StreamError,
@@ -329,10 +329,6 @@ mod with_runtime {
                 drop(tx);
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-        }
-        #[cfg(any(test, feature = "compute_harness"))]
-        fn as_any(&self) -> &dyn Any {
-            self
         }
     }
 
@@ -885,6 +881,7 @@ mod with_runtime {
 
     /// Build a fresh Engine (used by some unit tests); runtime uses the global ENGINE.
     #[cfg(any(test, feature = "compute_harness"))]
+    #[cfg_attr(feature = "compute_harness", allow(dead_code))]
     fn build_engine() -> anyhow::Result<Engine> {
         let mut cfg = Config::new();
         cfg.wasm_component_model(true)
@@ -1406,6 +1403,7 @@ mod with_runtime {
     }
 
     /// Wire core WASI Preview 2 imports only (host shims deferred to M2+).
+    #[cfg(feature = "uicp_wasi_enable")]
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
@@ -2126,7 +2124,6 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().unwrap().push(payload);
                 }
-                #[cfg(any(test, feature = "compute_harness"))]
             }
 
             let captured_partials: Arc<Mutex<Vec<serde_json::Value>>> =
@@ -2320,7 +2317,6 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
-                #[cfg(any(test, feature = "compute_harness"))]
             }
             let engine = build_engine().expect("engine");
             let mut store: Store<Ctx> = Store::new(
@@ -2379,7 +2375,6 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
-                #[cfg(any(test, feature = "compute_harness"))]
             }
             let engine = build_engine().expect("engine");
             let mut store: Store<Ctx> = Store::new(
@@ -2429,7 +2424,6 @@ mod with_runtime {
                 fn emit_debug(&self, payload: serde_json::Value) { self.debugs.lock().unwrap().push(payload); }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
-                #[cfg(any(test, feature = "compute_harness"))]
             }
 
             let engine = build_engine().expect("engine");

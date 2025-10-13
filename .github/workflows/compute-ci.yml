@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VITE_WIL_ONLY: '1'
+      # WHY: Ensure Playwright smoke uses the signed module path exercised in prod.
+      STRICT_MODULES_VERIFY: '1'
+      UICP_MODULES_PUBKEY: ih4HBWNN6fqiMx8ee5NICPwDUzu/4ORtUjo7OTVu4wg=
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,7 +51,7 @@ jobs:
 
       - name: Assert engine versions pinned
         run: |
-          echo "Checking Wasmtime versions in lockfile..."
+          echo "Checking Wasmtime versions in lockfile"
           awk '/name = "wasmtime"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '24\.'
           awk '/name = "wasmtime-wasi"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '24\.'
 
@@ -115,4 +118,3 @@ jobs:
         working-directory: uicp/components/log.test
         run: |
           cargo component metadata
-
