@@ -79,4 +79,28 @@ describe('WIL extended templates for DOM/Component/State', () => {
     expect((env2.params as any).target).toBe('#list');
     expect((env2.params as any).windowId).toBe('w1');
   });
+
+  it('parses dom.set with bracket selector and quoted attribute', () => {
+    const p = parseUtterance('set html in [data-test="panel"] of window win-1 to <div>OK</div>');
+    expect(p && p.op).toBe('dom.set');
+    const env = validateBatch([toOp(p!)])[0];
+    expect((env.params as any).target).toBe('[data-test="panel"]');
+    expect((env.params as any).windowId).toBe('win-1');
+  });
+
+  it('parses dom.append with quoted selector', () => {
+    const p = parseUtterance('append to "[data-role=items]" of window w2 <li>R</li>');
+    expect(p && ['dom.append','dom.set','dom.replace'].includes(p.op)).toBe(true);
+    const env = validateBatch([toOp(p!)])[0];
+    expect((env.params as any).target).toBe('[data-role=items]');
+    expect((env.params as any).windowId).toBe('w2');
+  });
+
+  it('parses dom.replace with quoted selector and windowId', () => {
+    const p = parseUtterance('replace html in "[data-id=slot]" of window w-3 with <span>OK</span>');
+    expect(p && p.op).toBe('dom.replace');
+    const env = validateBatch([toOp(p!)])[0];
+    expect((env.params as any).target).toBe('[data-id=slot]');
+    expect((env.params as any).windowId).toBe('w-3');
+  });
 });

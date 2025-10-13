@@ -1,16 +1,14 @@
+#![cfg(any(test, feature = "compute_harness"))]
+// WHY: These command shims back compute harness/testing flows only; exclude them from production wasm builds to keep CI warning-free.
+
 use tauri::{Emitter, Manager, Runtime, State};
 // use anyhow::Context;
 
-use crate::{compute, compute_cache, enforce_compute_policy, registry, AppState, ComputeJobSpec};
+use crate::{
+    compute, compute_cache, compute_input::canonicalize_task_input, emit_or_log,
+    enforce_compute_policy, registry, AppState, ComputeFinalErr, ComputeJobSpec,
+};
 use std::time::Instant;
-fn emit_or_log_generic<R: Runtime, T>(app_handle: &tauri::AppHandle<R>, event: &str, payload: T)
-where
-    T: serde::Serialize + Clone,
-{
-    if let Err(err) = app_handle.emit(event, payload) {
-        eprintln!("Failed to emit {event}: {err}");
-    }
-}
 
 pub async fn compute_call<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -33,14 +31,31 @@ pub async fn compute_call<R: Runtime>(
 
     // --- Policy enforcement ---
     if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log_generic(&app_handle, "compute.result.final", &deny);
+        emit_or_log(&app_handle, "compute.result.final", &deny);
         return Ok(());
     }
+
+    let normalized_input = match canonicalize_task_input(&spec) {
+        Ok(value) => value,
+        Err(err) => {
+            let payload = ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: err.code.into(),
+                message: err.message,
+                metrics: None,
+            };
+            emit_or_log(&app_handle, "compute.result.final", &payload);
+            return Ok(());
+        }
+    };
 
     // Cache lookup when enabled
     let cache_mode = spec.cache.to_lowercase();
     if cache_mode == "readwrite" || cache_mode == "readonly" {
-        let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+        let key =
+            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash);
         if let Ok(Some(mut cached)) =
             compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
         {
@@ -57,7 +72,7 @@ pub async fn compute_call<R: Runtime>(
                     *metrics = serde_json::json!({ "cacheHit": true });
                 }
             }
-            emit_or_log_generic(&app_handle, "compute.result.final", cached);
+            emit_or_log(&app_handle, "compute.result.final", cached);
             return Ok(());
         } else if cache_mode == "readonly" {
             let payload = crate::ComputeFinalErr {
@@ -68,7 +83,7 @@ pub async fn compute_call<R: Runtime>(
                 message: "Cache miss under ReadOnly cache policy".into(),
                 metrics: None,
             };
-            emit_or_log_generic(&app_handle, "compute.result.final", &payload);
+            emit_or_log(&app_handle, "compute.result.final", &payload);
             return Ok(());
         }
     }
@@ -88,6 +103,7 @@ pub async fn compute_call<R: Runtime>(
         .unwrap_or(u64::MAX);
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
+    spec_norm.input = normalized_input;
     let join = compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms);
     state
         .compute_ongoing

@@ -117,7 +117,7 @@ fn workspace_save_load_roundtrip() {
 
 #[test]
 fn workspace_foreign_key_cascade_delete() {
-    let (_tmp, mut conn) = init_test_db();
+    let (_tmp, conn) = init_test_db();
 
     // Insert workspace and window
     conn.execute(
@@ -149,7 +149,7 @@ fn workspace_foreign_key_cascade_delete() {
 
 #[test]
 fn concurrent_workspace_writes_last_write_wins() {
-    let (_tmp, mut conn) = init_test_db();
+    let (_tmp, conn) = init_test_db();
 
     // Simulate multiple rapid updates to workspace
     for i in 0..10 {

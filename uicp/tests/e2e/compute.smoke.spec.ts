@@ -77,15 +77,22 @@ test.describe('compute harness via headless host', () => {
           }
         });
 
-        child.stdin.write(`${JSON.stringify(spec)}\n`);
+        const stdin = child.stdin;
+        if (!stdin) {
+          pending.delete(spec.jobId);
+          rejectPromise(new Error('compute_harness stdin unavailable'));
+          return;
+        }
+        stdin.write(`${JSON.stringify(spec)}\n`);
       });
     });
 
     await page.exposeFunction('uicpNodeCancelCompute', async (jobId: string) => {
       const child = pending.get(jobId);
-      if (!child || !child.stdin.writable) return false;
+      const stdin = child?.stdin;
+      if (!child || !stdin || !stdin.writable) return false;
       return new Promise<boolean>((resolvePromise) => {
-        child.stdin.write('cancel\n', (err) => {
+        stdin.write('cancel\n', (err) => {
           if (err) {
             resolvePromise(false);
           } else {

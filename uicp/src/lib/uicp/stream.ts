@@ -8,19 +8,6 @@ import { parseWILBatch } from '../orchestrator/parseWILBatch';
 // Streaming aggregator for Ollama/OpenAI-like SSE chunks (WIL-only path).
 // Tracks per-channel content and, on flush, parses WIL lines into a typed batch.
 
-const extractBatch = (data: unknown): Batch | undefined => {
-  if (Array.isArray(data)) {
-    return data as Batch;
-  }
-  if (data && typeof data === 'object') {
-    const candidate = (data as { batch?: unknown }).batch;
-    if (Array.isArray(candidate)) {
-      return candidate as Batch;
-    }
-  }
-  return undefined;
-};
-
 const parseBatchFromText = (buffer: string): Batch | undefined => {
   const items = parseWILBatch(buffer);
   const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);

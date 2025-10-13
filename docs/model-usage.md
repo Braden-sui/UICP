@@ -6,7 +6,7 @@
 
 ## Authentication
 - Header: `Authorization: Bearer <api-key>`
-- Keys are user-provided and stored locally in `.env` (MVP).
+- Keys are user-provided. Preferred storage is the OS keyring; `.env` is supported for local dev and auto-migrated to the keyring on startup.
 
 ## Default Models
 - Planner: `deepseek-v3.1:671b` (profile: `deepseek`)

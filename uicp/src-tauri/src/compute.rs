@@ -9,17 +9,22 @@ use std::time::Duration;
 #[cfg(feature = "wasm_compute")]
 use std::time::Instant;
 
-// Base64 engine is needed by helpers regardless of wasm feature; import unconditionally.
+#[cfg(feature = "wasm_compute")]
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+#[cfg(feature = "wasm_compute")]
 use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{Emitter, Manager, Runtime};
 #[cfg(feature = "wasm_compute")]
 use tokio::sync::mpsc;
 use tokio::sync::OwnedSemaphorePermit;
 
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
+#[cfg(feature = "wasm_compute")]
+use crate::compute_input::{
+    derive_job_seed, extract_csv_input, extract_table_query_input, resolve_csv_source, TaskInputError,
+};
 use crate::ComputeJobSpec;
 
 /// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
@@ -41,309 +46,7 @@ pub mod error_codes {
 // Shared helpers (feature-independent) for task input prep and workspace FS policy
 // -----------------------------------------------------------------------------
 
-// NOTE: removed unused placeholder import to avoid warning
-
-use sha2::{Digest as _, Sha256};
-
-/// Extract csv.parse input fields from a JSON value.
-pub(crate) fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), String> {
-    let obj = input
-        .as_object()
-        .ok_or_else(|| "input must be an object".to_string())?;
-    let source = obj
-        .get("source")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "input.source must be a string".to_string())?
-        .to_string();
-    let has_header = obj
-        .get("hasHeader")
-        .and_then(|v| v.as_bool())
-        .or_else(|| obj.get("has_header").and_then(|v| v.as_bool()))
-        .or_else(|| obj.get("has-header").and_then(|v| v.as_bool()))
-        .unwrap_or(true);
-    Ok((source, has_header))
-}
-
-/// Validate and map a `ws:/files/...` path to a host path under FILES_DIR.
-/// Rules: must start with ws:/files/, no absolute, no `..` segments, normalize separators.
-pub(crate) fn sanitize_ws_files_path(ws_path: &str) -> Result<std::path::PathBuf, String> {
-    let prefix = "ws:/files/";
-    if !ws_path.starts_with(prefix) {
-        return Err("path must start with ws:/files/".into());
-    }
-    let rel = &ws_path[prefix.len()..];
-    if rel.is_empty() {
-        return Err("path missing trailing file segment".into());
-    }
-    let base = crate::files_dir_path();
-    let base_canonical = base
-        .canonicalize()
-        .map_err(|err| format!("files directory unavailable: {err}"))?;
-    let mut buf = std::path::PathBuf::from(base);
-    for seg in rel.split('/') {
-        if seg.is_empty() || seg == "." {
-            continue;
-        }
-        if seg == ".." {
-            return Err("parent traversal not allowed".into());
-        }
-        if seg.contains('\\') {
-            return Err("invalid separator in path".into());
-        }
-        buf.push(seg);
-    }
-    let candidate = buf;
-    match candidate.canonicalize() {
-        Ok(canonical) => {
-            if !canonical.starts_with(&base_canonical) {
-                return Err("path escapes workspace files directory".into());
-            }
-            Ok(candidate)
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(parent) = candidate.parent() {
-                if let Ok(parent_canon) = parent.canonicalize() {
-                    if !parent_canon.starts_with(&base_canonical) {
-                        return Err("path escapes workspace files directory".into());
-                    }
-                }
-            }
-            Ok(candidate)
-        }
-        Err(err) => Err(format!("canonicalize failed: {err}")),
-    }
-}
-
-/// Capability check: ensure a ws:/ path is allowed by fs_read caps (supports /** suffix glob).
-pub(crate) fn fs_read_allowed(spec: &ComputeJobSpec, ws_path: &str) -> bool {
-    if spec.capabilities.fs_read.is_empty() {
-        return false;
-    }
-    for pat in spec.capabilities.fs_read.iter() {
-        let p = pat.as_str();
-        if let Some(base) = p.strip_suffix("/**") {
-            if ws_path.starts_with(base) {
-                return true;
-            }
-        } else if p == ws_path {
-            return true;
-        }
-    }
-    false
-}
-
-/// Resolve csv.parse source string, enforcing workspace policy when using `ws:/files/...`.
-pub(crate) fn resolve_csv_source(
-    spec: &ComputeJobSpec,
-    source: &str,
-) -> Result<String, (&'static str, String)> {
-    if !source.starts_with("ws:/files/") {
-        return Ok(source.to_string());
-    }
-    if !fs_read_allowed(spec, source) {
-        return Err((
-            error_codes::CAPABILITY_DENIED,
-            "fs_read does not allow this path".into(),
-        ));
-    }
-    let host_path = sanitize_ws_files_path(source).map_err(|e| (error_codes::IO_DENIED, e))?;
-    match std::fs::read(host_path) {
-        Ok(bytes) => Ok(format!(
-            "data:text/csv;base64,{}",
-            BASE64_ENGINE.encode(bytes)
-        )),
-        Err(err) => Err((error_codes::IO_DENIED, format!("read failed: {err}"))),
-    }
-}
-
-/// Derive a deterministic per-job seed from `job_id` and `env_hash`.
-/// Stable across replays and platforms; domain-separated.
-pub(crate) fn derive_job_seed(job_id: &str, env_hash: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"UICP-SEED\x00");
-    hasher.update(job_id.as_bytes());
-    hasher.update(b"|");
-    hasher.update(env_hash.as_bytes());
-    hasher.finalize().into()
-}
-
-/// Extract table.query input fields from a JSON value.
-pub(crate) fn extract_table_query_input(
-    input: &serde_json::Value,
-) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), String> {
-    let obj = input
-        .as_object()
-        .ok_or_else(|| "input must be an object".to_string())?;
-    // rows: list<list<string>>
-    let rows_val = obj
-        .get("rows")
-        .ok_or_else(|| "input.rows required".to_string())?;
-    let rows = rows_val
-        .as_array()
-        .ok_or_else(|| "input.rows must be an array".to_string())?
-        .iter()
-        .map(|row| {
-            let arr = row
-                .as_array()
-                .ok_or_else(|| "row must be an array".to_string())?;
-            Ok(arr
-                .iter()
-                .map(|cell| cell.as_str().unwrap_or("").to_string())
-                .collect::<Vec<String>>())
-        })
-        .collect::<Result<Vec<Vec<String>>, String>>()?;
-
-    // select: list<u32>
-    let select_val = obj
-        .get("select")
-        .ok_or_else(|| "input.select required".to_string())?;
-    let select = select_val
-        .as_array()
-        .ok_or_else(|| "input.select must be an array".to_string())?
-        .iter()
-        .map(|v| {
-            v.as_u64()
-                .ok_or_else(|| "select entries must be non-negative integers".to_string())
-                .map(|u| u as u32)
-        })
-        .collect::<Result<Vec<u32>, String>>()?;
-
-    // where_contains: option<record { col: u32, needle: string }>
-    let where_opt = if let Some(w) = obj.get("where_contains") {
-        if w.is_null() {
-            None
-        } else {
-            let wobj = w
-                .as_object()
-                .ok_or_else(|| "where_contains must be an object".to_string())?;
-            let col = wobj
-                .get("col")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| "where_contains.col must be u32".to_string())?
-                as u32;
-            let needle = wobj
-                .get("needle")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "where_contains.needle must be string".to_string())?
-                .to_string();
-            Some((col, needle))
-        }
-    } else {
-        None
-    };
-
-    Ok((rows, select, where_opt))
-}
-
-// removed unused validate_rows_value helper
-
-#[cfg(test)]
-mod helper_tests {
-    use super::*;
-    use anyhow::Result as AnyResult;
-    use serde_json::json;
-
-    fn base_spec() -> crate::ComputeJobSpec {
-        crate::ComputeJobSpec {
-            job_id: "00000000-0000-4000-8000-000000000002".into(),
-            task: "csv.parse@1.2.0".into(),
-            input: json!({}),
-            timeout_ms: Some(30_000),
-            fuel: None,
-            mem_limit_mb: None,
-            bind: vec![],
-            cache: "readwrite".into(),
-            capabilities: crate::ComputeCapabilitiesSpec::default(),
-            replayable: true,
-            workspace_id: "default".into(),
-            provenance: crate::ComputeProvenanceSpec {
-                env_hash: "test-env".into(),
-                agent_trace_id: None,
-            },
-        }
-    }
-
-    #[test]
-    fn csv_input_parses_and_header_defaults() {
-        let v = json!({"source":"data:text/csv,foo,bar"});
-        let (src, has_header) = extract_csv_input(&v).expect("ok");
-        assert!(src.starts_with("data:text/csv"));
-        assert!(has_header, "default hasHeader should be true");
-
-        let v = json!({"source":"data:text/csv,foo,bar","hasHeader":false});
-        let (_src, has_header) = extract_csv_input(&v).expect("ok");
-        assert!(!has_header);
-    }
-
-    #[test]
-    fn table_query_input_parses() {
-        let v = json!({
-          "rows": [["a","b"],["c","d"]],
-          "select": [1],
-          "where_contains": {"col": 0, "needle": "c"}
-        });
-        let (rows, sel, wc) = extract_table_query_input(&v).expect("ok");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(sel, vec![1]);
-        assert_eq!(wc, Some((0, "c".into())));
-    }
-
-    #[test]
-    fn job_seed_is_deterministic() {
-        let a = derive_job_seed("job-1", "env-xyz");
-        let b = derive_job_seed("job-1", "env-xyz");
-        assert_eq!(a, b);
-        let c = derive_job_seed("job-2", "env-xyz");
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn sanitize_ws_paths() {
-        // Ensure files dir exists for mapping
-        let base = crate::files_dir_path();
-        let _ = std::fs::create_dir_all(base);
-        let ok = sanitize_ws_files_path("ws:/files/some/dir/data.csv").expect("ok");
-        assert!(ok.starts_with(base));
-
-        let err = sanitize_ws_files_path("/absolute/bad").unwrap_err();
-        assert!(err.contains("ws:/files"));
-
-        let err = sanitize_ws_files_path("ws:/files/../../escape").unwrap_err();
-        assert!(err.contains("parent traversal"));
-
-        let err = sanitize_ws_files_path("ws:/files/bad\\slash.csv").unwrap_err();
-        assert!(err.contains("invalid separator"));
-    }
-
-    #[test]
-    fn resolve_source_ws_and_plain() {
-        let mut spec = base_spec();
-        // Plain data URI passes through
-        let s = resolve_csv_source(&spec, "data:text/csv,hello").expect("ok");
-        assert_eq!(s, "data:text/csv,hello");
-
-        // Allow workspace reads
-        spec.capabilities.fs_read = vec!["ws:/files/**".into()];
-        let base = crate::files_dir_path();
-        let _ = std::fs::create_dir_all(base);
-        let f = base.join("u_test_compute.csv");
-        std::fs::write(&f, b"a,b\n1,2\n").expect("write");
-        let out = resolve_csv_source(&spec, "ws:/files/u_test_compute.csv").expect("ok");
-        assert!(out.starts_with("data:text/csv;base64,"));
-        let _ = std::fs::remove_file(&f);
-    }
-
-    #[test]
-    fn fs_read_allowed_matches_exact_and_glob() {
-        let mut spec = base_spec();
-        assert!(!fs_read_allowed(&spec, "ws:/files/foo.csv"));
-        spec.capabilities.fs_read = vec!["ws:/files/**".into()];
-        assert!(fs_read_allowed(&spec, "ws:/files/foo/bar.csv"));
-        spec.capabilities.fs_read = vec!["ws:/files/a.csv".into()];
-        assert!(fs_read_allowed(&spec, "ws:/files/a.csv"));
-        assert!(!fs_read_allowed(&spec, "ws:/files/b.csv"));
-    }
-}
+// NOTE: helper input tests now live in `compute_input.rs`.
 
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
@@ -1566,76 +1269,61 @@ mod with_runtime {
                         }
                         let call_res: anyhow::Result<serde_json::Value> = match task_name {
                             "csv.parse" => {
-                                let src_has =
-                                    extract_csv_input(&spec.input).map_err(|e| anyhow::anyhow!(e));
-                                if let Err(err) = src_has {
-                                    Err(err)
-                                } else {
-                                    let (src, has_header) = src_has.unwrap();
-                                    let resolved_res = resolve_csv_source(&spec, &src)
-                                        .map_err(|e| anyhow::anyhow!(format!("{}: {}", e.0, e.1)));
-                                    if let Err(err) = resolved_res {
-                                        Err(err)
-                                    } else {
-                                        let resolved = resolved_res.unwrap();
-                                        // WIT `result<T, E>` comes through Wasmtime as the standard Rust `Result<T, E>`.
-                                        let func_res: Result<
-                                            wasmtime::component::TypedFunc<
-                                                (String, String, bool),
-                                                (Result<Vec<Vec<String>>, String>,),
-                                            >,
-                                            _,
-                                        > = instance.get_typed_func(&mut store, "csv#run");
-                                        match func_res {
-                                            Err(e) => Err(anyhow::Error::from(e)),
-                                            Ok(func) => match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), resolved, has_header),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
-                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                                Err(e) => Err(anyhow::Error::from(e)),
-                                            },
-                                        }
-                                    }
+                                let (src, has_header) = extract_csv_input(&spec.input)
+                                    .map_err(|e: TaskInputError| {
+                                        anyhow::anyhow!(format!("{}: {}", e.code, e.message))
+                                    })?;
+                                let resolved = resolve_csv_source(&spec, &src)
+                                    .map_err(|e: TaskInputError| {
+                                        anyhow::anyhow!(format!("{}: {}", e.code, e.message))
+                                    })?;
+                                let func_res: Result<
+                                    wasmtime::component::TypedFunc<
+                                        (String, String, bool),
+                                        (Result<Vec<Vec<String>>, String>,),
+                                    >,
+                                    _,
+                                > = instance.get_typed_func(&mut store, "csv#run");
+                                match func_res {
+                                    Err(e) => Err(anyhow::Error::from(e)),
+                                    Ok(func) => match func
+                                        .call_async(
+                                            &mut store,
+                                            (spec.job_id.clone(), resolved, has_header),
+                                        )
+                                        .await
+                                    {
+                                        Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
+                                        Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                        Err(e) => Err(anyhow::Error::from(e)),
+                                    },
                                 }
                             }
                             "table.query" => {
-                                let parsed = extract_table_query_input(&spec.input)
-                                    .map_err(|e| anyhow::anyhow!(e));
-                                if let Err(err) = parsed {
-                                    Err(err)
-                                } else {
-                                    let (rows, select, where_opt) = parsed.unwrap();
-                                    let func_res: Result<
-                                        wasmtime::component::TypedFunc<
-                                            (
-                                                String,
-                                                Vec<Vec<String>>,
-                                                Vec<u32>,
-                                                Option<(u32, String)>,
-                                            ),
-                                            (Result<Vec<Vec<String>>, String>,),
-                                        >,
-                                        _,
-                                    > = instance.get_typed_func(&mut store, "table#run");
-                                    match func_res {
+                                let (rows, select, where_opt) = extract_table_query_input(&spec.input)
+                                    .map_err(|e: TaskInputError| {
+                                        anyhow::anyhow!(format!("{}: {}", e.code, e.message))
+                                    })?;
+                                let func_res: Result<
+                                    wasmtime::component::TypedFunc<
+                                        (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
+                                        (Result<Vec<Vec<String>>, String>,),
+                                    >,
+                                    _,
+                                > = instance.get_typed_func(&mut store, "table#run");
+                                match func_res {
+                                    Err(e) => Err(anyhow::Error::from(e)),
+                                    Ok(func) => match func
+                                        .call_async(
+                                            &mut store,
+                                            (spec.job_id.clone(), rows, select, where_opt),
+                                        )
+                                        .await
+                                    {
+                                        Ok((Ok(out),)) => Ok(serde_json::json!(out)),
+                                        Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
                                         Err(e) => Err(anyhow::Error::from(e)),
-                                        Ok(func) => match func
-                                            .call_async(
-                                                &mut store,
-                                                (spec.job_id.clone(), rows, select, where_opt),
-                                            )
-                                            .await
-                                        {
-                                            Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                            Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                            Err(e) => Err(anyhow::Error::from(e)),
-                                        },
-                                    }
+                                    },
                                 }
                             }
                             _ => Err(anyhow::anyhow!("unknown task for this world")),
@@ -1705,6 +1393,22 @@ mod with_runtime {
         Err(anyhow::anyhow!(
             "WASI imports disabled; rebuild with `--features uicp_wasi_enable` to enable WASI host imports"
         ))
+    }
+
+    fn register_control_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
+        let mut instance = linker.instance(name)?;
+        instance.func_wrap("open-partial-sink", host_open_partial_sink)?;
+        instance.func_wrap("should-cancel", host_should_cancel)?;
+        instance.func_wrap("deadline-ms", host_deadline_ms)?;
+        instance.func_wrap("remaining-ms", host_remaining_ms)?;
+        Ok(())
+    }
+
+    fn register_rng_interface(linker: &mut Linker<Ctx>, name: &str) -> anyhow::Result<()> {
+        let mut instance = linker.instance(name)?;
+        instance.func_wrap("next-u64", host_rng_next_u64)?;
+        instance.func_wrap("fill", host_rng_fill)?;
+        Ok(())
     }
 
     fn add_uicp_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
@@ -2435,13 +2139,10 @@ mod with_runtime {
             // Call the logging shim directly
             {
                 use wasmtime::AsContextMut;
-                host_wasi_log(
-                    store.as_context_mut(),
-                    WasiLogLevel::Info,
-                    "ctx".into(),
-                    "hello world".into(),
-                )
-                .expect("log ok");
+                let mut ctx = store.as_context_mut();
+                ctx.data_mut()
+                    .log(WasiLogLevel::Info, "ctx".into(), "hello world".into())
+                    .expect("log ok");
             }
 
             // Verify a partial event was captured with expected fields
@@ -2741,20 +2442,16 @@ mod with_runtime {
             );
 
             // Increment log count twice
-            host_wasi_log(
-                store.as_context_mut(),
-                WasiLogLevel::Info,
-                "ctx".into(),
-                "line-1".into(),
-            )
-            .unwrap();
-            host_wasi_log(
-                store.as_context_mut(),
-                WasiLogLevel::Info,
-                "ctx".into(),
-                "line-2".into(),
-            )
-            .unwrap();
+            {
+                use wasmtime::AsContextMut;
+                let mut ctx = store.as_context_mut();
+                ctx.data_mut()
+                    .log(WasiLogLevel::Info, "ctx".into(), "line-1".into())
+                    .unwrap();
+                ctx.data_mut()
+                    .log(WasiLogLevel::Info, "ctx".into(), "line-2".into())
+                    .unwrap();
+            }
 
             // Simulate memory growth to 5 MiB
             {
@@ -2772,51 +2469,6 @@ mod with_runtime {
         }
     }
 
-    // -----------------------------------------------------------------------------
-    // Non-wasm unit tests for helpers
-    // -----------------------------------------------------------------------------
-    #[cfg(test)]
-    mod helper_tests {
-        use super::*;
-
-        #[test]
-        fn extract_csv_input_supports_has_header_variants() {
-            let v1 = serde_json::json!({"source":"x","hasHeader":true});
-            let (s1, h1) = extract_csv_input(&v1).unwrap();
-            assert_eq!(s1, "x");
-            assert!(h1);
-
-            let v2 = serde_json::json!({"source":"y","has-header":false});
-            let (s2, h2) = extract_csv_input(&v2).unwrap();
-            assert_eq!(s2, "y");
-            assert!(!h2);
-        }
-
-        #[test]
-        fn extract_table_query_input_parses_rows_select_and_where() {
-            let v = serde_json::json!({
-                "rows": [["a","b"],["c","d"]],
-                "select": [1u32,0u32],
-                "where_contains": {"col": 0u32, "needle": "a"}
-            });
-            let (rows, sel, where_opt) = extract_table_query_input(&v).unwrap();
-            assert_eq!(rows.len(), 2);
-            assert_eq!(rows[0], vec!["a".to_string(), "b".to_string()]);
-            assert_eq!(sel, vec![1u32, 0u32]);
-            assert_eq!(where_opt, Some((0u32, "a".into())));
-        }
-    }
-
-    #[test]
-    fn derive_job_seed_is_stable_and_unique_per_env() {
-        let a1 = derive_job_seed("00000000-0000-4000-8000-000000000001", "env-a");
-        let a2 = derive_job_seed("00000000-0000-4000-8000-000000000001", "env-a");
-        let b = derive_job_seed("00000000-0000-4000-8000-000000000002", "env-a");
-        let c = derive_job_seed("00000000-0000-4000-8000-000000000001", "env-b");
-        assert_eq!(a1, a2, "seed must be deterministic for same (job, env)");
-        assert_ne!(a1, b, "seed must vary across job ids");
-        assert_ne!(a1, c, "seed must vary across env hashes");
-    }
 }
 
 #[cfg(not(feature = "wasm_compute"))]

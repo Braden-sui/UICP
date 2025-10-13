@@ -4,6 +4,8 @@ import { useAppStore } from '../state/app';
 import { createId } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { invoke } from '@tauri-apps/api/core';
+import { getComputeBridge } from '../lib/bridge/globals';
+import type { JobSpec } from '../compute/types';
 
 // Try to use Tauri dialog plugin if available; otherwise fail gracefully.
 const openDialog = async (opts: { multiple?: boolean }): Promise<string | null> => {
@@ -25,6 +27,17 @@ const ComputeDemoWindow = () => {
   const isOpen = useAppStore((s) => s.computeDemoOpen);
   const setOpen = useAppStore((s) => s.setComputeDemoOpen);
   const pushToast = useAppStore((s) => s.pushToast);
+  const copyToClipboard = useCallback(
+    async (value: string) => {
+      try {
+        await navigator.clipboard.writeText(value);
+        pushToast({ variant: 'success', message: `Copied ${value}` });
+      } catch (err) {
+        pushToast({ variant: 'error', message: `Copy failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [pushToast],
+  );
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<DemoResult | null>(null);
   const [lastJobId, setLastJobId] = useState<string | null>(null);
@@ -39,8 +52,8 @@ const ComputeDemoWindow = () => {
     setBusy(true);
     setLast(null);
     try {
-      const anyWin = window as any;
-      if (typeof anyWin.uicpComputeCall !== 'function') {
+      const computeCall = getComputeBridge();
+      if (typeof computeCall !== 'function') {
         pushToast({ variant: 'error', message: 'Tauri bridge not ready' });
         setLast({ ok: false, message: 'Bridge unavailable' });
         return;
@@ -48,7 +61,7 @@ const ComputeDemoWindow = () => {
       const csv = 'name,qty\nalpha,1\nbravo,2\ncharlie,3\n';
       const jobId = createId('job');
       setLastJobId(jobId);
-      await anyWin.uicpComputeCall({
+      const spec: JobSpec = {
         jobId,
         task: 'csv.parse@1.2.0',
         input: { source: csv, hasHeader: true },
@@ -58,7 +71,9 @@ const ComputeDemoWindow = () => {
         replayable: true,
         cache: 'readwrite',
         provenance: { envHash: 'dev' },
-      });
+        workspaceId: 'default',
+      };
+      await computeCall(spec);
       setLast({ ok: true, message: 'Submitted csv.parse@1.2.0 → /tables/demoCsv' });
     } catch (err) {
       setLast({ ok: false, message: (err as Error)?.message ?? String(err) });
@@ -72,8 +87,8 @@ const ComputeDemoWindow = () => {
     setBusy(true);
     setLast(null);
     try {
-      const anyWin = window as any;
-      if (typeof anyWin.uicpComputeCall !== 'function') {
+      const computeCall = getComputeBridge();
+      if (typeof computeCall !== 'function') {
         pushToast({ variant: 'error', message: 'Tauri bridge not ready' });
         setLast({ ok: false, message: 'Bridge unavailable' });
         return;
@@ -86,7 +101,7 @@ const ComputeDemoWindow = () => {
       ];
       const jobId = createId('job');
       setLastJobId(jobId);
-      await anyWin.uicpComputeCall({
+      const spec: JobSpec = {
         jobId,
         task: 'table.query@0.1.0',
         input: { rows, select: [0], where_contains: { col: 1, needle: 'bo' } },
@@ -96,7 +111,9 @@ const ComputeDemoWindow = () => {
         replayable: true,
         cache: 'readwrite',
         provenance: { envHash: 'dev' },
-      });
+        workspaceId: 'default',
+      };
+      await computeCall(spec);
       setLast({ ok: true, message: 'Submitted table.query@0.1.0 → /tables/demoQuery' });
     } catch (err) {
       setLast({ ok: false, message: (err as Error)?.message ?? String(err) });
@@ -110,15 +127,15 @@ const ComputeDemoWindow = () => {
     setBusy(true);
     setLast(null);
     try {
-      const anyWin = window as any;
-      if (typeof anyWin.uicpComputeCall !== 'function') {
+      const computeCall = getComputeBridge();
+      if (typeof computeCall !== 'function') {
         pushToast({ variant: 'error', message: 'Tauri bridge not ready' });
         setLast({ ok: false, message: 'Bridge unavailable' });
         return;
       }
       const jobId = createId('job');
       setLastJobId(jobId);
-      await anyWin.uicpComputeCall({
+      const spec: JobSpec = {
         jobId,
         task: 'csv.parse@1.2.0',
         input: { source: wsPath, hasHeader: true },
@@ -128,7 +145,9 @@ const ComputeDemoWindow = () => {
         replayable: true,
         cache: 'readwrite',
         provenance: { envHash: 'dev' },
-      });
+        workspaceId: 'default',
+      };
+      await computeCall(spec);
       setLast({ ok: true, message: `Submitted csv.parse from ${wsPath}` });
     } catch (err) {
       setLast({ ok: false, message: (err as Error)?.message ?? String(err) });
@@ -144,19 +163,19 @@ const ComputeDemoWindow = () => {
     } catch (err) {
       pushToast({ variant: 'error', message: `Open folder failed: ${(err as Error)?.message ?? String(err)}` });
     }
-  }, []);
+  }, [pushToast]);
 
   const importFileIntoWorkspace = useCallback(async () => {
     try {
       const selected = await openDialog({ multiple: false });
       if (!selected || Array.isArray(selected)) return;
-      const ws = (await invoke('copy_into_files', { srcPath: selected })) as string;
-      setWsPath(ws);
-      pushToast({ variant: 'success', message: `Imported to ${ws}` });
+      const path = String(selected);
+      setWsPath(path.startsWith('ws:') ? path : `ws:/files/${path.split(/[\\/]/).pop()}`);
     } catch (err) {
       pushToast({ variant: 'error', message: `Import failed: ${(err as Error)?.message ?? String(err)}` });
     }
-  }, [pushToast]);
+  }, [setWsPath, pushToast]);
+
 
   return (
     <DesktopWindow
@@ -271,7 +290,12 @@ const ComputeDemoWindow = () => {
               type="button"
               className="ml-auto rounded border border-slate-300 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:opacity-50"
               disabled={!lastJob || (lastJob.status !== 'running' && lastJob.status !== 'partial')}
-              onClick={() => lastJob && invoke('compute_cancel', { jobId: lastJob.jobId }).catch(() => {/* ignore */})}
+              onClick={() =>
+                lastJob &&
+                invoke('compute_cancel', { jobId: lastJob.jobId }).catch((err) => {
+                  pushToast({ variant: 'error', message: `Cancel failed: ${(err as Error)?.message ?? String(err)}` });
+                })
+              }
               title="Cancel current job"
             >
               Cancel
@@ -286,7 +310,7 @@ const ComputeDemoWindow = () => {
           <button
             type="button"
             className="ml-2 rounded px-1 text-[11px] underline decoration-dotted underline-offset-2 hover:text-slate-700"
-            onClick={async () => { try { await navigator.clipboard.writeText('/tables/demoCsv'); } catch {} }}
+            onClick={() => copyToClipboard('/tables/demoCsv')}
             title="Copy /tables/demoCsv"
           >
             /tables/demoCsv
@@ -295,7 +319,7 @@ const ComputeDemoWindow = () => {
           <button
             type="button"
             className="ml-1 rounded px-1 text-[11px] underline decoration-dotted underline-offset-2 hover:text-slate-700"
-            onClick={async () => { try { await navigator.clipboard.writeText('/tables/demoQuery'); } catch {} }}
+            onClick={() => copyToClipboard('/tables/demoQuery')}
             title="Copy /tables/demoQuery"
           >
             /tables/demoQuery

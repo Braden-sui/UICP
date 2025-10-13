@@ -1,41 +1,65 @@
-UICP Multi-Agent Architecture (v1)
+# UICP Architecture Overview
 
-Summary
-- Planner: outputs a plain-text outline (Summary, Steps, Risks, ActorHints, AppNotes). No JSON. No WIL.
-- Actor (GUI): emits WIL only, one command per line. No commentary. Stop on first `nop:`.
-- Orchestrator (Tauri/Rust): parses Planner text -> Plan (empty batch); parses Actor WIL -> typed ops; applies UI; enforces caps and telemetry. On actor `nop`, composes a single batched clarifier and returns `planner_fallback` with no batch.
-- App Agent (sidecar, v1.1): JSON-RPC over stdio to build/run components (deferred in v1.0).
+## High-Level
 
-Contracts
-- Planner: plain text sections; single batched clarifier turn (<=3 default, <=5 hard). Do not instruct Actor to ask.
-- Actor: WIL only, one line per op, enforce caps (50 default / 200 hard). Emit `nop:` and stop if blocked.
-- Orchestrator: WIL-only ingestion for Planner/Actor (no model JSON). On `nop:` route control back to Planner with reason; on other actor failures, surface error window.
+- Frontend: React + Tailwind running inside a Tauri webview.
+- Backend: Async Rust (Tokio) orchestrator handling:
+  - SQLite persistence and configuration (WAL, `synchronous=NORMAL`, 5s busy timeout)
+  - Ollama Cloud/local API access
+  - Tool/command queue and replay
+  - Event streaming to the frontend (Tauri emit)
+  - Optional Wasm compute plane (feature-gated)
+- Data Storage: Local SQLite under `~/Documents/UICP/`.
 
-WIL
-- Lexicon: `uicp/src/lib/wil/lexicon.ts` (exhaustive over OperationNameT).
-- Parser: `uicp/src/lib/wil/parse.ts` (templates, skip-words, slot post-process including size WxH).
-- Map/Validate: `uicp/src/lib/wil/map.ts` + `validateBatch`.
+## Backend Modules (Rust)
 
-Parsing & Streaming
-- Text collector: `uicp/src/lib/orchestrator/collectTextFromChannels.ts` (content channels + return events).
-- Batch parser: `uicp/src/lib/orchestrator/parseWILBatch.ts` (defence code blocks, caps, `nop:` early exit).
-- Streaming aggregator: `uicp/src/lib/uicp/stream.ts` (WIL-only path).
+- `uicp/src-tauri/src/main.rs` – Tauri commands, Ollama integration, DB setup, event streaming.
+- `uicp/src-tauri/src/core.rs` – shared paths (`DATA_DIR`, `FILES_DIR`), SQLite configuration (WAL, `busy_timeout`), app state.
+- `uicp/src-tauri/src/commands.rs` – compute commands wired for harness/tests.
+- `uicp/src-tauri/src/compute.rs` – Wasmtime host (WASI Preview 2), policy enforcement, partial/final event emission.
+- `uicp/src-tauri/src/compute_cache.rs` – workspace-scoped cache with canonical keys.
+- `uicp/src-tauri/src/registry.rs` – modules manifest, digest verification, install to user modules dir; `UICP_MODULES_DIR` override.
+- `uicp/src-tauri/src/policy.rs` – capability checks for compute jobs.
 
-Prompts
-- Planner: `uicp/src/prompts/planner.txt`
-- Actor: `uicp/src/prompts/actor.txt`
-- WIL guide: `uicp/src/prompts/wil.txt`
+## Commands (selected)
 
-Caps & Config
-- `uicp/src/lib/config.ts`: FOLLOWUP_MAX_*, ACTOR_BATCH_*, APP_* budgets; `VITE_WIL_ONLY=1` default.
+- Chat streaming: `chat_completion(requestId, request)` emits `ollama-completion` events; cancel via `cancel_chat(requestId)`.
+- Key management: `load_api_key`, `save_api_key`, `test_api_key` (Cloud: `GET /api/tags`, Local: `GET /v1/models`).
+- Persistence: `persist_command`, `get_workspace_commands`, `clear_workspace_commands`, `delete_window_commands`.
+- Compute: `compute_call`, `compute_cancel`, `clear_compute_cache` (feature-gated runtime).
 
-Tests
-- Orchestrator integration & fallbacks: `uicp/tests/unit/orchestrator*.test.ts`
-- Aggregator (WIL): `uicp/tests/unit/uicp.aggregator.test.ts`
-- WIL property-like tests: `uicp/tests/unit/wil/batch.property.test.ts`
-- Extra templates: `uicp/tests/unit/wil/templates.extra.test.ts`
+## Ollama Integration
 
-Security & Safety
-- No model JSON in Planner/Actor paths (OWASP LLM02 mitigation). All structure built locally.
-- Typed validation via Zod schemas; HTML sanitized gates; budgets enforced.
-- Clarifier caps: one batched turn (<=3 default, 5 hard), multiple-choice defaults where safe.
+- Base URL (cloud): <https://ollama.com> (runtime rejects `/v1` to prevent drift).
+- Base URL (local): <http://127.0.0.1:11434/v1>.
+- Endpoints: `POST /api/chat` (stream), `GET /api/tags` (validate key), local `GET /v1/models`.
+- Frontend subscribes to `ollama-completion` and parses deltas into planner/actor events.
+
+## Persistence & Replay
+
+- Commands are appended to `tool_call` and replayed in creation order on startup.
+- Window close removes commands for that window; workspace reset clears all persisted commands.
+
+## Environment Snapshot
+
+- A compact snapshot (agent flags, open windows, last trace; DOM summary by default) is prepended to planner/actor prompts.
+- Size budget: ~16 KB target (hard cap ~32 KB).
+
+## Interactivity (no inline JS)
+
+- Planner/Actor must not emit event APIs or inline JS. Interactivity via `data-command` and `data-state-*` attributes only.
+- Adapter validates and applies commands; sanitized HTML only.
+
+## Credentials
+
+- Preferred storage: OS keyring. On startup, `.env` (if present) is read and `OLLAMA_API_KEY` is migrated to the keyring.
+
+## Compute Plane (optional)
+
+- Feature-gated host (`wasm_compute`, `uicp_wasi_enable`), registry with digest verification, workspace-scoped cache.
+- Policy denies network by default; filesystem reads must be workspace-scoped (`ws:/files/**`).
+
+## Security & Safety
+
+- Fail loud; typed errors; structured logs; no silent drops.
+- SQLite in WAL; foreign keys enabled.

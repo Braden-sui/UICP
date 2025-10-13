@@ -1,28 +1,16 @@
 import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
-import type { StreamEvent } from './ollama';
-// JSON parsing removed for WIL-only mode
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
 import { createId } from '../utils';
-import { parseUtterance } from '../wil/parse';
-import { toOp } from '../wil/map';
 import { cfg } from '../config';
 import { collectTextFromChannels } from '../orchestrator/collectTextFromChannels';
 import { parseWILBatch } from '../orchestrator/parseWILBatch';
 import { composeClarifier } from '../orchestrator/clarifier';
 import { enforcePlannerCap } from '../orchestrator/plannerCap';
-import { composeClarifier } from '../orchestrator/clarifier';
+import { readNumberEnv } from '../env/values';
 
-const readEnvMs = (key: string, fallback: number): number => {
-  // Vite exposes env via import.meta.env; coerce string → number if valid
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = (import.meta as any)?.env?.[key] as unknown;
-  const n = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : undefined;
-  return Number.isFinite(n) && (n as number) > 0 ? (n as number) : fallback;
-};
-
-const DEFAULT_PLANNER_TIMEOUT_MS = readEnvMs('VITE_PLANNER_TIMEOUT_MS', 120_000);
-const DEFAULT_ACTOR_TIMEOUT_MS = readEnvMs('VITE_ACTOR_TIMEOUT_MS', 180_000);
+const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', 120_000, { min: 1_000 });
+const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', 180_000, { min: 1_000 });
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const toError = (input: unknown): Error => (input instanceof Error ? input : new Error(String(input)));
@@ -91,10 +79,20 @@ export async function planWithProfile(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const stream = client.streamIntent(intent, { profileKey: profile.key, extraSystem });
-      const { data, channelUsed } = await collectJsonFromChannels(stream, {
-        timeoutMs: options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS,
-      });
-      return { plan: validatePlan(data), channelUsed };
+      const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
+      if (!text || text.trim().length === 0) {
+        throw new Error('planner_empty');
+      }
+      const outline = parsePlannerOutline(text || intent);
+      return {
+        plan: validatePlan({
+          summary: outline.summary,
+          risks: outline.risks && outline.risks.length ? outline.risks : undefined,
+          batch: [],
+          actor_hints: outline.actorHints && outline.actorHints.length ? outline.actorHints : undefined,
+        }),
+        channelUsed: 'text',
+      };
     } catch (err) {
       lastErr = err;
       extraSystem = buildStructuredRetryMessage('emit_plan', err);
@@ -162,7 +160,7 @@ export async function actWithProfile(
   let extraSystem: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      if (cfg.wilOnly || profile.key === 'wil') {
+      if (cfg.wilOnly) {
         const stream = client.streamPlan(planJson, { profileKey: profile.key, extraSystem });
         const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
         if (!text || text.trim().length === 0) {
@@ -176,15 +174,15 @@ export async function actWithProfile(
       }
 
       const stream = client.streamPlan(planJson, { profileKey: profile.key, extraSystem });
-      const { data, channelUsed } = await collectJsonFromChannels<{ batch?: unknown }>(stream, {
-        timeoutMs: options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS,
-      });
-      const payload = Array.isArray(data) ? data : (data as { batch?: unknown })?.batch;
-      if (!Array.isArray(payload)) {
-        const summary = data && typeof data === 'object' ? `keys=${Object.keys(data as Record<string, unknown>).join(',')}` : String(data);
-        throw new Error(`emit_batch must return an object with a batch array. Received ${summary || 'empty payload'}.`);
+      const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
+      if (!text || text.trim().length === 0) {
+        throw new Error('actor_empty');
       }
-      return { batch: validateBatch(payload as unknown), channelUsed };
+      const items = parseWILBatch(text);
+      const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
+      if (nop) throw new Error(`actor_nop: ${nop.nop}`);
+      const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
+      return { batch: validateBatch(ops), channelUsed: 'text' };
     } catch (err) {
       lastErr = err;
       extraSystem = buildStructuredRetryMessage('emit_batch', err);
@@ -317,7 +315,7 @@ export async function runIntent(
         // Over caps: return with empty batch; UI surfaces reason
         batch = validateBatch([]);
       } else {
-        const clarifier = composeClarifier(questions as any);
+        const clarifier = composeClarifier(questions);
         try {
           const out2 = await planWithProfile(`${text}\n\n${clarifier}`, { profileKey: options?.plannerProfileKey });
           plan = out2.plan;

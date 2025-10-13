@@ -3,9 +3,15 @@
 Purpose: single source of truth for the compute plane (Rust host + TS frontend). Tracks what is done and what remains, with pointers to code. Treat this as an execution plan and review artifact.
 
 Legend
+
 - [x] complete and verified locally (builds/tests pass)
 - [ ] pending
 - [~] partial/in progress
+
+Last updated: 2025-10-13
+
+- JS/TS: npm run test → 114/114 passing; npm run lint → clean
+- Rust: integration suites present; see sections below and TEST_COVERAGE_SUMMARY.md
 
 -------------------------------------------------------------------------------
 
@@ -14,7 +20,9 @@ Legend
 - The agent works iteratively until each checklist item is delivered or explicitly descoped; there is no fixed "timebox" after which execution stops automatically.
 - Progress updates will call out blockers, additional context needed, or environment limitations as soon as they are discovered rather than waiting for a deadline.
 - If an explicit calendar deadline is required (for example, to align with a release cut), add it to the relevant checklist item so prioritization and sequencing can be adjusted.
+
 ## Identifier hygiene
+
 - WIT packages, interfaces, functions, and fields use kebab-case (lowercase words separated by single hyphens). Examples: `uicp:host@1.0.0`, `uicp:task-csv-parse@1.2.0`, `has-header`.
 - Pin WIT import versions explicitly (e.g., `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`).
 - Cargo `package.metadata.component` sticks to cargo-component supported keys (`world`, `wit-path`).
@@ -179,8 +187,11 @@ Legend
     - Extend `scripts/verify-modules.mjs` to enforce signature/digest verification in CI (`STRICT_MODULES_VERIFY=1`) and add a regression test that loads a module via the host and exercises a smoke input.
     - Include sample input/output fixtures so documentation and tests can validate module behavior deterministically.
 
-- [ ] Mandatory module signatures in release
+- [~] Mandatory module signatures in release
   - AC: With `STRICT_MODULES_VERIFY=1`, unsigned or mismatched-digest modules refuse to load; CI release job runs with this flag.
+  - Status: Partial
+    - Enforced at load-path: `registry::find_module` requires a valid Ed25519 signature when `STRICT_MODULES_VERIFY` is truthy, using `UICP_MODULES_PUBKEY` (base64 or hex) for verification. Unsigned or invalid signatures fail fast; digest mismatches already fail via `verify_digest`.
+    - Next: wire CI release job with `STRICT_MODULES_VERIFY=1` and `UICP_MODULES_PUBKEY` so unsigned artifacts are rejected automatically.
 
 - [ ] Component feature preflight
   - AC: Before instantiation, host inspects component metadata and rejects unsupported features with a precise error code and message.
@@ -225,8 +236,8 @@ Legend
 
   - [~] Logs/trace capture
     - Implemented: `wasi:logging/logging` bridged to structured `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream:"wasi-logging", level, context, tick, bytesLen, previewB64, truncated }`. Per-job byte budgets and rate limits applied. Mirrored as `debug-log` with `compute_guest_log` for dev visibility.
-    - UI: DevtoolsComputePanel renders a bounded rolling log with jobId/level filters and a Clear button (via `ui-debug-log` bus). LogsPanel shows a larger view. Tests cover panel ingestion, filtering, and clearing.
-    - Next: add an integration test with a guest component invoking `wasi:logging` and assert UI entries; ensure memory caps enforced.
+  - UI: DevtoolsComputePanel renders a bounded rolling log with jobId/level filters and a Clear button (via `ui-debug-log` bus). LogsPanel shows a larger view. Tests cover panel ingestion, filtering, and clearing.
+  - Next: add an integration test with a guest component invoking `wasi:logging` and assert UI entries; ensure memory caps enforced.
 
 -------------------------------------------------------------------------------
 
@@ -238,6 +249,7 @@ Legend
   - `compute-ci` compiles the host with `wasm_compute,uicp_wasi_enable` and runs `cargo test` for Rust, plus TS unit tests (`.github/workflows/compute-ci.yml`).
   - `Regenerate WIT bindings` runs `npm run gen:io` and fails when generated bindings drift from checked-in WIT definitions.
   - Added metadata checks for `components/log.test` to guard interface drift. Next: integrate Wasm component build smoke.
+  - JS/TS unit suite green locally (114 tests). Critical adapter/LLM/UI tests listed in section 11.
 
   - [ ] E2E smoke for compute
     - Add a CI-friendly Playwright job (Linux) that installs the bundled modules, starts the Tauri app in `--headless` or harness mode, submits a known job, and asserts final success/metrics/caching (pairs with the harness item above).
@@ -290,7 +302,40 @@ Legend
 - Tests: `uicp/tests/unit/compute.store.test.ts`, Rust unit tests in `compute.rs`, integration suite under `uicp/src-tauri/tests/integration_compute/*`
 - Work-in-progress WIT: `uicp/src-tauri/wit/command.wit`, `docs/wit/host/world.wit`
 
+-------------------------------------------------------------------------------
 
+## 11) Frontend (TS) Validation — Backed by Tests
+
+- [x] Replay ordering and window lifecycle
+  - Guarantees destroy-before-create for same window id; DOM ops apply after create.
+  - Tests: `uicp/tests/unit/adapter.replay.test.ts:1`
+
+- [x] Queue cancel short-circuit
+  - Applies `txn.cancel` batch immediately; clears queued work.
+  - Tests: `uicp/src/lib/uicp/__tests__/queue-cancel.test.ts:1`
+
+- [x] Data-command JSON safety and artifact cleanup
+  - Recovers misquoted JSON in `data-command`; trims stray JSON tokens from labels; removes bracket-artifact text nodes.
+  - Tests: `uicp/tests/unit/cleanup.test.ts:1`
+
+- [x] WIL lexicon + parse/map contract
+  - Templates parse and map to typed ops (e.g., `api.call` yields `url`/`method`).
+  - Tests: `uicp/tests/unit/wil/lexicon_and_parse.test.ts:1`, `uicp/src/lib/wil/templates.extra.test.ts` (where present)
+
+- [x] LLM streaming: event extraction and cancel
+  - Extracts JSON/text deltas and tool-calls; aborts active stream on cancel.
+  - Tests: `uicp/tests/unit/ollama.extract.test.ts:1`, `uicp/tests/unit/ollama.cancel.test.ts:1`
+
+- [x] Logs panel ingest/filter/clear (UI observability)
+  - DevtoolsComputePanel processes `ui-debug-log`; supports filters and clear.
+  - Tests: `uicp/tests/unit/devtools.compute.panel.test.tsx:1`
+
+- [x] Orchestrator fallback
+  - Falls back to actor-only path when planner fails; validates error surfaces.
+  - Tests: `uicp/tests/unit/orchestrator.fallback.test.ts:1`, `uicp/tests/unit/orchestrator.timeout.test.ts:1`
+
+Notes
+- These tests run in CI via `compute-ci.yml` (JS/TS unit stage). Rust integration tests are covered in Section 7 and TEST_COVERAGE_SUMMARY.md.
 
 
 

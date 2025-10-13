@@ -44,6 +44,7 @@ VITE_MOCK_MODE=true
 Notes
 - When `USE_DIRECT_CLOUD=1`, Cloud requests go to `https://ollama.com/api/chat` with `Authorization: Bearer <key>`.
 - Local offload uses `http://127.0.0.1:11434/v1/chat/completions` and requires a local daemon.
+ - Preferred storage for `OLLAMA_API_KEY` is the OS keyring. If you place it in `.env` for convenience, the app will read it on startup and migrate it into the keyring automatically.
 
 ## Run
 
@@ -114,6 +115,11 @@ npm run typecheck
 npm run test
 # optional: npm run test:e2e (requires Playwright browsers and dev server)
 ```
+
+CI notes
+- On Linux CI, we install with `npm ci --ignore-scripts --no-optional` to avoid platform-specific optional binaries and postinstall hooks.
+- The `postinstall` script (`uicp/scripts/postinstall.cjs`) only adjusts Rollup's native binding on Windows; running `npm run postinstall` on Linux/macOS is a no-op and safe.
+- Markdown link checks are configured via `.lychee.toml` at the repo root and run in CI.
 
 ## Quick verification
 

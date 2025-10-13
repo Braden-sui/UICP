@@ -21,7 +21,11 @@ import { replayWorkspace } from './adapter';
 
 // Provide a minimal window object to satisfy any optional window checks in adapter
 beforeEach(() => {
-  (globalThis as any).window = (globalThis as any).window || {};
+  // WHY: Some adapter code may probe for `window`. In Node/Vitest this can be
+  // absent, so we provide a minimal stub to satisfy those optional checks.
+  // INVARIANT: We do not rely on any real DOM APIs here; only existence.
+  const g = globalThis as typeof globalThis & { window?: object };
+  g.window = g.window ?? {};
 });
 
 describe('replayWorkspace de-duplicates identical ops', () => {

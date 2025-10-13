@@ -5,7 +5,7 @@ Master Checklist
 
 - RFC: docs/rfcs/0001-wasm-only-compute-plane.md
 - WIT: docs/wit/host/world.wit
-- Task example WIT: components/csv.parse/wit/world.wit
+ - Task example WIT: uicp/components/csv.parse/wit/world.wit
 - Error taxonomy: docs/compute/error-taxonomy.md
 - Host runtime (implemented): uicp/src-tauri/src/compute.rs
 - Cache module (implemented): uicp/src-tauri/src/compute_cache.rs

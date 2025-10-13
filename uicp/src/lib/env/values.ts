@@ -1,4 +1,8 @@
-type EnvKey = keyof ImportMetaEnv & string;
+/// <reference types="vite/client" />
+
+// WHY: Avoid referencing global `ImportMetaEnv` in type space to satisfy eslint no-undef across tools.
+// SAFETY: ImportMetaEnv includes an index signature; using `string` preserves behavior and compatibility.
+type EnvKey = string;
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);

@@ -12,10 +12,18 @@
 function isBracketArtifact(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  // Only punctuation and optional commas/spaces
-  if (/^["'\}\]\)\s,]+$/.test(t)) return true;
-  // Common tail from broken JSON-in-attribute (e.g., \"'}}])
-  if (/(\"|['"])\s*\}\s*\}\s*\]\s*\)?\s*$/.test(t)) return true;
+  // WHY: Avoid brittle regex escaping in char classes; check per-character instead.
+  // INVARIANT: Only whitespace and characters in the allowed set count as artifacts.
+  const allowed = new Set([',', '"', "'", ')', '}', ']']);
+  let onlyArtifacts = true;
+  for (const ch of t) {
+    // whisker: treat any whitespace as allowed
+    if (ch.trim().length === 0) continue;
+    if (!allowed.has(ch)) { onlyArtifacts = false; break; }
+  }
+  if (onlyArtifacts) return true;
+  // Common tail from broken JSON-in-attribute (e.g., "'}}])"
+  if (/(?:["'])\s*\}\s*\}\s*\]\s*\)?\s*$/.test(t)) return true;
   return false;
 }
 
@@ -143,11 +151,23 @@ export function tryRecoverJsonFromAttribute(val: string | null): string | null {
 function sanitizeCommandLabelText(node: Node) {
   if (node.nodeType !== Node.TEXT_NODE) return;
   const text = node.textContent ?? '';
-  // If the label contains obvious JSON structure, trim at the first suspicious token.
-  const idx = text.search(/[\[{].*\}|\"\}\}\]\]?/);
-  if (idx > 0) {
-    node.textContent = text.slice(0, idx).trim();
+  // WHY: Trim labels that accidentally include obvious JSON fragments.
+  // Avoid complex regex with excessive escapes; compute earliest suspicious index.
+  const candidates: number[] = [];
+  const iBracket = text.indexOf('[');
+  if (iBracket >= 0 && (text.indexOf(']', iBracket + 1) >= 0 || text.indexOf('}', iBracket + 1) >= 0)) {
+    candidates.push(iBracket);
   }
+  const iBrace = text.indexOf('{');
+  if (iBrace >= 0 && text.indexOf('}', iBrace + 1) >= 0) {
+    candidates.push(iBrace);
+  }
+  const iTail = text.indexOf("\"}}]");
+  if (iTail >= 0) {
+    candidates.push(iTail);
+  }
+  const idx = candidates.length ? Math.min(...candidates) : -1;
+  if (idx > 0) node.textContent = text.slice(0, idx).trim();
 }
 
 function cleanAroundElement(el: Element) {

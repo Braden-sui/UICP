@@ -19,7 +19,7 @@ Key Files
 - Orchestrator: `uicp/src/lib/llm/orchestrator.ts`
 - Aggregator: `uicp/src/lib/uicp/stream.ts`
 - Config/caps: `uicp/src/lib/config.ts`
-- Architecture: `docs/ARCHITECTURE.md`
+- Architecture: `docs/architecture.md`
 
 Decisions
 - Planner/Actor WIL is authoritative; JSON is disabled in these paths.
@@ -101,7 +101,7 @@ Security & Policy
 - [ ] Verify sanitize gates remain enforced (dom.* HTML) and keep snapshots.
 
 Docs
-- [ ] Update README to link to ARCHITECTURE.md and WIL_QUICKSTART.md.
+- [ ] Update README to link to architecture.md and WIL_QUICKSTART.md.
 - [ ] Add a short “How to add a new WIL op” guide (edit lexicon, add tests, examples).
 - [ ] Record clarifier UX and caps in Planner prompt docs.
 

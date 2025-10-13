@@ -34,6 +34,7 @@ use tokio_stream::StreamExt;
 mod commands;
 mod compute;
 mod compute_cache;
+mod compute_input;
 mod policy;
 mod registry;
 
@@ -501,7 +502,7 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
     let id = cmd.id.clone();
     let tool = cmd.tool.clone();
     let args_json = serde_json::to_string(&cmd.args).map_err(|e| format!("{e}"))?;
-    let started = Instant::now();
+    let _started = Instant::now();
     let res = state
         .db_rw
         .call(move |conn| -> tokio_rusqlite::Result<()> {
@@ -531,7 +532,7 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
 async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<CommandRequest>, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("load_commands").entered();
-    let started = Instant::now();
+    let _started = Instant::now();
     let res = state
         .db_ro
         .call(|conn| -> tokio_rusqlite::Result<Vec<CommandRequest>> {
@@ -573,7 +574,8 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
 async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("clear_commands").entered();
-    let started = Instant::now();
+    #[cfg(feature = "otel_spans")]
+    let _started = Instant::now(); // WHY: Silence dead_code when spans disabled; still track duration where enabled.
     let res = state
         .db_rw
         .call(|conn| -> tokio_rusqlite::Result<()> {
@@ -587,7 +589,7 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
         .await;
     #[cfg(feature = "otel_spans")]
     {
-        let ms = started.elapsed().as_millis() as i64;
+        let ms = _started.elapsed().as_millis() as i64;
         match &res {
             Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "commands cleared"),
             Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands clear failed"),
@@ -1876,8 +1878,9 @@ fn derive_size_token(width: f64, height: f64) -> String {
     }
 }
 
-pub(crate) fn emit_or_log<T>(app_handle: &tauri::AppHandle, event: &str, payload: T)
+pub(crate) fn emit_or_log<R, T>(app_handle: &tauri::AppHandle<R>, event: &str, payload: T)
 where
+    R: tauri::Runtime,
     T: serde::Serialize + Clone,
 {
     if let Err(err) = app_handle.emit(event, payload) {
@@ -1941,8 +1944,8 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             // Best-effort: run optimize and compact WAL periodically
             #[cfg(feature = "otel_spans")]
             let span = tracing::info_span!("db_maintenance").entered();
-            let started = Instant::now();
-            let res = state
+            let _started = Instant::now();
+            let _res = state
                 .db_rw
                 .call(
                     |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
@@ -2144,6 +2147,8 @@ pub mod test_support {
 /// Verify that all module entries listed in the manifest exist and match their digests.
 #[tauri::command]
 async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("verify_modules").entered();
     use crate::registry::{load_manifest, modules_dir};
     let dir = modules_dir(&app);
     let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
@@ -2234,6 +2239,8 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 /// Copy a host file into the workspace files directory and return its ws:/ path.
 #[tauri::command]
 async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<String, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("copy_into_files").entered();
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -2287,6 +2294,8 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
 
 #[tauri::command]
 async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("get_modules_info").entered();
     let dir = crate::registry::modules_dir(&app);
     let manifest = dir.join("manifest.json");
     let exists = manifest.exists();
@@ -2308,6 +2317,8 @@ async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, St
 
 #[tauri::command]
 async fn open_path(path: String) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("open_path").entered();
     use std::process::Command;
     let p = std::path::Path::new(&path);
     if !p.exists() {
@@ -2357,6 +2368,8 @@ async fn health_quick_check(app: tauri::AppHandle) -> Result<serde_json::Value, 
 }
 
 async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<serde_json::Value> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("health_quick_check").entered();
     let state: State<'_, AppState> = app.state();
     let status = state
         .db_ro
@@ -2388,6 +2401,8 @@ async fn clear_compute_cache(
     app: tauri::AppHandle,
     workspace_id: Option<String>,
 ) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("clear_compute_cache", workspace = %workspace_id.as_deref().unwrap_or("default")).entered();
     let ws = workspace_id.unwrap_or_else(|| "default".into());
     let state: State<'_, AppState> = app.state();
     state
@@ -2406,11 +2421,15 @@ async fn clear_compute_cache(
 
 #[tauri::command]
 async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("save_checkpoint", hash_len = hash.len()).entered();
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
         return Ok(());
     }
-    state
+    #[cfg(feature = "otel_spans")]
+    let _started = Instant::now(); // WHY: Same instrumentation guard as elsewhere; avoid unused warnings sans spans.
+    let res = state
         .db_rw
         .call(move |conn| -> tokio_rusqlite::Result<()> {
             conn.execute(
@@ -2426,8 +2445,16 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
             .map(|_| ())
             .map_err(tokio_rusqlite::Error::from)
         })
-        .await
-        .map_err(|e| format!("{e:?}"))
+        .await;
+    #[cfg(feature = "otel_spans")]
+    {
+        let ms = _started.elapsed().as_millis() as i64;
+        match &res {
+            Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "checkpoint saved"),
+            Err(e) => tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "checkpoint save failed"),
+        }
+    }
+    res.map_err(|e| format!("{e:?}"))
 }
 
 #[tauri::command]
@@ -2436,6 +2463,13 @@ async fn determinism_probe(
     n: u32,
     recomputed_hash: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!(
+        "determinism_probe",
+        n = n,
+        has_hash = recomputed_hash.is_some()
+    )
+    .entered();
     let state: State<'_, AppState> = app.state();
     let limit = n as i64;
     let samples = state
@@ -2463,11 +2497,15 @@ async fn determinism_probe(
     if drift {
         enter_safe_mode(&app, "DRIFT").await;
     }
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(target = "uicp", drift = drift, sampled = samples.len(), "determinism probe result");
     Ok(serde_json::json!({ "drift": drift, "sampled": samples.len() }))
 }
 
 #[tauri::command]
 async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("recovery_action", kind = %kind).entered();
     let emit = |app: &tauri::AppHandle, action: &str, outcome: &str, payload: serde_json::Value| {
         let _ = app.emit(
             "replay-issue",
@@ -2576,6 +2614,8 @@ async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), Stri
 
 #[tauri::command]
 async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("recovery_auto").entered();
     let mut attempts: Vec<serde_json::Value> = Vec::new();
     let mut status: &str = "failed";
     let mut failed_reason: Option<String> = None;
@@ -2636,6 +2676,8 @@ async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
 
 #[tauri::command]
 async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("recovery_export").entered();
     let state: State<'_, AppState> = app.state();
     let logs_dir = LOGS_DIR.clone();
     let integrity = reindex_and_integrity(&app).await.unwrap_or(false);
@@ -2672,6 +2714,8 @@ async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, Str
 }
 
 async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("reindex_and_integrity").entered();
     let state: State<'_, AppState> = app.state();
     let status = state
         .db_rw
@@ -2694,6 +2738,8 @@ async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
 }
 
 async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64>> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("last_checkpoint_ts").entered();
     let state: State<'_, AppState> = app.state();
     let ts = state
         .db_rw
@@ -2714,6 +2760,8 @@ async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64
 }
 
 async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("compact_log_after_last_checkpoint").entered();
     let ts_opt = last_checkpoint_ts(app).await?;
     if ts_opt.is_none() {
         return Ok(0);
@@ -2735,6 +2783,8 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
 }
 
 async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("rollback_to_last_checkpoint").entered();
     let ts_opt = last_checkpoint_ts(app).await?;
     if ts_opt.is_none() {
         return Ok(0);

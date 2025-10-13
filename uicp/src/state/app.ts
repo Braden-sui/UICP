@@ -7,6 +7,7 @@ import {
   type ActorProfileKey,
 } from '../lib/llm/profiles';
 import { createId } from '../lib/utils';
+import { readBooleanEnv } from '../lib/env/values';
 
 // AppState keeps cross-cutting UI control flags so DockChat, modal flows, and transport logic stay in sync.
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -99,12 +100,7 @@ const resolveDefaultAgentMode = (): AgentMode => {
   const env = import.meta.env;
   // Keep unit tests deterministic by forcing mock mode during vitest runs.
   if (env?.MODE === 'test') return 'mock';
-  const flag = env?.VITE_MOCK_MODE;
-  if (typeof flag === 'string') {
-    const normalized = flag.toLowerCase();
-    if (normalized === 'true' || normalized === '1') return 'mock';
-    if (normalized === 'false' || normalized === '0') return 'live';
-  }
+  if (readBooleanEnv('VITE_MOCK_MODE', false)) return 'mock';
   return 'live';
 };
 
@@ -173,17 +169,11 @@ export type AppState = {
   setDevtoolsAssumedOpen: (value: boolean) => void;
 };
 
-const getEnvFlag = (value: string | boolean | undefined, fallback: boolean) => {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') return value !== 'false';
-  return fallback;
-};
-
 export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
       connectionStatus: 'disconnected',
-      devMode: getEnvFlag(import.meta.env.VITE_DEV_MODE as unknown as string, true),
+      devMode: readBooleanEnv('VITE_DEV_MODE', true),
       fullControl: false,
       fullControlLocked: false,
       chatOpen: false,

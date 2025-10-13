@@ -16,6 +16,8 @@ This index lists the recommended reading order for onboarding and executing work
 - docs/model-usage.md
   - Current request/response expectations for DeepSeek/Qwen/Kimi.
   - Cloud vs local endpoints and streaming.
+- docs/ollama cloud vs. turbo.md
+  - Cloud/native `/api/*` vs local `/v1/*` usage, examples, and auth.
 - docs/Model Formatting Req.md
   - JSON-only planner/actor contract, sample payloads, and validation limits.
 
@@ -30,8 +32,10 @@ This index lists the recommended reading order for onboarding and executing work
 - docs/compute/test-plan.md
 
 ## Source of Truth (Status)
-- docs/MVP checklist.md
-  - Use this as the single source of truth for what is done/not done.
+- docs/STATUS.md (snapshot)
+  - One-page current status (Done/In Progress/Next/Risks/CI health).
+- docs/MVP checklist.md (authoritative)
+  - Detailed acceptance criteria and execution plan.
 
 ## Legacy (Deprecated)
 - docs/legacy/Model Formatting (Harmony).md

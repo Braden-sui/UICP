@@ -57,6 +57,12 @@ export const OperationName = z.enum([
   'txn.cancel',
 ]);
 
+type DomHtmlOp = 'dom.set' | 'dom.replace' | 'dom.append';
+
+function isDomHtmlOperation(env: Envelope): env is Envelope<DomHtmlOp> {
+  return env.op === 'dom.set' || env.op === 'dom.replace' || env.op === 'dom.append';
+}
+
 const WindowCreateParams = z.object({
   id: z.string().optional(),
   title: z.string().min(1),
@@ -273,8 +279,8 @@ export const batchSchema = z
     try {
       let totalHtml = 0;
       for (const env of batch) {
-        if (env.op === 'dom.set' || env.op === 'dom.replace' || env.op === 'dom.append') {
-          const h = (env.params as any)?.html;
+        if (isDomHtmlOperation(env)) {
+          const h = env.params.html;
           if (typeof h === 'string') totalHtml += h.length;
         }
       }

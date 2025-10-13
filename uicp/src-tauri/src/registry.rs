@@ -17,6 +17,7 @@ use base64::engine::general_purpose::{
 };
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use anyhow::{bail, Result as AnyResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleEntry {
@@ -109,11 +110,12 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     // Attempt a best-effort repair of invalid digests in a pre-existing manifest
     // using either the bundled manifest (preferred) or by hashing existing files.
     if manifest_path.exists() {
-        let before = std::fs::read_to_string(&manifest_path).ok();
+        #[cfg(feature = "otel_spans")]
+        let before_snapshot = std::fs::read_to_string(&manifest_path).ok();
         let _ = try_repair_manifest(&target, &bundled);
         #[cfg(feature = "otel_spans")]
         {
-            if let (Some(before), Ok(after)) = (before, std::fs::read_to_string(&manifest_path)) {
+            if let (Some(before), Ok(after)) = (before_snapshot, std::fs::read_to_string(&manifest_path)) {
                 if before != after {
                     tracing::info!(target = "uicp", path = %manifest_path.display(), "repaired manifest digests");
                 }
@@ -364,14 +366,52 @@ pub fn find_module<R: Runtime>(
     let dir = resolve_modules_dir(app);
     let path = dir.join(&entry.filename);
     match verify_digest(&path, &entry.digest_sha256) {
-        Ok(true) => Ok(Some(ModuleRef {
-            entry: entry.clone(),
-            path,
-        })),
+        Ok(true) => {
+            // Strict mode: require a valid signature using UICP_MODULES_PUBKEY
+            enforce_strict_signature(&entry)?;
+            Ok(Some(ModuleRef {
+                entry: entry.clone(),
+                path,
+            }))
+        }
         Ok(false) => anyhow::bail!("digest mismatch for {}", entry.filename),
         Err(err) => Err(err.context("verify module digest")),
     }
 }
+
+fn strict_verify_enabled() -> bool {
+    std::env::var("STRICT_MODULES_VERIFY")
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn require_pubkey_from_env() -> AnyResult<[u8; 32]> {
+    let raw = std::env::var("UICP_MODULES_PUBKEY")
+        .map_err(|_| anyhow::anyhow!("STRICT_MODULES_VERIFY requires UICP_MODULES_PUBKEY"))?;
+    let b64 = BASE64_STANDARD.decode(raw.as_bytes()).ok();
+    let hexed = if b64.is_none() { hex::decode(&raw).ok() } else { None };
+    let bytes = b64.or(hexed).ok_or_else(|| anyhow::anyhow!("invalid UICP_MODULES_PUBKEY (expected base64 or hex)"))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("UICP_MODULES_PUBKEY must be 32 bytes (Ed25519)"))?;
+    Ok(arr)
+}
+
+fn enforce_strict_signature(entry: &ModuleEntry) -> AnyResult<()> {
+    if !strict_verify_enabled() {
+        return Ok(());
+    }
+    let pk = require_pubkey_from_env()?;
+    let sig_status = verify_entry_signature(entry, &pk)?;
+    match sig_status {
+        SignatureStatus::Verified => Ok(()),
+        SignatureStatus::Missing => bail!("STRICT_MODULES_VERIFY: signature missing for {}@{}", entry.task, entry.version),
+        SignatureStatus::Invalid => bail!("STRICT_MODULES_VERIFY: signature invalid for {}@{}", entry.task, entry.version),
+    }
+}
+
 
 pub fn verify_digest(path: &Path, expected_hex: &str) -> Result<bool> {
     let meta = fs::symlink_metadata(path)
@@ -437,6 +477,83 @@ pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Resul
     match vk.verify(&message, &sig) {
         Ok(_) => Ok(SignatureStatus::Verified),
         Err(_) => Ok(SignatureStatus::Invalid),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::Signer; // WHY: bring Signer trait in scope for SigningKey.sign during tests.
+    use once_cell::sync::Lazy;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    fn make_entry(task: &str, version: &str, digest_hex: &str, sig_b64: Option<String>) -> ModuleEntry {
+        ModuleEntry {
+            task: task.to_string(),
+            version: version.to_string(),
+            filename: format!("{task}@{version}.wasm"),
+            digest_sha256: digest_hex.to_string(),
+            signature: sig_b64,
+        }
+    }
+
+    #[test]
+    fn strict_requires_pubkey() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("STRICT_MODULES_VERIFY", "1");
+        std::env::remove_var("UICP_MODULES_PUBKEY");
+        let entry = make_entry("task", "1.0.0", "00", None);
+        let err = enforce_strict_signature(&entry).unwrap_err();
+        assert!(format!("{err}").contains("UICP_MODULES_PUBKEY"));
+        std::env::remove_var("STRICT_MODULES_VERIFY");
+    }
+
+    #[test]
+    fn strict_rejects_missing_signature() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("STRICT_MODULES_VERIFY", "true");
+        // Prepare pubkey
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let vk = sk.verifying_key();
+        std::env::set_var("UICP_MODULES_PUBKEY", BASE64_STANDARD.encode(vk.to_bytes()));
+        let entry = make_entry("task-x", "1.2.3", "aa", None);
+        let err = enforce_strict_signature(&entry).unwrap_err();
+        assert!(format!("{err}").contains("signature missing"));
+        std::env::remove_var("STRICT_MODULES_VERIFY");
+        std::env::remove_var("UICP_MODULES_PUBKEY");
+    }
+
+    #[test]
+    fn strict_accepts_valid_signature() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("STRICT_MODULES_VERIFY", "on");
+        let sk = SigningKey::from_bytes(&[9u8; 32]);
+        let vk = sk.verifying_key();
+        std::env::set_var("UICP_MODULES_PUBKEY", BASE64_STANDARD.encode(vk.to_bytes()));
+
+        // Build message per verify_entry_signature
+        let digest_hex = "ab".repeat(32); // 32 bytes
+        let digest_bytes = hex::decode(&digest_hex).unwrap();
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"UICP-MODULE\x00");
+        msg.extend_from_slice(b"task=");
+        msg.extend_from_slice(b"task-y");
+        msg.push(0);
+        msg.extend_from_slice(b"version=");
+        msg.extend_from_slice(b"2.0.0");
+        msg.push(0);
+        msg.extend_from_slice(b"sha256=");
+        msg.extend_from_slice(&digest_bytes);
+        let sig = sk.sign(&msg);
+        let sig_b64 = BASE64_STANDARD.encode(sig.to_bytes());
+        let entry = make_entry("task-y", "2.0.0", &digest_hex, Some(sig_b64));
+
+        enforce_strict_signature(&entry).expect("strict ok");
+        std::env::remove_var("STRICT_MODULES_VERIFY");
+        std::env::remove_var("UICP_MODULES_PUBKEY");
     }
 }
 
@@ -677,7 +794,7 @@ pub enum SignatureStatus {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_signature {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha256};

@@ -9,40 +9,193 @@ import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
 import { createId } from '../../lib/utils';
 import { ComputeError } from '../compute/errors';
-import { asStatePath } from '../uicp/schemas';
+import { asStatePath, type Batch } from '../uicp/schemas';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
 
+const getBridgeWindow = () => (typeof window === 'undefined' ? undefined : window);
+
+type OllamaEvent = {
+  done?: boolean;
+  delta?: unknown;
+  kind?: string;
+  error?: {
+    status?: number;
+    code?: string;
+    detail?: string;
+    requestId?: string;
+    retryAfterMs?: number;
+  };
+};
+
 export async function initializeTauriBridge() {
   if (started) return;
 
+  const bridgeWindow = getBridgeWindow();
+  if (!bridgeWindow) return;
+
+  // Frontend debug event emitter for LogsPanel
+  const emitUiDebug = (event: string, extra?: Record<string, unknown>) => {
+    try {
+      bridgeWindow.dispatchEvent(
+        new CustomEvent('ui-debug-log', {
+          detail: { ts: Date.now(), event, ...(extra || {}) },
+        }),
+      );
+    } catch {
+      // ignore
+    }
+  };
+
+  // Compute plane: partials + finals support
+  const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+  let lastPendingPrune = 0;
+  const pendingBinds = new Map<string, { task: string; binds: { toStatePath: string }[]; ts: number }>();
+  const prunePending = () => {
+    const now = Date.now();
+    // Avoid frequent scans
+    if (now - lastPendingPrune < 60_000) return; // 1 minute
+    lastPendingPrune = now;
+    for (const [id, rec] of pendingBinds.entries()) {
+      if (now - rec.ts > PENDING_TTL_MS) {
+        const ageMs = now - rec.ts;
+        if (import.meta.env.DEV) {
+          console.debug('[compute.pending] pruning orphan', { jobId: id, ageMs });
+        }
+        emitUiDebug('compute_pending_prune', { jobId: id, ageMs });
+        pendingBinds.delete(id);
+      }
+    }
+  };
+
+  function applyFinalEvent(final: ComputeFinalEvent) {
+    const entry = pendingBinds.get(final.jobId);
+    if (!final.ok) {
+      const toast = formatComputeErrorToast(final);
+      useAppStore.getState().pushToast(toast);
+      useChatStore.getState().pushSystemMessage(toast.message, 'compute_final_error');
+      const m = final.metrics;
+      useComputeStore.getState().markFinal(
+        final.jobId,
+        false,
+        {
+          durationMs: m?.durationMs,
+          fuelUsed: m?.fuelUsed,
+          memPeakMb: m?.memPeakMb,
+          cacheHit: m?.cacheHit,
+          deadlineMs: m?.deadlineMs,
+          remainingMsAtFinish: m?.remainingMsAtFinish,
+          logCount: m?.logCount,
+          partialFrames: m?.partialFrames,
+          invalidPartialsDropped: m?.invalidPartialsDropped,
+          logThrottleWaits: m?.logThrottleWaits,
+          loggerThrottleWaits: m?.loggerThrottleWaits,
+          partialThrottleWaits: m?.partialThrottleWaits,
+        },
+        final.message,
+        final.code,
+      );
+      pendingBinds.delete(final.jobId);
+      return;
+    }
+    if (entry && entry.binds && entry.binds.length) {
+      const batch = entry.binds.map((b) => ({
+        op: 'state.set',
+        params: {
+          scope: 'workspace',
+          key: asStatePath(b.toStatePath),
+          value: final.output,
+        },
+      } as const));
+      enqueueBatch(batch).then((outcome) => {
+        if (!outcome.success) {
+          console.error('Failed to apply compute bindings', outcome.errors);
+          useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
+        }
+      });
+    }
+    const meta = final.metrics;
+    useComputeStore.getState().markFinal(final.jobId, true, {
+      durationMs: meta?.durationMs,
+      fuelUsed: meta?.fuelUsed,
+      memPeakMb: meta?.memPeakMb,
+      cacheHit: meta?.cacheHit,
+      deadlineMs: meta?.deadlineMs,
+      remainingMsAtFinish: meta?.remainingMsAtFinish,
+      logCount: meta?.logCount,
+      partialFrames: meta?.partialFrames,
+      invalidPartialsDropped: meta?.invalidPartialsDropped,
+      logThrottleWaits: meta?.logThrottleWaits,
+      loggerThrottleWaits: meta?.loggerThrottleWaits,
+      partialThrottleWaits: meta?.partialThrottleWaits,
+    });
+    pendingBinds.delete(final.jobId);
+  }
+
+  function setupTestComputeFallback(
+    targetWindow: Window,
+    computeFn: (spec: JobSpec) => Promise<unknown>,
+    cancelFn?: (jobId: string) => void,
+  ) {
+    targetWindow.uicpComputeCall = async (spec: JobSpec) => {
+      try {
+        pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
+        prunePending();
+        useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
+        const finalSpec: JobSpec = { ...spec, workspaceId: spec.workspaceId ?? 'default' };
+        const final = await computeFn(finalSpec);
+        const parsed = finalEventSchema.safeParse(final);
+        if (!parsed.success) {
+          throw new Error('Test compute stub returned invalid final payload');
+        }
+        applyFinalEvent(parsed.data);
+      } catch (error) {
+        pendingBinds.delete(spec.jobId);
+        useComputeStore
+          .getState()
+          .markFinal(
+            spec.jobId,
+            false,
+            undefined,
+            error instanceof Error ? error.message : String(error),
+            ComputeError.CapabilityDenied,
+          );
+        throw error;
+      }
+    };
+    targetWindow.uicpComputeCancel = async (jobId: string) => {
+      try {
+        cancelFn?.(jobId);
+      } catch {
+        // ignore cancellation stub errors
+      }
+    };
+  }
+
   // If not running inside Tauri, no-op gracefully.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const globalAny = window as any;
-  const hasTauri = typeof globalAny.__TAURI__ !== 'undefined';
+  const hasTauri = typeof bridgeWindow.__TAURI__ !== 'undefined';
   if (!hasTauri) {
-    const testCompute = globalAny.__UICP_TEST_COMPUTE__;
+    const testCompute = bridgeWindow.__UICP_TEST_COMPUTE__;
     if (typeof testCompute === 'function') {
       started = true;
       const testCancel =
-        typeof globalAny.__UICP_TEST_COMPUTE_CANCEL__ === 'function'
-          ? (globalAny.__UICP_TEST_COMPUTE_CANCEL__ as (jobId: string) => void)
+        typeof bridgeWindow.__UICP_TEST_COMPUTE_CANCEL__ === 'function'
+          ? bridgeWindow.__UICP_TEST_COMPUTE_CANCEL__
           : undefined;
-      setupTestComputeFallback(testCompute as (spec: JobSpec) => Promise<unknown>, testCancel);
+      setupTestComputeFallback(bridgeWindow, testCompute, testCancel);
     }
     return;
   }
   started = true;
 
   // Expose compute helpers immediately to avoid races with async listener setup.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).uicpComputeCall = async (spec: JobSpec) => {
+  bridgeWindow.uicpComputeCall = async (spec: JobSpec) => {
     try {
       pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
       prunePending();
       useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
-      const finalSpec = { ...spec, workspaceId: (spec as any).workspaceId ?? 'default' } as JobSpec;
+      const finalSpec: JobSpec = { ...spec, workspaceId: spec.workspaceId ?? 'default' };
       await invoke('compute_call', { spec: finalSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
@@ -51,8 +204,7 @@ export async function initializeTauriBridge() {
     }
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).uicpComputeCancel = async (jobId: string) => {
+  bridgeWindow.uicpComputeCancel = async (jobId: string) => {
     try {
       await invoke('compute_cancel', { jobId });
     } catch {
@@ -61,7 +213,7 @@ export async function initializeTauriBridge() {
   };
 
   // Dev-only: enable backend debug logs and mirror key events to DevTools
-  if ((import.meta as any)?.env?.DEV) {
+  if (import.meta.env.DEV) {
     try {
       await invoke('set_debug', { enabled: true });
     } catch {
@@ -90,11 +242,11 @@ export async function initializeTauriBridge() {
           }
           // Forward compute guest stdio/log debug events into UI debug bus as compute_log
           if (ev === 'compute_guest_stdio' || ev === 'compute_guest_log') {
-            const jobId = typeof rec['jobId'] === 'string' ? (rec['jobId'] as string) : undefined;
-            const task = typeof rec['task'] === 'string' ? (rec['task'] as string) : undefined;
-            const channel = typeof rec['channel'] === 'string' ? (rec['channel'] as string) : undefined;
-            const level = typeof rec['level'] === 'string' ? (rec['level'] as string) : undefined;
-            const message = typeof rec['message'] === 'string' ? (rec['message'] as string) : undefined;
+            const jobId = rec.jobId as string | undefined;
+            const task = rec.task as string | undefined;
+            const channel = rec.channel as string | undefined;
+            const level = rec.level as string | undefined;
+            const message = rec.message as string | undefined;
             emitUiDebug('compute_log', {
               jobId,
               task,
@@ -103,10 +255,8 @@ export async function initializeTauriBridge() {
               message,
             });
           }
-          // eslint-disable-next-line no-console
           console.debug(`[tauri:${String(ev)}]`, obj);
         } catch {
-          // eslint-disable-next-line no-console
           console.debug('[tauri:debug-log]', payload);
         }
       }),
@@ -115,15 +265,13 @@ export async function initializeTauriBridge() {
     // Mirror stream chunk sizes without altering aggregator behaviour
     unsubs.push(
       await listen('ollama-completion', (event) => {
-        const payload = event.payload as { done?: boolean; delta?: unknown; kind?: string } | undefined;
+        const payload = event.payload as OllamaEvent | undefined;
         if (!payload) return;
         if (payload.done) {
-          // eslint-disable-next-line no-console
           console.info('[ollama] done');
         } else if (payload.delta !== undefined) {
           const isStr = typeof payload.delta === 'string';
           const len = isStr ? (payload.delta as string).length : JSON.stringify(payload.delta).length;
-          // eslint-disable-next-line no-console
           console.debug(`[ollama:${payload.kind ?? (isStr ? 'text' : 'json')}] len=${len}`);
         }
       }),
@@ -148,14 +296,14 @@ export async function initializeTauriBridge() {
   };
 
   // Factory to create a new aggregator that respects Full Control and preview gating.
-  const applyAggregatedBatch = async (batch: unknown) => {
+  const applyAggregatedBatch = async (batch: Batch) => {
     const app = useAppStore.getState();
     // If an orchestrator-managed run is in flight, avoid duplicate apply/preview.
     if (app.suppressAutoApply) return;
 
     const canAutoApply = app.fullControl && !app.fullControlLocked;
     if (canAutoApply) {
-      const outcome = await enqueueBatch(batch as any);
+      const outcome = await enqueueBatch(batch);
       if (!outcome.success) {
         throw new Error(outcome.errors.join('; ') || 'enqueueBatch failed');
       }
@@ -167,7 +315,7 @@ export async function initializeTauriBridge() {
         pendingPlan: {
           id: createId('plan'),
           summary: 'Generated plan',
-          batch: batch as any,
+          batch,
         },
       });
     }
@@ -202,7 +350,13 @@ export async function initializeTauriBridge() {
 
   // Compute error toast formatter: labels by code + concise metrics summary.
   const formatComputeErrorToast = (
-    final: { jobId: string; task: string; code: string; message?: string; metrics?: Record<string, unknown> },
+    final: {
+      jobId: string;
+      task: string;
+      code: string;
+      message?: string;
+      metrics?: { durationMs?: number; fuelUsed?: number; memPeakMb?: number; cacheHit?: boolean };
+    },
   ): { variant: 'error' | 'info' | 'success'; message: string } => {
     const code = final.code;
     const label =
@@ -225,9 +379,7 @@ export async function initializeTauriBridge() {
                       : code === 'Nondeterministic'
                         ? '[Nondet]'
                         : `[${code}]`;
-    const m = (final as any).metrics as
-      | { durationMs?: number; fuelUsed?: number; memPeakMb?: number; cacheHit?: boolean }
-      | undefined;
+    const m = final.metrics;
     const parts: string[] = [];
     if (typeof m?.durationMs === 'number') parts.push(`dur=${Math.round(m.durationMs)}ms`);
     if (typeof m?.fuelUsed === 'number') parts.push(`fuel=${m.fuelUsed}`);
@@ -244,18 +396,7 @@ export async function initializeTauriBridge() {
   // Ensure cleanup on teardown
   unsubs.push(() => aggregators.clear());
 
-  // Frontend debug event emitter for LogsPanel
-  const emitUiDebug = (event: string, extra?: Record<string, unknown>) => {
-    try {
-      window.dispatchEvent(
-        new CustomEvent('ui-debug-log', {
-          detail: { ts: Date.now(), event, ...(extra || {}) },
-        }),
-      );
-    } catch {
-      // ignore
-    }
-  };
+  
 
   const offApplied = addQueueAppliedListener(({ windowId, applied, ms }) => {
     const tag = windowId && windowId !== '__global__' ? ` [${windowId}]` : '';
@@ -300,23 +441,21 @@ export async function initializeTauriBridge() {
 
   unsubs.push(
     await listen('ollama-completion', async (event) => {
-      const payload = event.payload as { done?: boolean; delta?: unknown } | undefined;
+      const payload = event.payload as OllamaEvent | undefined;
       if (!payload) return;
       if (payload.done) {
         // Ignore stale completions from a superseded stream
         if (activeStream !== streamGen) return;
         const agg = aggregators.get(activeStream);
         if (!agg) return;
-        const maybeErr = (event.payload as any)?.error as
-          | { status?: number; code?: string; detail?: string; requestId?: string; retryAfterMs?: number }
-          | undefined;
+        const maybeErr = (event.payload as OllamaEvent | undefined)?.error;
         if (maybeErr) {
           const toast = formatOllamaErrorToast(maybeErr, currentTraceId);
           useAppStore.getState().pushToast(toast);
           useChatStore
             .getState()
             .pushSystemMessage(`Chat error ${toast.message}`, 'ollama_stream_error');
-          const waitMs = typeof (maybeErr as any).retryAfterMs === 'number' ? Number((maybeErr as any).retryAfterMs) : 0;
+          const waitMs = typeof maybeErr.retryAfterMs === 'number' ? maybeErr.retryAfterMs! : 0;
           if (waitMs > 0) {
             const secs = Math.ceil(waitMs / 1000);
             const rid = maybeErr.requestId ? ` req=${maybeErr.requestId}` : '';
@@ -343,7 +482,6 @@ export async function initializeTauriBridge() {
           aggregatorFailed = false;
         }
         if (currentTraceId) {
-          // eslint-disable-next-line no-console
           console.info('[ollama] stream finished', { traceId: currentTraceId, gen: activeStream });
           emitUiDebug('stream_finished', { traceId: currentTraceId, gen: activeStream, flushed });
           currentTraceId = null;
@@ -359,7 +497,6 @@ export async function initializeTauriBridge() {
             activeStream = ++streamGen;
             aggregatorFailed = false;
             currentTraceId = createId('trace');
-            // eslint-disable-next-line no-console
             console.info('[ollama] stream started', { traceId: currentTraceId, gen: activeStream });
             emitUiDebug('stream_started', { traceId: currentTraceId, gen: activeStream });
             aggregators.set(activeStream, makeAggregator());
@@ -373,7 +510,6 @@ export async function initializeTauriBridge() {
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           handleAggregatorError(error);
-          // eslint-disable-next-line no-console
           console.error('[ollama] stream error', { traceId: currentTraceId, error: msg });
           emitUiDebug('stream_error', { traceId: currentTraceId ?? undefined, message: msg });
         }
@@ -395,214 +531,20 @@ export async function initializeTauriBridge() {
     }),
   );
 
-  // Compute plane: partials + finals
-  const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
-  let lastPendingPrune = 0;
-  const pendingBinds = new Map<string, { task: string; binds: { toStatePath: string }[]; ts: number }>();
-  const prunePending = () => {
-    const now = Date.now();
-    // Avoid frequent scans
-    if (now - lastPendingPrune < 60_000) return; // 1 minute
-    lastPendingPrune = now;
-    for (const [id, rec] of pendingBinds.entries()) {
-      if (now - rec.ts > PENDING_TTL_MS) {
-        const ageMs = now - rec.ts;
-        if ((import.meta as any)?.env?.DEV) {
-          // eslint-disable-next-line no-console
-          console.debug('[compute.pending] pruning orphan', { jobId: id, ageMs });
-        }
-        emitUiDebug('compute_pending_prune', { jobId: id, ageMs });
-        pendingBinds.delete(id);
-      }
-    }
-  };
-
-  if (typeof window !== 'undefined') {
-    const globalAny = window as any;
-    if (!globalAny.__UICP_COMPUTE_STORE__) {
-      Object.defineProperty(globalAny, '__UICP_COMPUTE_STORE__', {
+  if (!bridgeWindow.__UICP_COMPUTE_STORE__) {
+    Object.defineProperty(bridgeWindow, '__UICP_COMPUTE_STORE__', {
         value: useComputeStore,
         configurable: true,
         writable: false,
       });
-    }
-    if (!globalAny.__UICP_APP_STORE__) {
-      Object.defineProperty(globalAny, '__UICP_APP_STORE__', {
+  }
+  if (!bridgeWindow.__UICP_APP_STORE__) {
+    Object.defineProperty(bridgeWindow, '__UICP_APP_STORE__', {
         value: useAppStore,
         configurable: true,
         writable: false,
       });
-    }
   }
-
-  const applyFinalEvent = async (final: ComputeFinalEvent) => {
-    const entry = pendingBinds.get(final.jobId);
-    if (!final.ok) {
-      const toast = formatComputeErrorToast(final as any);
-      useAppStore.getState().pushToast(toast);
-      useChatStore.getState().pushSystemMessage(toast.message, 'compute_final_error');
-      const m = (final as any).metrics as {
-        durationMs?: number;
-        fuelUsed?: number;
-        memPeakMb?: number;
-        cacheHit?: boolean;
-        deadlineMs?: number;
-        remainingMsAtFinish?: number;
-        logCount?: number;
-        partialFrames?: number;
-        invalidPartialsDropped?: number;
-        logThrottleWaits?: number;
-        loggerThrottleWaits?: number;
-        partialThrottleWaits?: number;
-      } | undefined;
-      useComputeStore.getState().markFinal(final.jobId, false, {
-        durationMs: m?.durationMs,
-        fuelUsed: m?.fuelUsed,
-        memPeakMb: m?.memPeakMb,
-        cacheHit: m?.cacheHit,
-        deadlineMs: m?.deadlineMs,
-        remainingMsAtFinish: m?.remainingMsAtFinish,
-        logCount: m?.logCount,
-        partialFrames: m?.partialFrames,
-        invalidPartialsDropped: m?.invalidPartialsDropped,
-        logThrottleWaits: m?.logThrottleWaits,
-        loggerThrottleWaits: m?.loggerThrottleWaits,
-        partialThrottleWaits: m?.partialThrottleWaits,
-      }, final.message, final.code);
-      pendingBinds.delete(final.jobId);
-      return;
-    }
-    if (entry && entry.binds && entry.binds.length) {
-      const batch = entry.binds.map((b) => ({
-        op: 'state.set',
-        params: {
-          scope: 'workspace',
-          key: asStatePath(b.toStatePath),
-          value: final.output,
-        },
-      } as const));
-      const outcome = await enqueueBatch(batch);
-      if (!outcome.success) {
-        console.error('Failed to apply compute bindings', outcome.errors);
-        useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
-      }
-    }
-    const meta = (final as any).metrics as {
-      durationMs?: number;
-      fuelUsed?: number;
-      memPeakMb?: number;
-      cacheHit?: boolean;
-      deadlineMs?: number;
-      remainingMsAtFinish?: number;
-      logCount?: number;
-      partialFrames?: number;
-      invalidPartialsDropped?: number;
-      logThrottleWaits?: number;
-      loggerThrottleWaits?: number;
-      partialThrottleWaits?: number;
-    } | undefined;
-    useComputeStore.getState().markFinal(final.jobId, true, {
-      durationMs: meta?.durationMs,
-      fuelUsed: meta?.fuelUsed,
-      memPeakMb: meta?.memPeakMb,
-      cacheHit: meta?.cacheHit,
-      deadlineMs: meta?.deadlineMs,
-      remainingMsAtFinish: meta?.remainingMsAtFinish,
-      logCount: meta?.logCount,
-      partialFrames: meta?.partialFrames,
-      invalidPartialsDropped: meta?.invalidPartialsDropped,
-      logThrottleWaits: meta?.logThrottleWaits,
-      loggerThrottleWaits: meta?.loggerThrottleWaits,
-      partialThrottleWaits: meta?.partialThrottleWaits,
-    });
-    pendingBinds.delete(final.jobId);
-  };
-
-  function setupTestComputeFallback(
-    computeFn: (spec: JobSpec) => Promise<unknown>,
-    cancelFn?: (jobId: string) => void,
-  ) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).uicpComputeCall = async (spec: JobSpec) => {
-      try {
-        pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
-        prunePending();
-        useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
-        const finalSpec = { ...spec, workspaceId: (spec as any).workspaceId ?? 'default' } as JobSpec;
-        const final = await computeFn(finalSpec);
-        const parsed = finalEventSchema.safeParse(final);
-        if (!parsed.success) {
-          throw new Error('Test compute stub returned invalid final payload');
-        }
-        await applyFinalEvent(parsed.data);
-      } catch (error) {
-        pendingBinds.delete(spec.jobId);
-        useComputeStore
-          .getState()
-          .markFinal(spec.jobId, false, undefined, error instanceof Error ? error.message : String(error), ComputeError.CapabilityDenied);
-        throw error;
-      }
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).uicpComputeCancel = async (jobId: string) => {
-      try {
-        cancelFn?.(jobId);
-      } catch {
-        // ignore cancellation stub errors
-      }
-    };
-  }
-
-  // (uicpComputeCall / uicpComputeCancel already installed above)
-
-  unsubs.push(
-    await listen('compute.result.partial', (event) => {
-      const payload = event.payload as
-        | { jobId?: string; task?: string; seq?: number; payloadB64?: string }
-        | { jobId?: string; task?: string; seq?: number; kind?: string; stream?: string; tick?: number; bytesLen?: number; previewB64?: string; truncated?: boolean; level?: string }
-        | undefined;
-      if (!payload) return;
-      try {
-        const jobId = typeof payload.jobId === 'string' ? payload.jobId : undefined;
-        const task = String((payload as any).task ?? '');
-        const seq = Number((payload as any).seq ?? 0);
-        if (jobId) useComputeStore.getState().markPartial(jobId);
-        // If this is a structured log partial, decode and surface to UI debug for LogsPanel
-        const kind = String((payload as any).kind ?? '');
-        if (kind === 'log') {
-          const stream = String((payload as any).stream ?? 'stdout');
-          const level = (payload as any).level as string | undefined;
-          const truncated = Boolean((payload as any).truncated ?? false);
-          const b64 = String((payload as any).previewB64 ?? '');
-          let message = '';
-          try {
-            // decode base64 to UTF-8
-            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-            // @ts-ignore
-            const bin = atob(b64);
-            // Convert binary string to UTF-8
-            message = decodeURIComponent(escape(bin));
-          } catch {
-            try {
-              // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-              // @ts-ignore
-              message = atob(b64);
-            } catch {
-              message = '';
-            }
-          }
-          emitUiDebug('compute_log', { jobId, task, seq, stream, level, truncated, message });
-        } else {
-          // CBOR partial frame (payloadB64) path retains dev log only
-          // eslint-disable-next-line no-console
-          console.debug(`[compute.partial] job=${jobId} task=${task} seq=${seq}`);
-        }
-        prunePending();
-      } catch {
-        // ignore
-      }
-    }),
-  );
 
   unsubs.push(
     await listen('compute.result.final', async (event) => {
@@ -641,8 +583,8 @@ export async function initializeTauriBridge() {
     });
   };
 
-  window.addEventListener('uicp-intent', onIntent, false);
-  unsubs.push(() => window.removeEventListener('uicp-intent', onIntent, false));
+  bridgeWindow.addEventListener('uicp-intent', onIntent, false);
+  unsubs.push(() => bridgeWindow.removeEventListener('uicp-intent', onIntent, false));
 }
 
 export function teardownTauriBridge() {
@@ -656,8 +598,9 @@ export function teardownTauriBridge() {
   unsubs = [];
   started = false;
   // Clear globals to avoid accidental reuse after teardown
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).uicpComputeCall = undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).uicpComputeCancel = undefined;
+  const bridgeWindow = getBridgeWindow();
+  if (bridgeWindow) {
+    bridgeWindow.uicpComputeCall = undefined;
+    bridgeWindow.uicpComputeCancel = undefined;
+  }
 }

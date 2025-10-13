@@ -220,6 +220,8 @@ pub async fn lookup<R: Runtime>(
     let ws = workspace_id.to_string();
     let state: State<'_, AppState> = app.state();
     let path = state.db_path.clone();
+    #[cfg(feature = "otel_spans")]
+    #[cfg(feature = "otel_spans")]
     let started = std::time::Instant::now();
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = Connection::open(path).context("open sqlite for cache lookup")?;
@@ -295,6 +297,7 @@ pub async fn store<R: Runtime>(
     let env_hash = env_hash.to_string();
     let json = serde_json::to_string(value).context("serialize cache value")?;
     let path = state.db_path.clone();
+    #[cfg(feature = "otel_spans")]
     let started = std::time::Instant::now();
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(path).context("open sqlite for cache store")?;

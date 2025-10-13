@@ -1,5 +1,9 @@
-import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { render, screen, within, act } from '@testing-library/react';
+// Mock useDockReveal to avoid focus/timing side-effects during render
+vi.mock('../../src/hooks/useDockReveal', () => ({
+  useDockReveal: () => ({ chatOpen: true, onFocus: () => {}, onBlur: () => {}, setChatOpen: () => {} })
+}));
 import DockChat from '../../src/components/DockChat';
 import { useAppStore } from '../../src/state/app';
 import { useChatStore } from '../../src/state/chat';
@@ -15,9 +19,12 @@ const ensureCrypto = () => {
 };
 
 describe('DockChat clarifier-needed UI', () => {
-  beforeEach(() => {
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCancelRaf = globalThis.cancelAnimationFrame;
+
+  beforeEach(async () => {
     ensureCrypto();
-    act(() => {
+    await act(async () => {
       useAppStore.setState({ chatOpen: true });
       useChatStore.setState({
         messages: [
@@ -30,15 +37,39 @@ describe('DockChat clarifier-needed UI', () => {
         ],
       } as any);
     });
+    // Stub rAF/cAF to avoid timing-driven focus updates causing act warnings
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    }) as typeof globalThis.requestAnimationFrame;
+    globalThis.cancelAnimationFrame = (() => {
+      // no-op
+    }) as typeof globalThis.cancelAnimationFrame;
   });
 
-  afterEach(() => {
-    useAppStore.setState({ chatOpen: false });
-    useChatStore.setState({ messages: [] } as any);
+  afterEach(async () => {
+    await act(async () => {
+      useAppStore.setState({ chatOpen: false });
+      useChatStore.setState({ messages: [] } as any);
+    });
+    if (originalRaf) {
+      globalThis.requestAnimationFrame = originalRaf;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete (globalThis as { requestAnimationFrame?: typeof globalThis.requestAnimationFrame }).requestAnimationFrame;
+    }
+    if (originalCancelRaf) {
+      globalThis.cancelAnimationFrame = originalCancelRaf;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete (globalThis as { cancelAnimationFrame?: typeof globalThis.cancelAnimationFrame }).cancelAnimationFrame;
+    }
   });
 
   it('renders amber card styling and icon for clarifier-needed', async () => {
-    const { container } = await act(async () => render(<DockChat />));
+    await act(async () => {
+      render(<DockChat />);
+    });
     // Scope text lookup to the visible message list (avoid aria-live duplication)
     const list = screen.getByRole('list');
     const el = within(list).getByText('Need a quick clarification on the selector.');

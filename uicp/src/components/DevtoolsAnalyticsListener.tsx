@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { emit } from '@tauri-apps/api/event';
-import { useAppStore } from '../state/app';
+import { useAppStore, type DevtoolsAnalyticsContext } from '../state/app';
 
 const getPlatformTag = () => {
   if (typeof navigator === 'undefined') return 'unknown';
@@ -41,7 +41,7 @@ const DevtoolsAnalyticsListener = () => {
 
       const store = useAppStore.getState();
       const direction = store.devtoolsAssumedOpen ? 'close' : 'open';
-      const context = {
+      const context: DevtoolsAnalyticsContext = {
         agentPhase: store.agentStatus.phase,
         traceId: store.agentStatus.traceId,
         streaming: store.streaming,
@@ -49,7 +49,7 @@ const DevtoolsAnalyticsListener = () => {
         metricsOpen: store.metricsOpen,
         notepadOpen: store.notepadOpen,
         agentSettingsOpen: store.agentSettingsOpen,
-        computeDemoOpen: (store as any).computeDemoOpen ?? false,
+        computeDemoOpen: store.computeDemoOpen,
         workspaceWindows: Object.keys(store.workspaceWindows).length,
         devMode: store.devMode,
         agentMode: store.agentMode,

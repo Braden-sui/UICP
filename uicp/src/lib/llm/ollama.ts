@@ -205,11 +205,13 @@ export function streamOllamaCompletion(
   let unlisten: UnlistenFn | null = null;
   let started = false;
   const requestId = options?.requestId ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
-  let abortHandler: ((this: AbortSignal, ev: Event) => any) | undefined;
+  // WHY: Avoid `any` while not relying on global DOM types that may not be present in ESLint scope.
+  // INVARIANT: `abortHandler` is only set when `options.signal` supports add/removeEventListener; it performs a best-effort cancel then ends the queue.
+  let abortHandler: (() => void) | undefined;
   const readMs = (key: string, fallback: number): number => {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const raw = (import.meta as any)?.env?.[key] as unknown;
+      // SAFETY: `ImportMetaEnv` is declared in types/env.d.ts with an index signature.
+      const raw = import.meta?.env?.[key];
       const n = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : undefined;
       return Number.isFinite(n) && (n as number) > 0 ? (n as number) : fallback;
     } catch {
@@ -342,7 +344,8 @@ export function streamOllamaCompletion(
         }
         queue.end();
       };
-      options.signal.addEventListener('abort', abortHandler, { once: true } as AddEventListenerOptions);
+      // Avoid referencing global `AddEventListenerOptions` type to satisfy eslint/no-undef.
+      options.signal.addEventListener('abort', abortHandler, { once: true });
     }
     // Default timeout when no AbortSignal provided: best-effort cancel
     if (!options?.signal) {
@@ -402,7 +405,7 @@ export function streamOllamaCompletion(
             activeRequestId = null;
           }
           if (options?.signal && abortHandler && typeof options.signal.removeEventListener === 'function') {
-            try { options.signal.removeEventListener('abort', abortHandler as any); } catch { /* ignore */ }
+            try { options.signal.removeEventListener('abort', abortHandler); } catch { /* ignore */ }
           }
           queue.end();
           return { value: undefined as unknown as StreamEvent, done: true };

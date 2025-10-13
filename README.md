@@ -73,9 +73,11 @@ Compute modules and runtime
 
 - Compute runtime details: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md
 - WIL Architecture and Protocol:
-  - docs/ARCHITECTURE.md — Planner/Actor contracts, parsing, files.
+  - docs/architecture.md — Planner/Actor contracts, parsing, files.
   - docs/compute/WIL_QUICKSTART.md — Allowed templates and examples.
   - docs/WIL_REFACTOR.md — Tracking log and backlog.
+ - Model endpoints and auth: docs/ollama cloud vs. turbo.md
+ - Docs reading order: docs/INDEX.md
 
 ## Environment
 
@@ -87,13 +89,17 @@ Compute modules and runtime
 | `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window. |
 | `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window. |
 
-### Configuration (.env)
+### Configuration & Credentials
 
 - `USE_DIRECT_CLOUD` — `1` to use Ollama Cloud, `0` for local daemon
 - `OLLAMA_API_KEY` — required when `USE_DIRECT_CLOUD=1`
 - `PLANNER_MODEL` — default planner model id (e.g., `deepseek-v3.1:671b`)
 - `ACTOR_MODEL` — default actor model id (e.g., `qwen3-coder:480b`)
 - See `.env.example` at repo root.
+
+API key storage
+- Preferred: OS keyring (stored when you enter the key in-app; validated via `test_api_key`).
+- Optional: `uicp/.env` for local development. On startup the backend reads `.env` (if present) and migrates `OLLAMA_API_KEY` into the keyring automatically.
 
 ### Environment Snapshot
 
@@ -166,10 +172,21 @@ Rust (compute host)
 CI
 - UI: `.github/workflows/ci.yml` runs lint, typecheck, unit, e2e (mock), build, SBOM generation, Trivy, and Gitleaks.
 - Compute: `.github/workflows/compute-ci.yml` builds the Rust host, checks/pins Wasmtime, validates WIT packages, runs Rust tests, regenerates TS bindings, and executes a Playwright compute harness.
+- Link checks: Markdown links are validated using Lychee with settings in `.lychee.toml`.
+
+### CI Troubleshooting: deps install
+
+- Use Node 20 and npm 10. The workflow sets `node-version: 20`; local failures like `npm ERR! code EBADENGINE` usually indicate a different Node version.
+- Installs run with `npm ci --ignore-scripts --no-optional` to avoid platform-specific native installs. If your jobs use plain `npm install`, switch to `npm ci` with the same flags.
+- Postinstall is explicitly run after install, but our script is a no-op on Linux/macOS and only restores Rollup’s Windows binding on Windows (`uicp/scripts/postinstall.cjs`). Safe to keep.
+- Build/test commands are wrapped by `scripts/run-with-rollup-env.mjs`, which sets `ROLLUP_SKIP_NODE_NATIVE=true` to avoid native Rollup bindings; do not call `vite build` or `vitest` directly in CI.
+- If caching issues appear, clear Actions cache for `uicp/package-lock.json` and re-run. Lockfile drift will cause `npm ci` to fail; commit the updated `package-lock.json` when dependencies change.
+- Reproduce locally with: `cd uicp && npm ci --ignore-scripts --no-optional`.
 
 ## In Development
 
 Project status and execution plans
+- Status snapshot: `docs/STATUS.md`
 - Master checklist for compute runtime: `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`
 - Architecture overview: `docs/architecture.md`
 - MVP scope/status: `docs/MVP checklist.md`
@@ -202,7 +219,7 @@ See also: `docs/INDEX.md` for onboarding and reading order.
 
 ## Security
 
-- Never commit secrets. Use `.env` locally; `OLLAMA_API_KEY` is required for cloud calls when enabled.
+- Never commit secrets. For credentials, prefer the OS keyring. The app migrates `OLLAMA_API_KEY` from `.env` into the keyring on startup when present.
 - All planner HTML is sanitized before DOM insertion.
 
 ## License

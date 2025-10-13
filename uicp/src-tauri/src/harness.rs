@@ -1,8 +1,4 @@
-#![cfg(any(
-    test,
-    feature = "compute_harness",
-    all(feature = "wasm_compute", feature = "uicp_wasi_enable")
-))]
+#![cfg(any(test, feature = "compute_harness"))]
 
 use crate::{ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR};
 use anyhow::{Context, Result};
@@ -24,10 +20,10 @@ use tokio_rusqlite::Connection as AsyncConn;
 /// Test harness that provisions an in-memory (tempdir-backed) app instance capable of running
 /// real compute jobs against the Wasm runtime.
 pub struct ComputeTestHarness {
-    temp: Option<TempDir>,
+    _temp: Option<TempDir>, // SAFETY: keep tempdir alive for harness lifetime; unused fields are intentional.
     data_dir: PathBuf,
     app: tauri::App<MockRuntime>,
-    window: tauri::WebviewWindow<MockRuntime>,
+    _window: tauri::WebviewWindow<MockRuntime>, // SAFETY: WebviewWindow must stay owned to keep runtime handles valid.
 }
 
 impl ComputeTestHarness {
@@ -39,10 +35,10 @@ impl ComputeTestHarness {
         let (app, window) = Self::build_app(&data_dir)?;
 
         Ok(Self {
-            temp: Some(temp),
+            _temp: Some(temp),
             data_dir,
             app,
-            window,
+            _window: window,
         })
     }
 
@@ -51,10 +47,10 @@ impl ComputeTestHarness {
         let data_dir = dir.as_ref().to_path_buf();
         let (app, window) = Self::build_app(&data_dir)?;
         Ok(Self {
-            temp: None,
+            _temp: None,
             data_dir,
             app,
-            window,
+            _window: window,
         })
     }
 
@@ -227,6 +223,50 @@ impl ComputeTestHarness {
         crate::commands::compute_cancel(self.app.handle().clone(), state, job_id.to_string())
             .await
             .map_err(|err| anyhow::anyhow!(err))
+    }
+
+    /// WHY: Surface admin-style commands through the harness so the shim implementations stay exercised and ready for future tests.
+    pub async fn modules_info(&self) -> Result<Value> {
+        crate::commands::get_modules_info(self.app.handle().clone())
+            .await
+            .map_err(|err| anyhow::anyhow!("E-UICP-410: get_modules_info via harness failed: {err}"))
+    }
+
+    /// WHY: Allow harness callers to copy fixtures into the workspace files area without reimplementing the command logic.
+    pub async fn copy_into_files<P>(&self, src: P) -> Result<String>
+    where
+        P: AsRef<Path>,
+    {
+        let src_str = src
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("E-UICP-411: source path not valid UTF-8"))?;
+        crate::commands::copy_into_files(src_str.into())
+            .await
+            .map_err(|err| anyhow::anyhow!("E-UICP-412: copy_into_files via harness failed: {err}"))
+    }
+
+    /// WHY: Load workspace state through the command shim to ensure parity with the production entry point.
+    pub async fn load_workspace(&self) -> Result<Vec<Value>> {
+        let state: tauri::State<'_, AppState> = self.app.state();
+        crate::commands::load_workspace(state)
+            .await
+            .map_err(|err| anyhow::anyhow!("E-UICP-413: load_workspace via harness failed: {err}"))
+    }
+
+    /// WHY: Persist workspace state through the same code path the app uses, keeping invariants aligned.
+    pub async fn save_workspace(&self, windows: Vec<Value>) -> Result<()> {
+        let state: tauri::State<'_, AppState> = self.app.state();
+        crate::commands::save_workspace((), state, windows)
+            .await
+            .map_err(|err| anyhow::anyhow!("E-UICP-414: save_workspace via harness failed: {err}"))
+    }
+
+    /// WHY: Provide direct access to cache eviction so compute-focused tests can start from a known state.
+    pub async fn clear_compute_cache(&self, workspace_id: Option<String>) -> Result<()> {
+        crate::commands::clear_compute_cache(self.app.handle().clone(), workspace_id)
+            .await
+            .map_err(|err| anyhow::anyhow!("E-UICP-415: clear_compute_cache via harness failed: {err}"))
     }
 
     /// Return the temp workspace path backing this harness.

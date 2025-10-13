@@ -50,7 +50,7 @@ export function removeSkipWords(s: string, skips: readonly string[]): string {
   for (const phrase of skips) {
     if (!phrase) continue;
     const pat = escapeRegex(phrase.trim()).replace(/\s+/g, "\\s+");
-    const re = new RegExp(`(?:^|\s)${pat}(?=\s|$)`, "gi");
+    const re = new RegExp(`(?:^|\\s)${pat}(?=\\s|$)`, "gi");
     out = out.replace(re, " ");
   }
   return out.replace(/\s+/g, " ").trim();
@@ -84,7 +84,7 @@ export function matchTemplate(text: string, template: string): Record<string, st
     last = match.index + match[0].length;
   }
   parts.push(escapeRegex(template.slice(last)));
-  const fallback = new RegExp(`^\n?\n?\s*${parts.join("")}\s*$`, "i");
+  const fallback = new RegExp(`^\\n?\\n?\\s*${parts.join("")}\\s*$`, "i");
   m = fallback.exec(text);
   if (!m) return null;
   const out: Record<string, string> = {};
@@ -126,7 +126,7 @@ function templateToRegex(template: string): RegExp {
     cursor = index + len;
   }
   parts.push(escapeRegex(template.slice(cursor)));
-  return new RegExp(`^\n?\n?\s*${parts.join("")}\s*$`, "i");
+  return new RegExp(`^\\n?\\n?\\s*${parts.join("")}\\s*$`, "i");
 }
 
 function escapeRegex(s: string): string {
@@ -182,7 +182,7 @@ function postProcess(op: OperationNameT, raw: Record<string, string>): Record<st
           if (Number.isFinite(w)) slots.width = w;
           if (Number.isFinite(h)) slots.height = h;
         } else {
-          (slots as any).size = sz;
+          slots["size"] = sz;
         }
       }
       if (get("width")) slots.width = asNumber(get("width"));

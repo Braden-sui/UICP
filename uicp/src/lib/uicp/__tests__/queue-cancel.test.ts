@@ -1,15 +1,25 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import type { Batch } from '../schemas';
+import type { ApplyOutcome } from '../adapter';
 
 vi.mock('../adapter', async () => {
   return {
-    applyBatch: vi.fn(async (_batch: any) => ({ success: true, applied: _batch.length ?? 1, errors: [] })),
+    // WHY: In these tests we only need a deterministic, successful apply that
+    // returns the batch length. This isolates queue behavior around txn.cancel.
+    // INVARIANT: `applied` equals `_batch.length`; no side effects.
+    applyBatch: vi.fn(async (_batch: Batch): Promise<ApplyOutcome> => ({
+      success: true,
+      applied: _batch.length ?? 1,
+      errors: [],
+    })),
   };
 });
 
 import { enqueueBatch, clearAllQueues } from '../queue';
 import { applyBatch } from '../adapter';
 
-const mockedApply = applyBatch as unknown as ReturnType<typeof vi.fn> & { mock: any };
+// SAFETY: Vitest's Mock<T> accepts a single function type parameter.
+const mockedApply = applyBatch as unknown as Mock<(batch: Batch) => Promise<ApplyOutcome>>;
 
 describe('queue txn.cancel', () => {
   beforeEach(() => {

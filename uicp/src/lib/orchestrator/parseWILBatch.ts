@@ -26,14 +26,12 @@ export function parseWILBatch(text: string): WilBatchItem[] {
 
   const out: WilBatchItem[] = [];
   if (cfg.wilDebug) {
-    // eslint-disable-next-line no-console
     console.debug(`[WIL] lines_in=${lines.length} raw_in=${raw.length}`);
   }
   for (const line of lines) {
     if (line.toLowerCase().startsWith("nop:")) {
       out.push({ nop: line.slice(4).trim() || "unspecified" });
       if (cfg.wilDebug) {
-        // eslint-disable-next-line no-console
         console.debug(`[WIL] nop detected: ${line}`);
       }
       WIL_STATS.nops++;
@@ -43,7 +41,6 @@ export function parseWILBatch(text: string): WilBatchItem[] {
     if (!parsed) {
       out.push({ nop: "invalid WIL line" });
       if (cfg.wilDebug) {
-        // eslint-disable-next-line no-console
         console.debug(`[WIL] invalid line: ${line}`);
       }
       WIL_STATS.invalid++;

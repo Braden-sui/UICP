@@ -4,6 +4,8 @@ import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
 import { tryRecoverJsonFromAttribute } from "./cleanup";
+import { getBridgeWindow, getComputeBridge } from "../bridge/globals";
+import type { JobSpec } from "../../compute/types";
 
 const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
@@ -84,15 +86,13 @@ const stateStore = new Map<StateScope, Map<string, unknown>>([
   ["global", new Map()],
 ]);
 
-if (typeof window !== "undefined") {
-  const globalAny = window as any;
-  if (!globalAny.__UICP_STATE_STORE__) {
-    Object.defineProperty(globalAny, "__UICP_STATE_STORE__", {
-      value: stateStore,
-      configurable: true,
-      writable: false,
-    });
-  }
+const bridgeWindow = getBridgeWindow();
+if (bridgeWindow && !bridgeWindow.__UICP_STATE_STORE__) {
+  Object.defineProperty(bridgeWindow, "__UICP_STATE_STORE__", {
+    value: stateStore,
+    configurable: true,
+    writable: false,
+  });
 }
 
 // Track per-window drag cleanup so we can detach listeners on destroy.
@@ -619,9 +619,13 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
 
 // Replay persisted commands from database to restore workspace state
 export const replayWorkspace = async (): Promise<{ applied: number; errors: string[] }> => {
-  // Guard against calling invoke before Tauri is ready
+  // WHY: Allow replay under Vitest where __TAURI__ is absent but mocks are installed.
+  // INVARIANT: Proceed when either Tauri is present or test mocks are registered; otherwise, no-op.
+  const tauriWindow = getBridgeWindow();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const hasTauri = typeof (window as any).__TAURI__ !== 'undefined';
+  const hasMocks = typeof (globalThis as any).__TAURI_MOCKS__ !== 'undefined';
+  const hasTauri = typeof tauriWindow?.__TAURI__ !== 'undefined' || hasMocks;
+
   if (!hasTauri) {
     return { applied: 0, errors: [] };
   }
@@ -1163,11 +1167,21 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
         // UICP compute plane submission: uicp://compute.call (body = JobSpec)
         if (url.startsWith('uicp://compute.call')) {
           try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const computeCall = (window as any).uicpComputeCall as ((spec: import('../../compute/types').JobSpec) => Promise<void>) | undefined;
+            const computeCall = getComputeBridge();
             if (!computeCall) throw new Error('compute bridge not initialized');
-            const body = (params.body ?? {}) as import('../../compute/types').JobSpec;
-            await computeCall(body);
+            const body = (params.body ?? {}) as Partial<JobSpec>;
+            const jobId = body.jobId;
+            const task = body.task;
+            if (!jobId || !task) {
+              throw new Error('compute.call payload missing jobId or task');
+            }
+            const spec = {
+              ...body,
+              jobId,
+              task,
+              workspaceId: body.workspaceId ?? 'default',
+            } as JobSpec;
+            await computeCall(spec);
           } catch (error) {
             console.error('compute.call failed', error);
             return toFailure(error);
@@ -1287,7 +1301,6 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
       // Execute sequentially inside the animation frame so DOM mutations remain ordered even with awaits.
       (async () => {
         for (const job of plannedJobs) {
-          // eslint-disable-next-line no-await-in-loop
           await job();
         }
         resolve();
@@ -1318,8 +1331,7 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
       };
       const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(computeStateHash()));
       const hex = Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (typeof (window as any).__TAURI__ !== 'undefined') {
+      if (getBridgeWindow()?.__TAURI__) {
         await invoke('save_checkpoint', { hash: hex });
       }
     } catch (err) {
@@ -1333,7 +1345,5 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
     errors,
   };
 };
-
-
 
 

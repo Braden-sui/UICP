@@ -75,7 +75,7 @@ fn foreign_key_constraint_prevents_orphaned_windows() {
 
 #[test]
 fn foreign_key_check_detects_violations() {
-    let (_tmp, mut conn) = init_test_db();
+    let (_tmp, conn) = init_test_db();
 
     // Temporarily disable FK to insert bad data
     conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
