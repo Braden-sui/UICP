@@ -14,7 +14,8 @@ pub mod wasi_logging_shim {
                     import logging;
                 }
             "#,
-            require_store_data_send: true,
+            // WHY: `Ctx` embeds `ResourceTable` which is !Send; logging hostcalls operate on the same thread.
+            require_store_data_send: false,
         });
 
         pub mod imports {

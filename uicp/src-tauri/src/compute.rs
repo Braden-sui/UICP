@@ -23,7 +23,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::registry;
 #[cfg(feature = "wasm_compute")]
 use crate::compute_input::{
-    derive_job_seed, extract_csv_input, extract_table_query_input, resolve_csv_source, TaskInputError,
+    derive_job_seed, extract_csv_input, extract_table_query_input, resolve_csv_source,
 };
 use crate::ComputeJobSpec;
 
@@ -72,7 +72,6 @@ mod with_runtime {
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
-    use crate::wasi_logging::wasi_logging_shim::logging;
     use crate::wasi_logging::wasi_logging_shim::logging::{Host as WasiLogHost, Level as WasiLogLevel};
     use wasmtime_wasi::StdoutStream as WasiStdoutStream;
     use wasmtime_wasi::{
@@ -1269,62 +1268,75 @@ mod with_runtime {
                             sleep(TokioDuration::from_millis(delay)).await;
                         }
                         let call_res: anyhow::Result<serde_json::Value> = match task_name {
-                            "csv.parse" => {
-                                let (src, has_header) = extract_csv_input(&spec.input)
-                                    .map_err(|e: TaskInputError| {
-                                        anyhow::anyhow!(format!("{}: {}", e.code, e.message))
-                                    })?;
-                                let resolved = resolve_csv_source(&spec, &src)
-                                    .map_err(|e: TaskInputError| {
-                                        anyhow::anyhow!(format!("{}: {}", e.code, e.message))
-                                    })?;
-                                let func_res: Result<
-                                    wasmtime::component::TypedFunc<
-                                        (String, String, bool),
-                                        (Result<Vec<Vec<String>>, String>,),
-                                    >,
-                                    _,
-                                > = instance.get_typed_func(&mut store, "csv#run");
-                                match func_res {
-                                    Err(e) => Err(anyhow::Error::from(e)),
-                                    Ok(func) => match func
-                                        .call_async(
-                                            &mut store,
-                                            (spec.job_id.clone(), resolved, has_header),
-                                        )
-                                        .await
-                                    {
-                                        Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
-                                        Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                        Err(e) => Err(anyhow::Error::from(e)),
-                                    },
-                                }
-                            }
+                            "csv.parse" => match extract_csv_input(&spec.input) {
+                                Ok((src, has_header)) => match resolve_csv_source(&spec, &src) {
+                                    Ok(resolved) => {
+                                        let func_res: Result<
+                                            wasmtime::component::TypedFunc<
+                                                (String, String, bool),
+                                                (Result<Vec<Vec<String>>, String>,),
+                                            >,
+                                            _,
+                                        > = instance.get_typed_func(&mut store, "csv#run");
+                                        match func_res {
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                            Ok(func) => match func
+                                                .call_async(
+                                                    &mut store,
+                                                    (spec.job_id.clone(), resolved, has_header),
+                                                )
+                                                .await
+                                            {
+                                                Ok((Ok(rows),)) => Ok(serde_json::json!(rows)),
+                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                                Err(e) => Err(anyhow::Error::from(e)),
+                                            },
+                                        }
+                                    }
+                                    Err(e) => Err(anyhow::anyhow!(format!(
+                                        "{}: {}",
+                                        e.code, e.message
+                                    ))),
+                                },
+                                Err(e) => Err(anyhow::anyhow!(format!(
+                                    "{}: {}",
+                                    e.code, e.message
+                                ))),
+                            },
                             "table.query" => {
-                                let (rows, select, where_opt) = extract_table_query_input(&spec.input)
-                                    .map_err(|e: TaskInputError| {
-                                        anyhow::anyhow!(format!("{}: {}", e.code, e.message))
-                                    })?;
-                                let func_res: Result<
-                                    wasmtime::component::TypedFunc<
-                                        (String, Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>),
-                                        (Result<Vec<Vec<String>>, String>,),
-                                    >,
-                                    _,
-                                > = instance.get_typed_func(&mut store, "table#run");
-                                match func_res {
-                                    Err(e) => Err(anyhow::Error::from(e)),
-                                    Ok(func) => match func
-                                        .call_async(
-                                            &mut store,
-                                            (spec.job_id.clone(), rows, select, where_opt),
-                                        )
-                                        .await
-                                    {
-                                        Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                        Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                        Err(e) => Err(anyhow::Error::from(e)),
-                                    },
+                                match extract_table_query_input(&spec.input) {
+                                    Ok((rows, select, where_opt)) => {
+                                        let func_res: Result<
+                                            wasmtime::component::TypedFunc<
+                                                (
+                                                    String,
+                                                    Vec<Vec<String>>,
+                                                    Vec<u32>,
+                                                    Option<(u32, String)>,
+                                                ),
+                                                (Result<Vec<Vec<String>>, String>,),
+                                            >,
+                                            _,
+                                        > = instance.get_typed_func(&mut store, "table#run");
+                                        match func_res {
+                                            Err(e) => Err(anyhow::Error::from(e)),
+                                            Ok(func) => match func
+                                                .call_async(
+                                                    &mut store,
+                                                    (spec.job_id.clone(), rows, select, where_opt),
+                                                )
+                                                .await
+                                            {
+                                                Ok((Ok(out),)) => Ok(serde_json::json!(out)),
+                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
+                                                Err(e) => Err(anyhow::Error::from(e)),
+                                            },
+                                        }
+                                    }
+                                    Err(e) => Err(anyhow::anyhow!(format!(
+                                        "{}: {}",
+                                        e.code, e.message
+                                    ))),
                                 }
                             }
                             _ => Err(anyhow::anyhow!("unknown task for this world")),
@@ -1384,7 +1396,10 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         wasmtime_wasi::add_to_linker_async(linker)?;
-        logging::add_to_linker::<_, Ctx>(linker, |state| state)?;
+        crate::wasi_logging::wasi_logging_shim::logging::add_to_linker::<_, Ctx>(
+            linker,
+            |state| state,
+        )?;
         add_uicp_host(linker)?;
         Ok(())
     }
@@ -1478,7 +1493,7 @@ mod with_runtime {
                 partial_throttle_waits: ctx.partial_throttle_waits.clone(),
             })
         };
-        let stream: WasiOutputStream = Box::new(PartialOutputStream::new(shared));
+        let stream = PartialOutputStream::new(shared);
         let handle = store.data_mut().table.push(stream)?;
         Ok((handle,))
     }
@@ -1593,7 +1608,7 @@ mod with_runtime {
         metrics_opt: Option<serde_json::Value>,
     ) {
         let ms = started.elapsed().as_millis() as i64;
-        let mut metrics = if let Some(mut m) = metrics_opt {
+        let metrics = if let Some(mut m) = metrics_opt {
             if let Some(map) = m.as_object_mut() {
                 map.entry("queueMs".to_string())
                     .or_insert_with(|| serde_json::json!(queue_wait_ms));
@@ -1754,7 +1769,7 @@ mod with_runtime {
     fn collect_metrics(store: &wasmtime::Store<Ctx>) -> serde_json::Value {
         let duration_ms = store.data().started.elapsed().as_millis() as i64;
         let remaining = (store.data().deadline_ms as i64 - duration_ms).max(0) as i64;
-        let mut metrics = serde_json::json!({
+            let mut metrics = serde_json::json!({
             "durationMs": duration_ms,
             "deadlineMs": store.data().deadline_ms,
             "logCount": store.data().log_count.load(Ordering::Relaxed),

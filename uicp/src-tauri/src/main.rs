@@ -37,6 +37,8 @@ mod compute_cache;
 mod compute_input;
 mod policy;
 mod registry;
+#[cfg(feature = "wasm_compute")]
+mod wasi_logging;
 
 pub use policy::{
     enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
