@@ -1,3 +1,6 @@
+// ============================================================================
+// LEGACY WIT: Retained for documentation only. Tooling must not depend on this.
+// ============================================================================
 package uicp:task;
 
 type rows = list<list<string>>;

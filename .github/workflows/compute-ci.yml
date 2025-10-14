@@ -101,11 +101,11 @@ jobs:
       - name: Verify WIT packages
         run: |
           wit-component wit --check docs/wit
-          wit-component wit --check uicp/components/csv.parse/wit
+          wit-component wit --check uicp/components/csv.parse/csv-parse/wit
           wit-component wit --check uicp/components/table.query/wit
 
       - name: cargo-component metadata (csv.parse)
-        working-directory: uicp/components/csv.parse
+        working-directory: uicp/components/csv.parse/csv-parse
         run: |
           cargo component metadata
 

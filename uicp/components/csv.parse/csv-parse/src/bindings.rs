@@ -175,10 +175,10 @@ pub mod exports {
                     }
                 }
                 pub trait Guest {
-                    /// Parse `source` into rows. Supports `data:` URIs or plain text CSV.
+                    /// Parse `input` into rows. Supports `data:` URIs or plain text CSV.
                     fn run(
                         job_id: _rt::String,
-                        source: _rt::String,
+                        input: _rt::String,
                         has_header: bool,
                     ) -> Result<Rows, _rt::String>;
                 }
@@ -268,7 +268,7 @@ mod _rt {
 /// ```
 #[allow(unused_macros)]
 #[doc(hidden)]
-macro_rules! __export_command_impl {
+macro_rules! __export_task_impl {
     ($ty:ident) => {
         self::export!($ty with_types_in self);
     };
@@ -279,18 +279,20 @@ macro_rules! __export_command_impl {
     };
 }
 #[doc(inline)]
-pub(crate) use __export_command_impl as export;
+pub(crate) use __export_task_impl as export;
 #[cfg(target_arch = "wasm32")]
-#[unsafe(link_section = "component-type:wit-bindgen:0.41.0:uicp:task-csv-parse@1.2.0:command:encoded world")]
+#[unsafe(
+    link_section = "component-type:wit-bindgen:0.41.0:uicp:task-csv-parse@1.2.0:task:encoded world"
+)]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 270] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x90\x01\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 263] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x8c\x01\x01A\x02\x01\
 A\x02\x01B\x06\x01ps\x01p\0\x04\0\x04rows\x03\0\x01\x01j\x01\x02\x01s\x01@\x03\x06\
-job-ids\x06sources\x0ahas-header\x7f\0\x03\x04\0\x03run\x01\x04\x04\0\x1duicp:ta\
-sk-csv-parse/csv@1.2.0\x05\0\x04\0!uicp:task-csv-parse/command@1.2.0\x04\0\x0b\x0d\
-\x01\0\x07command\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compone\
-nt\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+job-ids\x05inputs\x0ahas-header\x7f\0\x03\x04\0\x03run\x01\x04\x04\0\x1duicp:tas\
+k-csv-parse/csv@1.2.0\x05\0\x04\0\x1euicp:task-csv-parse/task@1.2.0\x04\0\x0b\x0a\
+\x01\0\x04task\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
+0.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

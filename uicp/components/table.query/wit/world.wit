@@ -8,7 +8,7 @@ interface types {
   record input {
     rows: list<list<string>>,
     select: list<u32>,
-    where_contains: option<filter>,
+    where-contains: option<filter>,
   }
   type output = list<list<string>>;
 }
@@ -16,7 +16,7 @@ interface types {
 interface table {
   use types.{filter, input, output};
   enum error { cancelled }
-  run: func(job_id: string, input: input) -> result<output, error>;
+  run: func(job-id: string, input: input) -> result<output, error>;
 }
 
 world task {

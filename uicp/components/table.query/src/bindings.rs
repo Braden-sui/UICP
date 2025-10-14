@@ -1553,7 +1553,7 @@ pub mod exports {
     pub mod uicp {
         pub mod task_table_query {
             #[allow(dead_code, async_fn_in_trait, unused_imports, clippy::all)]
-            pub mod task {
+            pub mod table {
                 #[used]
                 #[doc(hidden)]
                 static __FORCE_SECTION_REF: fn() = super::super::super::super::__link_custom_section_describing_imports;
@@ -1826,25 +1826,26 @@ pub mod exports {
                     }
                 }
                 pub trait Guest {
-                    fn run(job: _rt::String, input: Input) -> Result<Output, Error>;
+                    fn run(job_id: _rt::String, input: Input) -> Result<Output, Error>;
                 }
                 #[doc(hidden)]
-                macro_rules! __export_uicp_task_table_query_task_0_1_0_cabi {
+                macro_rules! __export_uicp_task_table_query_table_0_1_0_cabi {
                     ($ty:ident with_types_in $($path_to_types:tt)*) => {
                         const _ : () = { #[unsafe (export_name =
-                        "uicp:task-table-query/task@0.1.0#run")] unsafe extern "C" fn
+                        "uicp:task-table-query/table@0.1.0#run")] unsafe extern "C" fn
                         export_run(arg0 : * mut u8, arg1 : usize, arg2 : * mut u8, arg3 :
                         usize, arg4 : * mut u8, arg5 : usize, arg6 : i32, arg7 : i32,
                         arg8 : * mut u8, arg9 : usize,) -> * mut u8 { unsafe {
                         $($path_to_types)*:: _export_run_cabi::<$ty > (arg0, arg1, arg2,
                         arg3, arg4, arg5, arg6, arg7, arg8, arg9) } } #[unsafe
-                        (export_name = "cabi_post_uicp:task-table-query/task@0.1.0#run")]
-                        unsafe extern "C" fn _post_return_run(arg0 : * mut u8,) { unsafe
-                        { $($path_to_types)*:: __post_return_run::<$ty > (arg0) } } };
+                        (export_name =
+                        "cabi_post_uicp:task-table-query/table@0.1.0#run")] unsafe extern
+                        "C" fn _post_return_run(arg0 : * mut u8,) { unsafe {
+                        $($path_to_types)*:: __post_return_run::<$ty > (arg0) } } };
                     };
                 }
                 #[doc(hidden)]
-                pub(crate) use __export_uicp_task_table_query_task_0_1_0_cabi;
+                pub(crate) use __export_uicp_task_table_query_table_0_1_0_cabi;
                 #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
                 #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
                 struct _RetArea(
@@ -2019,24 +2020,26 @@ mod _rt {
 /// ```
 #[allow(unused_macros)]
 #[doc(hidden)]
-macro_rules! __export_entry_impl {
+macro_rules! __export_task_impl {
     ($ty:ident) => {
         self::export!($ty with_types_in self);
     };
     ($ty:ident with_types_in $($path_to_types_root:tt)*) => {
         $($path_to_types_root)*::
-        exports::uicp::task_table_query::task::__export_uicp_task_table_query_task_0_1_0_cabi!($ty
-        with_types_in $($path_to_types_root)*:: exports::uicp::task_table_query::task);
+        exports::uicp::task_table_query::table::__export_uicp_task_table_query_table_0_1_0_cabi!($ty
+        with_types_in $($path_to_types_root)*:: exports::uicp::task_table_query::table);
     };
 }
 #[doc(inline)]
-pub(crate) use __export_entry_impl as export;
+pub(crate) use __export_task_impl as export;
 #[cfg(target_arch = "wasm32")]
-#[unsafe(link_section = "component-type:wit-bindgen:0.41.0:uicp:task-table-query@0.1.0:entry:encoded world")]
+#[unsafe(
+    link_section = "component-type:wit-bindgen:0.41.0:uicp:task-table-query@0.1.0:task:encoded world"
+)]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1933] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x91\x0e\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1935] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x94\x0e\x01A\x02\x01\
 A\x14\x01B\x04\x04\0\x05error\x03\x01\x01h\0\x01@\x01\x04self\x01\0s\x04\0\x1d[m\
 ethod]error.to-debug-string\x01\x02\x03\0\x13wasi:io/error@0.2.8\x05\0\x01B\x0a\x04\
 \0\x08pollable\x03\x01\x01h\0\x01@\x01\x04self\x01\0\x7f\x04\0\x16[method]pollab\
@@ -2074,10 +2077,10 @@ t\x04\x0ewhere-contains\x05\x04\0\x05input\x03\0\x06\x01p\x02\x04\0\x06output\x0
 \x03\0\x05\x05input\x02\x03\0\x05\x06output\x01B\x0b\x02\x03\x02\x01\x09\x04\0\x06\
 filter\x03\0\0\x02\x03\x02\x01\x0a\x04\0\x05input\x03\0\x02\x02\x03\x02\x01\x0b\x04\
 \0\x06output\x03\0\x04\x01m\x01\x09cancelled\x04\0\x05error\x03\0\x06\x01j\x01\x05\
-\x01\x07\x01@\x02\x03jobs\x05input\x03\0\x08\x04\0\x03run\x01\x09\x04\0\x20uicp:\
-task-table-query/task@0.1.0\x05\x0c\x04\0!uicp:task-table-query/entry@0.1.0\x04\0\
-\x0b\x0b\x01\0\x05entry\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-c\
-omponent\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+\x01\x07\x01@\x02\x06job-ids\x05input\x03\0\x08\x04\0\x03run\x01\x09\x04\0!uicp:\
+task-table-query/table@0.1.0\x05\x0c\x04\0\x20uicp:task-table-query/task@0.1.0\x04\
+\0\x0b\x0a\x01\0\x04task\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-\
+component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

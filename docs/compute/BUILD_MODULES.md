@@ -14,14 +14,14 @@ Key Points
 - Exports must match the shapes the host calls:
   - `csv#run(jobId: string, input: string, hasHeader: bool) -> result<list<list<string>>, string>`
   - `table#run(jobId: string, rows: list<list<string>>, select: list<u32>, where?: (u32, string)) -> result<list<list<string>>, string>`
-- Optional imports used by some components:
-  - `wasi:logging/logging` (for guest logs)
-  - `uicp:host/control` and `uicp:host/rng` (host control helpers)
+- Imports today:
+  - `csv.parse@1.2.0` is pure: no host control imports and no wasi:logging dependency.
+  - `table.query@0.1.0` imports `wasi:logging/logging`, `wasi:io/streams`, `wasi:clocks/monotonic-clock`, and `uicp:host/control`.
 
 Quick Scaffold (csv.parse)
 1) Create a component crate (outside of src-tauri):
    - `mkdir -p components/csv.parse && cd components/csv.parse`
-   - `cargo component new csv.parse --lib`
+   - `cargo component new csv-parse --lib`
 
 2) Define WIT world in `wit/` (minimal):
    - `wit/world.wit`:
@@ -39,8 +39,8 @@ Quick Scaffold (csv.parse)
 
 4) Build:
    - `rustup target add wasm32-wasip1`
-   - `cargo component build --release`
-   - Artifact is under `target/wasm32-wasip1/release/*.wasm` (component-encoded)
+   - `cargo component build --release --manifest-path csv-parse/Cargo.toml`
+   - Artifact is under `csv-parse/target/wasm32-wasip1/release/csv_parse.wasm` (component-encoded)
 
 5) Install into the host:
    - Copy artifact to `uicp/src-tauri/modules/csv.parse@1.2.0.wasm`

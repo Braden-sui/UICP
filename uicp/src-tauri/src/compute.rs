@@ -1195,6 +1195,7 @@ mod with_runtime {
             let mut store: Store<Ctx> = Store::new(engine, ctx);
             store.limiter(|ctx| &mut ctx.limits);
 
+
             // Optional diagnostics for mounts/imports at job start (support both cases)
             if diag_enabled {
                 telemetry.emit_debug(serde_json::json!({
@@ -1271,8 +1272,14 @@ mod with_runtime {
                                     Ok((src, has_header)) => {
                                         match resolve_csv_source(&spec, &src) {
                                             Ok(resolved) => {
-                                                // WHY: Attach precise lookup context for missing export scenarios.
+                                                // WHY: Navigate interface export hierarchy to reach the run function.
                                                 // ERROR: E-UICP-224 typed-func lookup failed for export `csv#run`.
+                                                let csv_instance_idx = instance
+                                                    .get_export_index(&mut store, None, "uicp:task-csv-parse/csv@1.2.0")
+                                                    .ok_or_else(|| anyhow::anyhow!("E-UICP-224: csv interface not exported"))?;
+                                                let run_func_idx = instance
+                                                    .get_export_index(&mut store, Some(&csv_instance_idx), "run")
+                                                    .ok_or_else(|| anyhow::anyhow!("E-UICP-224: run function not found in csv interface"))?;
                                                 let func_res: Result<
                                                     wasmtime::component::TypedFunc<
                                                         (String, String, bool),
@@ -1280,7 +1287,7 @@ mod with_runtime {
                                                     >,
                                                     _,
                                                 > = instance
-                                                    .get_typed_func(&mut store, "csv#run")
+                                                    .get_typed_func(&mut store, &run_func_idx)
                                                     .map_err(|e| anyhow::Error::from(e)
                                                         .context("E-UICP-224: get_typed_func csv#run failed"));
                                                 match func_res {
@@ -1323,8 +1330,14 @@ mod with_runtime {
                                 },
                                 "table.query" => match extract_table_query_input(&spec.input) {
                                     Ok((rows, select, where_opt)) => {
-                                        // WHY: Attach precise lookup context for missing export scenarios.
+                                        // WHY: Navigate interface export hierarchy to reach the run function.
                                         // ERROR: E-UICP-226 typed-func lookup failed for export `table#run`.
+                                        let table_instance_idx = instance
+                                            .get_export_index(&mut store, None, "uicp:task-table-query/table@0.1.0")
+                                            .ok_or_else(|| anyhow::anyhow!("E-UICP-226: table interface not exported"))?;
+                                        let run_func_idx = instance
+                                            .get_export_index(&mut store, Some(&table_instance_idx), "run")
+                                            .ok_or_else(|| anyhow::anyhow!("E-UICP-226: run function not found in table interface"))?;
                                         let func_res: Result<
                                             wasmtime::component::TypedFunc<
                                                 (
@@ -1337,7 +1350,7 @@ mod with_runtime {
                                             >,
                                             _,
                                         > = instance
-                                            .get_typed_func(&mut store, "table#run")
+                                            .get_typed_func(&mut store, &run_func_idx)
                                             .map_err(|e| {
                                                 anyhow::Error::from(e).context(
                                                     "E-UICP-226: get_typed_func table#run failed",
@@ -1369,6 +1382,9 @@ mod with_runtime {
                         };
                         tokio::select! {
                             _ = cancel_watch.changed() => {
+                                // Force the epoch deadline so Wasmtime traps promptly.
+                                let _ = store.set_epoch_deadline(1);
+                                engine.increment_epoch();
                                 let metrics = collect_metrics(&store);
                                 finalize_error(
                                     &app,
@@ -1383,6 +1399,7 @@ mod with_runtime {
                                 epoch_pump.abort();
                                 let state: tauri::State<'_, crate::AppState> = app.state();
                                 state.compute_cancel.write().await.remove(&spec.job_id);
+                                #[cfg(feature = "wasm_compute")]
                                 crate::remove_compute_job(&app, &spec.job_id).await;
                                 return;
                             }
@@ -1458,9 +1475,10 @@ mod with_runtime {
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
         add_to_linker_async(linker)?;
-        // Register wasi:logging/logging import directly for P2.
-        {
-            let mut inst = linker.instance("wasi:logging/logging")?;
+        // WHY: Guests may import either unversioned or versioned Preview2 logging packages.
+        // INVARIANT: Both aliases route to the same log handler so guests never miss logging.
+        for namespace in ["wasi:logging/logging", "wasi:logging/logging@0.2.0"] {
+            let mut inst = linker.instance(namespace)?;
             inst.func_wrap(
                 "log",
                 |mut store: StoreContextMut<'_, Ctx>,
@@ -2102,12 +2120,18 @@ mod with_runtime {
         fn wasi_import_surface_excludes_http_and_sockets() {
             let engine = build_engine().expect("engine");
             let mut linker: Linker<Ctx> = Linker::new(&engine);
-            add_wasi_and_host(&mut linker).expect("wasi add ok");
-            // Positive: logging already linked; creating a new instance should fail
+        add_wasi_and_host(&mut linker).expect("wasi add ok");
+        // WHY: Ensure both aliases refuse duplicate registration once `add_wasi_and_host` runs.
+        for namespace in ["wasi:logging/logging", "wasi:logging/logging@0.2.0"] {
+            let err = linker
+                .instance(namespace)
+                .expect_err("logging instance should already be linked");
+            let msg = err.to_string();
             assert!(
-                linker.instance("wasi:logging/logging").is_err(),
-                "wasi:logging/logging should already be linked"
+                msg.contains("already defined") || msg.contains("duplicate definition"),
+                "unexpected linker error for {namespace}: {msg}"
             );
+        }
 
             // Negative checks: ensure HTTP and sockets namespaces are not pre-linked.
             // Creating a placeholder function should succeed if the namespace was not pre-linked.

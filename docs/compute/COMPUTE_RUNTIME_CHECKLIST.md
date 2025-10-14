@@ -167,9 +167,9 @@ Last updated: 2025-10-13
   - File: `uicp/package.json` (`modules:build:*`, `modules:update:*`, `modules:verify`)
 
   - [~] Guest ABI contract
-    - World: `world command` exports `csv` and `table` interfaces sharing `common.rows`; lives at `uicp/src-tauri/wit/command.wit` and mirrors component crates under `uicp/components/*`.【F:uicp/src-tauri/wit/command.wit†L1-L25】【F:uicp/components/csv.parse/src/lib.rs†L1-L74】
-    - TODO: freeze the ABI by documenting request/response schemas, error semantics, and host imports in `docs/compute/README.md` and a dedicated WIT changelog. Include examples for partial CBOR envelopes and cancellation contracts.
-    - TODO: ensure host shims match the WIT files (`uicp:host/control`, `logger`, `rng`, `clock`) and add conformance tests using `wit-bindgen` generated bindings once the host exposes these imports.
+    - World: `task` exports the pure csv interface from `uicp/components/csv.parse/csv-parse/wit/world.wit`; `table.query` retains host-control imports as documented in `uicp/components/table.query/wit/world.wit`.
+    - TODO: freeze the ABI by documenting request/response schemas, error semantics, and host imports in `docs/compute/README.md` and a dedicated WIT changelog.
+    - TODO: ensure host shims match the WIT files (csv: no imports; table.query: `uicp:host/control`, `wasi:logging`, `wasi:io`, `wasi:clocks`) and add conformance tests using `wit-bindgen` generated bindings once the host exposes these imports.
     - TODO: add regression tests that diff the checked-in WIT files versus generated TypeScript/Rust bindings (`npm run gen:io`) so drift is caught in CI.
 
 - [ ] Float determinism guard

@@ -7,9 +7,9 @@ interface csv {
 
   /// Parse `input` into rows. Supports `data:` URIs or plain text CSV.
   run: func(
-    job_id: string,
+    job-id: string,
     input: string,
-    has_header: bool,
+    has-header: bool,
   ) -> result<rows, string>;
 }
 

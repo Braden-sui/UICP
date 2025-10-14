@@ -6,7 +6,6 @@
 #[allow(warnings)]
 mod bindings;
 
-use bindings::export;
 use bindings::exports::uicp::task_table_query::table::{Error, Guest, Input, Output};
 use bindings::uicp::host::control;
 use bindings::wasi::clocks::monotonic_clock;
@@ -27,7 +26,9 @@ impl Guest for Component {
     }
 }
 
-export!(Component);
+bindings::exports::uicp::task_table_query::table::__export_uicp_task_table_query_table_0_1_0_cabi!(
+    Component with_types_in bindings::exports::uicp::task_table_query::table
+);
 
 // WHY: Separate orchestration from trait impl for easier unit testing.
 fn run_table_query(job_id: String, input: Input) -> Result<Output, Error> {

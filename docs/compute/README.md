@@ -5,14 +5,14 @@
 - See `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md` for the authoritative list of what’s done and what remains (host, UI, modules, CI, docs).
 - RFC: `docs/rfcs/0001-wasm-only-compute-plane.md`.
 - WIT index: `docs/wit/host/world.wit` (plus vendored WASI packages under `docs/wit/vendor/`).
-  - Task example WIT: `uicp/components/csv.parse/wit/world.wit`.
+  - Task example WIT: `uicp/components/csv.parse/csv-parse/wit/world.wit`.
 - Error taxonomy: `docs/compute/error-taxonomy.md`.
 - Host runtime: `uicp/src-tauri/src/compute.rs`.
 - Cache module: `uicp/src-tauri/src/compute_cache.rs`.
 
 ## Maintaining the WIT documentation mirror
 
-- Authoritative WIT packages live under `uicp/src-tauri/wit/` and each component crate (for example `uicp/components/csv.parse/wit/world.wit`).
+- Authoritative WIT packages live under `uicp/src-tauri/wit/` and each component crate (for example `uicp/components/csv.parse/csv-parse/wit/world.wit`).
 - The `docs/wit/` folder mirrors the public ABI surface for contributors and external readers, including vendored WASI dependencies in `docs/wit/vendor/`.
 - When a WIT contract changes, update both the runtime copy and the doc mirror in the same commit, bump `docs/wit/CHANGELOG.md`, and rerun `npm run gen:io` to refresh `uicp/src/compute/types.gen.ts`.
 - If upstream WASI packages change, copy the updated `.wit` files into `docs/wit/vendor/` and note the version in the changelog so the documentation stays self-contained.

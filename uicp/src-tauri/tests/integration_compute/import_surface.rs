@@ -9,7 +9,11 @@ fn comp_dir() -> PathBuf {
 }
 
 fn csv_parse_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("components").join("csv.parse")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("components")
+        .join("csv.parse")
+        .join("csv-parse")
 }
 
 fn table_query_dir() -> PathBuf {
@@ -27,7 +31,7 @@ fn wit_of_component(dir: PathBuf, artifact: &str) -> String {
     assert!(status.success(), "cargo component build failed");
     let wasm = dir
         .join("target")
-        .join("wasm32-wasi")
+        .join("wasm32-wasip1")
         .join("release")
         .join(artifact);
     assert!(wasm.exists(), "component artifact missing: {}", wasm.display());
@@ -42,10 +46,11 @@ fn wit_of_component(dir: PathBuf, artifact: &str) -> String {
 
 #[test]
 fn csv_parse_component_imports_expected() {
-    let wit = wit_of_component(csv_parse_dir(), "uicp_task_csv_parse.wasm");
-    // Should include wasi:io and wasi:logging
-    assert!(wit.contains("wasi:io"));
-    assert!(wit.contains("wasi:logging"));
+    let wit = wit_of_component(csv_parse_dir(), "csv_parse.wasm");
+    // Simplified component should not import host control/logging
+    assert!(wit.contains("export csv"));
+    assert!(!wit.contains("uicp:host/control"), "legacy host control import present: \n{}", wit);
+    assert!(!wit.contains("wasi:logging"), "unexpected wasi:logging import: \n{}", wit);
     // Should not include networking/http surfaces
     assert!(!wit.contains("wasi:http"), "unexpected wasi:http in imports: \n{}", wit);
     assert!(

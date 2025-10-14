@@ -1,6 +1,6 @@
 [package]
 name = "csv-parse"
-version = "0.1.0"
+version = "1.2.0"
 edition = "2021"
 
 [dependencies]
@@ -13,7 +13,8 @@ percent-encoding = "2.3"
 crate-type = ["cdylib"]
 
 [package.metadata.component]
-package = "uicp:task-csv-parse@1.2.0"
+package = "uicp:task-csv-parse"
 
 [package.metadata.component.target]
+path = "wit"
 world = "task"

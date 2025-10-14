@@ -57,9 +57,11 @@ fn decode_data_uri(job_id: &str, rest: &str) -> Result<String, String> {
             .decode(body.trim())
             .map_err(|err| format!("{ERROR_DATA_URI}: job {job_id}: base64 decode failed: {err}"))
             .and_then(|bytes| {
-                String::from_utf8(bytes).map(trim_bom).map_err(|err| {
-                    format!("{ERROR_UTF8}: job {job_id}: base64 bytes not utf-8: {err}")
-                })
+                String::from_utf8(bytes)
+                    .map(|s| trim_bom(s.as_str()))
+                    .map_err(|err| {
+                        format!("{ERROR_UTF8}: job {job_id}: base64 bytes not utf-8: {err}")
+                    })
             })
     } else {
         percent_decode_str(body)
