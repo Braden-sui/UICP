@@ -197,7 +197,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - CI (`.github/workflows/ci.yml`): lint, typecheck, unit, e2e, build; fail if Cloud host uses `/v1`.
 
 ## 9) Acceptance Criteria (Updated)
-- [ ] Intent "make a notepad with title and a save button" -> window visible <=1 s on Turbo; system message "Applied N commands in X ms".
+- [ ] Intent "make a functional tik-tak-toe board".
 - [ ] DeepSeek (planner) and Qwen3-Coder:480b (actor) invoked; DockChat shows phase statuses.
 - [ ] Cloud path never uses `/v1`; local path always uses `/v1`.
 - [ ] Full Control gate + STOP behave per spec (STOP cancel <=1 s).

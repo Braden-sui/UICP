@@ -1,15 +1,15 @@
 # Required Methods
 
-[source](https://docs.rs/wasmtime-wasi/22.0.0/src/wasmtime_wasi/stdio.rs.html)
+[source](https://docs.rs/wasmtime-wasi/37.0.2/src/wasmtime_wasi/stdio.rs.html)
 
-#### fn stream(&self) -> Box<dyn [HostOutputStream](https://docs.rs/wasmtime-wasi/22.0.0/wasmtime_wasi/trait.HostOutputStream.html)>
+#### fn stream(&self) -> Box<dyn [HostOutputStream](https://docs.rs/wasmtime-wasi/37.0.2/wasmtime_wasi/trait.HostOutputStream.html)>
 stream
 [Box](https://doc.rust-lang.org/nightly/alloc/boxed/struct.Box.html)
-[HostOutputStream](https://docs.rs/wasmtime-wasi/22.0.0/wasmtime_wasi/trait.HostOutputStream.html)
+[HostOutputStream](https://docs.rs/wasmtime-wasi/37.0.2/wasmtime_wasi/trait.HostOutputStream.html)
 Returns a fresh new stream which can write to this output stream.
 Note that all output streams should output to the same logical source. This means that it's possible for each independent stream to acquire a separate "permit" to write and then act on that permit. Note that additionally at this time once a permit is "acquired" there's no way to release it, for example you can wait for readiness and then never actually write in WASI. This means that acquisition of a permit for one stream cannot discount the size of a permit another stream could obtain.
 Implementations must be able to handle this
-[source](https://docs.rs/wasmtime-wasi/22.0.0/src/wasmtime_wasi/stdio.rs.html)
+[source](https://docs.rs/wasmtime-wasi/37.0.2/src/wasmtime_wasi/stdio.rs.html)
 
 #### fn isatty(&self) -> [bool](https://doc.rust-lang.org/nightly/std/primitive.bool.html)
 isatty
@@ -17,4 +17,4 @@ isatty
 Returns whether this stream is backed by a TTY.
 
 ## Implementors
-[source](https://docs.rs/wasmtime-wasi/22.0.0/src/wasmtime_wasi/stdio.rs.html)
+[source](https://docs.rs/wasmtime-wasi/37.0.2/src/wasmtime_wasi/stdio.rs.html)

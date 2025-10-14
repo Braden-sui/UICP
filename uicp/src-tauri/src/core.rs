@@ -277,7 +277,13 @@ pub fn emit_or_log<R: Runtime, T>(app_handle: &tauri::AppHandle<R>, event: &str,
 where
     T: serde::Serialize + Clone,
 {
-    if let Err(err) = app_handle.emit(event, payload) {
+    // WHY: Tauri v2 enforces stricter event name rules; replace dots with dashes for compliance.
+    let evt = if event.contains('.') {
+        event.replace('.', "-")
+    } else {
+        event.to_string()
+    };
+    if let Err(err) = app_handle.emit(&evt, payload) {
         eprintln!("Failed to emit {event}: {err}");
     }
 }

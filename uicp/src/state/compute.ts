@@ -35,10 +35,14 @@ type ComputeState = {
   reset: () => void;
 };
 
-const ACTIVE_STATES: ComputeStatus[] = ['running', 'partial', 'queued'];
-
 // Retain all active jobs plus up to this many terminal jobs (newest first).
 const MAX_TERMINAL_JOBS = 100;
+
+const markComputeStore = (event: string) => {
+  if (typeof performance !== 'undefined' && typeof performance.mark === 'function') {
+    performance.mark(event);
+  }
+};
 
 function pruneJobs(jobs: Record<string, ComputeJob>, maxTerminal = MAX_TERMINAL_JOBS): Record<string, ComputeJob> {
   const list = Object.values(jobs);
@@ -60,6 +64,7 @@ export const useComputeStore = create<ComputeState>((set) => ({
   jobs: {},
   upsertJob: (job) =>
     set((state) => {
+      markComputeStore('compute-store-upsert');
       const existing = state.jobs[job.jobId];
       const now = Date.now();
       const next: ComputeJob = existing
@@ -78,6 +83,7 @@ export const useComputeStore = create<ComputeState>((set) => ({
     }),
   markQueued: (jobId) =>
     set((state) => {
+      markComputeStore('compute-store-queued');
       const existing = state.jobs[jobId];
       if (!existing || existing.status === 'queued') return { jobs: state.jobs };
       const next = { ...existing, status: 'queued' as const, updatedAt: Date.now() };
@@ -87,6 +93,7 @@ export const useComputeStore = create<ComputeState>((set) => ({
     }),
   markRunning: (jobId) =>
     set((state) => {
+      markComputeStore('compute-store-running');
       const existing = state.jobs[jobId];
       if (!existing || existing.status === 'running') return { jobs: state.jobs };
       const next = { ...existing, status: 'running' as const, updatedAt: Date.now() };
@@ -96,6 +103,7 @@ export const useComputeStore = create<ComputeState>((set) => ({
     }),
   markPartial: (jobId) =>
     set((state) => {
+      markComputeStore('compute-store-partial');
       const existing = state.jobs[jobId];
       if (!existing) return { jobs: state.jobs };
       const next = { ...existing, status: 'partial' as const, partials: existing.partials + 1, updatedAt: Date.now() };
@@ -105,6 +113,7 @@ export const useComputeStore = create<ComputeState>((set) => ({
     }),
   markFinal: (jobId, ok, meta, errMsg, errCode) =>
     set((state) => {
+      markComputeStore('compute-store-final');
       const existing = state.jobs[jobId];
       if (!existing) return { jobs: state.jobs };
       const normalizedSource = errCode ?? errMsg ?? '';
@@ -132,12 +141,16 @@ export const useComputeStore = create<ComputeState>((set) => ({
     }),
   removeJob: (jobId) =>
     set((state) => {
+      markComputeStore('compute-store-remove');
       if (!state.jobs[jobId]) return { jobs: state.jobs };
       const next = { ...state.jobs };
       delete next[jobId];
       return { jobs: next };
   }),
-  reset: () => set({ jobs: {} }),
+  reset: () => {
+    markComputeStore('compute-store-reset');
+    set({ jobs: {} });
+  },
 }));
 
 export type ComputeSummary = {
@@ -175,48 +188,114 @@ const percentile = (values: number[], p: number): number | null => {
   return sorted[idx];
 };
 
+let lastJobsSnapshot: Record<string, ComputeJob> | null = null;
+let lastRecentLimit = 0;
+let lastSummary: ComputeSummary | null = null;
+
 export const summarizeComputeJobs = (
   jobs: Record<string, ComputeJob>,
   recentLimit = 8,
 ): ComputeSummary => {
+  if (jobs === lastJobsSnapshot && lastSummary && recentLimit === lastRecentLimit) {
+    return lastSummary;
+  }
+
   const list = Object.values(jobs);
-  const queued = list.filter((j) => j.status === 'queued').length;
-  const running = list.filter((j) => j.status === 'running').length;
-  const partial = list.filter((j) => j.status === 'partial').length;
-  const done = list.filter((j) => j.status === 'done').length;
-  const cancelled = list.filter((j) => j.status === 'cancelled').length;
-  const timeout = list.filter((j) => j.status === 'timeout').length;
-  const error = list.filter((j) => j.status === 'error').length;
-  const cacheHits = list.filter((j) => j.cacheHit === true).length;
-  const doneWithCache = list.filter((j) => j.status === 'done' && j.cacheHit === true).length;
-  const cacheRatio =
-    done > 0 ? Math.round((doneWithCache / done) * 100) : 0;
-  const partialsSeen = list.reduce((acc, job) => acc + (job.partials ?? 0), 0);
-  const partialFrames = list.reduce((acc, job) => acc + (job.partialFrames ?? 0), 0);
-  const invalidPartialsDropped = list.reduce(
-    (acc, job) => acc + (job.invalidPartialsDropped ?? 0),
-    0,
-  );
-  const logCount = list.reduce((acc, job) => acc + (job.logCount ?? 0), 0);
-  const emittedLogBytes = list.reduce((acc, job) => acc + (job.emittedLogBytes ?? 0), 0);
-  const logThrottleWaits = list.reduce((acc, job) => acc + (job.logThrottleWaits ?? 0), 0);
-  const loggerThrottleWaits = list.reduce((acc, job) => acc + (job.loggerThrottleWaits ?? 0), 0);
-  const partialThrottleWaits = list.reduce((acc, job) => acc + (job.partialThrottleWaits ?? 0), 0);
-  const fuelUsed = list.reduce((acc, job) => acc + (job.fuelUsed ?? 0), 0);
-  const durations = list
-    .map((job) => job.durationMs ?? 0)
-    .filter((n) => n > 0);
-  const memPeaks = list
-    .map((job) => job.memPeakMb ?? 0)
-    .filter((n) => n > 0);
+  let queued = 0;
+  let running = 0;
+  let partial = 0;
+  let done = 0;
+  let cancelled = 0;
+  let timeout = 0;
+  let error = 0;
+  let cacheHits = 0;
+  let doneWithCache = 0;
+  let partialsSeen = 0;
+  let partialFrames = 0;
+  let invalidPartialsDropped = 0;
+  let logCount = 0;
+  let emittedLogBytes = 0;
+  let logThrottleWaits = 0;
+  let loggerThrottleWaits = 0;
+  let partialThrottleWaits = 0;
+  let fuelUsed = 0;
+  let active = 0;
+
+  const durations: number[] = [];
+  const memPeaks: number[] = [];
+  const recentCandidates: ComputeJob[] = [];
+
+  for (const job of list) {
+    switch (job.status) {
+      case 'queued':
+        queued += 1;
+        active += 1;
+        break;
+      case 'running':
+        running += 1;
+        active += 1;
+        break;
+      case 'partial':
+        partial += 1;
+        active += 1;
+        break;
+      case 'done':
+        done += 1;
+        break;
+      case 'cancelled':
+        cancelled += 1;
+        break;
+      case 'timeout':
+        timeout += 1;
+        break;
+      case 'error':
+        error += 1;
+        break;
+      default:
+        break;
+    }
+
+    if (job.cacheHit) {
+      cacheHits += 1;
+      if (job.status === 'done') {
+        doneWithCache += 1;
+      }
+    }
+
+    partialsSeen += job.partials ?? 0;
+    partialFrames += job.partialFrames ?? 0;
+    invalidPartialsDropped += job.invalidPartialsDropped ?? 0;
+    logCount += job.logCount ?? 0;
+    emittedLogBytes += job.emittedLogBytes ?? 0;
+    logThrottleWaits += job.logThrottleWaits ?? 0;
+    loggerThrottleWaits += job.loggerThrottleWaits ?? 0;
+    partialThrottleWaits += job.partialThrottleWaits ?? 0;
+    fuelUsed += job.fuelUsed ?? 0;
+
+    const duration = job.durationMs ?? 0;
+    if (duration > 0) {
+      durations.push(duration);
+    }
+    const memPeak = job.memPeakMb ?? 0;
+    if (memPeak > 0) {
+      memPeaks.push(memPeak);
+    }
+
+    recentCandidates.push(job);
+  }
+
   const durationP50 = percentile(durations, 0.5);
   const durationP95 = percentile(durations, 0.95);
   const memPeakP95 = percentile(memPeaks, 0.95);
-  const recent = [...list]
+  const cacheRatio = done > 0 ? Math.round((doneWithCache / done) * 100) : 0;
+  const recent = recentCandidates
+    .filter((job) => job != null)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
     .slice(0, recentLimit);
-  const active = list.filter((j) => ACTIVE_STATES.includes(j.status)).length;
-  return {
+
+  lastJobsSnapshot = jobs;
+  lastRecentLimit = recentLimit;
+  lastSummary = {
     total: list.length,
     queued,
     running,
@@ -242,4 +321,6 @@ export const summarizeComputeJobs = (
     memPeakP95: memPeakP95 ?? null,
     recent,
   };
+
+  return lastSummary;
 };

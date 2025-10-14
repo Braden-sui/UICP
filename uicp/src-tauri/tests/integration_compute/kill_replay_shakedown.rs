@@ -1,7 +1,12 @@
 //! Kill/replay shakedown: run a real compute job, simulate a host restart, and ensure replay hits
 //! the cache with identical output hashes and no orphaned temp files.
 
-#![cfg(all(feature = "wasm_compute", feature = "uicp_wasi_enable"))]
+#![cfg(all(
+    feature = "wasm_compute",
+    feature = "uicp_wasi_enable",
+    feature = "compute_harness"
+))]
+// WHY: Replay shakedown requires the full harness stack (mock runtime + Wasm compute).
 
 use serde_json::json;
 use uicp::{
@@ -35,7 +40,24 @@ fn build_job(job_id: &str, env_hash: &str) -> ComputeJobSpec {
 
 #[tokio::test]
 async fn kill_replay_produces_identical_output_hash() {
-    let harness = ComputeTestHarness::new().expect("compute harness");
+    // Skip if module absent or component not loadable
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    if let Ok(Some(m)) = uicp::registry::find_module(&app.handle(), "csv.parse@1.2.0") {
+        let mut cfg = wasmtime::Config::new();
+        cfg.wasm_component_model(true);
+        let engine = wasmtime::Engine::new(&cfg).expect("engine");
+        if wasmtime::component::Component::from_file(&engine, &m.path).is_err() {
+            eprintln!("skipping kill/replay (component not loadable)");
+            return;
+        }
+    } else {
+        eprintln!("skipping kill/replay (csv.parse module not available)");
+        return;
+    }
+
+    let harness = ComputeTestHarness::new_async().await.expect("compute harness");
     let data_dir = harness.workspace_dir().to_path_buf();
 
     let job_spec = build_job(&Uuid::new_v4().to_string(), "replay-env");
@@ -56,7 +78,9 @@ async fn kill_replay_produces_identical_output_hash() {
     drop(harness); // simulate host shutdown
 
     let harness_restarted =
-        ComputeTestHarness::with_data_dir(&data_dir).expect("restart harness on same data dir");
+        ComputeTestHarness::with_data_dir_async(&data_dir)
+            .await
+            .expect("restart harness on same data dir");
     let second_final = harness_restarted
         .run_job(job_spec)
         .await

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useChatStore } from '../state/chat';
 import { useAppStore } from '../state/app';
@@ -23,7 +23,7 @@ export const LogsPanel = () => {
   const setLogsOpen = useAppStore((s) => s.setLogsOpen);
   const setMetricsOpen = useAppStore((s) => s.setMetricsOpen);
   const telemetry = useAppStore((s) => s.telemetry);
-  const metrics = telemetry.slice(0, 3);
+  const metrics = useMemo(() => telemetry.slice(0, 3), [telemetry]);
   type DebugEntry = {
     ts: number;
     event: string;

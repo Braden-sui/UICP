@@ -1,0 +1,2 @@
+// WHY: Attach the manifest so Windows loads comctl32 v6 for TaskDialogIndirect exports.
+1 RT_MANIFEST "windows.manifest"

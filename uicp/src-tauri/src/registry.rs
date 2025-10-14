@@ -67,6 +67,8 @@ pub fn modules_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
 /// or missing files, and a bundled copy is present under the app resources,
 /// copy the bundled directory into place.
 pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<()> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("install_modules").entered();
     // In dev, when UICP_MODULES_DIR is provided, assume the developer manages
     // modules directly in that directory and avoid touching files (which would
     // trigger Tauri's file watcher and cause rebuild loops).
@@ -85,6 +87,8 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     // Acquire a best-effort lock to avoid concurrent installers clobbering files.
     let _lock = acquire_install_lock(&target);
     if _lock.is_none() {
+        #[cfg(feature = "otel_spans")]
+        tracing::debug!(target = "uicp", path = %target.display(), "module installer already active");
         // Another process/thread is installing; skip to avoid races.
         return Ok(());
     }

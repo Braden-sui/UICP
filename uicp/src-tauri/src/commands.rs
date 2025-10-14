@@ -183,7 +183,7 @@ pub async fn get_modules_info<R: Runtime>(
     }))
 }
 
-pub async fn copy_into_files(src_path: String) -> Result<String, String> {
+pub async fn copy_into_files<R: Runtime>(app: tauri::AppHandle<R>, src_path: String) -> Result<String, String> {
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -206,7 +206,17 @@ pub async fn copy_into_files(src_path: String) -> Result<String, String> {
         return Err("Empty file name".into());
     }
 
-    let dest_dir = crate::files_dir_path();
+    // Prefer env-configured data dir (harness sets UICP_DATA_DIR) to ensure tests write under the harness workspace.
+    // Prefer AppState-derived files dir to avoid stale statics/env drift across tests
+    let dest_dir_buf: PathBuf = {
+        let state: State<'_, AppState> = app.state();
+        state
+            .db_path
+            .parent()
+            .map(|p| p.join("files"))
+            .unwrap_or_else(|| crate::files_dir_path().to_path_buf())
+    };
+    let dest_dir = dest_dir_buf.as_path();
     if let Err(e) = fs::create_dir_all(dest_dir) {
         return Err(format!("Failed to create files dir: {e}"));
     }
@@ -223,6 +233,7 @@ pub async fn copy_into_files(src_path: String) -> Result<String, String> {
         dest = dest_dir.join(new_name);
     }
 
+    eprintln!("copy_into_files: src={} -> dest={}", p.display(), dest.display());
     fs::copy(p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
 
     Ok(format!(

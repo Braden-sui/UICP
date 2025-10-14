@@ -1,13 +1,13 @@
-# !WARNING!
-
-  - NOT PRODUCTION-READY — ACTIVE DEVELOPMENT — EXPECT BREAKING CHANGES
-  - Interfaces, prompts, and storage schemas are unstable and may change without notice.
-  - Security hardening is incomplete; do not use with sensitive data or in regulated environments.
-  - Data may be lost during upgrades; backups and migrations are not guaranteed.
-  - Windows-focused MVP; Linux/macOS support is incomplete.
-  - Mock mode defaults on; cloud calls and compute features are experimental.
-
 # UICP Desktop
+
+## Warning
+
+- NOT PRODUCTION-READY — ACTIVE DEVELOPMENT — EXPECT BREAKING CHANGES
+- Interfaces, prompts, and storage schemas are unstable and may change without notice.
+- Security hardening is incomplete; do not use with sensitive data or in regulated environments.
+- Data may be lost during upgrades; backups and migrations are not guaranteed.
+- Windows-focused MVP; Linux/macOS support is incomplete.
+- Mock mode defaults on; cloud calls and compute features are experimental.
 
 Local‑first Tauri desktop that exposes a clean workspace canvas and a DockChat surface. DockChat is the only user control; the agent drives the UI via validated UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
 
@@ -15,12 +15,14 @@ Local‑first Tauri desktop that exposes a clean workspace canvas and a DockChat
 
 Build a trustworthy, local‑first generative desktop where models describe intent and the system performs safe, declarative UI updates. The agent never emits inline JS; it speaks in validated commands that the adapter applies deterministically and can replay. The compute plane executes Wasm tasks locally (capability‑scoped, feature‑gated) so common data work stays offline. Everything fails loud with typed errors, streaming is cancellable, and state changes are auditable via logs and persisted commands. Longer‑term, integrate Claude Code and the Codex CLI directly into the desktop to enable agentic coding and real code implementation with reviewable diffs and tests.
 
-Non‑goals for the MVP
+### Non‑goals for the MVP
+
 - Production hardening and enterprise security
 - Backward‑compat shims for breaking changes
 - Broad OS support beyond Windows until core flows are stable
 
-Key runtime guardrails
+### Key runtime guardrails
+
 - Environment Snapshot is prepended to planner/actor prompts (agent flags, open windows, last trace, and a trimmed DOM summary) to boost context-awareness.
 - Models must not emit event APIs or inline JS. Interactivity is declared via `data-command` and `data-state-*` attributes only; the adapter executes these declaratively.
 - Adapter auto-creates a shell window if a batch targets a missing `windowId` for `window.update`, `dom.*`, or `component.render`, and persists the synthetic `window.create` to keep replay consistent.
@@ -62,7 +64,8 @@ The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.t
 - `npm run test` – Vitest unit suite (`tests/unit`)
 - `npm run test:e2e` - Playwright smoke (`tests/e2e/specs`), builds with MOCK mode then runs preview
 
-Compute modules and runtime
+### Compute modules and runtime
+
 - `npm run dev:wasm` – Tauri dev with `UICP_MODULES_DIR` on PATH for faster inner loop
 - `npm run dev:wasm:runtime` – Tauri dev with compute host features (`wasm_compute,uicp_wasi_enable`)
 - `npm run modules:build` – build Wasm components under `uicp/components/*`
@@ -71,13 +74,13 @@ Compute modules and runtime
 
 ## Documentation
 
-- Compute runtime details: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md
+- Compute runtime details: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md.
 - WIL Architecture and Protocol:
-  - docs/architecture.md — Planner/Actor contracts, parsing, files.
-  - docs/compute/WIL_QUICKSTART.md — Allowed templates and examples.
-  - docs/WIL_REFACTOR.md — Tracking log and backlog.
- - Model endpoints and auth: docs/ollama cloud vs. turbo.md
- - Docs reading order: docs/INDEX.md
+  - docs/architecture.md: Planner/Actor contracts, parsing, files.
+  - docs/compute/WIL_QUICKSTART.md: Allowed templates and examples.
+  - docs/WIL_REFACTOR.md: Tracking log and backlog.
+- Model endpoints and auth: docs/ollama cloud vs. turbo.md.
+- Docs reading order: docs/INDEX.md.
 
 ## Environment
 
@@ -85,21 +88,24 @@ Compute modules and runtime
 | --- | --- | --- |
 | `VITE_DEV_MODE` | `true` | enables developer UX touches |
 | `VITE_MOCK_MODE` | `true` | when true the deterministic planner + mock api are used |
-| `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend)
+| `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend) |
 | `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window. |
 | `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window. |
 
 ### Configuration & Credentials
+
+#### API Key Storage
+
+- Preferred: OS keyring (stored when you enter the key in-app; validated via `test_api_key`).
+- Optional: `uicp/.env` for local development. On startup the backend reads `.env` (if present) and migrates `OLLAMA_API_KEY` into the keyring automatically.
+
+#### Environment Variables
 
 - `USE_DIRECT_CLOUD` — `1` to use Ollama Cloud, `0` for local daemon
 - `OLLAMA_API_KEY` — required when `USE_DIRECT_CLOUD=1`
 - `PLANNER_MODEL` — default planner model id (e.g., `deepseek-v3.1:671b`)
 - `ACTOR_MODEL` — default actor model id (e.g., `qwen3-coder:480b`)
 - See `.env.example` at repo root.
-
-API key storage
-- Preferred: OS keyring (stored when you enter the key in-app; validated via `test_api_key`).
-- Optional: `uicp/.env` for local development. On startup the backend reads `.env` (if present) and migrates `OLLAMA_API_KEY` into the keyring automatically.
 
 ### Environment Snapshot
 
@@ -151,12 +157,15 @@ These tools provide visibility into the system's operation and help with debuggi
 - `src/lib/uicp` - Zod schemas, DOM adapter, per-window FIFO queue with idempotency and txn.cancel, and documentation.
 - `src/lib/mock.ts` – deterministic planner outputs for common prompts.
 
-- Compute plane: Optional Wasm host behind Tauri feature flags (`wasm_compute`, `uicp_wasi_enable`). See `docs/compute/README.md`.
+### Compute Plane
+
+- Optional Wasm host behind Tauri feature flags (`wasm_compute`, `uicp_wasi_enable`). See `docs/compute/README.md`.
   - Workspace-scoped cache: `JobSpec.workspaceId` (default `"default"`) scopes cache keys and reads.
   - Clear Cache: Agent Settings exposes "Clear Cache" for the active workspace.
   - External APIs remain first‑class via `api.call` when a task is not suitable for local compute.
 
-Backend (Rust)
+### Backend (Rust)
+
 - Tauri 2 runtime with SQLite persistence and WAL, guarded streaming, per-request deadlines, idempotency keys, and a per-host circuit breaker.
 - Compute host uses Wasmtime (WASI Preview 2) when enabled; capability-based IO; guest logs forwarded to UI debug bus.
 
@@ -166,10 +175,12 @@ Backend (Rust)
 2. `npm run test:e2e` drives the notepad flow end-to-end in Playwright. The config builds with `VITE_MOCK_MODE=true` and starts preview automatically. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
 
 Rust (compute host)
+
 - From `uicp/src-tauri`: `cargo test --features "wasm_compute uicp_wasi_enable" -- --nocapture`
 - Build only: `cargo check --features "wasm_compute uicp_wasi_enable"`
 
 CI
+
 - UI: `.github/workflows/ci.yml` runs lint, typecheck, unit, e2e (mock), build, SBOM generation, Trivy, and Gitleaks.
 - Compute: `.github/workflows/compute-ci.yml` builds the Rust host, checks/pins Wasmtime, validates WIT packages, runs Rust tests, regenerates TS bindings, and executes a Playwright compute harness.
 - Link checks: Markdown links are validated using Lychee with settings in `.lychee.toml`.
@@ -185,14 +196,16 @@ CI
 
 ## In Development
 
-Project status and execution plans
+### Project status and execution plans
+
 - Status snapshot: `docs/STATUS.md`
 - Master checklist for compute runtime: `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`
 - Architecture overview: `docs/architecture.md`
 - MVP scope/status: `docs/MVP checklist.md`
 - Coverage and recent fixes: `docs/compute/TEST_COVERAGE_SUMMARY.md`, `docs/compute/TEST_FIXES_SUMMARY.md`
 
-Key workstreams (high level)
+### Key workstreams (high level)
+
 - Compute plane (Wasmtime, WASI Preview 2)
   - Capability gates for fs/net; stricter preopens; HTTP allowlist (scaffold)
   - Determinism probes (clock/RNG/float), epoch deadlines, memory limits

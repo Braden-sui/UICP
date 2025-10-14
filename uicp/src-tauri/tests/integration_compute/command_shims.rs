@@ -7,7 +7,7 @@ use uicp::test_support::ComputeTestHarness;
 
 #[tokio::test]
 async fn harness_command_shims_cover_admin_ops() {
-    let harness = ComputeTestHarness::new().expect("compute harness");
+    let harness = ComputeTestHarness::new_async().await.expect("compute harness");
 
     // Exercise modules info shim
     let info = harness.modules_info().await.expect("modules info");

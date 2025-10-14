@@ -2112,10 +2112,23 @@ fn main() {
         std::process::exit(1);
     }
 
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .manage(state)
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init());
+
+    #[cfg(all(feature = "dialog_plugin", not(feature = "compute_harness")))]
+    {
+        builder = builder.plugin(tauri_plugin_dialog::init());
+    }
+
+    #[cfg(any(not(feature = "dialog_plugin"), feature = "compute_harness"))]
+    {
+        // WHY: Compute harness binaries run in CI/headless environments or without the dialog plugin feature; skipping
+        // it avoids a hard dependency on TaskDialogIndirect so tests do not fail on stripped-down Windows hosts.
+    }
+
+    builder
         .setup(|app| {
             // Ensure base data directories exist
             if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) {

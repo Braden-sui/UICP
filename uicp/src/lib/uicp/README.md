@@ -76,12 +76,14 @@ Exceeding these limits will cause validation errors.
 `api.call` is side-effectful and runs best-effort on the frontend:
 
 ### Simple text intent
+
 * `uicp://intent` with body: `{ text: string, windowId?: string }`
 * Dispatches a new chat message through the app pipeline with `text`
 * The bridge automatically merges it with the most recent user ask:
   `"<last user message>\n\nAdditional details: <text>"`
 
 ### Structured clarifier form
+
 * `uicp://intent` with body: `{ textPrompt?: string, fields?: [...], title?, submit?, cancel?, windowId?, width?, height?, description? }`
 * Renders an interactive form window with specified fields
 * On submit, dispatches structured data back to chat pipeline
@@ -112,11 +114,13 @@ Example structured clarifier:
 ```
 
 ### File operations
+
 * `tauri://fs/writeTextFile`
   * Body: `{ path: string, contents: string, directory?: "Desktop" | "Document" | ... }`
   * Writes `contents` to `path` under the given base directory (defaults to Desktop)
 
 ### HTTP requests
+
 * `http://` or `https://`
   * Performs a `fetch` with optional JSON `body` and `headers`
   * Errors are logged; no response is surfaced to the planner
@@ -163,12 +167,14 @@ The Tauri bridge installs an aggregator with a gating callback that:
 * The streaming transport supports best-effort cancellation: when the async iterator returned by `streamOllamaCompletion()` is closed, the frontend calls the Tauri command `cancel_chat(requestId)` to abort the backend HTTP request.
 
 ### Planner/Actor timeouts
+
 * Default planner timeout: 120s; actor: 180s. Both are overridable via Vite env at build time:
   * `VITE_PLANNER_TIMEOUT_MS=120000`
   * `VITE_ACTOR_TIMEOUT_MS=180000`
-The early-stop parser returns as soon as a complete JSON batch is observed, so long timeouts do not add latency when outputs finish early.
+* The early-stop parser returns as soon as a complete JSON batch is observed, so long timeouts do not add latency when outputs finish early.
 
 ## Window Lifecycle Helpers
+
 * `registerWindowLifecycle(listener)` subscribes to created/updated/destroyed events emitted by the adapter when windows change.
 * `listWorkspaceWindows()` returns the current window ids and titles for menu initialisation.
 * `closeWorkspaceWindow(id)` closes a workspace window and emits the matching lifecycle event.

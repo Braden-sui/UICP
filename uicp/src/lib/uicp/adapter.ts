@@ -100,6 +100,37 @@ const windowDragCleanup = new WeakMap<HTMLElement, () => void>();
 
 let workspaceRoot: HTMLElement | null = null;
 
+const REPLAY_PROGRESS_EVENT = 'workspace-replay-progress';
+const REPLAY_COMPLETE_EVENT = 'workspace-replay-complete';
+const REPLAY_BATCH_SIZE = 20;
+
+type ReplayProgressDetail = {
+  total: number;
+  processed: number;
+  applied: number;
+  errors: number;
+  done?: boolean;
+};
+
+const emitReplayProgress = (detail: ReplayProgressDetail) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(REPLAY_PROGRESS_EVENT, { detail }));
+  if (detail.done) {
+    window.dispatchEvent(new CustomEvent(REPLAY_COMPLETE_EVENT, { detail }));
+  }
+};
+
+const yieldReplay = () =>
+  new Promise<void>((resolve) => {
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => resolve(), { timeout: 32 });
+      return;
+    }
+    setTimeout(resolve, 16);
+  });
+
 type CommandResult<T = unknown> =
   | { success: true; value: T }
   | { success: false; error: string };
@@ -630,13 +661,21 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
     return { applied: 0, errors: [] };
   }
 
+  let commands: Array<{ id: string; tool: string; args: unknown }> = [];
+  let processed = 0;
+  let applied = 0;
+  let errors: string[] = [];
   try {
-    const commands = await invoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
-    const errors: string[] = [];
-    let applied = 0;
+    commands = await invoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
+    errors = [];
+    applied = 0;
+    processed = 0;
     const dedup = new Set<string>();
     // Discard transient in-memory state before replay so replayed ops fully define the state.
     for (const scope of stateStore.values()) scope.clear();
+
+    const total = commands.length;
+    emitReplayProgress({ total, processed, applied, errors: 0 });
 
     // Preserve original creation order to avoid inverting
     // window lifecycle (e.g., a prior close followed by a create
@@ -650,6 +689,11 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
         // This mitigates double-persistence or accidental duplicate rows without risking reordering.
         const key = `${cmd.tool}:${stableStringify(cmd.args)}`;
         if (dedup.has(key)) {
+          processed += 1;
+          if (processed % REPLAY_BATCH_SIZE === 0 || processed === total) {
+            emitReplayProgress({ total, processed, applied, errors: errors.length });
+            await yieldReplay();
+          }
           continue;
         }
         dedup.add(key);
@@ -667,14 +711,31 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
       } catch (error) {
         errors.push(`${cmd.tool}: ${error instanceof Error ? error.message : String(error)}`);
       }
+      processed += 1;
+      if (processed % REPLAY_BATCH_SIZE === 0 || processed === total) {
+        emitReplayProgress({ total, processed, applied, errors: errors.length });
+        // Yield to the browser so first paint and interactivity aren't blocked.
+        // WHY: Heavy workspaces can contain hundreds of commands; chunking keeps the UI responsive.
+        // INVARIANT: Replay preserves original ordering even when yielding between batches.
+        await yieldReplay();
+      }
     }
 
-    return { applied, errors };
+      emitReplayProgress({ total, processed, applied, errors: errors.length, done: true });
+      return { applied, errors };
   } catch (error) {
     console.error('Failed to replay workspace', error);
-    return { applied: 0, errors: [error instanceof Error ? error.message : String(error)] };
+    const message = error instanceof Error ? error.message : String(error);
+    emitReplayProgress({
+      total: commands.length,
+      processed,
+      applied,
+      errors: errors.length + 1,
+      done: true,
+    });
+    return { applied, errors: [...errors, message] };
   }
-};
+  };
 
 // Allows shared teardown from commands and UI controls.
 function destroyWindow(id: string) {
@@ -1345,5 +1406,3 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
     errors,
   };
 };
-
-

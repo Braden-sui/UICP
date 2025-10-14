@@ -31,31 +31,32 @@ impl ComputeTestHarness {
     /// Build a new harness. Modules are resolved from `UICP_MODULES_DIR` if set, otherwise
     /// default to the checked-in `src-tauri/modules` directory.
     pub fn new() -> Result<Self> {
+        // SAFETY: For non-async callers only. Prefer new_async() inside async tests to avoid nested runtime.
+        tauri::async_runtime::block_on(Self::new_async())
+    }
+
+    /// Async constructor to avoid nested Tokio runtimes inside #[tokio::test].
+    pub async fn new_async() -> Result<Self> {
         let temp = TempDir::new().context("create temp data dir")?;
         let data_dir = temp.path().to_path_buf();
-        let (app, window) = Self::build_app(&data_dir)?;
+        let (app, window) = Self::build_app_async(&data_dir).await?;
 
-        Ok(Self {
-            _temp: Some(temp),
-            data_dir,
-            app,
-            _window: window,
-        })
+        Ok(Self { _temp: Some(temp), data_dir, app, _window: window })
     }
 
     /// Reuse an existing data directory (e.g. to simulate process restart).
     pub fn with_data_dir<P: AsRef<Path>>(dir: P) -> Result<Self> {
-        let data_dir = dir.as_ref().to_path_buf();
-        let (app, window) = Self::build_app(&data_dir)?;
-        Ok(Self {
-            _temp: None,
-            data_dir,
-            app,
-            _window: window,
-        })
+        // SAFETY: For non-async callers only. Prefer with_data_dir_async() inside async tests.
+        tauri::async_runtime::block_on(Self::with_data_dir_async(dir))
     }
 
-    fn build_app(
+    pub async fn with_data_dir_async<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        let data_dir = dir.as_ref().to_path_buf();
+        let (app, window) = Self::build_app_async(&data_dir).await?;
+        Ok(Self { _temp: None, data_dir, app, _window: window })
+    }
+
+    async fn build_app_async(
         data_dir: &Path,
     ) -> Result<(tauri::App<MockRuntime>, tauri::WebviewWindow<MockRuntime>)> {
         std::fs::create_dir_all(data_dir).context("create data dir root")?;
@@ -71,47 +72,42 @@ impl ComputeTestHarness {
         ensure_default_workspace(&db_path).context("ensure default workspace")?;
 
         // Initialize resident async SQLite connections for tests
-        let db_rw = tauri::async_runtime::block_on(AsyncConn::open(&db_path))
-            .expect("open sqlite rw (harness)");
-        let db_ro = tauri::async_runtime::block_on(AsyncConn::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ))
-        .expect("open sqlite ro (harness)");
-        tauri::async_runtime::block_on(async {
-            // Writer: full configuration (unwrap both layers: tokio_rusqlite and rusqlite)
-            db_rw
-                .call(
-                    |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                        use std::time::Duration;
-                        c.busy_timeout(Duration::from_millis(5_000))
-                            .map_err(tokio_rusqlite::Error::from)?;
-                        c.pragma_update(None, "journal_mode", "WAL")
-                            .map_err(tokio_rusqlite::Error::from)?;
-                        c.pragma_update(None, "synchronous", "NORMAL")
-                            .map_err(tokio_rusqlite::Error::from)?;
-                        c.pragma_update(None, "foreign_keys", "ON")
-                            .map_err(tokio_rusqlite::Error::from)?;
-                        Ok(())
-                    },
-                )
-                .await
-                .expect("configure sqlite rw");
-            // Reader: non-writing pragmas only
-            db_ro
-                .call(
-                    |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                        use std::time::Duration;
-                        c.busy_timeout(Duration::from_millis(5_000))
-                            .map_err(tokio_rusqlite::Error::from)?;
-                        c.pragma_update(None, "foreign_keys", "ON")
-                            .map_err(tokio_rusqlite::Error::from)?;
-                        Ok(())
-                    },
-                )
-                .await
-                .expect("configure sqlite ro");
-        });
+        let db_rw = AsyncConn::open(&db_path).await.expect("open sqlite rw (harness)");
+        let db_ro = AsyncConn::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .await
+            .expect("open sqlite ro (harness)");
+        // Writer: full configuration (unwrap both layers: tokio_rusqlite and rusqlite)
+        db_rw
+            .call(
+                |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    use std::time::Duration;
+                    c.busy_timeout(Duration::from_millis(5_000))
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "journal_mode", "WAL")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "synchronous", "NORMAL")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "foreign_keys", "ON")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    Ok(())
+                },
+            )
+            .await
+            .expect("configure sqlite rw");
+        // Reader: non-writing pragmas only
+        db_ro
+            .call(
+                |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    use std::time::Duration;
+                    c.busy_timeout(Duration::from_millis(5_000))
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    c.pragma_update(None, "foreign_keys", "ON")
+                        .map_err(tokio_rusqlite::Error::from)?;
+                    Ok(())
+                },
+            )
+            .await
+            .expect("configure sqlite ro");
 
         let action_log =
             ActionLogService::start(&db_path).context("start action log service (harness)")?;
@@ -183,7 +179,7 @@ impl ComputeTestHarness {
         let handler_job_id = job_id.clone();
         let handler_tx = Arc::clone(&tx_arc);
 
-        let listener_id = self.app.listen("compute.result.final", move |event| {
+        let listener_id = self.app.listen("compute-result-final", move |event| {
             if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
                 if value
                     .get("jobId")
@@ -211,12 +207,17 @@ impl ComputeTestHarness {
             rx.await.map_err(|e| anyhow::anyhow!(e))
         })
         .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for compute.result.final"));
+        .map_err(|_| anyhow::anyhow!("timed out waiting for compute-result-final"));
 
         self.app.unlisten(listener_id);
 
         match result {
-            Ok(Ok(value)) => Ok(value),
+            Ok(Ok(value)) => {
+                if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                    eprintln!("compute-result-final (error): {value}");
+                }
+                Ok(value)
+            },
             Ok(Err(err)) => Err(err),
             Err(err) => Err(err),
         }
@@ -248,7 +249,7 @@ impl ComputeTestHarness {
             .as_ref()
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("E-UICP-411: source path not valid UTF-8"))?;
-        crate::commands::copy_into_files(src_str.into())
+        crate::commands::copy_into_files(self.app.handle().clone(), src_str.into())
             .await
             .map_err(|err| anyhow::anyhow!("E-UICP-412: copy_into_files via harness failed: {err}"))
     }

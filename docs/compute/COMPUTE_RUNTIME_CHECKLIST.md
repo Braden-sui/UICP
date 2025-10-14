@@ -40,7 +40,7 @@ Last updated: 2025-10-13
   - `StoreLimits` attached; memory cap derived from `mem_limit_mb`
 
 - [~] Version pin and upgrade gate
-  - Current: Wasmtime and wasmtime-wasi are pinned via lockfile to `24.0.4` (Cargo.lock). Preview 2 is in use. CI enforces pinned versions.
+- Current: Wasmtime and wasmtime-wasi are pinned via lockfile to `37.0.2` (Cargo.lock). Preview 2 is in use and supports the newer component encoding (0d 00 01 00). CI enforces pinned versions.
   - Next: Add golden-run gate before allowing engine upgrades.
 
 - [x] Resource enforcement
@@ -335,7 +335,5 @@ Last updated: 2025-10-13
   - Tests: `uicp/tests/unit/orchestrator.fallback.test.ts:1`, `uicp/tests/unit/orchestrator.timeout.test.ts:1`
 
 Notes
+
 - These tests run in CI via `compute-ci.yml` (JS/TS unit stage). Rust integration tests are covered in Section 7 and TEST_COVERAGE_SUMMARY.md.
-
-
-

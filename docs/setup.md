@@ -77,7 +77,7 @@ When you enable the `wasm_compute` feature, build and publish task components an
 1) Install toolchain for components
 
 ```bash
-rustup target add wasm32-wasi
+rustup target add wasm32-wasip1
 cargo install cargo-component --locked
 ```
 

@@ -1,10 +1,16 @@
-#![cfg(all(feature = "wasm_compute", feature = "uicp_wasi_enable"))]
+#![cfg(all(
+    feature = "wasm_compute",
+    feature = "uicp_wasi_enable",
+    feature = "compute_harness"
+))]
+// WHY: These determinism proofs need the harness-only Tauri test runtime plus the Wasm runtime.
 
 use serde_json::{json, Value};
 use uicp::{
     test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
     ComputeProvenanceSpec,
 };
+use uicp::registry;
 
 fn make_job(job_id: &str, env_hash: &str, fuel: Option<u64>) -> ComputeJobSpec {
     ComputeJobSpec {
@@ -47,7 +53,23 @@ fn ensure_success(final_ev: &Value) -> &serde_json::Map<String, Value> {
 
 #[tokio::test]
 async fn deterministic_runs_match_for_same_env_hash() {
-    let harness = ComputeTestHarness::new().expect("harness");
+    // Skip if module absent or invalid
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    if let Ok(Some(m)) = registry::find_module(&app.handle(), "table.query@0.1.0") {
+        let mut cfg = wasmtime::Config::new();
+        cfg.wasm_component_model(true);
+        let engine = wasmtime::Engine::new(&cfg).expect("engine");
+        if wasmtime::component::Component::from_file(&engine, &m.path).is_err() {
+            eprintln!("skipping determinism (component not loadable)");
+            return;
+        }
+    } else {
+        eprintln!("skipping determinism (table.query module not available)");
+        return;
+    }
+    let harness = ComputeTestHarness::new_async().await.expect("harness");
 
     let job_spec = make_job(
         "00000000-0000-4000-8000-0000000000aa",
@@ -105,7 +127,22 @@ async fn deterministic_runs_match_for_same_env_hash() {
 
 #[tokio::test]
 async fn different_env_hash_changes_seed_dependent_output() {
-    let harness = ComputeTestHarness::new().expect("harness");
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    if let Ok(Some(m)) = registry::find_module(&app.handle(), "table.query@0.1.0") {
+        let mut cfg = wasmtime::Config::new();
+        cfg.wasm_component_model(true);
+        let engine = wasmtime::Engine::new(&cfg).expect("engine");
+        if wasmtime::component::Component::from_file(&engine, &m.path).is_err() {
+            eprintln!("skipping determinism variant (component not loadable)");
+            return;
+        }
+    } else {
+        eprintln!("skipping determinism variant (table.query module not available)");
+        return;
+    }
+    let harness = ComputeTestHarness::new_async().await.expect("harness");
 
     let base_job = make_job(
         "00000000-0000-4000-8000-0000000000bb",

@@ -29,7 +29,7 @@ hex = "0.4"
 tauri = { version = "2.4.1", features = [] }
 tempfile = { version = "3.10", optional = true }
 tauri-plugin-fs = "2.4"
-tauri-plugin-dialog = "2.4"
+tauri-plugin-dialog = { version = "2.4", optional = true }
 time = "0.3"
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -42,12 +42,15 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], option
 
   # Optional Wasm runtime (WASI Preview 2) for the compute plane.
   # Enable via `--features "wasm_compute uicp_wasi_enable"` when you want local compute.
-  wasmtime = { version = "24.0.4", default-features = false, features = ["cranelift", "component-model", "cache"], optional = true }
-  wasmtime-wasi = { version = "24.0.4", optional = true }
+  # WHY: Newer Wasm component encoding (0x0d) requires an updated Wasmtime runtime.
+  # SAFETY: Keep feature set minimal; we rely on component model + cranelift JIT + cache.
+  wasmtime = { version = "37.0.2", default-features = false, features = ["cranelift", "component-model", "cache"], optional = true }
+  wasmtime-wasi = { version = "37.0.2", optional = true }
   dashmap = "6.0"
 
-  [build-dependencies]
-  tauri-build = { version = "2.4.1", features = [] }
+[build-dependencies]
+embed-resource = "2.5"
+tauri-build = { version = "2.4.1", features = [] }
 
 [dev-dependencies]
 tauri = { version = "2.4.1", features = ["test"] }
@@ -67,8 +70,9 @@ lto = true
 strip = true
 
 [features]
-default = ["tauri2"]
+default = ["tauri2", "dialog_plugin"]
 tauri2 = []
+dialog_plugin = ["dep:tauri-plugin-dialog"]
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:tempfile"]
 uicp_wasi_enable = []
 uicp_bindgen = []

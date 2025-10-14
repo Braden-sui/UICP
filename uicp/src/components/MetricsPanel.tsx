@@ -33,7 +33,7 @@ const MetricsPanel = () => {
   const devtoolsEvents = useAppStore((state) => state.devtoolsAnalytics);
   const computeJobs = useComputeStore((s) => s.jobs);
 
-  const rows = useMemo(() => telemetry.slice(0, 12), [telemetry]);
+  const telemetryRows = useMemo(() => telemetry.slice(0, 12), [telemetry]);
   const devtoolsRows = useMemo(() => devtoolsEvents.slice(0, 12), [devtoolsEvents]);
   const computeSummary = useMemo(() => summarizeComputeJobs(computeJobs), [computeJobs]);
 
@@ -296,9 +296,11 @@ const MetricsPanel = () => {
         )}
         <header className="flex items-center justify-between text-[11px] uppercase tracking-wide text-slate-500">
           <span>Recent traces</span>
-          <span className="text-[10px] font-mono lowercase text-slate-400">{rows.length} entries</span>
+          <span className="text-[10px] font-mono lowercase text-slate-400">
+            {telemetryRows.length} entries
+          </span>
         </header>
-        {rows.length === 0 ? (
+        {telemetryRows.length === 0 ? (
           <p className="rounded border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-slate-400">
             No telemetry captured yet. Send an intent to populate metrics.
           </p>
@@ -313,9 +315,9 @@ const MetricsPanel = () => {
                 <th className="px-3 py-2">Apply</th>
                 <th className="px-3 py-2">Status</th>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.map((entry) => (
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {telemetryRows.map((entry) => (
                 <tr key={entry.traceId} className="text-xs">
                   <td className="px-3 py-2 align-top font-mono text-[10px] text-slate-500">
                     <div>{entry.traceId}</div>

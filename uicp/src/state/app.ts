@@ -62,6 +62,56 @@ export type IntentTelemetry = {
   updatedAt: number;
 };
 
+export type TelemetryBuffer = {
+  capacity: number;
+  data: Array<IntentTelemetry | undefined>;
+  head: number;
+  size: number;
+  version: number;
+};
+
+const TELEMETRY_CAPACITY = 25;
+
+const createTelemetryBuffer = (capacity = TELEMETRY_CAPACITY): TelemetryBuffer => ({
+  capacity,
+  data: new Array<IntentTelemetry | undefined>(capacity),
+  head: 0,
+  size: 0,
+  version: 0,
+});
+
+const telemetryBufferFindIndex = (buffer: TelemetryBuffer, traceId: string): number => {
+  const { size, capacity, head, data } = buffer;
+  for (let i = 0; i < size; i += 1) {
+    const idx = (head - 1 - i + capacity) % capacity;
+    const entry = data[idx];
+    if (entry && entry.traceId === traceId) {
+      return idx;
+    }
+  }
+  return -1;
+};
+
+export const telemetryBufferToArray = (buffer: TelemetryBuffer, limit?: number): IntentTelemetry[] => {
+  const { size, capacity, head, data } = buffer;
+  const result: IntentTelemetry[] = [];
+  const count = Math.min(limit ?? size, size);
+  for (let i = 0; i < count; i += 1) {
+    const idx = (head - 1 - i + capacity) % capacity;
+    const entry = data[idx];
+    if (entry) {
+      result.push(entry);
+    }
+  }
+  return result;
+};
+
+const markTelemetry = (event: string) => {
+  if (typeof performance !== 'undefined' && typeof performance.mark === 'function') {
+    performance.mark(event);
+  }
+};
+
 export type DevtoolsAnalyticsContext = {
   agentPhase: AgentPhase;
   traceId?: string;
@@ -132,6 +182,7 @@ export type AppState = {
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
   workspaceWindows: Record<string, WorkspaceWindowMeta>;
+  telemetryBuffer: TelemetryBuffer;
   telemetry: IntentTelemetry[];
   devtoolsAnalytics: DevtoolsAnalyticsEvent[];
   devtoolsAssumedOpen: boolean;
@@ -202,6 +253,7 @@ export const useAppStore = create<AppState>()(
       actorProfileKey: getDefaultActorProfileKey(),
       desktopShortcuts: {},
       workspaceWindows: {},
+      telemetryBuffer: createTelemetryBuffer(),
       telemetry: [],
       devtoolsAnalytics: [],
       devtoolsAssumedOpen: false,
@@ -319,47 +371,72 @@ export const useAppStore = create<AppState>()(
           if (!traceId) {
             return {};
           }
+          markTelemetry('intent-telemetry-upsert');
           const now = Date.now();
-          const existingIndex = state.telemetry.findIndex((entry) => entry.traceId === traceId);
-          const draft: IntentTelemetry = existingIndex >= 0
-            ? { ...state.telemetry[existingIndex] }
-            : {
-                traceId,
-                summary: patch.summary ?? '',
-                startedAt: patch.startedAt ?? now,
-                planMs: patch.planMs ?? null,
-                actMs: patch.actMs ?? null,
-                applyMs: patch.applyMs ?? null,
-                batchSize: patch.batchSize ?? null,
-                status: patch.status ?? 'planning',
-                error: patch.error,
-                updatedAt: now,
-              };
+          const buffer = state.telemetryBuffer;
+          const index = telemetryBufferFindIndex(buffer, traceId);
+          const data = buffer.data.slice();
+          let head = buffer.head;
+          let size = buffer.size;
 
-          if (patch.summary !== undefined) draft.summary = patch.summary;
-          if (patch.startedAt !== undefined) draft.startedAt = patch.startedAt;
-          if (patch.planMs !== undefined) draft.planMs = patch.planMs;
-          if (patch.actMs !== undefined) draft.actMs = patch.actMs;
-          if (patch.applyMs !== undefined) draft.applyMs = patch.applyMs;
-          if (patch.batchSize !== undefined) draft.batchSize = patch.batchSize;
-          if (patch.status !== undefined) draft.status = patch.status;
+          const baseEntry: IntentTelemetry =
+            index >= 0 && data[index]
+              ? { ...data[index]! }
+              : {
+                  traceId,
+                  summary: patch.summary ?? '',
+                  startedAt: patch.startedAt ?? now,
+                  planMs: patch.planMs ?? null,
+                  actMs: patch.actMs ?? null,
+                  applyMs: patch.applyMs ?? null,
+                  batchSize: patch.batchSize ?? null,
+                  status: patch.status ?? 'planning',
+                  error: patch.error,
+                  updatedAt: now,
+                };
+
+          if (patch.summary !== undefined) baseEntry.summary = patch.summary;
+          if (patch.startedAt !== undefined) baseEntry.startedAt = patch.startedAt;
+          if (patch.planMs !== undefined) baseEntry.planMs = patch.planMs;
+          if (patch.actMs !== undefined) baseEntry.actMs = patch.actMs;
+          if (patch.applyMs !== undefined) baseEntry.applyMs = patch.applyMs;
+          if (patch.batchSize !== undefined) baseEntry.batchSize = patch.batchSize;
+          if (patch.status !== undefined) baseEntry.status = patch.status;
           if (patch.error !== undefined) {
-            draft.error = patch.error;
+            baseEntry.error = patch.error;
           }
-          draft.updatedAt = now;
-          const next = [...state.telemetry];
-          if (existingIndex >= 0) {
-            next[existingIndex] = draft;
+          baseEntry.updatedAt = now;
+
+          if (index >= 0) {
+            data[index] = baseEntry;
           } else {
-            next.unshift(draft);
+            data[head] = baseEntry;
+            head = (head + 1) % buffer.capacity;
+            if (size < buffer.capacity) {
+              size += 1;
+            }
           }
-          const MAX_ENTRIES = 25;
-          if (next.length > MAX_ENTRIES) {
-            next.length = MAX_ENTRIES;
-          }
-          return { telemetry: next };
+
+            const nextBuffer: TelemetryBuffer = {
+              capacity: buffer.capacity,
+              data,
+              head,
+              size,
+              version: buffer.version + 1,
+            };
+            return {
+              telemetryBuffer: nextBuffer,
+              telemetry: telemetryBufferToArray(nextBuffer),
+            };
+          }),
+      clearTelemetry: () =>
+        set((state) => {
+          markTelemetry('intent-telemetry-clear');
+          return {
+            telemetryBuffer: createTelemetryBuffer(state.telemetryBuffer.capacity),
+            telemetry: [],
+          };
         }),
-      clearTelemetry: () => set({ telemetry: [] }),
       recordDevtoolsAnalytics: (payload) =>
         set((state) => {
           if (!payload) return {};
