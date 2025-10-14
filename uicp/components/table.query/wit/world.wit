@@ -8,20 +8,20 @@ interface types {
   record input {
     rows: list<list<string>>,
     select: list<u32>,
-    where-contains: option<filter>,
+    where_contains: option<filter>,
   }
   type output = list<list<string>>;
 }
 
-interface task {
+interface table {
   use types.{filter, input, output};
   enum error { cancelled }
-  run: func(job: string, input: input) -> result<output, error>;
+  run: func(job_id: string, input: input) -> result<output, error>;
 }
 
-world entry {
+world task {
   import wasi:io/streams@0.2.8;
   import wasi:clocks/monotonic-clock@0.2.0;
   import uicp:host/control@1.0.0;
-  export task;
+  export table;
 }

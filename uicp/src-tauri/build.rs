@@ -1,4 +1,4 @@
-﻿#[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
 fn compile_windows_resources() {
     // WHY: Embed v6 common-controls manifest so TaskDialogIndirect resolves when tests run standalone.
     println!("cargo:rerun-if-changed=windows.rc");
@@ -34,9 +34,3 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=delayimp");
     tauri_build::build();
 }
-
-
-
-
-
-

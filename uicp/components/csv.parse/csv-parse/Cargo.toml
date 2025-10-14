@@ -1,0 +1,19 @@
+[package]
+name = "csv-parse"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
+csv = "1.3"
+base64 = "0.22"
+percent-encoding = "2.3"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component]
+package = "uicp:task-csv-parse@1.2.0"
+
+[package.metadata.component.target]
+world = "task"

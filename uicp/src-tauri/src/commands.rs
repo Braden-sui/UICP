@@ -183,7 +183,10 @@ pub async fn get_modules_info<R: Runtime>(
     }))
 }
 
-pub async fn copy_into_files<R: Runtime>(app: tauri::AppHandle<R>, src_path: String) -> Result<String, String> {
+pub async fn copy_into_files<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    src_path: String,
+) -> Result<String, String> {
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -233,7 +236,11 @@ pub async fn copy_into_files<R: Runtime>(app: tauri::AppHandle<R>, src_path: Str
         dest = dest_dir.join(new_name);
     }
 
-    eprintln!("copy_into_files: src={} -> dest={}", p.display(), dest.display());
+    eprintln!(
+        "copy_into_files: src={} -> dest={}",
+        p.display(),
+        dest.display()
+    );
     fs::copy(p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
 
     Ok(format!(

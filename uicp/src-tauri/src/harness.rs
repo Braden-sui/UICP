@@ -41,7 +41,12 @@ impl ComputeTestHarness {
         let data_dir = temp.path().to_path_buf();
         let (app, window) = Self::build_app_async(&data_dir).await?;
 
-        Ok(Self { _temp: Some(temp), data_dir, app, _window: window })
+        Ok(Self {
+            _temp: Some(temp),
+            data_dir,
+            app,
+            _window: window,
+        })
     }
 
     /// Reuse an existing data directory (e.g. to simulate process restart).
@@ -53,7 +58,12 @@ impl ComputeTestHarness {
     pub async fn with_data_dir_async<P: AsRef<Path>>(dir: P) -> Result<Self> {
         let data_dir = dir.as_ref().to_path_buf();
         let (app, window) = Self::build_app_async(&data_dir).await?;
-        Ok(Self { _temp: None, data_dir, app, _window: window })
+        Ok(Self {
+            _temp: None,
+            data_dir,
+            app,
+            _window: window,
+        })
     }
 
     async fn build_app_async(
@@ -72,10 +82,13 @@ impl ComputeTestHarness {
         ensure_default_workspace(&db_path).context("ensure default workspace")?;
 
         // Initialize resident async SQLite connections for tests
-        let db_rw = AsyncConn::open(&db_path).await.expect("open sqlite rw (harness)");
-        let db_ro = AsyncConn::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let db_rw = AsyncConn::open(&db_path)
             .await
-            .expect("open sqlite ro (harness)");
+            .expect("open sqlite rw (harness)");
+        let db_ro =
+            AsyncConn::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .await
+                .expect("open sqlite ro (harness)");
         // Writer: full configuration (unwrap both layers: tokio_rusqlite and rusqlite)
         db_rw
             .call(
@@ -217,7 +230,7 @@ impl ComputeTestHarness {
                     eprintln!("compute-result-final (error): {value}");
                 }
                 Ok(value)
-            },
+            }
             Ok(Err(err)) => Err(err),
             Err(err) => Err(err),
         }

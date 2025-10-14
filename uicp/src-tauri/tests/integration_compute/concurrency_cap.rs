@@ -9,11 +9,11 @@
 ))]
 mod wasm_tests {
     use serde_json::json;
+    use uicp::registry;
     use uicp::{
         test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
         ComputeProvenanceSpec,
     };
-    use uicp::registry;
     use uuid::Uuid;
 
     fn make_job(job_id: &str, env_hash: &str, source_rows: usize) -> ComputeJobSpec {
@@ -65,7 +65,9 @@ mod wasm_tests {
         }
         // Slow each compute job to create overlap so the third must wait for a permit.
         std::env::set_var("UICP_TEST_COMPUTE_DELAY_MS", "150");
-        let harness = ComputeTestHarness::new_async().await.expect("compute harness");
+        let harness = ComputeTestHarness::new_async()
+            .await
+            .expect("compute harness");
 
         let job1 = make_job(&Uuid::new_v4().to_string(), "env-1", 400);
         let job2 = make_job(&Uuid::new_v4().to_string(), "env-2", 400);

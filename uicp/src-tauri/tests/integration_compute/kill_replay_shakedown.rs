@@ -57,7 +57,9 @@ async fn kill_replay_produces_identical_output_hash() {
         return;
     }
 
-    let harness = ComputeTestHarness::new_async().await.expect("compute harness");
+    let harness = ComputeTestHarness::new_async()
+        .await
+        .expect("compute harness");
     let data_dir = harness.workspace_dir().to_path_buf();
 
     let job_spec = build_job(&Uuid::new_v4().to_string(), "replay-env");
@@ -77,10 +79,9 @@ async fn kill_replay_produces_identical_output_hash() {
 
     drop(harness); // simulate host shutdown
 
-    let harness_restarted =
-        ComputeTestHarness::with_data_dir_async(&data_dir)
-            .await
-            .expect("restart harness on same data dir");
+    let harness_restarted = ComputeTestHarness::with_data_dir_async(&data_dir)
+        .await
+        .expect("restart harness on same data dir");
     let second_final = harness_restarted
         .run_job(job_spec)
         .await

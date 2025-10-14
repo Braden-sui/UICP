@@ -47,14 +47,14 @@ pub mod error_codes {
 // NOTE: helper input tests now live in `compute_input.rs`.
 
 #[cfg_attr(not(feature = "uicp_wasi_enable"), allow(dead_code))]
-    #[cfg(feature = "wasm_compute")]
-    mod with_runtime {
-        use super::*;
-        // WHY: Bring `Context` into scope for error enrichment on Wasmtime operations.
-        // SAFETY: Some build permutations may not hit the `.context()` paths; suppress unused lint.
-        #[allow(unused_imports)]
-        use anyhow::Context as _;
-        // NOTE: Wasmtime 37 API: we'll wire wasi:logging directly instead of using bindgen.
+#[cfg(feature = "wasm_compute")]
+mod with_runtime {
+    use super::*;
+    // WHY: Bring `Context` into scope for error enrichment on Wasmtime operations.
+    // SAFETY: Some build permutations may not hit the `.context()` paths; suppress unused lint.
+    #[allow(unused_imports)]
+    use anyhow::Context as _;
+    // NOTE: Wasmtime 37 API: we'll wire wasi:logging directly instead of using bindgen.
     use bytes::Bytes;
     use chrono::Utc;
     use ciborium::value::Value;
@@ -75,9 +75,12 @@ pub mod error_codes {
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
     };
-    use wasmtime_wasi::p2::add_to_linker_async;
-    use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder};
-    use wasmtime_wasi::preview2::WasiView;
+    use wasmtime_wasi::async_trait;
+    use wasmtime_wasi::p2::{
+        add_to_linker_async, DynOutputStream, OutputStream as WasiOutputStreamTrait, Pollable,
+        StreamResult,
+    };
+    use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
     const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
     const EPOCH_TICK_INTERVAL_MS: u64 = 10;
@@ -115,6 +118,7 @@ pub mod error_codes {
         PartialJson(serde_json::Value),
     }
 
+    #[allow(dead_code)]
     const MAX_STDIO_CHARS: usize = 4_096;
 
     #[derive(Debug)]
@@ -353,44 +357,80 @@ pub mod error_codes {
     }
 
     impl PartialOutputStream {
-        fn new(shared: Arc<PartialStreamShared>) -> Self { Self { shared } }
-        #[allow(dead_code)]
-        fn process_frame(&self, bytes: &[u8]) -> Result<crate::ComputePartialEvent, PartialFrameError> {
-            if bytes.len() > MAX_PARTIAL_FRAME_BYTES { return Err(PartialFrameError::TooLarge(bytes.len())); }
-            let envelope = decode_partial_envelope(bytes)?;
-            let expected = self.shared.partial_seq.load(Ordering::Relaxed).saturating_add(1);
-            if envelope.seq != expected { return Err(PartialFrameError::OutOfOrder { expected, got: envelope.seq }); }
-            self.shared.partial_seq.store(envelope.seq, Ordering::Relaxed);
-            Ok(crate::ComputePartialEvent { job_id: self.shared.job_id.clone(), task: self.shared.task.clone(), seq: envelope.seq, payload_b64: BASE64_ENGINE.encode(bytes) })
+        fn new(shared: Arc<PartialStreamShared>) -> Self {
+            Self { shared }
         }
-        #[allow(dead_code)]
+
+        fn process_frame(
+            &self,
+            bytes: &[u8],
+        ) -> Result<crate::ComputePartialEvent, PartialFrameError> {
+            if bytes.len() > MAX_PARTIAL_FRAME_BYTES {
+                return Err(PartialFrameError::TooLarge(bytes.len()));
+            }
+            let envelope = decode_partial_envelope(bytes)?;
+            let expected = self
+                .shared
+                .partial_seq
+                .load(Ordering::Relaxed)
+                .saturating_add(1);
+            if envelope.seq != expected {
+                return Err(PartialFrameError::OutOfOrder {
+                    expected,
+                    got: envelope.seq,
+                });
+            }
+            self.shared
+                .partial_seq
+                .store(envelope.seq, Ordering::Relaxed);
+            Ok(crate::ComputePartialEvent {
+                job_id: self.shared.job_id.clone(),
+                task: self.shared.task.clone(),
+                seq: envelope.seq,
+                payload_b64: BASE64_ENGINE.encode(bytes),
+            })
+        }
+
         fn log_reject(&self, err: &PartialFrameError, len: usize) {
-            self.shared.emitter.emit_debug(serde_json::json!({ "event": "compute_partial_reject", "jobId": self.shared.job_id, "task": self.shared.task, "reason": err.to_string(), "len": len, "ts": Utc::now().timestamp_millis(), }));
+            self.shared.emitter.emit_debug(serde_json::json!({
+                "event": "compute_partial_reject",
+                "jobId": self.shared.job_id,
+                "task": self.shared.task,
+                "reason": err.to_string(),
+                "len": len,
+                "ts": Utc::now().timestamp_millis(),
+            }));
         }
     }
 
-    /* impl HostOutputStream for PartialOutputStream {
-        fn write(&mut self, bytes: Bytes) -> Result<(), StreamError> {
-            if bytes.is_empty() {
-                return Ok(());
-            }
+    #[async_trait]
+    impl Pollable for PartialOutputStream {
+        async fn ready(&mut self) {
             loop {
-                let wait_for;
-                {
+                let wait_for = {
                     let mut rl = self.shared.partial_rate.lock().unwrap();
                     if rl.try_take_event() {
-                        break;
+                        return;
                     }
-                    wait_for = rl.recommended_sleep();
-                }
+                    rl.recommended_sleep()
+                };
                 self.shared
                     .partial_throttle_waits
                     .fetch_add(1, Ordering::Relaxed);
                 if wait_for.as_nanos() == 0 {
-                    std::thread::yield_now();
+                    tokio::task::yield_now().await;
                 } else {
-                    std::thread::sleep(wait_for);
+                    sleep(TokioDuration::from_secs_f64(wait_for.as_secs_f64())).await;
                 }
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WasiOutputStreamTrait for PartialOutputStream {
+        fn write(&mut self, bytes: Bytes) -> StreamResult<()> {
+            if bytes.is_empty() {
+                return Ok(());
             }
             match self.process_frame(bytes.as_ref()) {
                 Ok(event) => {
@@ -407,12 +447,11 @@ pub mod error_codes {
             Ok(())
         }
 
-        fn flush(&mut self) -> Result<(), StreamError> {
+        fn flush(&mut self) -> StreamResult<()> {
             Ok(())
         }
 
-        fn check_write(&mut self) -> Result<usize, StreamError> {
-            // Allow writes when at least one event token is available
+        fn check_write(&mut self) -> StreamResult<usize> {
             let mut rl = self.shared.partial_rate.lock().unwrap();
             if rl.peek_tokens() >= 1.0 {
                 Ok(usize::MAX)
@@ -420,82 +459,67 @@ pub mod error_codes {
                 Ok(0)
             }
         }
-    } */
+    }
 
-    /* #[wasmtime_wasi::async_trait]
-    impl Subscribe for PartialOutputStream {
-        async fn ready(&mut self) {
-            // Wait until an event token is available
-            loop {
-                let wait_for = {
-                    let mut rl = self.shared.partial_rate.lock().unwrap();
-                    if rl.try_take_event() {
-                        return;
-                    }
-                    rl.recommended_sleep()
-                };
-                self.shared
-                    .partial_throttle_waits
-                    .fetch_add(1, Ordering::Relaxed);
-                let sleep_dur = if wait_for.as_nanos() == 0 {
-                    TokioDuration::from_micros(500)
-                } else {
-                    TokioDuration::from_secs_f64(wait_for.as_secs_f64())
-                };
-                sleep(sleep_dur).await;
-            }
-        }
-    } */
-
-    /* struct GuestLogShared {
+    
+    #[allow(dead_code)]
+    struct GuestLogShared {
         emitter: Arc<dyn TelemetryEmitter>,
         job_id: String,
         task: String,
-        // Shared counters/state
         seq: Arc<AtomicU64>,
         tick: Arc<AtomicU64>,
         log_count: Arc<AtomicU64>,
         emitted_bytes: Arc<AtomicU64>,
         max_bytes: usize,
         max_len: usize,
-        buf: Mutex<Vec<u8>>, // line buffer across writes
-        // Rate limiting for stdout/stderr (bytes/s)
+        buf: Mutex<Vec<u8>>,
         log_rate: Arc<Mutex<RateLimiterBytes>>,
         log_throttle_waits: Arc<AtomicU64>,
-        // WHY: Capture durable compute stdout/stderr frames for replay verification.
         action_log: crate::action_log::ActionLogHandle,
-    } */
+    }
 
-    // TelemetryStdout removed for Wasmtime 37 migration.
-
-    /* impl TelemetryStdout {
-        fn new(shared: Arc<GuestLogShared>, channel: &'static str) -> Self {
-            Self { shared, channel }
+    #[allow(dead_code)]
+    impl GuestLogShared {
+        fn clamp_preview(&self, bytes: &[u8]) -> String {
+            let preview_len = bytes.len().min(LOG_PREVIEW_MAX);
+            BASE64_ENGINE.encode(&bytes[..preview_len])
         }
-    } */
+    }
 
-    /* impl WasiStdoutStream for TelemetryStdout {
-        fn stream(&self) -> WasiOutputStream {
-            Box::new(GuestLogStream {
-                shared: self.shared.clone(),
-                channel: self.channel,
-            })
-        }
-
-        fn isatty(&self) -> bool {
-            false
-        }
-    } */
-
-    /* struct GuestLogStream {
+    #[allow(dead_code)]
+    struct GuestLogStream {
         shared: Arc<GuestLogShared>,
         channel: &'static str,
-    } */
+    }
 
-    /* impl GuestLogStream {
+    #[allow(dead_code)]
+    impl GuestLogStream {
         fn emit_message(&self, bytes: &[u8]) {
             if bytes.is_empty() {
                 return;
+            }
+            let len = bytes.len();
+            loop {
+                let wait_for;
+                {
+                    let mut rl = self.shared.log_rate.lock().unwrap();
+                    let avail = rl.available();
+                    if avail >= len {
+                        rl.consume(len);
+                        break;
+                    }
+                    let deficit = len.saturating_sub(avail);
+                    wait_for = rl.recommended_sleep(deficit);
+                }
+                self.shared
+                    .log_throttle_waits
+                    .fetch_add(1, Ordering::Relaxed);
+                if wait_for.as_nanos() == 0 {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(wait_for);
+                }
             }
             let mut buf = self.shared.buf.lock().unwrap();
             buf.extend_from_slice(bytes);
@@ -517,8 +541,7 @@ pub mod error_codes {
                         break;
                     }
                     let to_emit = line;
-                    let preview_len = to_emit.len().min(LOG_PREVIEW_MAX);
-                    let preview_b64 = BASE64_ENGINE.encode(&to_emit[..preview_len]);
+                    let preview_b64 = self.shared.clamp_preview(to_emit);
                     let seq_no = self.shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
                     let tick_no = self.shared.tick.fetch_add(1, Ordering::Relaxed) + 1;
                     let new_total =
@@ -580,77 +603,12 @@ pub mod error_codes {
                 }
             }
         }
-    } */
-
-    /* impl HostOutputStream for GuestLogStream {
-        fn write(&mut self, bytes: Bytes) -> Result<(), StreamError> {
-            // Throttle by byte rate; rely on ready()/check_write for backpressure
-            let len = bytes.len();
-            loop {
-                let wait_for;
-                {
-                    let mut rl = self.shared.log_rate.lock().unwrap();
-                    let avail = rl.available();
-                    if avail >= len {
-                        rl.consume(len);
-                        break;
-                    }
-                    let deficit = len.saturating_sub(avail);
-                    wait_for = rl.recommended_sleep(deficit);
-                }
-                self.shared
-                    .log_throttle_waits
-                    .fetch_add(1, Ordering::Relaxed);
-                if wait_for.as_nanos() == 0 {
-                    std::thread::yield_now();
-                } else {
-                    std::thread::sleep(wait_for);
-                }
-            }
-            self.emit_message(bytes.as_ref());
-            Ok(())
-        }
-
-        fn flush(&mut self) -> Result<(), StreamError> {
-            Ok(())
-        }
-
-        fn check_write(&mut self) -> Result<usize, StreamError> {
-            let mut rl = self.shared.log_rate.lock().unwrap();
-            let avail = rl.available();
-            Ok(if avail == 0 { 0 } else { avail })
-        }
-    } */
-
-    /* #[wasmtime_wasi::async_trait]
-    /* impl Subscribe for GuestLogStream {
-        async fn ready(&mut self) {
-            loop {
-                let wait_for = {
-                    let mut rl = self.shared.log_rate.lock().unwrap();
-                    let avail = rl.available();
-                    if avail > 0 {
-                        return;
-                    }
-                    rl.recommended_sleep(1)
-                };
-                self.shared
-                    .log_throttle_waits
-                    .fetch_add(1, Ordering::Relaxed);
-                let sleep_dur = if wait_for.as_nanos() == 0 {
-                    TokioDuration::from_micros(500)
-                } else {
-                    TokioDuration::from_secs_f64(wait_for.as_secs_f64())
-                };
-                sleep(sleep_dur).await;
-            }
-        }
-    } */
+    }
 
     #[derive(Debug)]
     struct PartialEnvelope {
         seq: u64,
-    } */
+    }
 
     #[derive(Debug)]
     enum PartialFrameError {
@@ -743,6 +701,7 @@ pub mod error_codes {
         }
     }
 
+    #[allow(dead_code)]
     fn truncate_message(input: &str, max_chars: usize) -> String {
         if input.chars().count() <= max_chars {
             return input.to_owned();
@@ -866,11 +825,11 @@ pub mod error_codes {
     }
 
     impl WasiView for Ctx {
-        fn table(&mut self) -> &mut ResourceTable {
-            &mut self.table
-        }
         fn ctx(&mut self) -> WasiCtxView<'_> {
-            self.wasi.as_mut()
+            WasiCtxView {
+                ctx: &mut self.wasi,
+                table: &mut self.table,
+            }
         }
     }
 
@@ -882,8 +841,6 @@ pub mod error_codes {
             .consume_fuel(true)
             .epoch_interruption(true)
             .wasm_memory64(false);
-        // Enable Wasmtime on-disk artifact cache (uses default OS cache dir)
-        let _ = cfg.cache_config_load_default();
         Engine::new(&cfg).expect("wasmtime engine")
     });
 
@@ -926,7 +883,6 @@ pub mod error_codes {
             .consume_fuel(true)
             .epoch_interruption(true)
             .wasm_memory64(false);
-        let _ = cfg.cache_config_load_default();
         Ok(Engine::new(&cfg)?)
     }
 
@@ -947,7 +903,9 @@ pub mod error_codes {
             let started = Instant::now();
             // WHY: Feature-flag-ish env var to dump diagnostics about WASI + component at job start.
             let diag_enabled = {
-                let v = std::env::var("UICP_WASI_DIAG").or_else(|_| std::env::var("uicp_wasi_diag")).unwrap_or_default();
+                let v = std::env::var("UICP_WASI_DIAG")
+                    .or_else(|_| std::env::var("uicp_wasi_diag"))
+                    .unwrap_or_default();
                 matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
             };
 
@@ -989,8 +947,10 @@ pub mod error_codes {
                 Err(err) => {
                     // WHY: Surface precise context so UI can see root-cause for module resolution faults.
                     // ERROR: E-UICP-221 registry lookup failed for task; message carries inner error string.
-                    let any = anyhow::Error::from(err)
-                        .context(format!("E-UICP-221: registry lookup failed for task '{}': module resolve error", spec.task));
+                    let any = anyhow::Error::from(err).context(format!(
+                        "E-UICP-221: registry lookup failed for task '{}': module resolve error",
+                        spec.task
+                    ));
                     let (code, msg) = map_trap_error(&any);
                     let message = if msg.is_empty() { any.to_string() } else { msg };
                     #[cfg(feature = "otel_spans")]
@@ -1009,11 +969,10 @@ pub mod error_codes {
                 Err(err) => {
                     // WHY: Carry the on-disk path and root cause to aid diagnosing cache/compile errors.
                     // ERROR: E-UICP-222 component load failed — likely invalid encoding or wrong target (not a component).
-                    let any = anyhow::Error::from(err)
-                        .context(format!(
-                            "E-UICP-222: load component failed for path {}",
-                            module.path.display()
-                        ));
+                    let any = anyhow::Error::from(err).context(format!(
+                        "E-UICP-222: load component failed for path {}",
+                        module.path.display()
+                    ));
                     let (code, msg) = map_trap_error(&any);
                     let chain = format!("{:#}", &any); // include error chain
                     let message = if msg.is_empty() { chain } else { msg };
@@ -1183,27 +1142,6 @@ pub mod error_codes {
                 });
             }
 
-            let action_log_handle = {
-                let state: tauri::State<'_, crate::AppState> = app.state();
-                state.action_log.clone()
-            };
-
-            let log_shared = Arc::new(GuestLogShared {
-                emitter: telemetry.clone(),
-                job_id: spec.job_id.clone(),
-                task: spec.task.clone(),
-                seq: partial_seq.clone(),
-                tick: logical_tick.clone(),
-                log_count: log_count.clone(),
-                emitted_bytes: emitted_bytes.clone(),
-                max_bytes: MAX_LOG_BYTES,
-                max_len: MAX_STDIO_CHARS,
-                buf: Mutex::new(Vec::new()),
-                log_rate: log_rate.clone(),
-                log_throttle_waits: log_throttle_waits.clone(),
-                action_log: action_log_handle,
-            });
-
             let mut wasi_builder = WasiCtxBuilder::new();
             // Single readonly preopen for workspace files, mounted at /ws/files in the guest.
             // Only enable when the job requested workspace file access via capabilities.
@@ -1315,8 +1253,8 @@ pub mod error_codes {
             {
                 // WHY: Add instantiation context so missing-import/linkage issues are visible in final error.
                 // ERROR: E-UICP-223 instantiation failure — often indicates a missing or version-mismatched import.
-                let inst_res: Result<wasmtime::component::Instance, _> = linker
-                    .instantiate(&mut store, &*component);
+                let inst_res: Result<wasmtime::component::Instance, _> =
+                    linker.instantiate_async(&mut store, &*component).await;
                 match inst_res {
                     Ok(instance) => {
                         let task_name = spec.task.split('@').next().unwrap_or("");
@@ -1366,7 +1304,10 @@ pub mod error_codes {
                                                             Err(anyhow::Error::msg(msg))
                                                         }
                                                         // ERROR: E-UICP-225 call csv#run failed — include trap context for visibility.
-                                                        Err(e) => Err(anyhow::Error::from(e).context("E-UICP-225: call csv#run failed")),
+                                                        Err(e) => Err(anyhow::Error::from(e)
+                                                            .context(
+                                                                "E-UICP-225: call csv#run failed",
+                                                            )),
                                                     },
                                                 }
                                             }
@@ -1397,8 +1338,11 @@ pub mod error_codes {
                                             _,
                                         > = instance
                                             .get_typed_func(&mut store, "table#run")
-                                            .map_err(|e| anyhow::Error::from(e)
-                                                .context("E-UICP-226: get_typed_func table#run failed"));
+                                            .map_err(|e| {
+                                                anyhow::Error::from(e).context(
+                                                    "E-UICP-226: get_typed_func table#run failed",
+                                                )
+                                            });
                                         match func_res {
                                             Err(e) => Err(e),
                                             Ok(func) => match func
@@ -1411,7 +1355,8 @@ pub mod error_codes {
                                                 Ok((Ok(out),)) => Ok(serde_json::json!(out)),
                                                 Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
                                                 // ERROR: E-UICP-227 call table#run failed — include trap context for visibility.
-                                                Err(e) => Err(anyhow::Error::from(e).context("E-UICP-227: call table#run failed")),
+                                                Err(e) => Err(anyhow::Error::from(e)
+                                                    .context("E-UICP-227: call table#run failed")),
                                             },
                                         }
                                     }
@@ -1477,13 +1422,23 @@ pub mod error_codes {
                     Err(err) => {
                         // WHY: Make instantiation failures actionable by including context.
                         // ERROR: E-UICP-223 propagated — see message for missing imports or signature mismatch.
-                        let any = anyhow::Error::from(err)
-                            .context(format!("E-UICP-223: instantiate component for task '{}' failed", spec.task));
+                        let any = anyhow::Error::from(err).context(format!(
+                            "E-UICP-223: instantiate component for task '{}' failed",
+                            spec.task
+                        ));
                         let (code, msg) = map_trap_error(&any);
                         let message = if msg.is_empty() { any.to_string() } else { msg };
                         let m = collect_metrics(&store);
-                        finalize_error(&app, &spec, code, &message, started, queue_wait_ms, Some(m))
-                            .await;
+                        finalize_error(
+                            &app,
+                            &spec,
+                            code,
+                            &message,
+                            started,
+                            queue_wait_ms,
+                            Some(m),
+                        )
+                        .await;
                         epoch_pump.abort();
                     }
                 }
@@ -1506,10 +1461,14 @@ pub mod error_codes {
         // Register wasi:logging/logging import directly for P2.
         {
             let mut inst = linker.instance("wasi:logging/logging")?;
-            inst.func_wrap("log", |mut store: StoreContextMut<'_, Ctx>, (level, context, message): (u32, String, String)| {
-                store.data_mut().log_p2(level, context, message);
-                Ok(())
-            })?;
+            inst.func_wrap(
+                "log",
+                |mut store: StoreContextMut<'_, Ctx>,
+                 (level, context, message): (u32, String, String)| {
+                    store.data_mut().log_p2(level, context, message);
+                    Ok(())
+                },
+            )?;
         }
         add_uicp_host(linker)?;
         Ok(())
@@ -1585,7 +1544,7 @@ pub mod error_codes {
     fn host_open_partial_sink(
         mut store: StoreContextMut<'_, Ctx>,
         (job,): (String,),
-    ) -> anyhow::Result<(Resource<PartialOutputStream>,)> {
+    ) -> anyhow::Result<(Resource<DynOutputStream>,)> {
         if job != store.data().job_id {
             let ctx = store.data();
             log_job_mismatch(ctx, "open-partial-sink", &job);
@@ -1604,7 +1563,7 @@ pub mod error_codes {
                 partial_throttle_waits: ctx.partial_throttle_waits.clone(),
             })
         };
-        let stream = PartialOutputStream::new(shared);
+        let stream: DynOutputStream = Box::new(PartialOutputStream::new(shared));
         let handle = store.data_mut().table.push(stream)?;
         Ok((handle,))
     }
@@ -2199,7 +2158,7 @@ pub mod error_codes {
         fn wasi_logging_bridge_emits_partial_event() {
             use std::sync::{Arc, Mutex};
 
-            #[derive(Clone)]
+            
             struct TestEmitter {
                 partials: Arc<Mutex<Vec<serde_json::Value>>>,
                 debugs: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -2314,7 +2273,7 @@ pub mod error_codes {
                 });
 
             // Capture partials emitted by the host logging bridge
-            #[derive(Clone)]
+            
             struct TestEmitter {
                 partials: Arc<Mutex<Vec<serde_json::Value>>>,
             }

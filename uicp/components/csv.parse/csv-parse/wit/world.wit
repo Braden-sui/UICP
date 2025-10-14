@@ -1,0 +1,19 @@
+package uicp:task-csv-parse@1.2.0;
+
+/// CSV parsing interface (matches host expectation).
+interface csv {
+  /// Rows emitted by the CSV parser.
+  type rows = list<list<string>>;
+
+  /// Parse `input` into rows. Supports `data:` URIs or plain text CSV.
+  run: func(
+    job_id: string,
+    input: string,
+    has_header: bool,
+  ) -> result<rows, string>;
+}
+
+/// Component world exporting the CSV interface.
+world task {
+  export csv;
+}

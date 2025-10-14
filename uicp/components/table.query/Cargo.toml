@@ -1,5 +1,5 @@
 [package]
-name = "uicp-task-table-query"
+name = "table-query"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -8,15 +8,14 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.46", default-features = false, features = ["macros"] }
 ciborium = "0.2"
-wit-bindgen-rt = "0.23"
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
 
 [package.metadata.component]
-package = "uicp:task-table-query"
+package = "uicp:task-table-query@0.1.0"
 [package.metadata.component.target]
 path = "wit"
-world = "entry"
+world = "task"
 
 [package.metadata.component.target.dependencies]
 "uicp:host"   = { path = "../../../docs/wit/host" }

@@ -6,11 +6,11 @@
 // WHY: These determinism proofs need the harness-only Tauri test runtime plus the Wasm runtime.
 
 use serde_json::{json, Value};
+use uicp::registry;
 use uicp::{
     test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
     ComputeProvenanceSpec,
 };
-use uicp::registry;
 
 fn make_job(job_id: &str, env_hash: &str, fuel: Option<u64>) -> ComputeJobSpec {
     ComputeJobSpec {
