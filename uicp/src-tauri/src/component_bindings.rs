@@ -3,8 +3,6 @@
 //! WHY: Host must share identical type identity with Wasm components. Using `wasmtime::component::bindgen!`
 //! guarantees that the Rust side uses the exact WIT definitions we ship, eliminating the ad-hoc typed ladder.
 
-#![cfg(feature = "wasm_compute")]
-
 /// Typed bindings for the `uicp:task-csv-parse@1.2.0` package.
 /// INVARIANT: The WIT path matches the vendored component source of truth.
 pub mod csv_parse {

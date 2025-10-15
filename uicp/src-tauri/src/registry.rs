@@ -295,14 +295,11 @@ fn try_repair_manifest(target: &Path, bundled: &Option<PathBuf>) -> Result<()> {
         // Fallback: compute digest of existing file in target
         let path = target.join(&entry.filename);
         if path.exists() && is_regular_file(&path) {
-            match fs::read(&path) {
-                Ok(bytes) => {
-                    let mut hasher = Sha256::new();
-                    hasher.update(&bytes);
-                    entry.digest_sha256 = hex::encode(hasher.finalize());
-                    updated = true;
-                }
-                Err(_) => {}
+            if let Ok(bytes) = fs::read(&path) {
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                entry.digest_sha256 = hex::encode(hasher.finalize());
+                updated = true;
             }
         }
     }
@@ -383,7 +380,7 @@ pub fn find_module<R: Runtime>(
     match verify_digest(&path, &entry.digest_sha256) {
         Ok(true) => {
             // Strict mode: require a valid signature using UICP_MODULES_PUBKEY
-            enforce_strict_signature(&entry)?;
+            enforce_strict_signature(entry)?;
             #[cfg(feature = "wasm_compute")]
             {
                 crate::compute::preflight_component_imports(
@@ -489,6 +486,7 @@ pub fn verify_digest(path: &Path, expected_hex: &str) -> Result<bool> {
 /// Verify an entry's Ed25519 signature against the expected digest.
 /// - `pubkey_bytes` must be the 32-byte Ed25519 public key.
 /// - `entry.signature` may be base64 or hex encoded.
+///
 /// The message that is signed uses domain separation to bind metadata alongside the digest.
 pub fn verify_entry_signature(entry: &ModuleEntry, pubkey_bytes: &[u8]) -> Result<SignatureStatus> {
     let Some(sig_str) = &entry.signature else {

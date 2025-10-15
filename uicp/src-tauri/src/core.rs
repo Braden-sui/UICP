@@ -36,7 +36,7 @@ pub static LOGS_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("logs"));
 pub static FILES_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("files"));
 
 pub fn files_dir_path() -> &'static std::path::Path {
-    &*FILES_DIR
+    &FILES_DIR
 }
 
 // ----------------------------------------------------------------------------

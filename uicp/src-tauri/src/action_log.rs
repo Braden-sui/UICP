@@ -133,7 +133,7 @@ impl ActionLogHandle {
                 reply: reply_tx,
             })
             .context("queue action log append")?;
-        Ok(reply_rx.recv().context("await action log receipt")??)
+        reply_rx.recv().context("await action log receipt")?
     }
 }
 
