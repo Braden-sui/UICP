@@ -1,0 +1,24 @@
+package uicp:task-table-query@0.1.0;
+
+interface types {
+  record filter {
+    col: u32,
+    needle: string,
+  }
+  record input {
+    rows: list<list<string>>,
+    select: list<u32>,
+    where-contains: option<filter>,
+  }
+  type output = list<list<string>>;
+}
+
+interface table {
+  use types.{filter, input, output};
+  enum error { cancelled }
+  run: func(job-id: string, input: input) -> result<output, error>;
+}
+
+world task {
+  export table;
+}

@@ -50,6 +50,11 @@ pub mod error_codes {
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
+    use crate::component_bindings::csv_parse::Task as CsvTask;
+    use crate::component_bindings::table_query::{
+        uicp::task_table_query::{table::Error as TableRunError, types as table_types},
+        Task as TableTask,
+    };
     // WHY: Bring `Context` into scope for error enrichment on Wasmtime operations.
     // SAFETY: Some build permutations may not hit the `.context()` paths; suppress unused lint.
     #[allow(unused_imports)]
@@ -120,53 +125,6 @@ mod with_runtime {
         Debug(serde_json::Value),
         PartialEvent(crate::ComputePartialEvent),
         PartialJson(serde_json::Value),
-    }
-
-    #[derive(
-        Debug,
-        Clone,
-        wasmtime::component::ComponentType,
-        wasmtime::component::Lower,
-        wasmtime::component::Lift,
-    )]
-    #[component(record)]
-    struct TableInput {
-        rows: Vec<Vec<String>>,
-        select: Vec<u32>,
-        #[component(name = "where-contains")]
-        where_contains: Option<TableFilter>,
-    }
-
-    #[derive(
-        Debug,
-        Clone,
-        wasmtime::component::ComponentType,
-        wasmtime::component::Lower,
-        wasmtime::component::Lift,
-    )]
-    #[component(record)]
-    struct TableFilter {
-        col: u32,
-        needle: String,
-    }
-
-    #[derive(
-        Debug,
-        Clone,
-        Copy,
-        wasmtime::component::ComponentType,
-        wasmtime::component::Lower,
-        wasmtime::component::Lift,
-    )]
-    #[component(enum)]
-    #[repr(u8)]
-    // WHY: Compatibility ladder for table.query uses primitive error codes/units;
-    // this enum exists only for potential future typed mapping. Silence dead-code
-    // warnings until we standardize on one typed signature.
-    #[allow(dead_code)]
-    enum TableError {
-        #[component(name = "cancelled")]
-        Cancelled,
     }
 
     #[allow(dead_code)]
@@ -1345,440 +1303,65 @@ mod with_runtime {
                         let call_future = async {
                             match task_name {
                                 "csv.parse" => match extract_csv_input(&spec.input) {
-                                    Ok((src, has_header)) => {
-                                        match resolve_csv_source(&spec, &src) {
-                                            Ok(resolved) => {
-                                        // WHY: Navigate export surface. Prefer direct function export when available,
-                                        // fall back to interface instance + `run`.
-                                        // ERROR: E-UICP-224 typed-func lookup failed for export `csv#run`.
-                                        let run_func_idx = instance
-                                            .get_export_index(&mut store, None, "uicp:task-csv-parse/csv@1.2.0#run")
-                                            .or_else(|| {
-                                                instance
-                                                    .get_export_index(&mut store, None, "uicp:task-csv-parse/csv@1.2.0")
-                                                    .and_then(|csv_idx| {
-                                                        instance.get_export_index(&mut store, Some(&csv_idx), "run")
-                                                    })
-                                            })
-                                            .ok_or_else(|| anyhow::anyhow!("E-UICP-224: csv.run export not found"))?;
-                                                let func_res: Result<
-                                                    wasmtime::component::TypedFunc<
-                                                        (String, String, bool),
-                                                        (Result<Vec<Vec<String>>, String>,),
-                                                    >,
-                                                    _,
-                                                > = instance
-                                                    .get_typed_func(&mut store, &run_func_idx)
-                                                    .map_err(|e| anyhow::Error::from(e)
-                                                        .context("E-UICP-224: get_typed_func csv#run failed"));
-                                                match func_res {
-                                                    Err(e) => Err(e),
-                                                    Ok(func) => match func
-                                                        .call_async(
-                                                            &mut store,
-                                                            (
-                                                                spec.job_id.clone(),
-                                                                resolved,
-                                                                has_header,
-                                                            ),
-                                                        )
-                                                        .await
-                                                    {
-                                                        Ok((Ok(rows),)) => {
-                                                            Ok(serde_json::json!(rows))
-                                                        }
-                                                        Ok((Err(msg),)) => {
-                                                            // WHY: Propagate guest error string verbatim; caller maps to final envelope.
-                                                            Err(anyhow::Error::msg(msg))
-                                                        }
-                                                        // ERROR: E-UICP-225 call csv#run failed — include trap context for visibility.
-                                                        Err(e) => Err(anyhow::Error::from(e)
-                                                            .context(
-                                                                "E-UICP-225: call csv#run failed",
-                                                            )),
-                                                    },
+                                    Ok((src, has_header)) => match resolve_csv_source(&spec, &src) {
+                                        Ok(resolved) => {
+                                            // WHY: Invoke typed bindings generated from WIT so the host matches the component's canonical signature.
+                                            let mut bindings = csv_parse::task::Task::new(&mut store, &instance)
+                                                .map_err(|e| {
+                                                    anyhow::Error::from(e)
+                                                        .context("E-UICP-224: csv task binding init failed")
+                                                })?;
+                                            match bindings
+                                                .call_run(
+                                                    &mut store,
+                                                    &spec.job_id,
+                                                    &resolved,
+                                                    has_header,
+                                                )
+                                                .await
+                                            {
+                                                Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
+                                                Ok(Err(msg)) => {
+                                                    // WHY: Propagate guest error string verbatim; caller maps to final envelope.
+                                                    Err(anyhow::Error::msg(msg))
                                                 }
+                                                Err(e) => Err(anyhow::Error::from(e)
+                                                    .context("E-UICP-225: call csv#run failed")),
                                             }
-                                            Err(e) => Err(anyhow::anyhow!(format!(
-                                                "{}: {}",
-                                                e.code, e.message
-                                            ))),
                                         }
-                                    }
-                                    Err(e) => {
-                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
-                                    }
+                                        Err(e) => Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message))),
+                                    },
+                                    Err(e) => Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message))),
                                 },
                                 "table.query" => match extract_table_query_input(&spec.input) {
                                     Ok((rows, select, where_opt)) => {
-                                        // WHY: Navigate interface export hierarchy to reach the run function.
-                                        // Some toolchains export the interface at the world root; others nest under the world instance.
-                                        // Try multiple resolution strategies to keep host tolerant of benign packaging differences.
-                                        // ERROR: E-UICP-226 typed-func lookup failed for export `table#run`.
-                                        // Prefer direct `#run` export when available.
-                                        // Try multiple name variants to tolerate versioned/unversioned exports.
-                                        let direct_func_candidates = [
-                                            "uicp:task-table-query/table@0.1.0#run",
-                                            "uicp:task-table-query/table#run",
-                                            "table#run",
-                                            "uicp:task-table-query/task@0.1.0#run",
-                                            "uicp:task-table-query/task#run",
-                                            "task#run",
-                                            "run",
-                                        ];
-                                        let mut run_func_idx_opt = None;
-                                        for name in &direct_func_candidates {
-                                            if let Some(idx) = instance.get_export_index(&mut store, None, name) {
-                                                run_func_idx_opt = Some(idx);
-                                                break;
-                                            }
-                                        }
-                                        let run_func_idx = if let Some(idx) = run_func_idx_opt {
-                                            idx
-                                        } else {
-                                            // Locate interface instance (root or nested under world), then find `run` within it.
-                                            let iface_root_candidates = [
-                                                "uicp:task-table-query/table@0.1.0",
-                                                "uicp:task-table-query/table",
-                                                "table",
-                                                "uicp:task-table-query/task@0.1.0",
-                                                "uicp:task-table-query/task",
-                                                "task",
-                                            ];
-                                            let world_candidates = [
-                                                "uicp:task-table-query/task@0.1.0",
-                                                "uicp:task-table-query/task",
-                                                "task",
-                                            ];
-                                            let mut table_instance_idx_opt = None;
-                                            // Try root-level interface first
-                                            for name in &iface_root_candidates {
-                                                if let Some(idx) =
-                                                    instance.get_export_index(&mut store, None, name)
-                                                {
-                                                    table_instance_idx_opt = Some(idx);
-                                                    break;
-                                                }
-                                            }
-                                            // Else try under world instance
-                                            if table_instance_idx_opt.is_none() {
-                                                'worlds: for w in &world_candidates {
-                                                    if let Some(world_idx) = instance
-                                                        .get_export_index(&mut store, None, w)
-                                                    {
-                                                        // Try interface under world first
-                                                        for name in &iface_root_candidates {
-                                                            if let Some(idx) = instance
-                                                                .get_export_index(
-                                                                    &mut store,
-                                                                    Some(&world_idx),
-                                                                    name,
-                                                                )
-                                                            {
-                                                                table_instance_idx_opt = Some(idx);
-                                                                break 'worlds;
-                                                            }
-                                                        }
-                                                        // Fallback: some builds may export `run` directly under the world
-                                                        if run_func_idx_opt.is_none() {
-                                                            if let Some(idx) = instance.get_export_index(
-                                                                &mut store,
-                                                                Some(&world_idx),
-                                                                "run",
-                                                            ) {
-                                                                run_func_idx_opt = Some(idx);
-                                                                break 'worlds;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            if let Some(idx) = run_func_idx_opt {
-                                                idx
-                                            } else {
-                                                let table_instance_idx = table_instance_idx_opt
-                                                    .ok_or_else(|| anyhow::anyhow!(
-                                                        "E-UICP-226: table interface not exported"
-                                                    ))?;
-                                                instance
-                                                    .get_export_index(&mut store, Some(&table_instance_idx), "run")
-                                                    .ok_or_else(|| anyhow::anyhow!(
-                                                        "E-UICP-226: run function not found in table interface"
-                                                    ))?
-                                            }
+                                        // WHY: Use typed binding derived from vendored WIT to eliminate signature ladders and enforce identical host/guest types.
+                                        let mut bindings = table_query::task::Task::new(&mut store, &instance)
+                                            .map_err(|e| {
+                                                anyhow::Error::from(e)
+                                                    .context("E-UICP-226: table task binding init failed")
+                                            })?;
+                                        let input = table_query::types::Input {
+                                            rows,
+                                            select,
+                                            where_contains: where_opt.map(|(col, needle)| table_query::types::Filter { col, needle }),
                                         };
-                                        // WHY: Different toolchains can surface minor ABI differences in how
-                                        // records/enums are represented for typed calls. Try a small set of
-                                        // compatible signatures to avoid false negatives.
-                                        // Prepare typed structs for native signature attempts
-                                        let table_input = TableInput {
-                                            rows: rows.clone(),
-                                            select: select.clone(),
-                                            where_contains: where_opt.clone().map(|(col, needle)| TableFilter {
-                                                col,
-                                                needle,
-                                            }),
-                                        };
-
-                                        let mut typed_failures: Vec<String> = Vec::new();
-
-                                        // Try native signature with several error variants
-                                        match instance.get_typed_func::<
-                                            (String, TableInput),
-                                            (Result<Vec<Vec<String>>, String>,),
-                                        >(&mut store, &run_func_idx)
+                                        match bindings
+                                            .call_run(&mut store, &spec.job_id, &input)
+                                            .await
                                         {
-                                            Ok(func) => match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), table_input.clone()),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => return Ok(serde_json::json!(out)),
-                                                Ok((Err(msg),)) => return Err(anyhow::Error::msg(msg)),
-                                                Err(e) => typed_failures.push(format!(
-                                                    "Result<Vec<Vec<String>>, String> call failed: {e:#?}"
-                                                )),
-                                            },
-                                            Err(err) => typed_failures.push(format!(
-                                                "Result<Vec<Vec<String>>, String> load failed: {err:#?}"
-                                            )),
-                                        }
-
-                                        match instance.get_typed_func::<
-                                            (String, TableInput),
-                                            (Result<Vec<Vec<String>>, TableError>,),
-                                        >(&mut store, &run_func_idx)
-                                        {
-                                            Ok(func) => match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), table_input.clone()),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => return Ok(serde_json::json!(out)),
-                                                Ok((Err(TableError::Cancelled),)) => {
-                                                    return Err(anyhow::Error::msg("cancelled"))
+                                            Ok(Ok(out)) => Ok(serde_json::json!(out)),
+                                            Ok(Err(err)) => {
+                                                use table_query::task::exports::table::Error as TableRunError;
+                                                match err {
+                                                    TableRunError::Cancelled => Err(anyhow::Error::msg("cancelled")),
                                                 }
-                                                Err(e) => typed_failures.push(format!(
-                                                    "Result<Vec<Vec<String>>, TableError> call failed: {e:#?}"
-                                                )),
-                                            },
-                                            Err(err) => typed_failures.push(format!(
-                                                "Result<Vec<Vec<String>>, TableError> load failed: {err:#?}"
-                                            )),
-                                        }
-
-                                        match instance.get_typed_func::<
-                                            (String, TableInput),
-                                            (Result<Vec<Vec<String>>, u32>,),
-                                        >(&mut store, &run_func_idx)
-                                        {
-                                            Ok(func) => match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), table_input.clone()),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => return Ok(serde_json::json!(out)),
-                                                Ok((Err(_),)) => return Err(anyhow::Error::msg("cancelled")),
-                                                Err(e) => typed_failures.push(format!(
-                                                    "Result<Vec<Vec<String>>, u32> call failed: {e:#?}"
-                                                )),
-                                            },
-                                            Err(err) => typed_failures.push(format!(
-                                                "Result<Vec<Vec<String>>, u32> load failed: {err:#?}"
-                                            )),
-                                        }
-
-                                        match instance.get_typed_func::<
-                                            (String, TableInput),
-                                            (Result<Vec<Vec<String>>, ()>,),
-                                        >(&mut store, &run_func_idx)
-                                        {
-                                            Ok(func) => match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), table_input.clone()),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => return Ok(serde_json::json!(out)),
-                                                Ok((Err(_),)) => return Err(anyhow::Error::msg("cancelled")),
-                                                Err(e) => typed_failures.push(format!(
-                                                    "Result<Vec<Vec<String>>, ()> call failed: {e:#?}"
-                                                )),
-                                            },
-                                            Err(err) => typed_failures.push(format!(
-                                                "Result<Vec<Vec<String>>, ()> load failed: {err:#?}"
-                                            )),
-                                        }
-
-                                        if let Ok(func) = instance
-                                            .get_typed_func::<
-                                                (
-                                                    String,
-                                                    (
-                                                        Vec<Vec<String>>,
-                                                        Vec<u32>,
-                                                        Option<(u32, String)>,
-                                                    ),
-                                                ),
-                                                (Result<Vec<Vec<String>>, u32>,),
-                                            >(&mut store, &run_func_idx)
-                                        {
-                                            match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (
-                                                        spec.job_id.clone(),
-                                                        (rows.clone(), select.clone(), where_opt.clone()),
-                                                    ),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                                Ok((Err(_code),)) => Err(anyhow::Error::msg("cancelled")),
-                                                Err(e) => Err(anyhow::Error::from(e)
-                                                    .context("E-UICP-227: call table#run failed")),
                                             }
-                                        } else if let Ok(func) = instance
-                                            .get_typed_func::<
-                                                (
-                                                    String,
-                                                    Vec<Vec<String>>,
-                                                    Vec<u32>,
-                                                    Option<(u32, String)>,
-                                                ),
-                                                (Result<Vec<Vec<String>>, String>,),
-                                            >(&mut store, &run_func_idx)
-                                        {
-                                            match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), rows.clone(), select.clone(), where_opt.clone()),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                                Err(e) => Err(anyhow::Error::from(e)
-                                                    .context("E-UICP-227: call table#run failed")),
-                                            }
-                                        } else if let Ok(func) = instance
-                                            .get_typed_func::<
-                                                (
-                                                    String,
-                                                    (
-                                                        Vec<Vec<String>>,
-                                                        Vec<u32>,
-                                                        Option<(u32, String)>,
-                                                    ),
-                                                ),
-                                                (Result<Vec<Vec<String>>, String>,),
-                                            >(&mut store, &run_func_idx)
-                                        {
-                                            match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (
-                                                        spec.job_id.clone(),
-                                                        (rows.clone(), select.clone(), where_opt.clone()),
-                                                    ),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                                Ok((Err(msg),)) => Err(anyhow::Error::msg(msg)),
-                                                Err(e) => Err(anyhow::Error::from(e)
-                                                    .context("E-UICP-227: call table#run failed")),
-                                            }
-                                        } else if let Ok(func) = instance
-                                            .get_typed_func::<
-                                                (
-                                                    String,
-                                                    Vec<Vec<String>>,
-                                                    Vec<u32>,
-                                                    Option<(u32, String)>,
-                                                ),
-                                                (Result<Vec<Vec<String>>, u32>,),
-                                            >(&mut store, &run_func_idx)
-                                        {
-                                            match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), rows.clone(), select.clone(), where_opt.clone()),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                                Ok((Err(_code),)) => Err(anyhow::Error::msg("cancelled")),
-                                                Err(e) => Err(anyhow::Error::from(e)
-                                                    .context("E-UICP-227: call table#run failed")),
-                                            }
-                                        } else if let Ok(func) = instance
-                                            .get_typed_func::<
-                                                (
-                                                    String,
-                                                    (
-                                                        Vec<Vec<String>>,
-                                                        Vec<u32>,
-                                                        Option<(u32, String)>,
-                                                    ),
-                                                ),
-                                                (Result<Vec<Vec<String>>, ()>,),
-                                            >(&mut store, &run_func_idx)
-                                        {
-                                            match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (
-                                                        spec.job_id.clone(),
-                                                        (rows.clone(), select.clone(), where_opt.clone()),
-                                                    ),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                                Ok((Err(_),)) => Err(anyhow::Error::msg("cancelled")),
-                                                Err(e) => Err(anyhow::Error::from(e)
-                                                    .context("E-UICP-227: call table#run failed")),
-                                            }
-                                        } else if let Ok(func) = instance
-                                            .get_typed_func::<
-                                                (
-                                                    String,
-                                                    Vec<Vec<String>>,
-                                                    Vec<u32>,
-                                                    Option<(u32, String)>,
-                                                ),
-                                                (Result<Vec<Vec<String>>, ()>,),
-                                            >(&mut store, &run_func_idx)
-                                        {
-                                            match func
-                                                .call_async(
-                                                    &mut store,
-                                                    (spec.job_id.clone(), rows.clone(), select.clone(), where_opt.clone()),
-                                                )
-                                                .await
-                                            {
-                                                Ok((Ok(out),)) => Ok(serde_json::json!(out)),
-                                                Ok((Err(_),)) => Err(anyhow::Error::msg("cancelled")),
-                                                Err(e) => Err(anyhow::Error::from(e)
-                                                    .context("E-UICP-227: call table#run failed")),
-                                            }
-                                        } else {
-                                            Err(anyhow::anyhow!(
-                                                "E-UICP-226: get_typed_func table#run failed"
-                                            ))
+                                            Err(e) => Err(anyhow::Error::from(e)
+                                                .context("E-UICP-227: call table#run failed")),
                                         }
                                     }
-                                    Err(e) => {
-                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
-                                    }
+                                    Err(e) => Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message))),
                                 },
                                 _ => Err(anyhow::anyhow!("unknown task for this world")),
                             }

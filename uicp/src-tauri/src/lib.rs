@@ -19,6 +19,9 @@ pub mod registry;
 #[cfg(feature = "wasm_compute")]
 pub mod wasi_logging;
 
+#[cfg(feature = "wasm_compute")]
+pub mod component_bindings;
+
 #[cfg(any(
     all(feature = "wasm_compute", feature = "uicp_wasi_enable"),
     test,
