@@ -2,7 +2,7 @@
 
 Purpose: one-page, human-readable snapshot of what is Done, In Progress, Next, plus risks and CI health. This page is the entry point for status; deeper, authoritative checklists remain in docs/MVP checklist.md and docs/compute/COMPUTE_RUNTIME_CHECKLIST.md.
 
-Last updated: please update this header when you change status.
+Last updated: 2025-01-15 (Codex)
 
 ## Summary
 
@@ -12,28 +12,29 @@ Last updated: please update this header when you change status.
 
 ## Now (Current Focus)
 
-- Stabilize command replay ordering and add regression tests for destroy-before-create/idempotent replay.
-- Add Rust tests for `test_api_key` (cloud vs. local) and verify `api-key-status` events.
-- Harden compute harness smoke (collect timings, tighten invariants) after initial CI integration.
+- Finalize guest ABI contract docs (document host imports + schemas, freeze changelog).
+- Implement component feature preflight to reject unsupported Wasm metadata before instantiation.
+- Wire compute metrics (p50/p95 duration, cache ratio) into Devtools dashboards and production observability.
 
 ## Done (Recently)
 
-- Docs alignment: ports, endpoints, keyring migration, provider usage, architecture overview.
-- CI hardened: `npm ci --ignore-scripts --no-optional`, Lychee link check via `.lychee.toml`, SBOM, Trivy, Gitleaks.
-- Compute: host scaffolding, workspace-scoped cache, registry/digest verify, partial/final events, guest logs to UI, `UICP_WASI_DIAG`.
-- WIT bindings drift guard: `npm run gen:io` + diff on `uicp/src/compute/types.gen.ts`.
+- State & testing foundation documented (`docs/memory.md`, `docs/TEST_PLAN_LEAN.md`); error-handling note updated to match fail-loud behaviour.
+- Adapter `data-command` path now throws `E-UICP-301` on malformed/empty payloads; LLM iterator teardown logs `E-UICP-401`.
+- Component preflight enforces per-task import allowlists before instantiation (rejects modules importing `wasi:http`/etc).
+- Compute observability gaps closed: float canonicalization tests added, RNG/clock determinism proven, host harness smoke runs under `STRICT_MODULES_VERIFY` in CI.
+- CI enforces Wasmtime 37 pin and runs headless compute harness + Playwright smoke against signed modules.
 
 ## In Progress
 
-- Compute negative tests (timeouts, memory caps, fs policy) executed with a real guest module.
-- Import-surface assertions for host (deny `wasi:http`/sockets unless gated).
-- Devtools polish for compute logs and metrics panels.
+- Completing guest ABI freeze and WIT documentation drift checks.
+- Component metadata preflight & strict signature enforcement for release packaging.
+- UI polish for compute dashboards (alerts + charts) fed by new metrics summary.
 
 ## Next (Planned)
 
-- CI: host-only compute strict verify job (build sample component, verify signature/digest, run trivial job, assert output/digest).
-- Determinism probes (seeded RNG and logical clock) surfaced in UI and captured in metrics.
-- Minimal dashboards/alerts for critical paths (Tier 2+ readiness).
+- Automate WIT binding drift detection directly in CI (failing when `npm run gen:io` produces diffs).
+- Add dashboards/alerts for compute success/error rates, cache hit ratio, throttle counters.
+- Expand negative guest modules (timeout, OOM) to validate policy end-to-end under Playwright harness.
 
 ## Open Bugs/Quirks
 

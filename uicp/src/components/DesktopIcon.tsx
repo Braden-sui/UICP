@@ -111,11 +111,7 @@ const DesktopIcon = ({
     setDragging(false);
     const target = event.currentTarget as HTMLElement;
     if (typeof target.releasePointerCapture === 'function') {
-      try {
-        target.releasePointerCapture(event.pointerId);
-      } catch {
-        // Ignore cases where capture was never established.
-      }
+      target.releasePointerCapture(event.pointerId);
     }
   }, []);
 

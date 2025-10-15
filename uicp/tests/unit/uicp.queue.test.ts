@@ -11,6 +11,7 @@ const applyBatchMock = vi.fn(async (batch: any[]) => {
 
 vi.mock('../../src/lib/uicp/adapter', () => ({
   applyBatch: (batch: any) => applyBatchMock(batch),
+  deferBatchIfNotReady: () => null, // Always return null (workspace ready) for queue tests
 }));
 
 import { enqueueBatch, clearAllQueues } from '../../src/lib/uicp/queue';

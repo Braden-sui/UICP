@@ -33,6 +33,8 @@ use tokio_stream::StreamExt;
 
 mod action_log;
 mod commands;
+#[cfg(feature = "wasm_compute")]
+mod component_bindings;
 mod compute;
 mod compute_cache;
 mod compute_input;

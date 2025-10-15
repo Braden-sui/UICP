@@ -235,8 +235,9 @@ export function streamOllamaCompletion(
         try {
           unlisten();
         } catch (err) {
-          // ignore teardown errors
-          void err;
+          // WHY: Listener teardown must be observable; log with dedicated code so CI can grep for regressions.
+          const original = err instanceof Error ? err : new Error(String(err));
+          console.error(`E-UICP-401: failed to unregister ollama listener for request ${requestId}`, original);
         }
         unlisten = null;
       }
@@ -331,11 +332,15 @@ export function streamOllamaCompletion(
         }
         try {
           void invoke('cancel_chat', { requestId });
-        } catch {
-          // ignore
+        } catch (error) {
+          console.error(`Failed to cancel chat request ${requestId} on abort:`, error instanceof Error ? error.message : String(error));
         }
         if (unlisten) {
-          try { unlisten(); } catch { /* ignore */ }
+          try {
+            unlisten();
+          } catch (error) {
+            console.error(`Failed to unlisten on abort for request ${requestId}:`, error instanceof Error ? error.message : String(error));
+          }
           unlisten = null;
         }
         // Clear active marker when aborted
@@ -352,11 +357,15 @@ export function streamOllamaCompletion(
       timeoutId = setTimeout(() => {
         try {
           void invoke('cancel_chat', { requestId });
-        } catch {
-          // ignore
+        } catch (error) {
+          console.error(`Failed to cancel chat request ${requestId} on timeout:`, error instanceof Error ? error.message : String(error));
         }
         if (unlisten) {
-          try { unlisten(); } catch { /* ignore */ }
+          try {
+            unlisten();
+          } catch (error) {
+            console.error(`Failed to unlisten on timeout for request ${requestId}:`, error instanceof Error ? error.message : String(error));
+          }
           unlisten = null;
         }
         if (activeRequestId === requestId) {
@@ -382,30 +391,35 @@ export function streamOllamaCompletion(
         next: () => queue.next(),
         return: async () => {
           if (timeoutId) {
-            try { clearTimeout(timeoutId); } catch { /* ignore */ }
+            clearTimeout(timeoutId);
             timeoutId = undefined;
           }
           if (unlisten) {
             try {
               unlisten();
             } catch (err) {
-              // ignore teardown errors
-              void err;
+              // WHY: Iterator return errors often indicate leaking listeners; surface them loudly instead of ignoring.
+              const original = err instanceof Error ? err : new Error(String(err));
+              console.error(`E-UICP-401: failed to unregister ollama listener during iterator return for request ${requestId}`, original);
             }
             unlisten = null;
           }
           try {
             // Best-effort backend cancel to stop network usage
             await invoke('cancel_chat', { requestId });
-          } catch {
-            // ignore
+          } catch (error) {
+            console.error(`Failed to cancel chat request ${requestId} on return:`, error instanceof Error ? error.message : String(error));
           }
           // Clear active marker on consumer return
           if (activeRequestId === requestId) {
             activeRequestId = null;
           }
           if (options?.signal && abortHandler && typeof options.signal.removeEventListener === 'function') {
-            try { options.signal.removeEventListener('abort', abortHandler); } catch { /* ignore */ }
+            try {
+              options.signal.removeEventListener('abort', abortHandler);
+            } catch (error) {
+              console.error(`Failed to remove abort listener for request ${requestId}:`, error instanceof Error ? error.message : String(error));
+            }
           }
           queue.end();
           return { value: undefined as unknown as StreamEvent, done: true };
@@ -420,12 +434,16 @@ export function streamOllamaCompletion(
 // Track the most recent in-flight chat request id so STOP can cancel promptly.
 let activeRequestId: string | null = null;
 
-export async function cancelActiveChat(): Promise<void> {
-  const rid = activeRequestId;
+export async function cancelChat(rid: string | null) {
   if (!rid) return;
   try {
     await invoke('cancel_chat', { requestId: rid });
-  } catch {
-    // ignore
+  } catch (error) {
+    console.error(`Failed to cancel chat request ${rid}:`, error instanceof Error ? error.message : String(error));
   }
+}
+
+// WHY: DockChat STOP button cancels the latest in-flight request without tracking the id directly.
+export async function cancelActiveChat() {
+  await cancelChat(activeRequestId);
 }

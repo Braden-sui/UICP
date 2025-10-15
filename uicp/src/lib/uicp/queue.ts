@@ -1,6 +1,6 @@
-import type { Batch } from './schemas';
-import { validateBatch } from './schemas';
-import { applyBatch, type ApplyOutcome } from './adapter';
+import type { Batch } from "./schemas";
+import { validateBatch } from "./schemas";
+import { applyBatch, deferBatchIfNotReady, type ApplyOutcome } from "./adapter";
 
 // Per-window FIFO queue with idempotency and txn cancel support.
 // - Commands with the same windowId run sequentially
@@ -95,6 +95,10 @@ const mergeOutcomes = (outcomes: ApplyOutcome[]): ApplyOutcome => {
 export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome> => {
   // Allow callers to pass unknown; validate/normalize to Batch.
   const batch = Array.isArray(input) ? validateBatch(input) : validateBatch(input as unknown);
+
+  // Guard: defer batch if workspace root is not yet registered (race condition protection)
+  const deferred = deferBatchIfNotReady(batch);
+  if (deferred) return deferred;
 
   // Handle txn.cancel upfront: clear queues and apply the cancel immediately.
   const hasTxnCancel = batch.some((env) => env.op === 'txn.cancel');

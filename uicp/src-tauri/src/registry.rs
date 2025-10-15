@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fs,
+    env, fs,
     fs::OpenOptions,
     io::{ErrorKind, Read, Write},
     path::{Component, Path, PathBuf},
@@ -47,14 +47,18 @@ fn resolve_modules_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     if let Ok(dir) = std::env::var("UICP_MODULES_DIR") {
         return PathBuf::from(dir);
     }
-    // Fallback: put under the app data dir beside db/logs.
-    let state: tauri::State<'_, crate::AppState> = app.state();
-    let base = state
-        .db_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| state.db_path.clone());
-    base.join("modules")
+    // Fallback: prefer AppState-managed path, otherwise derive from the app data dir.
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        let base = state
+            .db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| state.db_path.clone());
+        return base.join("modules");
+    }
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("modules")
 }
 
 /// Public accessor for the resolved modules directory path.
@@ -380,6 +384,27 @@ pub fn find_module<R: Runtime>(
         Ok(true) => {
             // Strict mode: require a valid signature using UICP_MODULES_PUBKEY
             enforce_strict_signature(&entry)?;
+            crate::compute::preflight_component_imports(
+                &path,
+                &format!("{}@{}", entry.task, entry.version),
+            )
+            .with_context(|| {
+                format!(
+                    "E-UICP-229: component preflight failed for {}@{}",
+                    entry.task, entry.version
+                )
+            })?;
+            #[cfg(feature = "wasm_compute")]
+            crate::compute::verify_component_contract(
+                &path,
+                &format!("{}@{}", entry.task, entry.version),
+            )
+            .with_context(|| {
+                format!(
+                    "E-UICP-240: module contract verification failed for {}@{}",
+                    entry.task, entry.version
+                )
+            })?;
             Ok(Some(ModuleRef {
                 entry: entry.clone(),
                 path,
@@ -590,11 +615,12 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         // WHY: Only enforce bundled signature verification when explicitly enabled.
         // INVARIANT: CI should set UICP_CI_PUBKEY_ENFORCE=1 to require Verified signatures.
-        let enforce = std::env::var("UICP_CI_PUBKEY_ENFORCE")
-            .unwrap_or_default();
+        let enforce = std::env::var("UICP_CI_PUBKEY_ENFORCE").unwrap_or_default();
         let enforce = matches!(enforce.as_str(), "1" | "true" | "TRUE" | "yes" | "on");
         if !enforce {
-            eprintln!("skipping bundled manifest signature enforcement (UICP_CI_PUBKEY_ENFORCE not set)");
+            eprintln!(
+                "skipping bundled manifest signature enforcement (UICP_CI_PUBKEY_ENFORCE not set)"
+            );
             return;
         }
 

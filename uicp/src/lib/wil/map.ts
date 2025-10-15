@@ -22,13 +22,24 @@ function coerceFor(op: OperationNameT, slots: unknown): Record<string, unknown> 
   switch (op) {
     case "window.create":
     case "window.update": {
+      // Defense-in-depth: if size is a dimension string like "1200x800", split it.
+      // This complements postProcess in parse.ts and catches edge cases.
+      let result = { ...s };
+      if (typeof result.size === 'string') {
+        const match = /^(\d+)\s*x\s*(\d+)$/i.exec(result.size);
+        if (match) {
+          result.width = Number(match[1]);
+          result.height = Number(match[2]);
+          delete result.size; // Remove to avoid schema clash with enum values
+        }
+      }
       return {
-        ...s,
-        width: coerceNumber(s.width),
-        height: coerceNumber(s.height),
-        x: coerceNumber(s.x),
-        y: coerceNumber(s.y),
-        zIndex: coerceNumber(s.zIndex),
+        ...result,
+        width: clampDimension(coerceNumber(result.width)),
+        height: clampDimension(coerceNumber(result.height)),
+        x: coerceNumber(result.x),
+        y: coerceNumber(result.y),
+        zIndex: coerceNumber(result.zIndex),
       };
     }
     case "dom.set":
@@ -52,6 +63,14 @@ function coerceNumber(v: unknown): number | undefined {
     if (Number.isFinite(n)) return n;
   }
   return undefined;
+}
+
+/**
+ * Clamp dimension (width/height) to schema minimum of 120px.
+ * Prevents Zod validation failures when agents suggest small dimensions.
+ */
+function clampDimension(n: number | undefined): number | undefined {
+  return typeof n === 'number' ? Math.max(120, n) : undefined;
 }
 
 function coerceBoolean(v: unknown): boolean | undefined {

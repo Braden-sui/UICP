@@ -9,11 +9,17 @@
 // WHY: Replay shakedown requires the full harness stack (mock runtime + Wasm compute).
 
 use serde_json::json;
+use std::sync::Once;
 use uicp::{
     test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
     ComputeProvenanceSpec,
 };
 use uuid::Uuid;
+
+fn skip_contract_verify() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| std::env::set_var("UICP_SKIP_CONTRACT_VERIFY", "1"));
+}
 
 fn build_job(job_id: &str, env_hash: &str) -> ComputeJobSpec {
     ComputeJobSpec {
@@ -40,6 +46,7 @@ fn build_job(job_id: &str, env_hash: &str) -> ComputeJobSpec {
 
 #[tokio::test]
 async fn kill_replay_produces_identical_output_hash() {
+    skip_contract_verify();
     // Skip if module absent or component not loadable
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

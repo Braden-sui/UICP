@@ -52,8 +52,18 @@ jobs:
       - name: Assert engine versions pinned
         run: |
           echo "Checking Wasmtime versions in lockfile"
-          awk '/name = "wasmtime"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '24\.'
-          awk '/name = "wasmtime-wasi"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '24\.'
+          awk '/name = "wasmtime"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '37\.'
+          awk '/name = "wasmtime-wasi"/{f=1} f&&/version/{print; exit}' uicp/src-tauri/Cargo.lock | grep -E '37\.'
+
+      - name: Host harness smoke (strict verify)
+        working-directory: uicp/src-tauri
+        env:
+          STRICT_MODULES_VERIFY: ${{ env.STRICT_MODULES_VERIFY }}
+          UICP_MODULES_PUBKEY: ${{ env.UICP_MODULES_PUBKEY }}
+        run: |
+          mkdir -p ../target/compute-ci
+          printf '%s\n' '{"jobId":"ci-smoke","task":"csv.parse@1.2.0","input":{"source":"data:text/csv,a,b\n1,2","hasHeader":true},"timeoutMs":10000,"fuel":null,"memLimitMb":null,"bind":[],"cache":"disabled","capabilities":{},"replayable":true,"workspaceId":"default","provenance":{"envHash":"ci-smoke","agentTraceId":null}}' \
+            | cargo run --quiet --features "wasm_compute,uicp_wasi_enable,compute_harness" --bin compute_harness -- run --data-dir ../target/compute-ci
 
       - name: Rust tests compile (no run)
         working-directory: uicp/src-tauri

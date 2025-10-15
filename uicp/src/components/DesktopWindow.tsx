@@ -113,11 +113,7 @@ const DesktopWindow = ({
     setDragging(false);
     const target = event.currentTarget as HTMLElement;
     if (typeof target.releasePointerCapture === 'function') {
-      try {
-        target.releasePointerCapture(event.pointerId);
-      } catch {
-        // Ignore missing capture edge cases.
-      }
+      target.releasePointerCapture(event.pointerId);
     }
   }, []);
 
@@ -135,11 +131,7 @@ const DesktopWindow = ({
   );
   // Ensure we only call onClose when provided to avoid runtime errors
   const handleClose = useCallback(() => {
-    try {
-      _onClose?.();
-    } catch {
-      // no-op
-    }
+    _onClose?.();
   }, [_onClose]);
 
   return (

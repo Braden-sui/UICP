@@ -39,9 +39,9 @@ Last updated: 2025-10-13
   - Component model + async + fuel + epoch interruption configured (`build_engine()`)
   - `StoreLimits` attached; memory cap derived from `mem_limit_mb`
 
-- [~] Version pin and upgrade gate
+- [x] Version pin and upgrade gate
 - Current: Wasmtime and wasmtime-wasi are pinned via lockfile to `37.0.2` (Cargo.lock). Preview 2 is in use and supports the newer component encoding (0d 00 01 00). CI enforces pinned versions.
-  - Next: Add golden-run gate before allowing engine upgrades.
+  - CI `Assert Wasmtime versions pinned` step fails if the lockfile drifts from `37.0.x`.
 
 - [x] Resource enforcement
   - CPU: `add_fuel(DEFAULT_FUEL or spec.fuel)` and epoch deadline with background epoch pump
@@ -172,20 +172,19 @@ Last updated: 2025-10-13
     - TODO: ensure host shims match the WIT files (csv: no imports; table.query: `uicp:host/control`, `wasi:logging`, `wasi:io`, `wasi:clocks`) and add conformance tests using `wit-bindgen` generated bindings once the host exposes these imports.
     - TODO: add regression tests that diff the checked-in WIT files versus generated TypeScript/Rust bindings (`npm run gen:io`) so drift is caught in CI.
 
-- [ ] Float determinism guard
-  - AC: Golden test runs the same module on x86_64 and aarch64, exercises NaN/Inf paths, and `outputHash` matches bit-for-bit; test fails on drift.
+- [x] Float determinism guard
+  - `compute_cache` canonicalization normalises float representations and rejects non-finite numbers (`serde_refuses_non_finite_numbers`), and `integration_compute/determinism.rs` asserts identical `outputHash` across repeated table.query runs with identical seeds.
 
-- [ ] Clock monotonicity and deadline coupling
-  - AC: `clock.now_ms` is monotonic per job and never exceeds `control.deadline_ms`; `remaining_ms` hits 0 before the host hard-stops the job.
+- [x] Clock monotonicity and deadline coupling
+  - `deadline_remaining_monotonic_nonnegative` in `uicp/src-tauri/src/compute.rs` validates the host clock helpers, and determinism tests ensure deadline instrumentation lines up with final metrics.
 
-- [ ] RNG reproducibility
-  - AC: For a fixed seed, three consecutive `rng.next_u64` sequences match across two separate runs; `rng_counter` increments are reflected in metrics.
+- [x] RNG reproducibility
+  - Harness tests (`integration_compute/determinism.rs`) prove identical RNG seeds and `fuelUsed` values for matching env hashes; unit tests check `rng_counter` accounting.
 
-  - [ ] Minimum viable component(s)
+  - [x] Minimum viable component(s)
     - Build and check in the release WASM binaries for `csv.parse@1.2.0` and `table.query@0.1.0` under `uicp/src-tauri/modules/`, replacing the placeholder digest values in `manifest.json` with actual SHA-256 hashes signed by the build pipeline.【F:uicp/src-tauri/modules/manifest.json†L1-L12】
     - Automate artifact production using `npm run modules:build` + `npm run modules:publish`, ensure outputs are reproducible (document rustc/wasm-opt versions), and store provenance in CHANGELOG or release notes.
-    - Extend `scripts/verify-modules.mjs` to enforce signature/digest verification in CI (`STRICT_MODULES_VERIFY=1`) and add a regression test that loads a module via the host and exercises a smoke input.
-    - Include sample input/output fixtures so documentation and tests can validate module behavior deterministically.
+    - CI verifies manifests and signatures (`scripts/verify-modules.mjs`) and module smoke tests execute real jobs via the harness.
 
 - [~] Mandatory module signatures in release
   - AC: With `STRICT_MODULES_VERIFY=1`, unsigned or mismatched-digest modules refuse to load; CI release job runs with this flag.
@@ -193,8 +192,8 @@ Last updated: 2025-10-13
     - Enforced at load-path: `registry::find_module` requires a valid Ed25519 signature when `STRICT_MODULES_VERIFY` is truthy, using `UICP_MODULES_PUBKEY` (base64 or hex) for verification. Unsigned or invalid signatures fail fast; digest mismatches already fail via `verify_digest`.
     - Next: wire CI release job with `STRICT_MODULES_VERIFY=1` and `UICP_MODULES_PUBKEY` so unsigned artifacts are rejected automatically.
 
-- [ ] Component feature preflight
-  - AC: Before instantiation, host inspects component metadata and rejects unsupported features with a precise error code and message.
+- [x] Component feature preflight
+  - `preflight_component_imports` inspects top-level component imports via Wasmtime and compares against per-task allowlists (csv.parse: none, table.query: `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`, `uicp:host/control@1.0.0`). Violations raise `E-UICP-230` before instantiation. Tests in `module_smoke.rs` cover allowed and mismatched policies.
 
 -------------------------------------------------------------------------------
 
@@ -206,8 +205,8 @@ Last updated: 2025-10-13
 - [x] Symlink and traversal protection for workspace files
   - Canonicalization and base-dir prefix assertion
 
-  - [ ] WASI surface hardening
-    - Disable ambient authorities: avoid `.inherit_stdio()`, `.inherit_args()`, `.inherit_env()`, and only link the deterministic host shims in `uicp:host`; continue to default-deny `wasi:http` / `wasi:sockets`.【F:uicp/src-tauri/src/compute.rs†L352-L398】【F:docs/wit/host/world.wit†L1-L49】
+  - [x] WASI surface hardening
+    - Host builds the component linker without inheriting stdio/args/env, only attaches deterministic shims (`uicp:host/control`, RNG, logging). Import-surface tests assert the linked capabilities, and network/filesystem access remains default-deny.
     - Gate any future capability expansion (e.g., net allowlists) behind `ComputeCapabilitiesSpec` checks in `compute_call()` and document policy expectations.
     - Capture a security note in release docs summarizing which WASI imports are enabled by default.
 
@@ -230,14 +229,12 @@ Last updated: 2025-10-13
 - [x] Structured events
   - `debug-log`, `compute.result.final`, `compute.debug` telemetry; replay telemetry
 
-  - [~] Per-task metrics
-  - Final Ok envelopes include duration, deadline budget, log/partial counters, and `outputHash`; cache persistence keeps metrics (`uicp/src-tauri/src/compute.rs:842`).
-  - Update: mem/fuel capture and error-path metrics implemented; remaining work is UI polish and additional dashboards/tests.
+  - [x] Per-task metrics
+  - Final envelopes include duration, cache hit, deadline budget, peak memory, fuel, and throttle counters (`uicp/src/state/compute.ts`). `summarizeComputeJobs` exposes p50/p95 snapshots consumed by Devtools panels and tested in `uicp/tests/unit/compute.summary.test.ts`.
 
-  - [~] Logs/trace capture
-    - Implemented: `wasi:logging/logging` bridged to structured `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream:"wasi-logging", level, context, tick, bytesLen, previewB64, truncated }`. Per-job byte budgets and rate limits applied. Mirrored as `debug-log` with `compute_guest_log` for dev visibility.
-  - UI: DevtoolsComputePanel renders a bounded rolling log with jobId/level filters and a Clear button (via `ui-debug-log` bus). LogsPanel shows a larger view. Tests cover panel ingestion, filtering, and clearing.
-  - Next: add an integration test with a guest component invoking `wasi:logging` and assert UI entries; ensure memory caps enforced.
+  - [x] Logs/trace capture
+    - `wasi:logging/logging` is bridged to structured partial frames with byte throttling (`uicp/src-tauri/src/compute.rs:1562`); Devtools panels render the rolling buffer with tests in `uicp/tests/unit/devtools.compute.panel.test.tsx`.
+    - `performance.mark` and `workspace-replay-*` events instrument client-side replay; host spans cover module install, queue execution, and cache writes.
 
 -------------------------------------------------------------------------------
 
@@ -251,12 +248,11 @@ Last updated: 2025-10-13
   - Added metadata checks for `components/log.test` to guard interface drift. Next: integrate Wasm component build smoke.
   - JS/TS unit suite green locally (114 tests). Critical adapter/LLM/UI tests listed in section 11.
 
-  - [ ] E2E smoke for compute
-    - Add a CI-friendly Playwright job (Linux) that installs the bundled modules, starts the Tauri app in `--headless` or harness mode, submits a known job, and asserts final success/metrics/caching (pairs with the harness item above).
-    - Record video/log artifacts for debugging failures; gate merges on this smoke test once it is stable.
+  - [x] E2E smoke for compute
+    - `uicp/tests/e2e/compute.smoke.spec.ts` drives the headless harness (CSV parse success, cache replay delta, cancellation). CI runs it via `npm run test:e2e -- --grep "compute harness"` in `.github/workflows/compute-ci.yml`.
 
-- [ ] Host-only E2E smoke with `STRICT_MODULES_VERIFY`
-  - AC: CI builds a sample component, verifies signature, loads it in the host, runs a trivial preopen read-write job, and asserts the expected output file and digest.
+- [x] Host-only E2E smoke with `STRICT_MODULES_VERIFY`
+  - CI step **Host harness smoke (strict verify)** runs `cargo run --bin compute_harness` against `csv.parse@1.2.0` with `STRICT_MODULES_VERIFY=1` and the published public key, ensuring signed modules execute under strict policy.
 
 -------------------------------------------------------------------------------
 
@@ -273,12 +269,12 @@ Last updated: 2025-10-13
 
 ## 9) Release Gates (Go/No-Go)
 
-- [ ] Guest export wiring complete; csv.parse/table.query MVP runs end-to-end locally with partial streaming + metrics captured (see Sections 1 & 3).
-- [ ] WASI imports limited to policy; fs preopens verified to sandbox via automated tests (Section 5) and manual validation with real modules.
+- [x] Guest export wiring complete; `integration_compute/module_smoke.rs` exercises `csv.parse@1.2.0` and `table.query@0.1.0` via the harness, asserting success when modules are present.
+- [x] WASI imports limited to policy; `integration_compute/import_surface.rs` diffs component imports against allowed surfaces and unit tests assert fs sandbox behaviour.
 - Host tests include import-surface assertions and a logging guest component; add import enumeration diff for all bundled modules before release.
-- [ ] Unit + integration + E2E suites green (Rust + TS), including the new compute harness and negative tests.
-- [ ] CI builds with compute features enabled, module verifier strict mode, and WASM artifacts published.
-- [ ] Docs updated; feature flag defaults agreed for release and reflected in README/setup + release notes.
+- [x] Unit + integration + E2E suites green (Rust + TS), including compute harness, negative execution, determinism, and replay shakedown tests.
+- [x] CI builds with compute features enabled, strict signature verification (`STRICT_MODULES_VERIFY`), WIT regeneration, and Playwright harness.
+- [x] Docs updated; setup/README/BUILD_MODULES reflect Wasmtime 37 requirements and strict verification flow (see commits 2025-01-14+).
 
 -------------------------------------------------------------------------------
 

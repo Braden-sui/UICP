@@ -24,13 +24,22 @@ type LexEntry<K extends OperationNameT> = {
 export const LEXICON: { [K in OperationNameT]: LexEntry<K> } = {
   // Windows -----------------------------------------------------------------
   "window.create": {
-    verbs: ["create", "make", "open"],
+    verbs: ["create", "make", "open", "new"],
     templates: [
       // Prefer more specific patterns first so generic {title} does not over-capture
       "create window title {title} width {width} height {height}",
       "create window title {title} size {size}",
       "create window title {title} at {x},{y}",
       "create window title {title}",
+      // Additional verb variations for agent flexibility
+      "new window title {title} width {width} height {height}",
+      "new window title {title} size {size}",
+      "new window title {title} at {x},{y}",
+      "new window title {title}",
+      "make window title {title} width {width} height {height}",
+      "make window title {title} size {size}",
+      "make window title {title}",
+      "open window title {title}",
     ],
     skip: ["please", "can you", "the", "a"],
   },

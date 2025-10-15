@@ -43,8 +43,8 @@ export async function initializeTauriBridge() {
           detail: { ts: Date.now(), event, ...(extra || {}) },
         }),
       );
-    } catch {
-      // ignore
+    } catch (error) {
+      console.error(`Failed to emit ui-debug-log event ${event}:`, error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -169,8 +169,8 @@ export async function initializeTauriBridge() {
     targetWindow.uicpComputeCancel = async (jobId: string) => {
       try {
         cancelFn?.(jobId);
-      } catch {
-        // ignore cancellation stub errors
+      } catch (error) {
+        console.error(`Compute cancellation failed for job ${jobId}:`, error instanceof Error ? error.message : String(error));
       }
     };
   }
@@ -209,8 +209,8 @@ export async function initializeTauriBridge() {
   bridgeWindow.uicpComputeCancel = async (jobId: string) => {
     try {
       await invoke('compute_cancel', { jobId });
-    } catch {
-      // ignore cancellation errors
+    } catch (error) {
+      console.error(`Compute cancellation invoke failed for job ${jobId}:`, error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -218,8 +218,8 @@ export async function initializeTauriBridge() {
   if (import.meta.env.DEV) {
     try {
       await invoke('set_debug', { enabled: true });
-    } catch {
-      // ignore failures enabling debug
+    } catch (error) {
+      console.error('Failed to enable debug mode:', error instanceof Error ? error.message : String(error));
     }
 
     // Mirror backend debug events
@@ -593,8 +593,8 @@ export function teardownTauriBridge() {
   for (const off of unsubs) {
     try {
       off();
-    } catch {
-      // ignore
+    } catch (error) {
+      console.error('Failed to unsubscribe event listener during teardown:', error instanceof Error ? error.message : String(error));
     }
   }
   unsubs = [];

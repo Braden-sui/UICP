@@ -39,6 +39,7 @@ ciborium = "0.2"
  rand = { version = "0.8", features = ["std"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
+pollster = "0.3"
 
   # Optional Wasm runtime (WASI Preview 2) for the compute plane.
   # Enable via `--features "wasm_compute uicp_wasi_enable"` when you want local compute.

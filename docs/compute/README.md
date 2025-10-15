@@ -27,6 +27,32 @@
 - Workspace-scoped cache implemented in `uicp/src-tauri/src/compute_cache.rs`.
 - Clear Compute Cache UI is available in `uicp/src/components/AgentSettingsWindow.tsx` (invokes `clear_compute_cache`).
 
+## Guest ABI contract (csv.parse & table.query)
+
+| Task | WIT package | Export | Imports | Notes |
+| ---- | ----------- | ------ | ------- | ----- |
+| `csv.parse@1.2.0` | `uicp:task-csv-parse@1.2.0` (`components/csv.parse/csv-parse/wit/world.wit`) | `func run(job-id: string, input: string, has-header: bool) -> result<list<list<string>>, string>` | _None_ | Pure parser. Input is a `data:` URI (CSV text). Returns rows or a string error. |
+| `table.query@0.1.0` | `uicp:task-table-query@0.1.0` (`components/table.query/wit/world.wit`) | `func run(job-id: string, rows: list<list<string>>, select: list<u32>, where?: record { col: u32, needle: string }) -> result<list<list<string>>, string>` | `uicp:host/control`, `wasi:io/streams`, `wasi:clocks/monotonic-clock` | Relies on host control for partial logging/cancel checks. No filesystem or network imports are linked. |
+
+Host shims:
+
+- `uicp:host/control` exposes `should_cancel(job)`, `deadline_ms(job)`, `remaining_ms(job)`, and `open_partial_sink(job)` for structured log frames.
+- `wasi:logging/logging` is mapped to `compute.result.partial` events with rate limiting.
+- `wasi:io/streams` is limited to the stream returned by `open_partial_sink`; no other stdio is linked.
+- `wasi:clocks/monotonic-clock` provides a deterministic `now` view—exposed via the host deadline tracker.
+
+Capability guardrails:
+
+- No ambient filesystem (`wasi:filesystem`) or network (`wasi:http`) imports are linked in V1; granting those requires explicit policy updates and new component versions.
+- Modules must execute within 30 s by default (`timeoutMs` gate) and 256 MB of linear memory unless `capabilities.longRun` / `capabilities.memHigh` are set.
+- The host derives a stable RNG seed per `(jobId, envHash)` and reports it via `metrics.rngSeedHex`; repeated runs with identical inputs must yield identical `outputHash` values.
+
+Error surface:
+
+- Guests return `result<…>`; errors propagate as `ComputeFinalErr` with `code` such as `Compute.Timeout`, `Compute.Resource.Limit`, `Compute.CapabilityDenied`, or `Runtime.Fault`.
+- Non-finite numbers (NaN/Inf) are rejected before caching (`compute_cache::canonicalize_input`).
+- Partial logs must stay within the byte budgets enforced by the host; overruns are truncated with `partialThrottleWaits`/`logThrottleWaits` metrics.
+
 ## Registry (Phase 0 scaffold)
 
 - Manifest path: `<dataDir>/modules/manifest.json` (override with `UICP_MODULES_DIR`).
@@ -169,3 +195,4 @@ await (window as any).uicpComputeCall({
 ## Drift Guard
 
 - CI workflow `.github/workflows/compute-ci.yml` runs `npm run gen:io` followed by `git diff --exit-code src/compute/types.gen.ts`, ensuring ABI changes stay in sync with generated bindings before merge.
+- Preflight validation (`preflight_component_imports`) loads each module with Wasmtime and rejects any import surface outside the allowlist above. Unknown tasks must register their import policy before modules will load.

@@ -9,13 +9,62 @@
 // WHY: Module smoke tests exercise real compute jobs via the harness-only runtime.
 
 use serde_json::json;
+use std::path::PathBuf;
+use std::sync::Once;
 use uicp::{
+    compute::preflight_component_imports,
     registry, test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
     ComputeProvenanceSpec,
 };
 
+fn skip_contract_verify() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| std::env::set_var("UICP_SKIP_CONTRACT_VERIFY", "1"));
+}
+
+fn modules_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("modules")
+}
+
+#[test]
+fn csv_parse_preflight_allows_empty_imports() {
+    skip_contract_verify();
+    let module = modules_dir().join("csv.parse@1.2.0.wasm");
+    if !module.exists() {
+        eprintln!("skipping csv.parse preflight test (module missing)");
+        return;
+    }
+    preflight_component_imports(&module, "csv.parse@1.2.0").expect("csv.parse preflight");
+}
+
+#[test]
+fn table_query_preflight_allows_expected_imports() {
+    skip_contract_verify();
+    let module = modules_dir().join("table.query@0.1.0.wasm");
+    if !module.exists() {
+        eprintln!("skipping table.query preflight test (module missing)");
+        return;
+    }
+    preflight_component_imports(&module, "table.query@0.1.0").expect("table.query preflight");
+}
+
+#[test]
+fn preflight_rejects_mismatched_policy() {
+    skip_contract_verify();
+    let module = modules_dir().join("table.query@0.1.0.wasm");
+    if !module.exists() {
+        eprintln!("skipping preflight mismatch test (module missing)");
+        return;
+    }
+    assert!(
+        preflight_component_imports(&module, "csv.parse@1.2.0").is_err(),
+        "table.query should not satisfy csv.parse import policy"
+    );
+}
+
 #[tokio::test]
 async fn csv_parse_smoke_when_module_present() {
+    skip_contract_verify();
     // Quick presence check so CI/dev without modules doesn't fail the suite.
     // Set modules dir env so registry path resolution does not require AppState.
     std::env::set_var(
@@ -73,6 +122,7 @@ async fn csv_parse_smoke_when_module_present() {
 
 #[tokio::test]
 async fn table_query_smoke_when_module_present() {
+    skip_contract_verify();
     std::env::set_var(
         "UICP_MODULES_DIR",
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("modules"),

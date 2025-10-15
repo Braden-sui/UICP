@@ -3,7 +3,7 @@ import { createFrameCoalescer, createId } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
-import { tryRecoverJsonFromAttribute } from "./cleanup";
+// Removed: tryRecoverJsonFromAttribute - strict JSON parsing only
 import { getBridgeWindow, getComputeBridge } from "../bridge/globals";
 import type { JobSpec } from "../../compute/types";
 
@@ -28,12 +28,19 @@ export const registerWindowLifecycle = (listener: (event: WindowLifecycleEvent) 
 };
 
 const emitWindowEvent = (event: WindowLifecycleEvent) => {
+  const errors: Array<{ listener: number; error: unknown }> = [];
+  let index = 0;
   for (const listener of windowListeners) {
     try {
       listener(event);
     } catch (error) {
-      console.error('window lifecycle listener error', error);
+      errors.push({ listener: index, error });
     }
+    index++;
+  }
+  if (errors.length > 0) {
+    const details = errors.map(e => `listener ${e.listener}: ${e.error instanceof Error ? e.error.message : String(e.error)}`).join('; ');
+    throw new Error(`Window lifecycle event failed for ${event.type}: ${details}`);
   }
 };
 
@@ -64,11 +71,8 @@ const stableStringify = (input: unknown): string => {
     }
     return out;
   };
-  try {
-    return JSON.stringify(walk(input));
-  } catch {
-    try { return String(input); } catch { return '[unstringifiable]'; }
-  }
+  // Strict: fail fast on unstringifiable input instead of silently degrading
+  return JSON.stringify(walk(input));
 };
 
 type ComponentRecord = {
@@ -99,6 +103,10 @@ if (bridgeWindow && !bridgeWindow.__UICP_STATE_STORE__) {
 const windowDragCleanup = new WeakMap<HTMLElement, () => void>();
 
 let workspaceRoot: HTMLElement | null = null;
+// Guard against race: bridge may enqueue batches before Desktop.tsx registers the root.
+let workspaceReady = false;
+type PendingBatchEntry = { batch: Batch; resolve: (outcome: import('./adapter').ApplyOutcome) => void; reject: (error: unknown) => void };
+const pendingBatches: PendingBatchEntry[] = [];
 
 const REPLAY_PROGRESS_EVENT = 'workspace-replay-progress';
 const REPLAY_COMPLETE_EVENT = 'workspace-replay-complete';
@@ -474,15 +482,44 @@ const renderStructuredClarifierForm = (body: StructuredClarifierBody, command: E
 type UIEventCallback = (event: Event, payload: Record<string, unknown>) => void;
 let uiEventCallback: UIEventCallback | null = null;
 
+/**
+ * Guard to defer batch application until workspace root is registered.
+ * Returns a Promise if the batch is queued, otherwise returns null to signal immediate processing.
+ * 
+ * CONTEXT: initializeTauriBridge() runs before Desktop.tsx mounts, so streaming/compute events
+ * may call enqueueBatch() before registerWorkspaceRoot() is called. This prevents the
+ * "Workspace root not registered" error.
+ */
+export const deferBatchIfNotReady = (batch: Batch): Promise<ApplyOutcome> | null => {
+  if (workspaceReady) return null; // Workspace is ready, proceed normally
+  
+  console.debug(`[adapter] workspace not ready, queuing batch with ${batch.length} op(s)`);
+  return new Promise((resolve, reject) => {
+    pendingBatches.push({ batch, resolve, reject });
+  });
+};
+
 // Adapter mutates the isolated workspace DOM so commands remain pure data.
 export const registerWorkspaceRoot = (element: HTMLElement) => {
   workspaceRoot = element;
+  workspaceReady = true;
 
   // Set up event delegation at the root
   element.addEventListener('click', handleDelegatedEvent, true);
   element.addEventListener('input', handleDelegatedEvent, true);
   element.addEventListener('submit', handleDelegatedEvent, true);
   element.addEventListener('change', handleDelegatedEvent, true);
+
+  // Process any batches that arrived before workspace was ready
+  if (pendingBatches.length > 0) {
+    console.debug(`[adapter] flushing ${pendingBatches.length} pending batch(es)`);
+    const toProcess = pendingBatches.splice(0); // Drain the queue
+    for (const entry of toProcess) {
+      enqueueBatch(entry.batch)
+        .then(entry.resolve)
+        .catch(entry.reject);
+    }
+  }
 };
 
 // Register callback for UI events
@@ -585,37 +622,36 @@ const handleDelegatedEvent = (event: Event) => {
       cmdHost = cmdHost.parentElement;
     }
     if (commandJson) {
-      const recovered = tryRecoverJsonFromAttribute(commandJson);
-      const normalized = recovered ?? commandJson;
-      if (recovered && cmdHost) {
-        cmdHost.setAttribute('data-command', normalized);
-      }
-      // Enforce size cap to prevent oversized payloads
-      if (normalized.length > MAX_DATA_COMMAND_LEN) {
-        console.error('data-command exceeds size cap');
-        return;
+      // WHY: Hard fail on malformed or empty data-command payloads so UI inconsistencies never go unnoticed.
+      // INVARIANT: Every data-command must parse into a non-empty Batch; template evaluation cannot silently drop commands.
+      if (commandJson.length > MAX_DATA_COMMAND_LEN) {
+        throw new Error(`E-UICP-300: data-command exceeds size cap: ${commandJson.length} > ${MAX_DATA_COMMAND_LEN}`);
       }
       try {
-        // Cap template tokens prior to parse to bound work
-        const tokenMatches = normalized.match(/\{\{\s*[^}]+\s*\}\}/g);
+        const tokenMatches = commandJson.match(/\{\{\s*[^}]+\s*\}\}/g);
         const tokenCount = tokenMatches ? tokenMatches.length : 0;
         if (tokenCount > MAX_TEMPLATE_TOKENS) {
-          console.error('data-command contains too many template tokens');
-          return;
+          throw new Error(`E-UICP-300: data-command contains too many template tokens: ${tokenCount} > ${MAX_TEMPLATE_TOKENS}`);
         }
-        const raw = JSON.parse(normalized) as unknown;
+        const raw = JSON.parse(commandJson) as unknown;
         const evaluated = evalTemplates(raw, {
           ...payload,
           value: (target as HTMLInputElement | HTMLTextAreaElement).value,
           form: (payload.formData as Record<string, unknown> | undefined) ?? {},
         });
-        const batch = Array.isArray(evaluated) ? (evaluated as Batch) : ((evaluated as { batch?: unknown })?.batch as Batch);
-        if (batch && Array.isArray(batch) && batch.length > 0) {
-          // Fire and forget; queue validates internally
-          void enqueueBatch(batch);
+        const batchCandidate = Array.isArray(evaluated)
+          ? (evaluated as Batch)
+          : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
+        if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
+          throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
         }
+        void enqueueBatch(batchCandidate);
       } catch (err) {
-        console.error('Failed to process data-command JSON', err);
+        const original = err instanceof Error ? err : new Error(String(err));
+        console.error('E-UICP-301: failed to process data-command JSON', original);
+        throw new Error(`E-UICP-301: data-command parsing failed — ${original.message}`, {
+          cause: original,
+        });
       }
     }
   }
@@ -742,13 +778,15 @@ function destroyWindow(id: string) {
   const record = windows.get(id);
   if (!record) return;
   // Detach drag listeners if present
-  try {
-    const off = windowDragCleanup.get(record.wrapper);
-    if (off) off();
-    windowDragCleanup.delete(record.wrapper);
-  } catch {
-    // ignore
+  const off = windowDragCleanup.get(record.wrapper);
+  if (off) {
+    try {
+      off();
+    } catch (error) {
+      console.error(`Failed to cleanup drag listeners for window ${id}:`, error instanceof Error ? error.message : String(error));
+    }
   }
+  windowDragCleanup.delete(record.wrapper);
   record.wrapper.remove();
   windows.delete(id);
   emitWindowEvent({ type: 'destroyed', id, title: record.titleText.textContent ?? id });
@@ -936,10 +974,8 @@ const executeWindowCreate = (
     const endPointerTracking = (event: PointerEvent) => {
       if (pointerId === null || event.pointerId !== pointerId) return;
       pointerId = null;
-      try {
-        chrome.releasePointerCapture?.(event.pointerId);
-      } catch {
-        // ignore
+      if (typeof chrome.releasePointerCapture === 'function') {
+        chrome.releasePointerCapture(event.pointerId);
       }
     };
 

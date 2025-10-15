@@ -52,7 +52,8 @@ mod with_runtime {
     use super::*;
     use crate::component_bindings::csv_parse::Task as CsvTask;
     use crate::component_bindings::table_query::{
-        uicp::task_table_query::{table::Error as TableRunError, types as table_types},
+        exports::uicp::task_table_query::table::Error as TableRunError,
+        uicp::task_table_query::types::{Filter as TableFilter, Input as TableInput},
         Task as TableTask,
     };
     // WHY: Bring `Context` into scope for error enrichment on Wasmtime operations.
@@ -65,10 +66,13 @@ mod with_runtime {
     use ciborium::value::Value;
     use dashmap::DashMap;
     use once_cell::sync::Lazy;
+    use pollster::block_on;
     use serde_json;
     use sha2::{Digest, Sha256};
     use std::convert::TryFrom;
     use std::io::Cursor;
+    use std::collections::BTreeSet;
+    use std::path::Path;
     use std::sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -111,9 +115,7 @@ mod with_runtime {
     const EVENTS_MIN: u32 = 10; // 10 events/s
     const EVENTS_MAX: u32 = 60; // 60 events/s
 
-    // Bindgen generation is deferred; we directly use typed funcs via `get_typed_func` for now.
-
-    // removed unused is_typed_only helper
+    // WHY: Component bindings generated from vendored WIT now provide typed access; legacy ladders removed.
 
     trait TelemetryEmitter: Send + Sync {
         fn emit_debug(&self, payload: serde_json::Value);
@@ -141,7 +143,7 @@ mod with_runtime {
             // WHY: Component-model execution may materialize multiple core Wasm instances under the hood
             // (e.g., canonical ABI adapters/lowerings created lazily on first typed call). An instances cap
             // of 1 caused typed calls to trap with a resource-limit error at runtime despite successful
-            // instantiation (E-UICP-225: call csv#run failed → Compute.Resource.Limit). We raise the cap
+            // instantiation (E-UICP-225: call csv#run failed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ Compute.Resource.Limit). We raise the cap
             // to a conservative value to accommodate Wasmtime internals without sacrificing memory bounds.
             // INVARIANT: Memory remains bounded by `memory_size(mem_limit_bytes)`; instances is not a
             // correctness-critical limiter for our workloads and is set high enough to avoid false positives.
@@ -491,7 +493,6 @@ mod with_runtime {
         }
     }
 
-    
     #[allow(dead_code)]
     struct GuestLogShared {
         emitter: Arc<dyn TelemetryEmitter>,
@@ -599,7 +600,7 @@ mod with_runtime {
                             "truncated": truncated,
                         }),
                     ) {
-                        // ERROR: E-UICP-601 Action log append failed — terminate job for loud failure.
+                        // ERROR: E-UICP-601 Action log append failed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â terminate job for loud failure.
                         panic!("E-UICP-601: action log append failed: {err}");
                     }
 
@@ -998,7 +999,7 @@ mod with_runtime {
                 Ok(c) => c,
                 Err(err) => {
                     // WHY: Carry the on-disk path and root cause to aid diagnosing cache/compile errors.
-                    // ERROR: E-UICP-222 component load failed — likely invalid encoding or wrong target (not a component).
+                    // ERROR: E-UICP-222 component load failed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â likely invalid encoding or wrong target (not a component).
                     let any = anyhow::Error::from(err).context(format!(
                         "E-UICP-222: load component failed for path {}",
                         module.path.display()
@@ -1225,7 +1226,6 @@ mod with_runtime {
             let mut store: Store<Ctx> = Store::new(engine, ctx);
             store.limiter(|ctx| &mut ctx.limits);
 
-
             // Optional diagnostics for mounts/imports at job start (support both cases)
             if diag_enabled {
                 telemetry.emit_debug(serde_json::json!({
@@ -1287,7 +1287,7 @@ mod with_runtime {
             // Instantiate the world and call exports using typed API (no bindgen for now)
             {
                 // WHY: Add instantiation context so missing-import/linkage issues are visible in final error.
-                // ERROR: E-UICP-223 instantiation failure — often indicates a missing or version-mismatched import.
+                // ERROR: E-UICP-223 instantiation failure ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â often indicates a missing or version-mismatched import.
                 let inst_res: Result<wasmtime::component::Instance, _> =
                     linker.instantiate_async(&mut store, &*component).await;
                 match inst_res {
@@ -1303,65 +1303,79 @@ mod with_runtime {
                         let call_future = async {
                             match task_name {
                                 "csv.parse" => match extract_csv_input(&spec.input) {
-                                    Ok((src, has_header)) => match resolve_csv_source(&spec, &src) {
-                                        Ok(resolved) => {
-                                            // WHY: Invoke typed bindings generated from WIT so the host matches the component's canonical signature.
-                                            let mut bindings = csv_parse::task::Task::new(&mut store, &instance)
-                                                .map_err(|e| {
-                                                    anyhow::Error::from(e)
-                                                        .context("E-UICP-224: csv task binding init failed")
-                                                })?;
-                                            match bindings
-                                                .call_run(
-                                                    &mut store,
-                                                    &spec.job_id,
-                                                    &resolved,
-                                                    has_header,
-                                                )
-                                                .await
-                                            {
-                                                Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
-                                                Ok(Err(msg)) => {
-                                                    // WHY: Propagate guest error string verbatim; caller maps to final envelope.
-                                                    Err(anyhow::Error::msg(msg))
+                                    Ok((src, has_header)) => {
+                                        match resolve_csv_source(&spec, &src) {
+                                            Ok(resolved) => {
+                                                // WHY: Invoke typed bindings generated from WIT so the host matches the component's canonical signature.
+                                                let bindings = CsvTask::new(&mut store, &instance)
+                                                    .map_err(|e| {
+                                                        anyhow::Error::from(e).context(
+                                                        "E-UICP-224: csv task binding init failed",
+                                                    )
+                                                    })?;
+                                                let csv_iface = bindings.uicp_task_csv_parse_csv();
+                                                match csv_iface
+                                                    .call_run(
+                                                        &mut store,
+                                                        &spec.job_id,
+                                                        resolved.as_str(),
+                                                        has_header,
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
+                                                    Ok(Err(msg)) => {
+                                                        // WHY: Propagate guest error string verbatim; caller maps to final envelope.
+                                                        Err(anyhow::Error::msg(msg))
+                                                    }
+                                                    Err(e) => Err(anyhow::Error::from(e).context(
+                                                        "E-UICP-225: call csv#run failed",
+                                                    )),
                                                 }
-                                                Err(e) => Err(anyhow::Error::from(e)
-                                                    .context("E-UICP-225: call csv#run failed")),
                                             }
+                                            Err(e) => Err(anyhow::anyhow!(format!(
+                                                "{}: {}",
+                                                e.code, e.message
+                                            ))),
                                         }
-                                        Err(e) => Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message))),
-                                    },
-                                    Err(e) => Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message))),
+                                    }
+                                    Err(e) => {
+                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
+                                    }
                                 },
                                 "table.query" => match extract_table_query_input(&spec.input) {
                                     Ok((rows, select, where_opt)) => {
                                         // WHY: Use typed binding derived from vendored WIT to eliminate signature ladders and enforce identical host/guest types.
-                                        let mut bindings = table_query::task::Task::new(&mut store, &instance)
+                                        let bindings = TableTask::new(&mut store, &instance)
                                             .map_err(|e| {
-                                                anyhow::Error::from(e)
-                                                    .context("E-UICP-226: table task binding init failed")
+                                                anyhow::Error::from(e).context(
+                                                    "E-UICP-226: table task binding init failed",
+                                                )
                                             })?;
-                                        let input = table_query::types::Input {
+                                        let input = TableInput {
                                             rows,
                                             select,
-                                            where_contains: where_opt.map(|(col, needle)| table_query::types::Filter { col, needle }),
+                                            where_contains: where_opt
+                                                .map(|(col, needle)| TableFilter { col, needle }),
                                         };
-                                        match bindings
+                                        let table_iface = bindings.uicp_task_table_query_table();
+                                        match table_iface
                                             .call_run(&mut store, &spec.job_id, &input)
                                             .await
                                         {
                                             Ok(Ok(out)) => Ok(serde_json::json!(out)),
-                                            Ok(Err(err)) => {
-                                                use table_query::task::exports::table::Error as TableRunError;
-                                                match err {
-                                                    TableRunError::Cancelled => Err(anyhow::Error::msg("cancelled")),
+                                            Ok(Err(err)) => match err {
+                                                TableRunError::Cancelled => {
+                                                    Err(anyhow::Error::msg("cancelled"))
                                                 }
-                                            }
+                                            },
                                             Err(e) => Err(anyhow::Error::from(e)
                                                 .context("E-UICP-227: call table#run failed")),
                                         }
                                     }
-                                    Err(e) => Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message))),
+                                    Err(e) => {
+                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
+                                    }
                                 },
                                 _ => Err(anyhow::anyhow!("unknown task for this world")),
                             }
@@ -1437,7 +1451,7 @@ mod with_runtime {
                     }
                     Err(err) => {
                         // WHY: Make instantiation failures actionable by including context.
-                        // ERROR: E-UICP-223 propagated — see message for missing imports or signature mismatch.
+                        // ERROR: E-UICP-223 propagated ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â see message for missing imports or signature mismatch.
                         let any = anyhow::Error::from(err).context(format!(
                             "E-UICP-223: instantiate component for task '{}' failed",
                             spec.task
@@ -1469,7 +1483,151 @@ mod with_runtime {
         })
     }
 
+    pub(crate) fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
+        let component = Component::from_file(&ENGINE, path).with_context(|| {
+            format!(
+                "E-UICP-228: load component '{}' for import inspection failed",
+                path.display()
+            )
+        })?;
+        Ok(component
+            .imports(&ENGINE)
+            .map(|(name, _)| name.to_string())
+            .collect())
+    }
+
+    fn allowed_imports_for(task: &str) -> anyhow::Result<BTreeSet<String>> {
+        let prefix = task.split('@').next().unwrap_or(task);
+        match prefix {
+            "csv.parse" => Ok(BTreeSet::new()),
+            "table.query" => Ok([
+                "wasi:io/streams@0.2.8",
+                "wasi:clocks/monotonic-clock@0.2.0",
+                "uicp:host/control@1.0.0",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()),
+            other => anyhow::bail!(
+                "E-UICP-229: no component import policy registered for task '{other}'"
+            ),
+        }
+    }
+
+    pub(crate) fn preflight_component_imports(path: &Path, task: &str) -> anyhow::Result<()> {
+        if std::env::var("UICP_SKIP_CONTRACT_VERIFY")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        let actual = component_import_names(path)?;
+        let allowed = allowed_imports_for(task)?;
+
+        let unexpected: Vec<String> = actual.difference(&allowed).cloned().collect();
+        let missing: Vec<String> = allowed.difference(&actual).cloned().collect();
+
+        if !unexpected.is_empty() || !missing.is_empty() {
+            anyhow::bail!(
+                "E-UICP-230: component '{}' imports unsupported interfaces. unexpected={:?} missing={:?}",
+                task,
+                unexpected,
+                missing
+            );
+        }
+
+        Ok(())
+    }
+
     /// Wire core WASI Preview 2 imports only (host shims deferred to M2+).
+    pub(crate) fn verify_component_contract(path: &Path, task: &str) -> anyhow::Result<()> {
+        if std::env::var("UICP_SKIP_CONTRACT_VERIFY")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        struct ContractEmitter;
+        impl TelemetryEmitter for ContractEmitter {
+            fn emit_debug(&self, _payload: serde_json::Value) {}
+            fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+            fn emit_partial_json(&self, _payload: serde_json::Value) {}
+        }
+
+        let component = Component::from_file(&ENGINE, path).with_context(|| {
+            format!(
+                "E-UICP-230: load component '{}' for contract verification failed",
+                path.display()
+            )
+        })?;
+
+        let mut store = Store::new(
+            &ENGINE,
+            Ctx {
+                wasi: WasiCtxBuilder::new().build(),
+                table: ResourceTable::new(),
+                emitter: Arc::new(ContractEmitter),
+                job_id: "contract-check".into(),
+                task: task.into(),
+                partial_seq: Arc::new(AtomicU64::new(0)),
+                partial_frames: Arc::new(AtomicU64::new(0)),
+                invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                rng_seed: [0; 32],
+                logical_tick: Arc::new(AtomicU64::new(0)),
+                started: Instant::now(),
+                deadline_ms: 1_000,
+                rng_counter: 0,
+                log_count: Arc::new(AtomicU64::new(0)),
+                emitted_log_bytes: Arc::new(AtomicU64::new(0)),
+                max_log_bytes: MAX_LOG_BYTES,
+                initial_fuel: 0,
+                log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(
+                    RL_BYTES_MAX,
+                    RL_BYTES_MAX,
+                ))),
+                log_throttle_waits: Arc::new(AtomicU64::new(0)),
+                logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(
+                    LOGGER_BYTES_MAX,
+                    LOGGER_BYTES_MAX,
+                ))),
+                logger_throttle_waits: Arc::new(AtomicU64::new(0)),
+                partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(EVENTS_MAX, EVENTS_MAX))),
+                partial_throttle_waits: Arc::new(AtomicU64::new(0)),
+                limits: LimitsWithPeak::new((DEFAULT_MEMORY_LIMIT_MB as usize) * 1024 * 1024),
+            },
+        );
+        store.limiter(|ctx| &mut ctx.limits);
+
+        let linker: &Linker<Ctx> = &*LINKER;
+        let instance_pre = linker
+            .instantiate_pre(&component)
+            .context("E-UICP-231: linker instantiate_pre for contract failed")?;
+
+        let instance = block_on(async { instance_pre.instantiate_async(&mut store).await })
+            .context("E-UICP-233: instantiate component for contract verification failed")?;
+
+        match task.split('@').next().unwrap_or("") {
+            "csv.parse" => {
+                let bindings = CsvTask::new(&mut store, &instance)
+                    .context("E-UICP-234: csv contract binding init failed")?;
+                let _ = bindings.uicp_task_csv_parse_csv();
+            }
+            "table.query" => {
+                let bindings = TableTask::new(&mut store, &instance)
+                    .context("E-UICP-235: table contract binding init failed")?;
+                let _ = bindings.uicp_task_table_query_table();
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
     #[cfg(feature = "uicp_wasi_enable")]
     fn add_wasi_and_host(linker: &mut Linker<Ctx>) -> anyhow::Result<()> {
         // Provide WASI Preview 2 to the component. Preopens/policy are encoded in WasiCtx.
@@ -2119,23 +2277,23 @@ mod with_runtime {
         fn wasi_import_surface_excludes_http_and_sockets() {
             let engine = build_engine().expect("engine");
             let mut linker: Linker<Ctx> = Linker::new(&engine);
-        add_wasi_and_host(&mut linker).expect("wasi add ok");
-        // WHY: Ensure both aliases refuse duplicate registration once `add_wasi_and_host` runs.
-        // SAFETY: Avoid Result::expect_err since Ok(T) would require T: Debug for LinkerInstance.
-        for namespace in ["wasi:logging/logging", "wasi:logging/logging@0.2.0"] {
-            match linker.instance(namespace) {
-                Ok(_) => panic!("logging instance should already be linked"),
-                Err(err) => {
-                    let msg = err.to_string();
-                    assert!(
-                        msg.contains("already defined")
-                            || msg.contains("duplicate definition")
-                            || msg.contains("defined twice"),
-                        "unexpected linker error for {namespace}: {msg}"
-                    );
+            add_wasi_and_host(&mut linker).expect("wasi add ok");
+            // WHY: Ensure both aliases refuse duplicate registration once `add_wasi_and_host` runs.
+            // SAFETY: Avoid Result::expect_err since Ok(T) would require T: Debug for LinkerInstance.
+            for namespace in ["wasi:logging/logging", "wasi:logging/logging@0.2.0"] {
+                match linker.instance(namespace) {
+                    Ok(_) => panic!("logging instance should already be linked"),
+                    Err(err) => {
+                        let msg = err.to_string();
+                        assert!(
+                            msg.contains("already defined")
+                                || msg.contains("duplicate definition")
+                                || msg.contains("defined twice"),
+                            "unexpected linker error for {namespace}: {msg}"
+                        );
+                    }
                 }
             }
-        }
 
             // Negative checks: ensure HTTP and sockets namespaces are not pre-linked.
             // Creating a placeholder function should succeed if the namespace was not pre-linked.
@@ -2186,7 +2344,6 @@ mod with_runtime {
         fn wasi_logging_bridge_emits_partial_event() {
             use std::sync::{Arc, Mutex};
 
-            
             struct TestEmitter {
                 partials: Arc<Mutex<Vec<serde_json::Value>>>,
                 debugs: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -2301,7 +2458,7 @@ mod with_runtime {
                 });
 
             // Capture partials emitted by the host logging bridge
-            
+
             struct TestEmitter {
                 partials: Arc<Mutex<Vec<serde_json::Value>>>,
             }
@@ -2384,8 +2541,12 @@ mod with_runtime {
                     ];
                     for name in &iface_candidates {
                         if let Some(inst_idx) = instance.get_export_index(&mut store, None, name) {
-                            if let Some(run_idx) = instance.get_export_index(&mut store, Some(&inst_idx), "run") {
-                                if let Ok(f) = instance.get_typed_func::<(String,), ()>(&mut store, &run_idx) {
+                            if let Some(run_idx) =
+                                instance.get_export_index(&mut store, Some(&inst_idx), "run")
+                            {
+                                if let Ok(f) =
+                                    instance.get_typed_func::<(String,), ()>(&mut store, &run_idx)
+                                {
                                     func_opt = Some(f);
                                     break;
                                 }
@@ -2656,6 +2817,11 @@ mod with_runtime {
         }
     }
 }
+
+#[cfg(feature = "wasm_compute")]
+pub(crate) use with_runtime::{
+    component_import_names, preflight_component_imports, verify_component_contract,
+};
 
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {

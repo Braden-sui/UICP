@@ -87,6 +87,7 @@ pub fn compute_key(task: &str, input: &Value, env_hash: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Number;
 
     #[test]
     fn canonicalize_is_stable_and_key_sorted() {
@@ -118,6 +119,24 @@ mod tests {
             canonical.contains("\\u2028") && canonical.contains("\\u2029"),
             "canonical string should escape JS separators for deterministic hashing"
         );
+    }
+
+    #[test]
+    fn canonicalize_normalizes_float_representation() {
+        let canonical_a = canonicalize_input(&Value::Number(Number::from_f64(0.3).expect("finite 0.3")));
+        let canonical_b =
+            canonicalize_input(&Value::Number(Number::from_f64(0.1f64 + 0.2f64).expect("finite 0.1+0.2")));
+        assert_eq!(
+            canonical_a, canonical_b,
+            "floating point values with the same IEEE representation must canonicalize identically"
+        );
+    }
+
+    #[test]
+    fn serde_refuses_non_finite_numbers() {
+        assert!(Number::from_f64(f64::NAN).is_none(), "serde_json::Number must reject NaN");
+        assert!(Number::from_f64(f64::INFINITY).is_none(), "serde_json::Number must reject +INF");
+        assert!(Number::from_f64(f64::NEG_INFINITY).is_none(), "serde_json::Number must reject -INF");
     }
 
     #[test]

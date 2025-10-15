@@ -27,7 +27,11 @@ fn add_delayload_for_tests_and_harness() {
 #[cfg(not(target_os = "windows"))]
 fn add_delayload_for_tests_and_harness() {}
 
-fn assert_sanitized_wit(src: &str, sanitized_path: &str, strip_imports: bool) -> std::io::Result<()> {
+fn assert_sanitized_wit(
+    src: &str,
+    sanitized_path: &str,
+    strip_imports: bool,
+) -> std::io::Result<()> {
     println!("cargo:rerun-if-changed={src}");
     println!("cargo:rerun-if-changed={sanitized_path}");
     let contents = fs::read_to_string(src)?;
@@ -45,9 +49,7 @@ fn assert_sanitized_wit(src: &str, sanitized_path: &str, strip_imports: bool) ->
     }
     let actual = fs::read_to_string(sanitized_path)?;
     if actual != expected {
-        panic!(
-            "Sanitized WIT '{sanitized_path}' is stale; regenerate from {src}"
-        );
+        panic!("Sanitized WIT '{sanitized_path}' is stale; regenerate from {src}");
     }
     Ok(())
 }
