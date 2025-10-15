@@ -3,7 +3,7 @@ import DesktopWindow from './DesktopWindow';
 import { useAppStore } from '../state/app';
 import { createId } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
-import { invoke } from '@tauri-apps/api/core';
+import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
 import { getComputeBridge } from '../lib/bridge/globals';
 import type { JobSpec } from '../compute/types';
 
@@ -158,8 +158,12 @@ const ComputeDemoWindow = () => {
 
   const openFilesFolder = useCallback(async () => {
     try {
-      const info = (await invoke('get_paths')) as { filesDir?: string };
-      if (info?.filesDir) await invoke('open_path', { path: info.filesDir });
+      if (!hasTauriBridge()) {
+        pushToast({ variant: 'error', message: 'File actions require the Tauri runtime' });
+        return;
+      }
+      const info = await tauriInvoke<{ filesDir?: string }>('get_paths');
+      if (info?.filesDir) await tauriInvoke('open_path', { path: info.filesDir });
     } catch (err) {
       pushToast({ variant: 'error', message: `Open folder failed: ${(err as Error)?.message ?? String(err)}` });
     }
@@ -290,12 +294,18 @@ const ComputeDemoWindow = () => {
               type="button"
               className="ml-auto rounded border border-slate-300 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:opacity-50"
               disabled={!lastJob || (lastJob.status !== 'running' && lastJob.status !== 'partial')}
-              onClick={() =>
-                lastJob &&
-                invoke('compute_cancel', { jobId: lastJob.jobId }).catch((err) => {
+              onClick={async () => {
+                if (!lastJob) return;
+                if (!hasTauriBridge()) {
+                  pushToast({ variant: 'error', message: 'Cancel requires the Tauri runtime' });
+                  return;
+                }
+                try {
+                  await tauriInvoke('compute_cancel', { jobId: lastJob.jobId });
+                } catch (err) {
                   pushToast({ variant: 'error', message: `Cancel failed: ${(err as Error)?.message ?? String(err)}` });
-                })
-              }
+                }
+              }}
               title="Cancel current job"
             >
               Cancel

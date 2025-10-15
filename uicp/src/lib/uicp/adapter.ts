@@ -2,7 +2,7 @@ import type { Batch, Envelope, OperationParamMap } from "./schemas";
 import { createFrameCoalescer, createId } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
-import { invoke } from "@tauri-apps/api/core";
+import { hasTauriBridge, tauriInvoke } from "../bridge/tauri";
 // Removed: tryRecoverJsonFromAttribute - strict JSON parsing only
 import { getBridgeWindow, getComputeBridge } from "../bridge/globals";
 import type { JobSpec } from "../../compute/types";
@@ -163,8 +163,14 @@ const persistCommand = async (command: Envelope): Promise<void> => {
     }
   }
 
+  if (!hasTauriBridge()) {
+    if (import.meta.env.DEV) {
+      console.info('[adapter] skipping persist_command; tauri bridge unavailable');
+    }
+    return;
+  }
   try {
-    await invoke('persist_command', {
+    await tauriInvoke('persist_command', {
       cmd: {
         id: command.idempotencyKey ?? command.id ?? createId('cmd'),
         tool: command.op,
@@ -670,14 +676,16 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
   if (workspaceRoot) {
     workspaceRoot.innerHTML = "";
   }
-  // Clear persisted commands so they don't replay on next startup
-  void invoke('clear_workspace_commands').catch((error) => {
-    console.error('Failed to clear workspace commands', error);
-  });
-  // Clear compute cache entries for this workspace
-  void invoke('clear_compute_cache', { workspace_id: 'default' }).catch((error) => {
-    console.error('Failed to clear compute cache', error);
-  });
+  if (hasTauriBridge()) {
+    // Clear persisted commands so they don't replay on next startup
+    void tauriInvoke('clear_workspace_commands').catch((error) => {
+      console.error('Failed to clear workspace commands', error);
+    });
+    // Clear compute cache entries for this workspace
+    void tauriInvoke('clear_compute_cache', { workspace_id: 'default' }).catch((error) => {
+      console.error('Failed to clear compute cache', error);
+    });
+  }
   if (options?.deleteFiles) {
     // Intentionally not implemented in v1 to avoid accidental deletion.
     console.warn('deleteFiles=true requested, but deletion of ws:/files is not implemented in v1.');
@@ -702,7 +710,7 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
   let applied = 0;
   let errors: string[] = [];
   try {
-    commands = await invoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
+    commands = await tauriInvoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
     errors = [];
     applied = 0;
     processed = 0;
@@ -791,10 +799,12 @@ function destroyWindow(id: string) {
   windows.delete(id);
   emitWindowEvent({ type: 'destroyed', id, title: record.titleText.textContent ?? id });
 
-  // Delete persisted commands for this window so it doesn't reappear on restart
-  void invoke('delete_window_commands', { windowId: id }).catch((error) => {
-    console.error('Failed to delete window commands', id, error);
-  });
+  if (hasTauriBridge()) {
+    // Delete persisted commands for this window so it doesn't reappear on restart
+    void tauriInvoke('delete_window_commands', { windowId: id }).catch((error) => {
+      console.error('Failed to delete window commands', id, error);
+    });
+  }
 }
 
 export const listWorkspaceWindows = (): Array<{ id: string; title: string }> => {
@@ -1428,8 +1438,8 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
       };
       const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(computeStateHash()));
       const hex = Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
-      if (getBridgeWindow()?.__TAURI__) {
-        await invoke('save_checkpoint', { hash: hex });
+      if (hasTauriBridge()) {
+        await tauriInvoke('save_checkpoint', { hash: hex });
       }
     } catch (err) {
       console.error('save_checkpoint failed', err);

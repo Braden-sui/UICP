@@ -384,16 +384,19 @@ pub fn find_module<R: Runtime>(
         Ok(true) => {
             // Strict mode: require a valid signature using UICP_MODULES_PUBKEY
             enforce_strict_signature(&entry)?;
-            crate::compute::preflight_component_imports(
-                &path,
-                &format!("{}@{}", entry.task, entry.version),
-            )
-            .with_context(|| {
-                format!(
-                    "E-UICP-229: component preflight failed for {}@{}",
-                    entry.task, entry.version
+            #[cfg(feature = "wasm_compute")]
+            {
+                crate::compute::preflight_component_imports(
+                    &path,
+                    &format!("{}@{}", entry.task, entry.version),
                 )
-            })?;
+                .with_context(|| {
+                    format!(
+                        "E-UICP-229: component preflight failed for {}@{}",
+                        entry.task, entry.version
+                    )
+                })?;
+            }
             #[cfg(feature = "wasm_compute")]
             crate::compute::verify_component_contract(
                 &path,

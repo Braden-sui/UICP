@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
+import { hasTauriBridge, tauriInvoke } from '../bridge/tauri';
 
 // Streamed event union returned by the async iterator
 export type StreamEvent =
@@ -202,6 +202,11 @@ export function streamOllamaCompletion(
   options?: StreamRequestOptions,
 ): AsyncIterable<StreamEvent> {
   const queue = new AsyncQueue<StreamEvent>();
+  if (!hasTauriBridge()) {
+    queue.fail(new Error('Tauri runtime unavailable for streamOllamaCompletion'));
+    queue.end();
+    return queue;
+  }
   let unlisten: UnlistenFn | null = null;
   let started = false;
   const requestId = options?.requestId ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
@@ -307,21 +312,27 @@ export function streamOllamaCompletion(
       // Mark this requestId as the active in-flight chat stream
       activeRequestId = requestId;
 
-      void invoke('chat_completion', {
-        requestId,
-        request: requestPayload,
-      }).catch((err) => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = undefined;
-        }
-        queue.fail(err instanceof Error ? err : new Error(String(err)));
+      if (!hasTauriBridge()) {
+        queue.fail(new Error('Tauri runtime unavailable for chat completion'));
         queue.end();
-        // Clear active marker on error as well
-        if (activeRequestId === requestId) {
-          activeRequestId = null;
-        }
-      });
+        activeRequestId = null;
+      } else {
+        void tauriInvoke('chat_completion', {
+          requestId,
+          request: requestPayload,
+        }).catch((err) => {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = undefined;
+          }
+          queue.fail(err instanceof Error ? err : new Error(String(err)));
+          queue.end();
+          // Clear active marker on error as well
+          if (activeRequestId === requestId) {
+            activeRequestId = null;
+          }
+        });
+      }
     }
     // If caller supplied an AbortSignal, wire it to backend cancel
     if (options?.signal && typeof options.signal.addEventListener === 'function') {
@@ -330,10 +341,15 @@ export function streamOllamaCompletion(
           clearTimeout(timeoutId);
           timeoutId = undefined;
         }
-        try {
-          void invoke('cancel_chat', { requestId });
-        } catch (error) {
-          console.error(`Failed to cancel chat request ${requestId} on abort:`, error instanceof Error ? error.message : String(error));
+        if (hasTauriBridge()) {
+          void tauriInvoke('cancel_chat', { requestId }).catch((error) => {
+            console.error(
+              `Failed to cancel chat request ${requestId} on abort:`,
+              error instanceof Error ? error.message : String(error),
+            );
+          });
+        } else {
+          console.warn(`[ollama] abort cancel skipped for ${requestId}; tauri bridge unavailable`);
         }
         if (unlisten) {
           try {
@@ -355,10 +371,15 @@ export function streamOllamaCompletion(
     // Default timeout when no AbortSignal provided: best-effort cancel
     if (!options?.signal) {
       timeoutId = setTimeout(() => {
-        try {
-          void invoke('cancel_chat', { requestId });
-        } catch (error) {
-          console.error(`Failed to cancel chat request ${requestId} on timeout:`, error instanceof Error ? error.message : String(error));
+        if (hasTauriBridge()) {
+          void tauriInvoke('cancel_chat', { requestId }).catch((error) => {
+            console.error(
+              `Failed to cancel chat request ${requestId} on timeout:`,
+              error instanceof Error ? error.message : String(error),
+            );
+          });
+        } else {
+          console.warn(`[ollama] timeout cancel skipped for ${requestId}; tauri bridge unavailable`);
         }
         if (unlisten) {
           try {
@@ -404,11 +425,18 @@ export function streamOllamaCompletion(
             }
             unlisten = null;
           }
-          try {
-            // Best-effort backend cancel to stop network usage
-            await invoke('cancel_chat', { requestId });
-          } catch (error) {
-            console.error(`Failed to cancel chat request ${requestId} on return:`, error instanceof Error ? error.message : String(error));
+          if (hasTauriBridge()) {
+            try {
+              // Best-effort backend cancel to stop network usage
+              await tauriInvoke('cancel_chat', { requestId });
+            } catch (error) {
+              console.error(
+                `Failed to cancel chat request ${requestId} on return:`,
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          } else {
+            console.warn(`[ollama] return cancel skipped for ${requestId}; tauri bridge unavailable`);
           }
           // Clear active marker on consumer return
           if (activeRequestId === requestId) {
@@ -436,8 +464,12 @@ let activeRequestId: string | null = null;
 
 export async function cancelChat(rid: string | null) {
   if (!rid) return;
+  if (!hasTauriBridge()) {
+    console.warn(`[ollama] cancel_chat skipped for ${rid}; tauri bridge unavailable`);
+    return;
+  }
   try {
-    await invoke('cancel_chat', { requestId: rid });
+    await tauriInvoke('cancel_chat', { requestId: rid });
   } catch (error) {
     console.error(`Failed to cancel chat request ${rid}:`, error instanceof Error ? error.message : String(error));
   }

@@ -9,7 +9,7 @@ import {
   getActorProfile,
 } from '../lib/llm/profiles';
 import type { PlannerProfileKey, ActorProfileKey } from '../lib/llm/profiles';
-import { invoke } from '@tauri-apps/api/core';
+import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -48,7 +48,13 @@ const AgentSettingsWindow = () => {
     let mounted = true;
     (async () => {
       try {
-        const info = await invoke('get_modules_info');
+        if (!hasTauriBridge()) {
+          if (import.meta.env.DEV) {
+            console.info('[agent-settings] tauri bridge unavailable; skipping get_modules_info');
+          }
+          return;
+        }
+        const info = await tauriInvoke('get_modules_info');
         if (!mounted) return;
         const obj = info as { dir?: string; entries?: number };
         setModulesDir(obj.dir ?? '');
@@ -70,8 +76,12 @@ const AgentSettingsWindow = () => {
   }, [modulesDir]);
   const handleOpenModulesFolder = useCallback(async () => {
     try {
+      if (!hasTauriBridge()) {
+        useAppStore.getState().pushToast({ variant: 'error', message: 'Open folder requires the Tauri runtime' });
+        return;
+      }
       if (!modulesDir) return;
-      await invoke('open_path', { path: modulesDir });
+      await tauriInvoke('open_path', { path: modulesDir });
     } catch (err) {
       useAppStore.getState().pushToast({ variant: 'error', message: `Open folder failed: ${(err as Error)?.message ?? String(err)}` });
     }
@@ -79,7 +89,13 @@ const AgentSettingsWindow = () => {
 
   const handleVerifyModules = useCallback(async () => {
     try {
-      const res = (await invoke('verify_modules')) as { ok?: boolean; failures?: Array<{ filename?: string; reason?: string }>; count?: number };
+      if (!hasTauriBridge()) {
+        useAppStore.getState().pushToast({ variant: 'error', message: 'Module verification requires the Tauri runtime' });
+        return;
+      }
+      const res = await tauriInvoke<{ ok?: boolean; failures?: Array<{ filename?: string; reason?: string }>; count?: number }>(
+        'verify_modules',
+      );
       if (res?.ok) {
         useAppStore.getState().pushToast({ variant: 'success', message: `Modules OK (${res.count ?? 0} entries)` });
       } else {
@@ -93,7 +109,11 @@ const AgentSettingsWindow = () => {
 
   const handleClearComputeCache = useCallback(async () => {
     try {
-      await invoke('clear_compute_cache', { workspace_id: 'default' });
+      if (!hasTauriBridge()) {
+        useAppStore.getState().pushToast({ variant: 'error', message: 'Clearing cache requires the Tauri runtime' });
+        return;
+      }
+      await tauriInvoke('clear_compute_cache', { workspace_id: 'default' });
       useAppStore.getState().pushToast({ variant: 'success', message: 'Compute cache cleared for workspace: default' });
     } catch (err) {
       useAppStore.getState().pushToast({ variant: 'error', message: `Clear cache failed: ${(err as Error)?.message ?? String(err)}` });

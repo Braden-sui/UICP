@@ -38,4 +38,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 beforeEach(() => {
   tauriMocks.invokeMock.mockClear();
   tauriMocks.listenMock.mockClear();
+  if (typeof window !== "undefined") {
+    // WHY: Tests run in jsdom where the Tauri bridge is absent; provide a minimal stub so runtime guards pass.
+    (window as typeof window & {
+      __TAURI__?: { core?: { invoke?: unknown } };
+    }).__TAURI__ = { core: { invoke: tauriMocks.invokeMock } };
+  }
 });

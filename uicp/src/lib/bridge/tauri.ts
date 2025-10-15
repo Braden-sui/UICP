@@ -16,6 +16,24 @@ let unsubs: UnlistenFn[] = [];
 
 const getBridgeWindow = () => (typeof window === 'undefined' ? undefined : window);
 
+export const hasTauriBridge = (): boolean => {
+  const w = getBridgeWindow() as (Window & {
+    __TAURI__?: { core?: { invoke?: unknown } };
+  }) | undefined;
+  const tauriInvoke = w?.__TAURI__?.core?.invoke;
+  const mocks = (globalThis as Record<string, unknown>).__TAURI_MOCKS__ as
+    | { invokeMock?: unknown }
+    | undefined;
+  return typeof tauriInvoke === 'function' || typeof mocks?.invokeMock === 'function';
+};
+
+export const tauriInvoke = async <T>(command: string, args?: unknown): Promise<T> => {
+  if (!hasTauriBridge()) {
+    throw new Error(`Tauri bridge unavailable for command ${command}`);
+  }
+  return invoke<T>(command, args as never);
+};
+
 type OllamaEvent = {
   done?: boolean;
   delta?: unknown;
@@ -176,8 +194,7 @@ export async function initializeTauriBridge() {
   }
 
   // If not running inside Tauri, no-op gracefully.
-  const hasTauri = typeof bridgeWindow.__TAURI__ !== 'undefined';
-  if (!hasTauri) {
+  if (!hasTauriBridge()) {
     const testCompute = bridgeWindow.__UICP_TEST_COMPUTE__;
     if (typeof testCompute === 'function') {
       started = true;

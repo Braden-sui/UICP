@@ -1,5 +1,5 @@
 import { useAppStore, selectSafeMode, selectSafeReason } from '../state/app';
-import { invoke } from '@tauri-apps/api/core';
+import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
 
 const SystemBanner = () => {
   const safeMode = useAppStore(selectSafeMode);
@@ -9,8 +9,12 @@ const SystemBanner = () => {
 
   const message = `Replay issue detected: ${safeReason ?? 'Unknown'}. You can attempt automatic repair, restore from checkpoint, export diagnostics, or start fresh.`;
   const act = async (kind: string) => {
+    if (!hasTauriBridge()) {
+      console.warn(`[system-banner] recovery action ${kind} skipped; tauri bridge unavailable`);
+      return;
+    }
     try {
-      await invoke('recovery_action', { kind });
+      await tauriInvoke('recovery_action', { kind });
     } catch (err) {
       console.error('recovery_action failed', err);
     }
@@ -21,9 +25,40 @@ const SystemBanner = () => {
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
         <div className="font-medium">{message}</div>
         <div className="flex items-center gap-2">
-          <button className="rounded border border-amber-300 bg-white/80 px-2 py-1 text-xs" onClick={() => invoke('recovery_auto')}>Attempt auto-repair</button>
+          <button
+            className="rounded border border-amber-300 bg-white/80 px-2 py-1 text-xs"
+            onClick={async () => {
+              if (!hasTauriBridge()) {
+                console.warn('[system-banner] recovery_auto skipped; tauri bridge unavailable');
+                return;
+              }
+              try {
+                await tauriInvoke('recovery_auto');
+              } catch (err) {
+                console.error('recovery_auto failed', err);
+              }
+            }}
+          >
+            Attempt auto-repair
+          </button>
           <button className="rounded border border-amber-300 bg-white/80 px-2 py-1 text-xs" onClick={() => act('restore_checkpoint')}>Restore from checkpoint</button>
-          <button className="rounded border border-amber-300 bg-white/80 px-2 py-1 text-xs" onClick={async () => { try { const res = await invoke('recovery_export'); console.info('diagnostics path', res); } catch (e) { console.error(e); }}}>Export diagnostics</button>
+          <button
+            className="rounded border border-amber-300 bg-white/80 px-2 py-1 text-xs"
+            onClick={async () => {
+              if (!hasTauriBridge()) {
+                console.warn('[system-banner] recovery_export skipped; tauri bridge unavailable');
+                return;
+              }
+              try {
+                const res = await tauriInvoke('recovery_export');
+                console.info('diagnostics path', res);
+              } catch (e) {
+                console.error(e);
+              }
+            }}
+          >
+            Export diagnostics
+          </button>
           <button className="rounded border border-amber-300 bg-white/80 px-2 py-1 text-xs" onClick={() => act('reset')}>Start fresh</button>
         </div>
       </div>
