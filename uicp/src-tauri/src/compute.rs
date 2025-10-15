@@ -1486,7 +1486,7 @@ mod with_runtime {
         })
     }
 
-    pub fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
+    pub(crate) fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
         let component = Component::from_file(&ENGINE, path).with_context(|| {
             format!(
                 "E-UICP-228: load component '{}' for import inspection failed",
@@ -1546,7 +1546,7 @@ mod with_runtime {
     }
 
     /// Wire core WASI Preview 2 imports only (host shims deferred to M2+).
-    pub fn verify_component_contract(path: &Path, task: &str) -> anyhow::Result<()> {
+    pub(crate) fn verify_component_contract(path: &Path, task: &str) -> anyhow::Result<()> {
         if std::env::var("UICP_SKIP_CONTRACT_VERIFY")
             .ok()
             .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
@@ -2823,7 +2823,9 @@ mod with_runtime {
 }
 
 #[cfg(feature = "wasm_compute")]
-pub use with_runtime::{preflight_component_imports, verify_component_contract};
+pub use with_runtime::{
+    component_import_names, preflight_component_imports, verify_component_contract,
+};
 
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {
