@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ciborium = "0.2"
-wit-bindgen = "0.46.0"
+wit-bindgen = "0.44.0"
 wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
 
 [package.metadata.component]

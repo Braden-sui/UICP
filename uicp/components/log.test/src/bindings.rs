@@ -11,48 +11,14 @@ pub mod wasi {
             #[used]
             #[doc(hidden)]
             static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
-            #[repr(u8)]
-            #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-            pub enum Level {
-                Trace,
-                Debug,
-                Info,
-                Warn,
-                Error,
-            }
-            impl ::core::fmt::Debug for Level {
-                fn fmt(
-                    &self,
-                    f: &mut ::core::fmt::Formatter<'_>,
-                ) -> ::core::fmt::Result {
-                    match self {
-                        Level::Trace => f.debug_tuple("Level::Trace").finish(),
-                        Level::Debug => f.debug_tuple("Level::Debug").finish(),
-                        Level::Info => f.debug_tuple("Level::Info").finish(),
-                        Level::Warn => f.debug_tuple("Level::Warn").finish(),
-                        Level::Error => f.debug_tuple("Level::Error").finish(),
-                    }
-                }
-            }
-            impl Level {
-                #[doc(hidden)]
-                pub unsafe fn _lift(val: u8) -> Level {
-                    if !cfg!(debug_assertions) {
-                        return ::core::mem::transmute(val);
-                    }
-                    match val {
-                        0 => Level::Trace,
-                        1 => Level::Debug,
-                        2 => Level::Info,
-                        3 => Level::Warn,
-                        4 => Level::Error,
-                        _ => panic!("invalid enum discriminant"),
-                    }
-                }
-            }
+            use super::super::super::_rt;
             #[allow(unused_unsafe, clippy::all)]
             /// Log a message at a given level
-            pub fn log(level: Level, context: &str, message: &str) -> () {
+            /// WHY: Host bridges in this repository implement logging with a numeric level
+            /// for compatibility with Wasmtime 37 typed hostcalls without codegen. Accept a
+            /// numeric level at the ABI boundary and map to textual levels in the host.
+            /// INVARIANT: 0..=5 map to trace/debug/info/warn/error/critical.
+            pub fn log(level: u32, context: &str, message: &str) -> () {
                 unsafe {
                     let vec0 = context;
                     let ptr0 = vec0.as_ptr().cast::<u8>();
@@ -84,7 +50,7 @@ pub mod wasi {
                     }
                     unsafe {
                         wit_import2(
-                            level.clone() as i32,
+                            _rt::as_i32(&level),
                             ptr0.cast_mut(),
                             len0,
                             ptr1.cast_mut(),
@@ -137,6 +103,65 @@ pub mod exports {
 #[rustfmt::skip]
 mod _rt {
     #![allow(dead_code, clippy::all)]
+    pub fn as_i32<T: AsI32>(t: T) -> i32 {
+        t.as_i32()
+    }
+    pub trait AsI32 {
+        fn as_i32(self) -> i32;
+    }
+    impl<'a, T: Copy + AsI32> AsI32 for &'a T {
+        fn as_i32(self) -> i32 {
+            (*self).as_i32()
+        }
+    }
+    impl AsI32 for i32 {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
+    impl AsI32 for u32 {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
+    impl AsI32 for i16 {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
+    impl AsI32 for u16 {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
+    impl AsI32 for i8 {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
+    impl AsI32 for u8 {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
+    impl AsI32 for char {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
+    impl AsI32 for usize {
+        #[inline]
+        fn as_i32(self) -> i32 {
+            self as i32
+        }
+    }
     #[cfg(target_arch = "wasm32")]
     pub fn run_ctors_once() {
         wit_bindgen_rt::run_ctors_once();
@@ -188,13 +213,12 @@ pub(crate) use __export_entry_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 334] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xd2\x01\x01A\x02\x01\
-A\x04\x01B\x04\x01m\x05\x05trace\x05debug\x04info\x04warn\x05error\x04\0\x05leve\
-l\x03\0\0\x01@\x03\x05level\x01\x07contexts\x07messages\x01\0\x04\0\x03log\x01\x02\
-\x03\0\x1awasi:logging/logging@0.2.0\x05\0\x01B\x02\x01@\x01\x03jobs\x01\0\x04\0\
-\x03run\x01\0\x04\0\x1duicp:task-log-test/task@0.1.0\x05\x01\x04\0\x1euicp:task-\
-log-test/entry@0.1.0\x04\0\x0b\x0b\x01\0\x05entry\x03\0\0\0G\x09producers\x01\x0c\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 292] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa8\x01\x01A\x02\x01\
+A\x04\x01B\x02\x01@\x03\x05levely\x07contexts\x07messages\x01\0\x04\0\x03log\x01\
+\0\x03\0\x1awasi:logging/logging@0.2.0\x05\0\x01B\x02\x01@\x01\x03jobs\x01\0\x04\
+\0\x03run\x01\0\x04\0\x1duicp:task-log-test/task@0.1.0\x05\x01\x04\0\x1euicp:tas\
+k-log-test/entry@0.1.0\x04\0\x0b\x0b\x01\0\x05entry\x03\0\0\0G\x09producers\x01\x0c\
 processed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]

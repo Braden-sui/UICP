@@ -235,6 +235,19 @@ async fn compute_call(
         return Err(format!("Duplicate job id {}", spec.job_id));
     }
 
+    if let Err(err) = state.action_log.append_json(
+        "compute.job.submit",
+        &serde_json::json!({
+            "jobId": spec.job_id.clone(),
+            "task": spec.task.clone(),
+            "cache": spec.cache.clone(),
+            "workspaceId": spec.workspace_id.clone(),
+            "ts": chrono::Utc::now().timestamp_millis(),
+        }),
+    ) {
+        return Err(format!("Action log append failed: {err}"));
+    }
+
     let app_handle = window.app_handle().clone();
 
     // --- Policy enforcement (Non-negotiables v1) ---

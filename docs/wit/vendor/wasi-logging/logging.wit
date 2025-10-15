@@ -3,11 +3,11 @@ package wasi:logging@0.2.0;
 /// Simple structured logging interface
 @since(version = 0.2.0)
 interface logging {
-    @since(version = 0.2.0)
-    enum level { trace, debug, info, warn, error }
-
     /// Log a message at a given level
+    /// WHY: Host bridges in this repository implement logging with a numeric level
+    /// for compatibility with Wasmtime 37 typed hostcalls without codegen. Accept a
+    /// numeric level at the ABI boundary and map to textual levels in the host.
+    /// INVARIANT: 0..=5 map to trace/debug/info/warn/error/critical.
     @since(version = 0.2.0)
-    log: func(level: level, context: string, message: string);
+    log: func(level: u32, context: string, message: string);
 }
-

@@ -12,8 +12,9 @@ struct Component;
 
 impl TaskGuest for Component {
     fn run(_job: String) {
-        let _ = logging::log(logging::Level::Info, "log.test", "hello from guest");
-        let _ = logging::log(logging::Level::Warn, "log.test", "be careful");
+        // 2 => info, 3 => warn (see host mapping in compute.rs)
+        let _ = logging::log(2, "log.test", "hello from guest");
+        let _ = logging::log(3, "log.test", "be careful");
     }
 }
 
