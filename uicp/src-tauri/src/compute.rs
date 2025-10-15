@@ -1486,7 +1486,7 @@ mod with_runtime {
         })
     }
 
-    pub(crate) fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
+    pub fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
         let component = Component::from_file(&ENGINE, path).with_context(|| {
             format!(
                 "E-UICP-228: load component '{}' for import inspection failed",
@@ -1546,7 +1546,7 @@ mod with_runtime {
     }
 
     /// Wire core WASI Preview 2 imports only (host shims deferred to M2+).
-    pub(crate) fn verify_component_contract(path: &Path, task: &str) -> anyhow::Result<()> {
+    pub fn verify_component_contract(path: &Path, task: &str) -> anyhow::Result<()> {
         if std::env::var("UICP_SKIP_CONTRACT_VERIFY")
             .ok()
             .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
