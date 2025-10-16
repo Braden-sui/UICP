@@ -239,12 +239,14 @@ const configurePurifier = () => {
     return;
   }
 
+  // WHY: Specifying ALLOWED_ATTR conflicts with ALLOW_DATA_ATTR. Use FORBID_ATTR instead.
+  // INVARIANT: All data-* attributes allowed by default; dangerous attributes explicitly forbidden.
   purifier.setConfig({
     ALLOWED_TAGS: SANITIZE_WHITELIST_TAGS,
-    ALLOWED_ATTR: SANITIZE_WHITELIST_ATTRS,
     ALLOW_DATA_ATTR: true,
+    ADD_ATTR: SANITIZE_WHITELIST_ATTRS,
     FORBID_TAGS: ['form', 'input', 'textarea', 'select', 'option', 'iframe', 'embed', 'object', 'svg', 'math', 'meta', 'link', 'style'],
-    FORBID_ATTR: ['xlink:href', 'xmlns', 'formaction', 'formenctype', 'formmethod', 'formnovalidate', 'formtarget', 'action'],
+    FORBID_ATTR: ['xlink:href', 'xmlns', 'formaction', 'formenctype', 'formmethod', 'formnovalidate', 'formtarget', 'action', 'style', 'onload', 'onclick', 'onerror', 'onmouseover'],
     KEEP_CONTENT: false,
     SAFE_FOR_TEMPLATES: true,
     RETURN_DOM: false,

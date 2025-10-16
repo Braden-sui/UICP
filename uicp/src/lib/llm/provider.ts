@@ -1,4 +1,4 @@
-import type { ToolSpec, StreamEvent } from './ollama';
+import type { ToolSpec, StreamEvent, StreamMeta } from './ollama';
 import { streamOllamaCompletion } from './ollama';
 import { getActorProfile, getPlannerProfile, type ActorProfileKey, type PlannerProfileKey } from './profiles';
 import { buildEnvironmentSnapshot } from '../env';
@@ -13,6 +13,7 @@ export type PlannerStreamOptions = {
   profileKey?: PlannerProfileKey;
   extraSystem?: string;
   responseFormat?: unknown;
+  meta?: StreamMeta;
 };
 
 export type ActorStreamOptions = {
@@ -22,6 +23,7 @@ export type ActorStreamOptions = {
   profileKey?: ActorProfileKey;
   extraSystem?: string;
   responseFormat?: unknown;
+  meta?: StreamMeta;
 };
 
 export type PlannerClient = {
@@ -40,16 +42,22 @@ export function getPlannerClient(): PlannerClient {
       // Include DOM snapshot by default to maximize context-awareness.
       const env = buildEnvironmentSnapshot({ includeDom: true });
       const supportsTools = profile.capabilities?.supportsTools !== false;
-      const tools = supportsTools ? options?.tools ?? [EMIT_PLAN] : options?.tools;
+      const tools = supportsTools ? options?.tools ?? [EMIT_PLAN] : undefined;
       const toolChoice = supportsTools
         ? options?.toolChoice ?? { type: 'function', function: { name: 'emit_plan' } }
-        : options?.toolChoice;
+        : undefined;
       const responseFormat = supportsTools
         ? options?.responseFormat ?? {
             type: 'json_schema',
             json_schema: { name: 'uicp_plan', schema: planSchema },
           }
-        : options?.responseFormat;
+        : undefined;
+      const format = supportsTools ? 'json' : undefined;
+      const meta: StreamMeta = {
+        role: 'planner',
+        profileKey: profile.key,
+        ...options?.meta,
+      };
       const messages = [
         // Prepend a compact environment snapshot to improve context-awareness.
         { role: 'system', content: env },
@@ -62,9 +70,10 @@ export function getPlannerClient(): PlannerClient {
       // Force JSON-mode responses so downstream schema validation never sees prose.
       // Provide OpenAI-compatible response_format as a hint for local daemons.
       return streamOllamaCompletion(messages, model, tools, {
-        format: 'json',
+        format,
         responseFormat,
         toolChoice,
+        meta,
       });
     },
   };
@@ -77,16 +86,22 @@ export function getActorClient(): ActorClient {
       // Actor profiles encapsulate templating so downstream consumers get consistent outputs.
       const env = buildEnvironmentSnapshot({ includeDom: true });
       const supportsTools = profile.capabilities?.supportsTools !== false;
-      const tools = supportsTools ? options?.tools ?? [EMIT_BATCH] : options?.tools;
+      const tools = supportsTools ? options?.tools ?? [EMIT_BATCH] : undefined;
       const toolChoice = supportsTools
         ? options?.toolChoice ?? { type: 'function', function: { name: 'emit_batch' } }
-        : options?.toolChoice;
+        : undefined;
       const responseFormat = supportsTools
         ? options?.responseFormat ?? {
             type: 'json_schema',
             json_schema: { name: 'uicp_batch', schema: batchSchema },
           }
-        : options?.responseFormat;
+        : undefined;
+      const format = supportsTools ? 'json' : undefined;
+      const meta: StreamMeta = {
+        role: 'actor',
+        profileKey: profile.key,
+        ...options?.meta,
+      };
       const messages = [
         { role: 'system', content: env },
         ...profile.formatMessages(planJson, { tools }),
@@ -95,11 +110,12 @@ export function getActorClient(): ActorClient {
         messages.push({ role: 'system', content: options.extraSystem });
       }
       const model = options?.model ?? profile.defaultModel;
-      // Actor output must be valid JSON; request strict JSON formatting and provide OpenAI-compatible hint.
+      // Request JSON-mode responses only when tool calling is enabled, otherwise allow free-form WIL text.
       return streamOllamaCompletion(messages, model, tools, {
-        format: 'json',
+        format,
         responseFormat,
         toolChoice,
+        meta,
       });
     },
   };

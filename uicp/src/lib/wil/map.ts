@@ -33,13 +33,18 @@ function coerceFor(op: OperationNameT, slots: unknown): Record<string, unknown> 
           delete result.size; // Remove to avoid schema clash with enum values
         }
       }
+      // INVARIANT: Preserve all fields including id, title, etc.
+      // Only override dimension fields with clamped/coerced values
+      const mappedDimensions: Record<string, unknown> = {};
+      if (result.width !== undefined) mappedDimensions.width = clampDimension(coerceNumber(result.width));
+      if (result.height !== undefined) mappedDimensions.height = clampDimension(coerceNumber(result.height));
+      if (result.x !== undefined) mappedDimensions.x = coerceNumber(result.x);
+      if (result.y !== undefined) mappedDimensions.y = coerceNumber(result.y);
+      if (result.zIndex !== undefined) mappedDimensions.zIndex = coerceNumber(result.zIndex);
+      
       return {
         ...result,
-        width: clampDimension(coerceNumber(result.width)),
-        height: clampDimension(coerceNumber(result.height)),
-        x: coerceNumber(result.x),
-        y: coerceNumber(result.y),
-        zIndex: coerceNumber(result.zIndex),
+        ...mappedDimensions,
       };
     }
     case "dom.set":

@@ -1,13 +1,19 @@
 import { cfg } from "../config";
 import { parseUtterance } from "../wil/parse";
 import { toOp } from "../wil/map";
+import { sanitizeActorResponse } from "./sanitize";
 
 export type WilBatchItem = { op: string; params: unknown } | { nop: string };
 export const WIL_STATS = { parsed: 0, nops: 0, invalid: 0 };
 
 export function parseWILBatch(text: string): WilBatchItem[] {
-  const defenced = extractFromFences(text || '');
-  const raw = defenced
+  // Keep old fence extractor for backwards compat, then sanitize.
+  const defenced = extractFromFences(text || "");
+  const { text: sanitized, dropped } = sanitizeActorResponse(defenced);
+  if (cfg.wilDebug && dropped.length) {
+    console.debug(`[wil] dropped ${dropped.length} non-WIL line(s):`, dropped);
+  }
+  const raw = sanitized
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
@@ -25,27 +31,24 @@ export function parseWILBatch(text: string): WilBatchItem[] {
   }
 
   const out: WilBatchItem[] = [];
-  if (cfg.wilDebug) {
-    console.debug(`[WIL] lines_in=${lines.length} raw_in=${raw.length}`);
-  }
-  for (const line of lines) {
-    if (line.toLowerCase().startsWith("nop:")) {
-      out.push({ nop: line.slice(4).trim() || "unspecified" });
-      if (cfg.wilDebug) {
-        console.debug(`[WIL] nop detected: ${line}`);
-      }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Stop on first nop:* (after sanitization, this can't incorrectly be the leading token
+    // if there are valid ops following).
+    if (/^nop:\s*/i.test(line)) {
+      if (cfg.wilDebug) console.debug(`[wil] got nop at L${i + 1}:`, line);
+      out.push({ nop: line });
       WIL_STATS.nops++;
       break;
     }
     const parsed = parseUtterance(line);
     if (!parsed) {
-      out.push({ nop: "invalid WIL line" });
-      if (cfg.wilDebug) {
-        console.debug(`[WIL] invalid line: ${line}`);
-      }
+      if (cfg.wilDebug) console.debug(`[wil] skip(non-WIL) at L${i + 1}:`, line);
       WIL_STATS.invalid++;
-      break;
+      // CRITICAL FIX: do NOT abort the batch — continue scanning subsequent lines.
+      continue;
     }
+    if (cfg.wilDebug) console.debug(`[wil] accept L${i + 1}:`, parsed.op, parsed.slots);
     out.push(toOp(parsed));
     WIL_STATS.parsed++;
   }

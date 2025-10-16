@@ -40,10 +40,12 @@ describe('sanitizeHtml', () => {
     expect(sanitizeHtml(payload)).toBe('');
   });
 
-  it('strips target=_blank to avoid opener vulnerabilities', () => {
+  it('adds noopener/noreferrer to target=_blank links', () => {
     const input = '<a href="https://example.com" target="_blank">Open</a>';
     const out = sanitizeHtml(input);
-    expect(out).toBe('<a href="https://example.com">Open</a>');
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener noreferrer"');
+    expect(out).toContain('https://example.com');
   });
 
   it('removes forms and unsafe actions entirely', () => {
@@ -61,6 +63,14 @@ describe('sanitizeHtml', () => {
     const input = '<div id="note-card" class="card highlight">Note</div>';
     const out = sanitizeHtml(input);
     expect(out).toBe('<div class="card highlight" id="note-card">Note</div>');
+  });
+
+  it('preserves data-testid and other data attributes', () => {
+    const input = '<p data-testid="payload" data-id="123">Hello</p>';
+    const out = sanitizeHtml(input);
+    expect(out).toContain('data-testid="payload"');
+    expect(out).toContain('data-id="123"');
+    expect(out).toContain('Hello');
   });
 });
 

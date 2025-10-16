@@ -860,6 +860,10 @@ const executeWindowCreate = (
     const id = params.id ?? createId("window");
     const existing = windows.get(id);
 
+    console.debug(
+      `[adapter] window.create id=${id} title="${params.title}" w=${String(params.width ?? "")} h=${String(params.height ?? "")}`
+    );
+
     if (existing) {
       applyWindowGeometry(existing, params);
       existing.titleText.textContent = params.title;

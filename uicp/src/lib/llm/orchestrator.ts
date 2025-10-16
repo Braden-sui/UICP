@@ -8,6 +8,7 @@ import { parseWILBatch } from '../orchestrator/parseWILBatch';
 import { composeClarifier } from '../orchestrator/clarifier';
 import { enforcePlannerCap } from '../orchestrator/plannerCap';
 import { readNumberEnv } from '../env/values';
+import { collectWithFallback } from './collectWithFallback';
 
 const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', 120_000, { min: 1_000 });
 const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', 180_000, { min: 1_000 });
@@ -41,27 +42,38 @@ export type RunIntentResult = {
   failures?: { planner?: string; actor?: string };
 };
 
-const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error: unknown): string => {
+const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error: unknown, useTools: boolean): string => {
   const reason = toError(error).message.replace(/\s+/g, ' ').trim();
   const snippet = reason.length > 400 ? `${reason.slice(0, 400)}...` : reason;
   if (toolName === 'emit_plan') {
+    if (useTools) {
+      return `Your previous tool call did not match the schema. Use the emit_plan tool with valid JSON. Last error: ${snippet}`;
+    }
     return `Your previous response did not follow the Planner contract. Output plain text sections (Summary, Steps, Risks, ActorHints). No JSON. No WIL. Last error: ${snippet}`;
+  }
+  if (useTools) {
+    return `Your previous tool call did not match the schema. Use the emit_batch tool with valid WIL commands as Envelopes. Last error: ${snippet}`;
   }
   return `Your previous response did not follow the Actor contract. Output WIL only, one command per line. No JSON or commentary. Stop on first nop:. Last error: ${snippet}`;
 };
 
-// JSON collectors removed in WIL-only mode.
-
 export async function planWithProfile(
   intent: string,
-  options?: { timeoutMs?: number; profileKey?: PlannerProfileKey },
+  options?: { timeoutMs?: number; profileKey?: PlannerProfileKey; traceId?: string },
 ): Promise<{ plan: Plan; channelUsed?: string }> {
   const client = getPlannerClient();
   const profile = getPlannerProfile(options?.profileKey);
-  // WIL planner: collect plain text outline and emit empty-batch plan
-  if (cfg.wilOnly || profile.key === 'wil') {
-    const stream = client.streamIntent(intent, { profileKey: profile.key });
-    const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
+  const supportsTools = profile.capabilities?.supportsTools === true;
+  const useJsonFirst = supportsTools && !cfg.wilOnly;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS;
+
+  // WIL deterministic planner (local, no model call)
+  if (profile.key === 'wil') {
+    const stream = client.streamIntent(intent, {
+      profileKey: profile.key,
+      meta: { traceId: options?.traceId, intent },
+    });
+    const text = await collectTextFromChannels(stream, timeoutMs);
     if (!text || text.trim().length === 0) {
       throw new Error('planner_empty');
     }
@@ -74,15 +86,68 @@ export async function planWithProfile(
     });
     return { plan, channelUsed: 'text' };
   }
+
   let lastErr: unknown;
   let extraSystem: string | undefined;
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const stream = client.streamIntent(intent, { profileKey: profile.key, extraSystem });
-      const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS);
+      const stream = client.streamIntent(intent, {
+        profileKey: profile.key,
+        extraSystem,
+        meta: { traceId: options?.traceId, intent },
+      });
+
+      // JSON-first path: collect both tool calls AND text in single pass
+      if (useJsonFirst) {
+        const { toolResult, textContent } = await collectWithFallback(stream, 'emit_plan', timeoutMs);
+
+        // Priority 1: Tool call result
+        if (toolResult?.args) {
+          try {
+            const plan = validatePlan(toolResult.args);
+            return { plan, channelUsed: 'tool' };
+          } catch (err) {
+            console.warn('Tool args failed validation, trying text fallback', err);
+          }
+        }
+
+        // Priority 2: Parse JSON from text content
+        if (textContent && textContent.trim().length > 0) {
+          const jsonPlan = tryParsePlanFromJson(textContent);
+          if (jsonPlan) {
+            return { plan: jsonPlan, channelUsed: 'json' };
+          }
+
+          // Priority 3: Parse text outline
+          const outline = parsePlannerOutline(textContent);
+          return {
+            plan: validatePlan({
+              summary: outline.summary,
+              risks: outline.risks && outline.risks.length ? outline.risks : undefined,
+              batch: [],
+              actor_hints: outline.actorHints && outline.actorHints.length ? outline.actorHints : undefined,
+            }),
+            channelUsed: 'text',
+          };
+        }
+
+        throw new Error('planner_empty');
+      }
+
+      // WIL-only path: collect text only
+      const text = await collectTextFromChannels(stream, timeoutMs);
       if (!text || text.trim().length === 0) {
         throw new Error('planner_empty');
       }
+
+      // Try JSON parse first (model might emit JSON as content)
+      const jsonPlan = tryParsePlanFromJson(text);
+      if (jsonPlan) {
+        return { plan: jsonPlan, channelUsed: 'json' };
+      }
+
+      // Final fallback: parse outline sections (legacy text path)
       const outline = parsePlannerOutline(text || intent);
       return {
         plan: validatePlan({
@@ -95,7 +160,7 @@ export async function planWithProfile(
       };
     } catch (err) {
       lastErr = err;
-      extraSystem = buildStructuredRetryMessage('emit_plan', err);
+      extraSystem = buildStructuredRetryMessage('emit_plan', err, useJsonFirst);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -106,7 +171,7 @@ export async function planWithProfile(
 // - Encourage inclusion of a small aria-live status region for progress.
 function augmentPlan(input: Plan): Plan {
   const risks = Array.isArray(input.risks) ? input.risks.slice() : [];
-  const hasReuseId = risks.some((r) => /gui:\s*reuse\s*window\s*id/i.test(r));
+  const hasReuseId = risks.some((r) => /gui:\s*(reuse|create)\s*window\s*id/i.test(r));
   const hasStatus = risks.some((r) => /aria-live|status\s*region/i.test(r));
   const hasDeclarativeEvents = risks.some((r) => /data-command|no\s*event\.addlistener/i.test(r));
   const slug = input.summary
@@ -114,7 +179,10 @@ function augmentPlan(input: Plan): Plan {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 32) || 'app';
-  if (!hasReuseId) risks.push(`gui: reuse window id win-${slug}`);
+  // In degraded mode (empty batch), Actor must CREATE the window. Otherwise, reuse existing.
+  const isEmptyBatch = !Array.isArray(input.batch) || input.batch.length === 0;
+  const verb = isEmptyBatch ? 'create' : 'reuse';
+  if (!hasReuseId) risks.push(`gui: ${verb} window id win-${slug}`);
   if (!hasStatus) risks.push('gui: include small aria-live status region updated via dom.set');
   if (!hasDeclarativeEvents) risks.push('gui: wire events via data-command only; NEVER emit event.addListener');
   return {
@@ -151,33 +219,82 @@ function isStructuredClarifierPlan(plan: Plan): boolean {
 
 export async function actWithProfile(
   plan: Plan,
-  options?: { timeoutMs?: number; profileKey?: ActorProfileKey },
+  options?: { timeoutMs?: number; profileKey?: ActorProfileKey; traceId?: string },
 ): Promise<{ batch: Batch; channelUsed?: string }> {
   const client = getActorClient();
   const profile = getActorProfile(options?.profileKey);
+  const supportsTools = profile.capabilities?.supportsTools === true;
+  const useJsonFirst = supportsTools && !cfg.wilOnly;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS;
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
+
   let lastErr: unknown;
   let extraSystem: string | undefined;
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      if (cfg.wilOnly) {
-        const stream = client.streamPlan(planJson, { profileKey: profile.key, extraSystem });
-        const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
-        if (!text || text.trim().length === 0) {
-          throw new Error('actor_nop: invalid WIL line');
+      const stream = client.streamPlan(planJson, {
+        profileKey: profile.key,
+        extraSystem,
+        meta: { traceId: options?.traceId, planSummary: plan.summary },
+      });
+
+      // JSON-first path: collect both tool calls AND text in single pass
+      if (useJsonFirst) {
+        const { toolResult, textContent } = await collectWithFallback(stream, 'emit_batch', timeoutMs);
+
+        // Priority 1: Tool call result
+        if (toolResult?.args) {
+          try {
+            const batchData = toolResult.args as { batch?: unknown };
+            if (Array.isArray(batchData.batch)) {
+              const batch = validateBatch(batchData.batch);
+              return { batch, channelUsed: 'tool' };
+            }
+          } catch (err) {
+            console.warn('Tool args failed validation, trying text fallback', err);
+          }
         }
-        const items = parseWILBatch(text);
-        const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
-        if (nop) throw new Error(`actor_nop: ${nop.nop}`);
-        const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
-        return { batch: validateBatch(ops), channelUsed: 'text' };
+
+        // Priority 2: Parse JSON from text content
+        if (textContent && textContent.trim().length > 0) {
+          console.log('[DEBUG] Text content length:', textContent.length, 'First 200 chars:', textContent.slice(0, 200));
+          const jsonBatch = tryParseBatchFromJson(textContent);
+          if (jsonBatch) {
+            console.log('[DEBUG] Parsed as JSON, batch length:', jsonBatch.length);
+            return { batch: jsonBatch, channelUsed: 'json' };
+          }
+
+          // Priority 3: Parse WIL text
+          console.log('[DEBUG] Trying WIL parse...');
+          const items = parseWILBatch(textContent);
+          console.log('[DEBUG] WIL parsed items:', items.length, 'items:', items.map(i => 'op' in i ? i.op : 'nop' in i ? 'nop' : 'unknown'));
+          const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
+          if (nop) throw new Error(`actor_nop: ${nop.nop}`);
+          const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
+          console.log('[DEBUG] Filtered ops:', ops.length, 'Validating batch...');
+          const batch = validateBatch(ops);
+          console.log('[DEBUG] Validated batch length:', batch.length);
+          return { batch, channelUsed: 'text' };
+        }
+
+        console.log('[DEBUG] No text content, throwing nop error');
+        throw new Error('actor_nop: invalid WIL line');
       }
 
-      const stream = client.streamPlan(planJson, { profileKey: profile.key, extraSystem });
-      const text = await collectTextFromChannels(stream, options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS);
+      // WIL-only path: collect text only
+      const text = await collectTextFromChannels(stream, timeoutMs);
       if (!text || text.trim().length === 0) {
-        throw new Error('actor_empty');
+        throw new Error('actor_nop: invalid WIL line');
       }
+
+      // Try JSON batch parse first (model might emit JSON as content)
+      const jsonBatch = tryParseBatchFromJson(text);
+      if (jsonBatch) {
+        return { batch: jsonBatch, channelUsed: 'json' };
+      }
+
+      // Final fallback: parse WIL text
       const items = parseWILBatch(text);
       const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
       if (nop) throw new Error(`actor_nop: ${nop.nop}`);
@@ -185,7 +302,7 @@ export async function actWithProfile(
       return { batch: validateBatch(ops), channelUsed: 'text' };
     } catch (err) {
       lastErr = err;
-      extraSystem = buildStructuredRetryMessage('emit_batch', err);
+      extraSystem = buildStructuredRetryMessage('emit_batch', err, useJsonFirst);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -245,7 +362,7 @@ export async function runIntent(
   let plan: Plan;
   let plannerChannelUsed: string | undefined;
   try {
-    const out = await planWithProfile(text, { profileKey: options?.plannerProfileKey });
+    const out = await planWithProfile(text, { profileKey: options?.plannerProfileKey, traceId });
     plan = out.plan;
     plannerChannelUsed = out.channelUsed;
   } catch (err) {
@@ -290,7 +407,7 @@ export async function runIntent(
   let actorChannelUsed: string | undefined;
   let clarifierAttempted = false;
   try {
-    const out = await actWithProfile(plan, { profileKey: options?.actorProfileKey });
+    const out = await actWithProfile(plan, { profileKey: options?.actorProfileKey, traceId });
     batch = out.batch;
     actorChannelUsed = out.channelUsed;
   } catch (err) {
@@ -317,7 +434,7 @@ export async function runIntent(
       } else {
         const clarifier = composeClarifier(questions);
         try {
-          const out2 = await planWithProfile(`${text}\n\n${clarifier}`, { profileKey: options?.plannerProfileKey });
+          const out2 = await planWithProfile(`${text}\n\n${clarifier}`, { profileKey: options?.plannerProfileKey, traceId });
           plan = out2.plan;
           plannerChannelUsed = out2.channelUsed ?? plannerChannelUsed;
         } catch (replanErr) {
@@ -380,6 +497,18 @@ export async function runIntent(
 }
 
 // WHY: Some models stream tool calls but wrap final arguments as plain text JSON.
+// Try to parse Plan from JSON text (fallback when model emits JSON as content).
+function tryParsePlanFromJson(text: string): Plan | null {
+  let obj: unknown;
+  try { obj = JSON.parse(text); } catch { return null; }
+  if (!obj || typeof obj !== 'object') return null;
+  try {
+    return validatePlan(obj);
+  } catch {
+    return null;
+  }
+}
+
 // Try to parse and normalize Envelope aliases (method->op) before falling back to WIL.
 export function tryParseBatchFromJson(text: string): Batch | null {
   let obj: unknown;

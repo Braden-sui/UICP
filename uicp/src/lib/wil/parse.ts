@@ -167,6 +167,7 @@ function postProcess(op: OperationNameT, raw: Record<string, string>): Record<st
 
   switch (op) {
     case "window.create": {
+      if (get("id")) slots.id = maybeUnquote(get("id"));
       if (get("title")) {
         const rawTitle = get("title");
         // strip accidental trailing slot text if template fallback over-captured

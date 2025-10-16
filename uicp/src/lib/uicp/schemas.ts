@@ -38,84 +38,6 @@ export function sanitizeHtmlStrict(raw: string): SafeHtml {
   return cleaned as SafeHtml;
 }
 
-const tagWithAttrsPattern =
-  /<([a-z0-9:-]+)((?:\s+[^\s=<>/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*([/])?>/gi;
-
-type ParsedAttribute = { name: string; lower: string; suffix: string };
-
-const parseAttributes = (chunk: string): ParsedAttribute[] => {
-  const attrs: ParsedAttribute[] = [];
-  let index = 0;
-  const length = chunk.length;
-
-  while (index < length) {
-    while (index < length && /\s/.test(chunk[index]!)) index++;
-    if (index >= length) break;
-
-    let name = '';
-    while (index < length && !/\s|=/.test(chunk[index]!)) {
-      name += chunk[index]!;
-      index++;
-    }
-    if (!name) break;
-
-    while (index < length && /\s/.test(chunk[index]!)) index++;
-
-    let suffix = '';
-    if (index < length && chunk[index] === '=') {
-      index++;
-      while (index < length && /\s/.test(chunk[index]!)) index++;
-      if (index < length) {
-        const quote = chunk[index]!;
-        if (quote === '"' || quote === "'") {
-          index++;
-          let value = '';
-          while (index < length && chunk[index] !== quote) {
-            value += chunk[index]!;
-            index++;
-          }
-          if (index < length && chunk[index] === quote) {
-            index++;
-          }
-          suffix = `=${quote}${value}${quote}`;
-        } else {
-          let value = '';
-          while (
-            index < length &&
-            !/\s/.test(chunk[index]!) &&
-            chunk[index] !== '>' &&
-            !(chunk[index] === '/' && chunk[index + 1] === '>')
-          ) {
-            value += chunk[index]!;
-            index++;
-          }
-          suffix = value.length > 0 ? `=${value}` : '';
-        }
-      }
-    }
-
-    attrs.push({ name, lower: name.toLowerCase(), suffix });
-  }
-
-  return attrs;
-};
-
-const normalizeAttributeOrder = (html: string): string => {
-  return html.replace(tagWithAttrsPattern, (_match, tagName: string, attrBlock: string, trailing: string) => {
-    const attrs = parseAttributes(attrBlock ?? '');
-    if (!attrs.length) {
-      return `<${tagName}${trailing ? ` ${trailing}>` : '>'}`;
-    }
-    const sorted = attrs
-      .sort((a, b) => {
-        const cmp = a.lower.localeCompare(b.lower);
-        return cmp !== 0 ? cmp : a.name.localeCompare(b.name);
-      })
-      .map((attr) => `${attr.name}${attr.suffix}`);
-    const suffix = trailing ? ` ${trailing}>` : '>';
-    return `<${tagName} ${sorted.join(' ')}${suffix}`;
-  });
-};
 
 // Centralised schema map so planner results and streamed events (via Tauri) are validated consistently before touching the DOM.
 export const OperationName = z.enum([
@@ -317,16 +239,28 @@ export const envelopeSchema = EnvelopeBase.superRefine((value, ctx) => {
   if (value.op === 'dom.set' || value.op === 'dom.replace' || value.op === 'dom.append') {
     const html = (parsed.data as { html?: unknown }).html;
     if (typeof html === 'string') {
-      const cleaned = sanitizeHtml(html);
-      if (cleaned !== html) {
-        const canonicalInput = normalizeAttributeOrder(html);
-        const canonicalCleaned = normalizeAttributeOrder(cleaned);
-        if (canonicalInput !== canonicalCleaned) {
+      // WHY: Pattern-based pre-validation catches common dangers before DOM manipulation.
+      // INVARIANT: Reject any HTML containing script/style tags, event handlers, or javascript: URLs.
+      // NOTE: DOMPurify provides defense-in-depth at execution time; this is an early gate.
+      const dangerPatterns = [
+        /<script[\s>]/i,
+        /<style[\s>]/i,
+        /\son\w+\s*=/i,  // onclick, onload, etc.
+        /javascript:/i,
+        /<iframe[\s>]/i,
+        /<embed[\s>]/i,
+        /<object[\s>]/i,
+        /<form[\s>]/i,
+      ];
+      
+      for (const pattern of dangerPatterns) {
+        if (pattern.test(html)) {
           ctx.addIssue({
             code: 'custom',
             path: [...ctx.path, 'params', 'html'],
             message: 'HTML contains disallowed content (script/style/on* or javascript:). Provide safe HTML only.',
           });
+          return;
         }
       }
     }

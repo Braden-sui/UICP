@@ -152,4 +152,38 @@ describe('window.create size parameter', () => {
     // toOp should throw because 'invalid' is not a valid enum value or WxH format
     expect(() => toOp(parsed!)).toThrow();
   });
+
+  it('parses create window with explicit id parameter', () => {
+    const utterance = 'create window id win-plan title "Plan" width 800 height 600';
+    const parsed = parseUtterance(utterance);
+    
+    expect(parsed).toBeTruthy();
+    expect(parsed?.op).toBe('window.create');
+    
+    const op = toOp(parsed!);
+    if (op.op !== 'window.create') throw new Error('Expected window.create');
+    
+    expect(op.params.id).toBe('win-plan');
+    expect(op.params.title).toBe('Plan');
+    expect(op.params.width).toBe(800);
+    expect(op.params.height).toBe(600);
+    
+    // Validate it passes schema
+    const batch = validateBatch([op]);
+    expect(batch).toHaveLength(1);
+  });
+
+  it('parses create window with id but no dimensions', () => {
+    const utterance = 'create window id win-notes title "Notes"';
+    const parsed = parseUtterance(utterance);
+    
+    const op = toOp(parsed!);
+    if (op.op !== 'window.create') throw new Error('Expected window.create');
+    
+    expect(op.params.id).toBe('win-notes');
+    expect(op.params.title).toBe('Notes');
+    
+    const batch = validateBatch([op]);
+    expect(batch).toHaveLength(1);
+  });
 });

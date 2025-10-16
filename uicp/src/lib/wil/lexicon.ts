@@ -26,12 +26,19 @@ export const LEXICON: { [K in OperationNameT]: LexEntry<K> } = {
   "window.create": {
     verbs: ["create", "make", "open", "new"],
     templates: [
-      // Prefer more specific patterns first so generic {title} does not over-capture
+      // ID-specific templates first (most specific patterns)
+      "create window id {id} title {title} width {width} height {height}",
+      "create window id {id} title {title} size {size}",
+      "create window id {id} title {title} at {x},{y}",
+      "create window id {id} title {title}",
+      // Generic templates without ID
       "create window title {title} width {width} height {height}",
       "create window title {title} size {size}",
       "create window title {title} at {x},{y}",
       "create window title {title}",
       // Additional verb variations for agent flexibility
+      "new window id {id} title {title} width {width} height {height}",
+      "new window id {id} title {title}",
       "new window title {title} width {width} height {height}",
       "new window title {title} size {size}",
       "new window title {title} at {x},{y}",

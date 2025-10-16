@@ -1,278 +1,363 @@
-# Goal
+agents.md
 
-Ship correct code fast, with proofs. Be autonomous by default; switch to propose-only only when required gates cannot be met. Leave clear notes in code for future humans/agents.
+Last updated: 2025-10-15
 
-Applies to: Entire repo (uicp TypeScript/React/Tauri + Rust backend, docs, tests, CI).
+Purpose
+Define how autonomous engineering agents operate in any repository here. The goal is simple: ship correct changes fast, with proof. Agents act, validate, and leave the codebase healthier than they found it. No silent skips. No sloppy work. Green only when it is earned.
 
-## 0) Non-negotiables
+Applies to
+All languages, stacks, docs, tests, CI, and infra in this repo.
 
-No silent failure. No empty/broad catches; no “log and continue” on errors.
+Repo prefix for error codes
+Use E-<REPO>-#### where <REPO> is this repo name in caps without spaces. Example: E-UICP-0123.
 
-Fail loud. Treat warnings as errors in CI. Assert invariants.
+0) Precedence and stop conditions
 
-Every change has tests. New behavior without tests is rejected.
+This file overrides other style or workflow docs when there is conflict.
 
-Delete dead code only after proving replacement coverage.
+If /.haltagent exists at repo root, stop work immediately, report why, and wait for direction.
 
-Leave code notes. Explain why and invariants, not just what (format below).
+Default mode is Autonomous. Do not defer started work.
 
-No long-lived shims/flags. Temporary compatibility is removed before merge to main.
+1) Operating principles
 
-## 1) Operating Modes
+Validate first, then modify. Reproduce the issue, isolate the cause, add a minimal repro test, then patch.
 
-Small Steps (default): Minimal diffs, fast feedback, reversible.
+Make zero assumptions without evidence. If confidence is below 0.9, gather proof.
 
-Large Refactor (when warranted): If the small path harms correctness or simplicity. Plan → codemod → migrate → verify → delete old path in same PR or paired cleanup PR with a dated follow-up.
+Be liberal in verification, conservative in speculation. Use all available tools to validate: code search, static analysis, local runs, sandboxed execution, and web research with sources.
 
-## 2) Autonomy Tiers (condensed)
+Never perform silent skips. Every deviation or fallback is explicit, logged, and justified.
 
-Choose the highest tier touched by the change. If you can’t satisfy gates, switch to propose-only for the failing step.
+No TODO, FIXME, or placeholders in code. Follow ups belong in issues or PR notes, not in source files.
 
-Risk score R = (impact × irreversibility) / confidence
+Senior grade only. Clear structure, explicit invariants, typed errors, and disciplined naming.
 
-Impact: 1 minor → 5 legal/compliance
+2) Decision protocol
 
-Irreversibility: 1 trivial revert → 5 restore required
+Ask at most two concise clarifying questions only if required for correctness. If ambiguity remains, proceed with the best documented assumption and record it in the PLAN. Once a task starts, complete it in this session or present the single blocking item.
 
-Confidence: 1 weak → 5 strong (tests + obs + dry runs)
+3) Autonomy tiers and risk gates
+
+Compute R = (impact x irreversibility) / confidence.
+
+Impact: 1 docs to 5 legal or compliance
+Irreversibility: 1 trivial revert to 5 restore required
+Confidence: 1 weak to 5 strong (tests + observability + dry runs)
 
 Mapping:
-0-2 → T0, >2-4 → T1, >4-7 → T2, >7-10 → T3, >10 → T4
+0 to 2 -> T0 Open
 
-| Tier | Scope (examples) | Allowed | Required gates (must have) |
-| ---- | ---------------- | ------- | -------------------------- |
-| T0 Open | Docs, comments, non-hot internal code | Edit/add/delete; self-merge on green | Build + lint + tests |
-| T1 Caution | Public functions, CLI behavior, DB reads/writes w/o schema change | Full edits/deletes; self-merge on green | Contract tests + minimal e2e smoke for touched flows |
-| T2 Extreme | Schema/migrations, auth, privacy, background jobs moving/deleting data | Full edits/deletes | Migration dry run on fixtures; backup/restore point; dual-write or shadow-read when practical; metrics + logs + traces; staged canary + kill switch; attach proofs |
-| T3 Critical | Secrets, CI/CD, IaC, network policies, encryption | Full edits/deletes | Policy token pre-authorization; IaC/CI "plan" in sandbox; blue-green/canary (1%→10%→100%); guard metrics/alerts; auto-rollback script + trigger |
-| T4 Catastrophic | Irreversible data purge, retention changes, crypto invalidation | Proceed only if reversibility proven | Full T3 + timed restore rehearsal in prod-like clone; dark launch OK; else propose-only |
+2 to 4 -> T1 Caution
+4 to 7 -> T2 Extreme
+7 to 10 -> T3 Critical
+10 -> T4 Catastrophic
 
-Policy tokens (T3/T4): Signed JSON in-repo that pre-authorizes the exact action class (scope, limits, proofs required). If missing, propose-only.
+Tier table
 
-## 3) Context Summary (build before editing)
+Tier	Scope examples	Allowed	Required gates
+T0	Docs, comments, internal non-hot code	Edit, add, delete, self-merge on green	Build + lint + tests
+T1	Public APIs, CLI behavior, DB reads or writes without schema change	Full edits	Contract tests + smoke e2e for affected flows
+T2	Schema or migrations, privacy, auth, background jobs moving or deleting data	Full edits	Migration dry run on fixtures, backup or snapshot point, dual-write or shadow-read when practical, logs + metrics + traces, staged canary + kill switch, attach proofs
+T3	Secrets, CI or CD, IaC, network policy, encryption	Full edits	Policy token or explicit approval, plan in sandbox, blue-green or canary 1 to 10 to 100 percent, guard metrics and alerts, auto-rollback script
+T4	Irreversible data purge, retention policy change, crypto invalidation	Proceed only if reversibility proven	Full T3 plus restore rehearsal in prod-like clone; else propose-only
+4) Required outputs for non-trivial work
 
-Write a short artifact (commit note or PR section):
+Provide these sections in the PR description or work log.
 
-Touched modules & why
+PLAN
 
-Invariants to preserve
+Goal and why now
 
-Risks & blast radius
+Key assumptions and their current confidence
 
-Selected Tier & rationale
+Approach and alternatives considered
 
-Observability to add (logs/metrics/traces)
+Selected Tier and rationale
 
-Rollback plan (revert steps or kill switch)
+Risk class and rollback plan
 
-## 4) Change Strategy
+DIFF SUMMARY
 
-Isolate → Improve → Prove. Keep commits coherent by topic.
+What changed, why, and where
 
-Interfaces: Branch by abstraction in-branch; swap impl; remove indirection before merge.
+Deleted code inventory if any
 
-Data/API: Expand → backfill → switch → contract (contract before merge; no residual compat).
+VALIDATION
 
-Deletions: inventory symbols/routes → remove → run full tests → grep for remnants → smoke key flows.
+Tests added or updated and what they prove
 
-## 5) Testing Policy (minimums)
+Manual steps if any
 
-For any change, include tests from the layers you touch:
+Observability added (logs, metrics, traces, dashboards)
 
-Unit: pure logic, property tests for parsers/algos.
+Links to dashboards or artifacts
 
-Contract: public functions/API shapes; golden/snapshot for serializers/renderers.
+5) Validation workflow
 
-Integration: service boundaries, DB, queues (real if lightweight, thin fakes if heavy).
+Recon
 
-E2E: critical user journeys impacted. Keep few & stable.
+Map entry points, data flow, and external effects.
 
-Migration: forward apply on fixtures; verify counts/invariants; idempotency when claimed.
+Detect multiple linters or conflicting configs, duplicate defaults, unused flags, dead code behind switches. Propose a crisp choice.
 
-Negative: invalid inputs, timeouts, partial failures; verify loud failure.
+Reproduce
 
-Coverage: enforce per-module floors; do not drop on main without explicit approval. No flake masking.
+Create a minimal failing test or script. Capture inputs, environment, and seed where relevant.
 
-Tier adds: T2 needs differential tests if replacing a path. T3 needs rollback/recovery smoke. T4 needs restore rehearsal proofs.
+Inspect
 
-## 6) Fail-Loud Patterns
+Use static analysis, type checks, and local runs. Instrument with temporary structured logs or trace spans.
 
-Never broad-catch without rethrow + context.
+Verify with web sources when claims are external
 
-Structured errors with unique codes; include request/trace id.
+Cross check at least two independent high quality sources. Cite in docs or PR notes. Summarize evidence, do not paste walls of text.
 
-Process exits non-zero on misconfig, schema mismatch, missing env.
+Patch
 
-TypeScript: strict; no floating promises; always await or rethrow; @typescript-eslint enforced.
-Rust: use anyhow/typed errors + ?; prefer tracing for logs; avoid unwrap() outside initialization; async via Tokio.
-Go (if present): check every err; wrap with context; panic only on fatal startup config.
+Prefer the smallest correct change. Escalate to refactor only if the small change harms correctness or clarity.
 
-## 7) Observability
+Prove
 
-Add trace spans around new/changed paths.
+Run full CI, enforce warnings as errors. Show failure modes are handled and surfaced.
 
-Logs: structured; include actor (if allowed), request id, op, input summary, outcome, duration.
+Clean
 
-Metrics: success/error rate, latency p50/p95/p99, queue depth where relevant.
+Remove temporary instrumentation, dead paths, and unused flags in the same PR or paired cleanup PR linked in PLAN.
 
-Dashboards/alerts when touching critical paths.
+6) Code quality rules
 
-Tier adds: T2+ require dashboards + at least one alert. T3/4 require SLOs.
+No broad catches or empty error handlers. Fail loud with typed or structured errors.
 
-## 8) Security & Supply Chain
+No unwrap or expect outside initialization in Rust. No floating promises in TypeScript. Always await or rethrow.
 
-Never commit secrets. Use .env; run secret scanner in CI.
+Strict type settings. Treat lints as errors.
 
-Pinned lockfiles; intentional updates with risk notes.
+Pure functions where practical. Side effects live at boundaries. Clear module boundaries.
 
-Sanitize logs; no sensitive payloads.
+Explicit invariants in code comments at decision points. Use tags: WHY, INVARIANT, SAFETY, ERROR.
 
-For T3/4 secret handling, use managed stores & verify rotation age; never print values.
+No duplicated logic. Extract helpers with tests.
 
-## 9) Performance Budgets
+No feature flags that linger. Temporary gates are removed before merge to main unless policy states otherwise.
 
-If the path is hot or perf-sensitive: set/observe a target (e.g., ≤ +5% p95 latency delta under baseline load). Avoid algorithmic regressions; add micro-benchmarks for critical loops.
+Language notes
+TypeScript: strict, eslint on, no implicit any, no misused promises, sanitize HTML before DOM.
+Rust: anyhow or typed error enums, tracing for logs, Tokio for async, avoid panics in runtime paths.
+Go: check every error, wrap with context, panic only on fatal startup config.
+Python: type hints required, mypy strict where used, no bare except, use exceptions for control flow sparingly.
 
-## 10) Code Notes (required)
+7) Testing policy
 
-Leave short, high-signal notes at decision points. Prefer these tags:
+Every behavioral change carries tests. No feel good tests. Tests must verify actual logic and failure handling.
 
-WHY: rationale / trade-offs
+Minimums by layer
 
-INVARIANT: must always hold
+Unit: pure logic, property tests for parsers or algorithms.
 
-SAFETY: why this is sound (Rust) / safe to ignore (TS)
+Contract: public APIs and function shapes; golden or snapshot for serializers or renderers.
 
-ERROR: expected failures & codes
+Integration: service boundaries, DB, queues. Prefer real lightweight dependencies, thin fakes if heavy.
 
-TODO(yyyy-mm-dd): short-lived follow-up with date
+E2E: only for critical user journeys; keep few and stable.
 
-### TypeScript example
+Migration: apply forward on fixtures, verify counts and invariants, show idempotency if claimed.
 
-// WHY: Keep renderer pure; IO happens in the Tauri command layer.
-// INVARIANT: `node.children` are normalized before render.
+Negative: invalid inputs, timeouts, partial failures. Assert loud failure and error codes.
+
+Differential: when replacing a path, run old vs new under the same inputs and compare outputs.
+
+Coverage floors per module are allowed but not a substitute for quality. Do not drop floors on main without explicit approval.
+
+8) Observability
+
+Add trace spans around new or changed paths.
+
+Structured logs with request id or trace id, actor if allowed, input summary, outcome, and duration.
+
+Metrics for success and error rate, p50 p95 p99 latency, queue depth where relevant.
+
+T2 and higher require dashboards and at least one alert. T3 and T4 require SLOs and an error budget check.
+
+9) Security and supply chain
+
+Never commit secrets. Use .env and secret scanners in CI.
+
+Pin lockfiles. Update dependencies intentionally with risk notes.
+
+Sanitize logs. No sensitive payloads.
+
+For T3 and T4, verify secret age and rotation. Do not print secret values.
+
+Generate or update SBOM when dependencies change. Run SAST and dependency scans.
+
+10) Performance budgets
+
+If a path is hot, set a target and measure. Example: p95 latency delta less than or equal to 5 percent against baseline under representative load.
+
+Avoid algorithmic regressions. Add microbenchmarks for critical loops where useful.
+
+11) Docs and knowledge hygiene
+
+Update existing docs in place. Do not create duplicate files. If a new document is necessary, integrate and retire the old one in the same PR.
+
+Keep docs plain ASCII. No smart quotes. No em dashes.
+
+When docs include technical or factual claims, cite sources or code references. For internal references, link to files or tests.
+
+Changelogs and READMEs reflect the current truth after each merge. No stale sections.
+
+12) Memory and context discipline
+
+Agents load prior decisions and context before editing. Summarize key constraints and invariants at the top of the PLAN.
+
+Refresh memories when the ground truth changes. Outdated agent notes must be corrected in the same PR that changes behavior.
+
+Do not invent context. When missing, ask once or derive from code and tests, then proceed.
+
+13) PR protocol
+
+Title: imperative and concise.
+Context Summary: goal, why now, invariants to preserve.
+Scope: files or subsystems touched, small vs large and why.
+Autonomy Tier: tier number, rubric values, and links to proofs.
+Risks: correctness, data, performance, security, and mitigations.
+Tests: list by layer and what they prove; coverage summary.
+Observability: logs, metrics, traces, dashboards.
+Migration: steps, runtime estimate, backfill notes.
+Rollback: revert steps or kill switch.
+Cleanup: deleted code list and any follow ups recorded as issues, not code comments.
+
+CI gates must pass: build, type, lint, format, tests, coverage floors, security scans, secret scan, tier jobs such as migration dry run or IaC plan. No warnings.
+
+14) Deletion protocol
+
+Inventory symbols or routes and all callers, including dynamic entry points.
+
+Prove new path coverage or non-usage. Tests enforce absence of old path.
+
+Remove and verify: compile or build, run full tests, grep for remnants.
+
+Post delete checks: smoke key flows and update docs or examples.
+
+15) Tool usage policy
+
+Always choose tools that increase certainty. Use liberally for verification.
+
+Local
+
+Grep or ripgrep, ctags or symbol index, static analyzers, linters, formatters, type checkers, unit and integration test runners, profilers.
+
+Sandboxed execution for risky steps.
+
+External
+
+Web search and reference checks when claims are external. Prefer primary sources and current official docs. Record sources in PR notes or docs.
+
+Calculators or notebooks for data checks. Export results when they inform code or tests.
+
+Rule: if confidence is below 0.9 or the claim is time sensitive, verify externally and cite.
+
+16) Interface and data change strategy
+
+Interfaces: branch by abstraction, swap implementation, remove indirection before merge.
+
+Data or API: expand, backfill, switch, contract. No big bang swaps without a gate.
+
+Feature flags are temporary and must be removed before merge or in a paired cleanup PR within the same release window.
+
+17) Error handling and codes
+
+Use structured error types and unique error codes. Include enough context to debug without leaking sensitive data.
+
+Process exits non-zero on misconfig, schema mismatch, or missing env.
+
+Document expected failures and codes in code comments and contract tests.
+
+18) Style and hygiene
+
+ASCII only. No hidden Unicode.
+
+No generated or vendored artifacts in diffs.
+
+Consistent naming, small focused commits, and clean diffs.
+
+19) Quick start checklist
+
+Context summary and Tier selected.
+
+Patch plan written.
+
+Core tests written or failing repro added.
+
+Focused commits applied.
+
+Observability added.
+
+Dead code removed and coverage proved.
+
+Full CI and tier gates green.
+
+PR opened with PLAN, DIFF SUMMARY, and VALIDATION.
+
+Post merge housekeeping done: docs, dashboards, issues for follow up if any.
+
+20) Minimal code comment templates
+
+TypeScript
+
+// WHY: Keep renderer pure; IO happens in the command layer.
+// INVARIANT: node.children are normalized before render.
+// ERROR: E-<REPO>-0001 invalid AST: children missing
 export function renderNode(node: AstNode): VNode {
   if (!node || !Array.isArray(node.children)) {
-    // ERROR: E-UICP-001 Invalid AST shape — fail loud for upstream fix.
-    throw new Error("E-UICP-001: invalid AST: children missing");
+    throw new Error("E-<REPO>-0001 invalid AST: children missing");
   }
-  // SAFETY: `children` are normalized by `normalizeAst()` in adapter.ts.
   return h("div", {}, node.children.map(renderNode));
 }
 
-### Rust example
+
+Rust
 
 // WHY: Stream DB rows to UI; avoid unbounded allocations.
-// INVARIANT: Each chunk <= 1_000 rows; caller must drain stream.
+// INVARIANT: Each chunk <= 1_000 rows; caller must drain the stream.
+// ERROR: E-<REPO>-0201 query_stream failed; E-<REPO>-0202 row decode failure.
 pub async fn stream_rows(db: &Db, q: Query) -> anyhow::Result<impl Stream<Item = Row>> {
     use futures::TryStreamExt;
     let s = db.query_stream(q).await
-        .context("E-UICP-201: query_stream failed")? // ERROR code + context
-        .map_err(|e| anyhow::anyhow!("E-UICP-202: row decode: {e}"));
+        .context("E-<REPO>-0201 query_stream failed")?
+        .map_err(|e| anyhow::anyhow!("E-<REPO>-0202 row decode: {e}"));
     Ok(s)
 }
 
-Error code prefix: E-UICP-#### for this repo.
 
-## 11) PR Protocol (one page)
+Go
 
-Title: imperative, concise.
-Context Summary: goal, why now, invariants.
-Scope: files/subsystems; small vs large and why.
-Autonomy Tier: number + rubric + links to proofs (migrations, plans, dashboards).
-Risks: correctness/data/perf/security; mitigations.
-Tests: list by layer + what they prove; coverage summary.
-Observability: logs/metrics/traces/dashboards.
-Migration (if any): steps, runtime estimate, backfill notes.
-Rollback: revert steps or kill switch.
-Cleanup: deleted code list; dated follow-ups if any.
+// WHY: Validate payload then persist atomically.
+// INVARIANT: idempotency key uniqueness per 24h window.
+// ERROR: E-<REPO>-0301 invalid payload, E-<REPO>-0302 db write.
+func Handle(w http.ResponseWriter, r *http.Request) error {
+  p, err := decode(r.Body)
+  if err != nil { return fmt.Errorf("E-<REPO>-0301: %w", err) }
+  if err := repo.Save(r.Context(), p); err != nil { return fmt.Errorf("E-<REPO>-0302: %w", err) }
+  return nil
+}
 
-CI gates must pass: build, type, lint, format; tests + coverage floors; security/secret scans; no warnings; tier jobs (e.g., migration dry run, IaC plan, canary health).
+21) Anti-patterns
 
-## 12) Quick Start Checklist (for any task)
+Catch and ignore exceptions.
 
-- **Context summary** Build context summary; select Tier.
-- **Patch plan** Write a patch plan (small first; escalate if smaller is worse).
-- **Tests first** Write core tests first (or differential tests for replacements).
-- **Focused commits** Implement in focused commits.
-- **Observability** Add logs/metrics/traces.
-- **Coverage** Delete dead code; prove replacement coverage.
-- **CI** Run full CI + tier gates; fix all failures (no warnings).
-- **PR** Open PR with required sections + proofs.
-- **Post-merge** Post-merge housekeeping (docs, dashboards, tickets).
+New behavior without tests.
 
-## 13) Deletion Protocol (short)
+Feature flags that linger.
 
-Inventory: symbols/routes & all callers (static + dynamic entry points).
+Dead code left after refactor.
 
-Prove coverage: new path covers old; tests enforce absence of old path.
+Regex-only sweeps for structural changes. Prefer codemods or AST transforms.
 
-Remove & verify: compile/build; run full tests; grep names.
+Docs that claim without sources.
 
-Post-delete checks: smoke critical flows; update docs/examples.
+Any TODO or FIXME left in code.
 
-## 14) Repo-specific guardrails (uicp)
-
-TypeScript strict; React 18; Rust async (Tokio).
-
-Run locally:
-
-cd uicp && npm run dev (Vite + Tauri)
-
-npm run build (typecheck + bundle)
-
-npm run test (Vitest) / npm run test:e2e (Playwright)
-
-npm run lint && npm run format (ESLint + Prettier)
-
-Security: never commit secrets; use .env (e.g., OLLAMA_API_KEY).
-
-Sanitize HTML before DOM. No inline JS from models; use data-* hooks.
-
-## 15) Minimal Tier Annotations (optional)
-
-.agent-policy.yml example:
-
-```yaml
-patterns:
-  - path: "docs/**"         # T0
-    default_tier: 0
-  - path: "uicp/src/**"     # T1
-    default_tier: 1
-  - path: "migrations/**"   # T2
-    default_tier: 2
-  - path: "infra/**"        # T3
-    default_tier: 3
-  - path: "scripts/purge/**"# T4
-    default_tier: 4
-```
-
-## 16) Optional Appendix — Wasm/Component-Model Agents (keep it short)
-
-If you introduce Wasm agents/components:
-
-Contract first: define WIT packages/worlds with versions (package ns:name@x.y.z;).
-
-Least privilege: import only required capabilities (preopened dirs, http, clocks, random).
-
-Determinism: gate wall-clock/random; canonicalize NaNs; prefer epoch or fuel limits.
-
-Streams not blobs: use wasi:io/streams and pollables; avoid unbounded `list<u8>`.
-
-Distribution: compose with wasm-tools; sign artifacts (cosign); verify on pull.
-
-## 17) Anti-patterns (reject)
-
-Catch and ignore exceptions; log without failing.
-
-New code without tests.
-
-Feature flags that linger in main.
-
-Dead code left post‑refactor.
-
-Regex‑only sweeps for structural changes (use codemods).
-
-“Back‑compat forever” layers after the migration is done.
-
-Default stance: Autonomy with proof. If there’s doubt, pick the higher tier and show it’s safe.
+Default stance
+Autonomy with proof. If there is doubt, pick the higher tier and show it is safe. Finish what you start, validate aggressively, and keep the tree clean.

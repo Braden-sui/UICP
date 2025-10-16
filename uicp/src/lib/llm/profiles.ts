@@ -38,7 +38,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     key: 'glm',
     label: 'GLM 4.6',
     description: 'Advanced agentic, reasoning and coding capabilities with 198K context window.',
-    defaultModel: 'glm-4.6',
+    defaultModel: 'glm-4.6:cloud',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent: string) => [
       { role: 'system', content: plannerPrompt.trim() },
@@ -50,7 +50,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'GPT-OSS 120B',
     description: 'Open-source GPT model with 120B parameters.',
     defaultModel: 'gpt-oss:120b',
-    capabilities: { channels: ['json'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: false },
     formatMessages: (intent: string) => [
       { role: 'system', content: plannerPrompt.trim() },
       { role: 'user', content: intent },
@@ -61,7 +61,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'DeepSeek V3.1',
     description: 'Legacy planner prompt tuned for DeepSeek reasoning mode.',
     defaultModel: 'deepseek-v3.1:671b',
-    capabilities: { channels: ['json'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: false },
     formatMessages: (intent) => [
       { role: 'system', content: plannerPrompt.trim() },
       { role: 'user', content: intent },
@@ -72,7 +72,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'Kimi K2',
     description: 'Planner prompt for Kimi-k2:1t.',
     defaultModel: 'kimi-k2:1t',
-    capabilities: { channels: ['json'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: false },
     formatMessages: (intent) => [
       { role: 'system', content: plannerPrompt.trim() },
       { role: 'user', content: intent },
@@ -83,7 +83,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     label: 'Qwen3-Coder 480B',
     description: 'Planner prompt for Qwen3-Coder (fallback when DeepSeek unavailable).',
     defaultModel: 'qwen3-coder:480b',
-    capabilities: { channels: ['json'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: false },
     formatMessages: (intent) => [
       { role: 'system', content: plannerPrompt.trim() },
       { role: 'user', content: intent },
@@ -96,7 +96,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     key: 'glm',
     label: 'GLM 4.6',
     description: 'Advanced agentic, reasoning and coding capabilities with 198K context window.',
-    defaultModel: 'glm-4.6',
+    defaultModel: 'glm-4.6:cloud',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson: string) => [
       { role: 'system', content: actorPrompt.trim() },
@@ -108,7 +108,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     label: 'GPT-OSS 120B',
     description: 'Open-source GPT model with 120B parameters.',
     defaultModel: 'gpt-oss:120b',
-    capabilities: { channels: ['json'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: false },
     formatMessages: (planJson: string) => [
       { role: 'system', content: actorPrompt.trim() },
       { role: 'user', content: planJson },
@@ -119,7 +119,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     label: 'Qwen3-Coder 480B',
     description: 'Legacy actor prompt tuned for Qwen tool calling.',
     defaultModel: 'qwen3-coder:480b',
-    capabilities: { channels: ['json'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: false },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
       { role: 'user', content: planJson },
@@ -130,7 +130,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
     label: 'Kimi K2',
     description: 'Actor prompt for Kimi-k2:1t.',
     defaultModel: 'kimi-k2:1t',
-    capabilities: { channels: ['json'], supportsTools: true },
+    capabilities: { channels: ['json'], supportsTools: false },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
       { role: 'user', content: planJson },
