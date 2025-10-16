@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { applyBatch } from "../lib/uicp/adapter";
-import { mockPlanner } from "../lib/mock";
 import type { Batch } from "../lib/uicp/schemas";
 import { UICPValidationError, validateBatch, validatePlan } from "../lib/uicp/schemas";
 import { createId } from "../lib/utils";
@@ -121,129 +120,105 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let notice: 'planner_fallback' | 'actor_fallback' | undefined;
       let planAutoApply = false;
 
-      if (app.agentMode === 'mock') {
-        const mock = mockPlanner(prompt);
-        const plan = validatePlan({ summary: mock.summary, batch: mock.batch }, "/batch");
-        summary = plan.summary;
-        const stamped = ensureBatchMetadata(plan.batch);
+      // Orchestrator path: DeepSeek (planner) -> Qwen (actor) via streaming transport.
+      app.setSuppressAutoApply(true);
+      try {
+        const result = await runIntent(
+          prompt,
+          /* applyNow */ false,
+          {
+            onPhaseChange: (detail) => {
+              if (detail.phase === 'planning') {
+                traceId = detail.traceId;
+                app.transitionAgentPhase('planning', {
+                  startedAt,
+                  traceId,
+                  planMs: null,
+                  actMs: null,
+                  applyMs: null,
+                  error: undefined,
+                });
+              } else {
+                traceId = detail.traceId;
+                planDuration = detail.planMs;
+                app.transitionAgentPhase('acting', {
+                  traceId,
+                  planMs: planDuration,
+                  actMs: null,
+                });
+              }
+            },
+          },
+          {
+            plannerProfileKey: app.plannerProfileKey,
+            actorProfileKey: app.actorProfileKey,
+          },
+        );
+        notice = result.notice;
+        const plannerFailure = result.failures?.planner;
+        const actorFailure = result.failures?.actor;
+        const safePlan = validatePlan({ summary: result.plan.summary, risks: result.plan.risks, batch: result.plan.batch });
+        const safeBatch = validateBatch(result.batch);
+        summary = safePlan.summary;
+        planDuration = result.timings.planMs;
+        actDuration = result.timings.actMs;
+        const autoApply = Boolean(result.autoApply);
+        planAutoApply = autoApply;
+        const stamped = ensureBatchMetadata(safeBatch, result.traceId);
         batch = stamped.batch;
         traceId = stamped.traceId;
-        planDuration = 0;
-        actDuration = 0;
         app.transitionAgentPhase('acting', {
           traceId,
           planMs: planDuration,
           actMs: actDuration,
         });
-        app.upsertTelemetry(traceId, {
+        const telemetryPatch: Parameters<typeof app.upsertTelemetry>[1] = {
           summary,
           startedAt,
           planMs: planDuration,
           actMs: actDuration,
           batchSize: batch.length,
-          status: app.fullControl && !app.fullControlLocked ? 'applying' : 'acting',
-        });
-      } else {
-        // Orchestrator path: DeepSeek (planner) → Qwen (actor) via streaming transport.
-        app.setSuppressAutoApply(true);
-        try {
-          const result = await runIntent(
-            prompt,
-            /* applyNow */ false,
-            {
-              onPhaseChange: (detail) => {
-                if (detail.phase === 'planning') {
-                  traceId = detail.traceId;
-                  app.transitionAgentPhase('planning', {
-                    startedAt,
-                    traceId,
-                    planMs: null,
-                    actMs: null,
-                    applyMs: null,
-                    error: undefined,
-                  });
-                } else {
-                  traceId = detail.traceId;
-                  planDuration = detail.planMs;
-                  app.transitionAgentPhase('acting', {
-                    traceId,
-                    planMs: planDuration,
-                    actMs: null,
-                  });
-                }
-              },
-            },
-            {
-              plannerProfileKey: app.plannerProfileKey,
-              actorProfileKey: app.actorProfileKey,
-            },
-          );
-          notice = result.notice;
-          const plannerFailure = result.failures?.planner;
-          const actorFailure = result.failures?.actor;
-          const safePlan = validatePlan({ summary: result.plan.summary, risks: result.plan.risks, batch: result.plan.batch });
-          const safeBatch = validateBatch(result.batch);
-          summary = safePlan.summary;
-          planDuration = result.timings.planMs;
-          actDuration = result.timings.actMs;
-          const autoApply = Boolean(result.autoApply);
-          planAutoApply = autoApply;
-          const stamped = ensureBatchMetadata(safeBatch, result.traceId);
-          batch = stamped.batch;
-          traceId = stamped.traceId;
-          app.transitionAgentPhase('acting', {
-            traceId,
-            planMs: planDuration,
-            actMs: actDuration,
-          });
-          const telemetryPatch: Parameters<typeof app.upsertTelemetry>[1] = {
-            summary,
-            startedAt,
-            planMs: planDuration,
-            actMs: actDuration,
-            batchSize: batch.length,
-            status: autoApply || (app.fullControl && !app.fullControlLocked) ? 'applying' : 'acting',
-          };
-          const failureMessages = [plannerFailure, actorFailure].filter((msg): msg is string => Boolean(msg));
-          if (failureMessages.length > 0) {
-            telemetryPatch.error = failureMessages.join('; ');
-          }
-          app.upsertTelemetry(traceId, telemetryPatch);
-          // Surface clarifier reason when planner_fallback resulted from an actor nop
-          if (notice === 'planner_fallback' && actorFailure) {
-            get().pushSystemMessage(`Clarifier needed: ${actorFailure}`, 'clarifier_needed');
-          }
-          const plannerRisks = (safePlan.risks ?? []).filter((risk) => !risk.trim().toLowerCase().startsWith('clarifier:'));
-          if (plannerRisks.length > 0) {
-            const lines = plannerRisks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
-            get().pushSystemMessage(`Planner hints${traceId ? ` [${traceId}]` : ''}:\n${lines}`, 'planner_hints');
-          }
-          if (notice === 'planner_fallback') {
-            const message = plannerFailure
-              ? `Planner degraded: ${plannerFailure}`
-              : 'Planner degraded: using actor-only fallback for this intent.';
-            get().pushSystemMessage(message, 'planner_fallback');
-          } else if (notice === 'actor_fallback') {
-            const message = actorFailure
-              ? `Actor failed to produce a batch: ${actorFailure}`
-              : 'Actor failed to produce a batch. Showing a safe error window.';
-            get().pushSystemMessage(message, 'actor_fallback');
-          }
-          if (plannerFailure && notice !== 'planner_fallback') {
-            get().pushSystemMessage(
-              `Planner error${traceId ? ` [${traceId}]` : ''}: ${plannerFailure}`,
-              'planner_error',
-            );
-          }
-          if (actorFailure && notice !== 'actor_fallback') {
-            get().pushSystemMessage(
-              `Actor error${traceId ? ` [${traceId}]` : ''}: ${actorFailure}`,
-              'actor_error',
-            );
-          }
-        } finally {
-          app.setSuppressAutoApply(false);
+          status: autoApply || (app.fullControl && !app.fullControlLocked) ? 'applying' : 'acting',
+        };
+        const failureMessages = [plannerFailure, actorFailure].filter((msg): msg is string => Boolean(msg));
+        if (failureMessages.length > 0) {
+          telemetryPatch.error = failureMessages.join('; ');
         }
+        app.upsertTelemetry(traceId, telemetryPatch);
+        // Surface clarifier reason when planner_fallback resulted from an actor nop
+        if (notice === 'planner_fallback' && actorFailure) {
+          get().pushSystemMessage(`Clarifier needed: ${actorFailure}`, 'clarifier_needed');
+        }
+        const plannerRisks = (safePlan.risks ?? []).filter((risk) => !risk.trim().toLowerCase().startsWith('clarifier:'));
+        if (plannerRisks.length > 0) {
+          const lines = plannerRisks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
+          get().pushSystemMessage(`Planner hints${traceId ? ` [${traceId}]` : ''}:\n${lines}`, 'planner_hints');
+        }
+        if (notice === 'planner_fallback') {
+          const message = plannerFailure
+            ? `Planner degraded: ${plannerFailure}`
+            : 'Planner degraded: using actor-only fallback for this intent.';
+          get().pushSystemMessage(message, 'planner_fallback');
+        } else if (notice === 'actor_fallback') {
+          const message = actorFailure
+            ? `Actor failed to produce a batch: ${actorFailure}`
+            : 'Actor failed to produce a batch. Showing a safe error window.';
+          get().pushSystemMessage(message, 'actor_fallback');
+        }
+        if (plannerFailure && notice !== 'planner_fallback') {
+          get().pushSystemMessage(
+            `Planner error${traceId ? ` [${traceId}]` : ''}: ${plannerFailure}`,
+            'planner_error',
+          );
+        }
+        if (actorFailure && notice !== 'actor_fallback') {
+          get().pushSystemMessage(
+            `Actor error${traceId ? ` [${traceId}]` : ''}: ${actorFailure}`,
+            'actor_error',
+          );
+        }
+      } finally {
+        app.setSuppressAutoApply(false);
       }
 
       const plan: PlanPreview = {

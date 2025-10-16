@@ -124,7 +124,7 @@ pub async fn compute_cancel<R: Runtime>(
     tracing::info!(target = "uicp", job_id = %job_id, "compute cancel requested");
     let app_handle = app.clone();
     let _ = app_handle.emit(
-        "compute.debug",
+        "compute-debug",
         serde_json::json!({ "jobId": job_id, "event": "cancel_requested" }),
     );
 
@@ -148,7 +148,7 @@ pub async fn compute_cancel<R: Runtime>(
 
         if aborted {
             let _ = app_handle.emit(
-                "compute.debug",
+                "compute-debug",
                 serde_json::json!({ "jobId": jid, "event": "cancel_aborted_after_grace" }),
             );
             {

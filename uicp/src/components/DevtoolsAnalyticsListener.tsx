@@ -52,7 +52,6 @@ const DevtoolsAnalyticsListener = () => {
         computeDemoOpen: store.computeDemoOpen,
         workspaceWindows: Object.keys(store.workspaceWindows).length,
         devMode: store.devMode,
-        agentMode: store.agentMode,
         fullControl: store.fullControl,
         fullControlLocked: store.fullControlLocked,
         platform: result.platform,

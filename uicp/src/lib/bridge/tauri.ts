@@ -18,13 +18,18 @@ const getBridgeWindow = () => (typeof window === 'undefined' ? undefined : windo
 
 export const hasTauriBridge = (): boolean => {
   const w = getBridgeWindow() as (Window & {
-    __TAURI__?: { core?: { invoke?: unknown } };
+    __TAURI_INTERNALS__?: unknown;
+    isTauri?: unknown;
   }) | undefined;
-  const tauriInvoke = w?.__TAURI__?.core?.invoke;
+  // Tauri v2 uses __TAURI_INTERNALS__
+  if (w?.__TAURI_INTERNALS__ !== undefined) return true;
+  // Check for isTauri property (set by Tauri runtime)
+  if (w?.isTauri === true) return true;
+  // Legacy check for tests
   const mocks = (globalThis as Record<string, unknown>).__TAURI_MOCKS__ as
     | { invokeMock?: unknown }
     | undefined;
-  return typeof tauriInvoke === 'function' || typeof mocks?.invokeMock === 'function';
+  return typeof mocks?.invokeMock === 'function';
 };
 
 export const tauriInvoke = async <T>(command: string, args?: unknown): Promise<T> => {
@@ -538,7 +543,7 @@ export async function initializeTauriBridge() {
 
   // Compute plane: debug telemetry for cancellations/timeouts
   unsubs.push(
-    await listen('compute.debug', (event) => {
+    await listen('compute-debug', (event) => {
       const payload = event.payload as { jobId?: string; event?: string } | undefined;
       if (!payload) return;
       const jobId = String(payload.jobId ?? '');
@@ -566,7 +571,7 @@ export async function initializeTauriBridge() {
   }
 
   unsubs.push(
-    await listen('compute.result.final', async (event) => {
+    await listen('compute-result-final', async (event) => {
       const payload = event.payload as unknown;
       const parsed = finalEventSchema.safeParse(payload);
       if (!parsed.success) {

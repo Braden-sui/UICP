@@ -378,3 +378,30 @@ export async function runIntent(
     failures: Object.keys(failures).length > 0 ? failures : undefined,
   };
 }
+
+// WHY: Some models stream tool calls but wrap final arguments as plain text JSON.
+// Try to parse and normalize Envelope aliases (method->op) before falling back to WIL.
+export function tryParseBatchFromJson(text: string): Batch | null {
+  let obj: unknown;
+  try { obj = JSON.parse(text); } catch { return null; }
+  const asRecord = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' ? (v as Record<string, unknown>) : null);
+  const normalizeEnvelope = (entry: unknown): unknown => {
+    if (!entry || typeof entry !== 'object') return entry;
+    const e = { ...(entry as Record<string, unknown>) };
+    if (!('op' in e) && typeof (e as Record<string, unknown>).method === 'string') {
+      (e as Record<string, unknown>).op = (e as Record<string, unknown>).method;
+      delete (e as Record<string, unknown>).method;
+    }
+    return e;
+  };
+  const record = asRecord(obj);
+  const candidate = Array.isArray(obj) ? obj : Array.isArray(record?.batch) ? (record!.batch as unknown[]) : null;
+  if (!candidate) return null;
+  try {
+    const mapped = candidate.map((e) => normalizeEnvelope(e));
+    return validateBatch(mapped);
+  } catch {
+    return null;
+  }
+}
+

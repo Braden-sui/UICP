@@ -2,8 +2,8 @@ import plannerPrompt from '../../prompts/planner.txt?raw';
 import actorPrompt from '../../prompts/actor.txt?raw';
 import type { ChatMessage, ToolSpec } from './ollama';
 
-export type PlannerProfileKey = 'deepseek' | 'kimi' | 'wil';
-export type ActorProfileKey = 'qwen' | 'kimi';
+export type PlannerProfileKey = 'glm' | 'deepseek' | 'kimi' | 'wil' | 'qwen' | 'gpt-oss';
+export type ActorProfileKey = 'glm' | 'qwen' | 'kimi' | 'gpt-oss';
 
 export interface PlannerProfile {
   key: PlannerProfileKey;
@@ -34,6 +34,28 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
       { role: 'user', content: intent },
     ],
   },
+  glm: {
+    key: 'glm',
+    label: 'GLM 4.6',
+    description: 'Advanced agentic, reasoning and coding capabilities with 198K context window.',
+    defaultModel: 'glm-4.6',
+    capabilities: { channels: ['json'], supportsTools: true },
+    formatMessages: (intent: string) => [
+      { role: 'system', content: plannerPrompt.trim() },
+      { role: 'user', content: intent },
+    ],
+  },
+  'gpt-oss': {
+    key: 'gpt-oss',
+    label: 'GPT-OSS 120B',
+    description: 'Open-source GPT model with 120B parameters.',
+    defaultModel: 'gpt-oss:120b',
+    capabilities: { channels: ['json'], supportsTools: true },
+    formatMessages: (intent: string) => [
+      { role: 'system', content: plannerPrompt.trim() },
+      { role: 'user', content: intent },
+    ],
+  },
   deepseek: {
     key: 'deepseek',
     label: 'DeepSeek V3.1',
@@ -56,9 +78,42 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
       { role: 'user', content: intent },
     ],
   },
+  qwen: {
+    key: 'qwen',
+    label: 'Qwen3-Coder 480B',
+    description: 'Planner prompt for Qwen3-Coder (fallback when DeepSeek unavailable).',
+    defaultModel: 'qwen3-coder:480b',
+    capabilities: { channels: ['json'], supportsTools: true },
+    formatMessages: (intent) => [
+      { role: 'system', content: plannerPrompt.trim() },
+      { role: 'user', content: intent },
+    ],
+  },
 };
 
 const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
+  glm: {
+    key: 'glm',
+    label: 'GLM 4.6',
+    description: 'Advanced agentic, reasoning and coding capabilities with 198K context window.',
+    defaultModel: 'glm-4.6',
+    capabilities: { channels: ['json'], supportsTools: true },
+    formatMessages: (planJson: string) => [
+      { role: 'system', content: actorPrompt.trim() },
+      { role: 'user', content: planJson },
+    ],
+  },
+  'gpt-oss': {
+    key: 'gpt-oss',
+    label: 'GPT-OSS 120B',
+    description: 'Open-source GPT model with 120B parameters.',
+    defaultModel: 'gpt-oss:120b',
+    capabilities: { channels: ['json'], supportsTools: true },
+    formatMessages: (planJson: string) => [
+      { role: 'system', content: actorPrompt.trim() },
+      { role: 'user', content: planJson },
+    ],
+  },
   qwen: {
     key: 'qwen',
     label: 'Qwen3-Coder 480B',
@@ -87,8 +142,8 @@ export const listPlannerProfiles = (): PlannerProfile[] => Object.values(planner
 export const listActorProfiles = (): ActorProfile[] => Object.values(actorProfiles);
 
 export const getPlannerProfile = (key?: PlannerProfileKey): PlannerProfile => {
-  const resolvedKey = key ?? (import.meta.env.VITE_PLANNER_PROFILE as PlannerProfileKey) ?? 'deepseek';
-  return plannerProfiles[resolvedKey] ?? plannerProfiles.deepseek;
+  const resolvedKey = key ?? (import.meta.env.VITE_PLANNER_PROFILE as PlannerProfileKey) ?? 'qwen';
+  return plannerProfiles[resolvedKey] ?? plannerProfiles.qwen;
 };
 
 export const getActorProfile = (key?: ActorProfileKey): ActorProfile => {
@@ -97,8 +152,8 @@ export const getActorProfile = (key?: ActorProfileKey): ActorProfile => {
 };
 
 export const getDefaultPlannerProfileKey = (): PlannerProfileKey => {
-  const key = (import.meta.env.VITE_PLANNER_PROFILE as PlannerProfileKey) ?? 'deepseek';
-  return plannerProfiles[key] ? key : 'deepseek';
+  const key = (import.meta.env.VITE_PLANNER_PROFILE as PlannerProfileKey) ?? 'qwen';
+  return plannerProfiles[key] ? key : 'qwen';
 };
 
 export const getDefaultActorProfileKey = (): ActorProfileKey => {

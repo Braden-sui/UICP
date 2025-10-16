@@ -40,8 +40,8 @@ The adapter maintains per-window DOM islands under `#workspace-root`. Commands a
 * `window.create` creates a draggable-ready shell with a header and content slot.
 * `dom.*` operations mutate the content slot. HTML is sanitised to remove `<script>`/`<style>` tags, neutralise inline `on*` handlers, and strip `javascript:` URLs.
 * `dom.set` is the preferred path for replacing the entire target subtree in one shot; `dom.append` appends sanitized HTML at the end of the target.
-* `component.*` calls are mapped onto lightweight mock components so MOCK mode can emulate planner output.
-* `state.*` stores values in memory to support planned future diffing. In MOCK mode watchers are inert.
+* `component.*` calls are mapped onto lightweight prototype component shells to enable rapid UI composition.
+* `state.*` stores values in memory to support planned future diffing.
 * Safety net: if a `dom.*`, `component.render`, or `window.update` operation targets a `windowId` that is not present, the adapter auto-creates a shell window and persists the synthetic `window.create` so that replay on restart remains consistent.
 
 ## Interactivity via data-* attributes (no JS)

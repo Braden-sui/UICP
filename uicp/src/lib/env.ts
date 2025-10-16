@@ -16,7 +16,6 @@ export const buildEnvironmentSnapshot = (opts?: EnvSnapshotOptions): string => {
   const { includeDom = false, maxWindows = 12 } = opts ?? {};
   const app = useAppStore.getState();
 
-  const mode = app.agentMode;
   const phase = app.agentStatus.phase;
   const trace = app.agentStatus.traceId ?? 'none';
   const fullControl = app.fullControl && !app.fullControlLocked ? 'enabled' : 'disabled';
@@ -56,7 +55,7 @@ export const buildEnvironmentSnapshot = (opts?: EnvSnapshotOptions): string => {
 
   const lines: string[] = [];
   lines.push('Environment Snapshot');
-  lines.push(`- Agent: mode=${mode}, phase=${phase}, fullControl=${fullControl}, streaming=${streaming}`);
+  lines.push(`- Agent: phase=${phase}, fullControl=${fullControl}, streaming=${streaming}`);
   lines.push(`- Flags: devMode=${devMode}, platform=${platform}`);
   lines.push(`- LastTrace: ${trace}${app.agentStatus.error ? ` (error=${app.agentStatus.error})` : ''}`);
   lines.push(`- WorkspaceWindows: ${windowCount}`);

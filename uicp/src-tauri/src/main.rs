@@ -254,7 +254,7 @@ async fn compute_call(
 
     // --- Policy enforcement (Non-negotiables v1) ---
     if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log(&app_handle, "compute.result.final", &deny);
+        emit_or_log(&app_handle, "compute-result-final", &deny);
         return Ok(());
     }
 
@@ -334,7 +334,7 @@ async fn compute_cancel(
     // Emit telemetry: cancel requested
     let app_handle = window.app_handle().clone();
     let _ = app_handle.emit(
-        "compute.debug",
+        "compute-debug",
         serde_json::json!({ "jobId": job_id, "event": "cancel_requested" }),
     );
 
@@ -361,7 +361,7 @@ async fn compute_cancel(
         if aborted {
             // Emit telemetry and clean up maps to avoid leaks when the host did not finalize
             let _ = app_handle.emit(
-                "compute.debug",
+                "compute-debug",
                 serde_json::json!({ "jobId": jid, "event": "cancel_aborted_after_grace" }),
             );
             {

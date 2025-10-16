@@ -22,7 +22,6 @@ describe('DevtoolsAnalyticsListener', () => {
       agentSettingsOpen: false,
       workspaceWindows: {},
       devMode: false,
-      agentMode: 'mock',
       fullControl: true,
       fullControlLocked: false,
       streaming: false,

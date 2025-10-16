@@ -41,6 +41,8 @@ describe('DevtoolsComputePanel logs', () => {
 
     // Filter by jobId
     const jobInput = await screen.findByLabelText(/Filter jobId/i);
+    expect(jobInput).toHaveAttribute('id', 'compute-log-filter-job');
+    expect(jobInput).toHaveAttribute('name', 'filterJobId');
     await act(async () => {
       (jobInput as HTMLInputElement).value = 'job-1';
       jobInput.dispatchEvent(new Event('input', { bubbles: true }));

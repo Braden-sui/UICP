@@ -32,8 +32,6 @@ export type WorkspaceWindowMeta = {
   kind: WorkspaceWindowKind;
 };
 
-export type AgentMode = 'live' | 'mock';
-
 export type AgentPhase = 'idle' | 'planning' | 'acting' | 'applying';
 
 export type AgentStatus = {
@@ -123,7 +121,6 @@ export type DevtoolsAnalyticsContext = {
   computeDemoOpen: boolean;
   workspaceWindows: number;
   devMode: boolean;
-  agentMode: AgentMode;
   fullControl: boolean;
   fullControlLocked: boolean;
   platform: string;
@@ -146,14 +143,6 @@ export type DevtoolsAnalyticsPayload = {
   timestamp?: number;
 };
 
-const resolveDefaultAgentMode = (): AgentMode => {
-  const env = import.meta.env;
-  // Keep unit tests deterministic by forcing mock mode during vitest runs.
-  if (env?.MODE === 'test') return 'mock';
-  if (readBooleanEnv('VITE_MOCK_MODE', false)) return 'mock';
-  return 'live';
-};
-
 export type AppState = {
   connectionStatus: ConnectionStatus;
   devMode: boolean;
@@ -161,7 +150,6 @@ export type AppState = {
   fullControlLocked: boolean;
   chatOpen: boolean;
   streaming: boolean;
-  agentMode: AgentMode;
   agentStatus: AgentStatus;
   safeMode: boolean;
   safeReason?: string;
@@ -195,7 +183,6 @@ export type AppState = {
   setChatOpen: (value: boolean) => void;
   setStreaming: (value: boolean) => void;
   setSuppressAutoApply: (value: boolean) => void;
-  setAgentMode: (mode: AgentMode) => void;
   setSafeMode: (enabled: boolean, reason?: string) => void;
   openGrantModal: () => void;
   closeGrantModal: () => void;
@@ -229,7 +216,6 @@ export const useAppStore = create<AppState>()(
       fullControlLocked: false,
       chatOpen: false,
       streaming: false,
-      agentMode: resolveDefaultAgentMode(),
       agentStatus: {
         phase: 'idle',
         traceId: undefined,
@@ -266,7 +252,6 @@ export const useAppStore = create<AppState>()(
       setChatOpen: (value) => set({ chatOpen: value }),
       setStreaming: (value) => set({ streaming: value }),
       setSuppressAutoApply: (value) => set({ suppressAutoApply: value }),
-      setAgentMode: (mode) => set({ agentMode: mode }),
       setSafeMode: (enabled, reason) =>
         set({ safeMode: enabled, safeReason: enabled ? reason : undefined }),
       openGrantModal: () => set({ grantModalOpen: true }),
@@ -474,7 +459,6 @@ export const useAppStore = create<AppState>()(
         desktopShortcuts: state.desktopShortcuts,
         workspaceWindows: state.workspaceWindows,
         notepadOpen: state.notepadOpen,
-        agentMode: state.agentMode,
         plannerProfileKey: state.plannerProfileKey,
         actorProfileKey: state.actorProfileKey,
         agentSettingsOpen: state.agentSettingsOpen,

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { applyBatch, registerWorkspaceRoot, resetWorkspace } from '../../src/lib/uicp/adapter';
-import { validateBatch } from '../../src/lib/uicp/schemas';
+import { validateBatch, sanitizeHtmlStrict, type Batch } from '../../src/lib/uicp/schemas';
 import { getTauriMocks } from '../mocks/tauri';
 
 describe('adapter auto-create window for targeted ops', () => {
@@ -17,9 +17,14 @@ describe('adapter auto-create window for targeted ops', () => {
   });
 
   it('dom.set bootstraps a missing window and persists create', async () => {
-    const batch = validateBatch([
-      { op: 'dom.set', params: { windowId: 'win-auto', target: '#root', html: '<p id="payload">Hello</p>' } },
-    ]);
+    const safeHtml = sanitizeHtmlStrict('<p id="payload">Hello</p>');
+    const batch: Batch = [
+      {
+        op: 'dom.set',
+        windowId: 'win-auto',
+        params: { windowId: 'win-auto', target: '#root', html: safeHtml },
+      },
+    ];
 
     const outcome = await applyBatch(batch);
     expect(outcome.success).toBe(true);
@@ -50,4 +55,3 @@ describe('adapter auto-create window for targeted ops', () => {
     expect(tools).toEqual(['window.create', 'window.update']);
   });
 });
-

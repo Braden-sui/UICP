@@ -1,9 +1,9 @@
-import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
-import { useAppStore, type AgentMode, type AgentPhase } from '../state/app';
+import { useAppStore, type AgentPhase } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon, ClarifierIcon } from '../icons';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 import { strings } from '../strings';
@@ -27,11 +27,8 @@ export const DockChat = () => {
   const openGrantModal = useAppStore((state) => state.openGrantModal);
   const fullControl = useAppStore((state) => state.fullControl);
   const fullControlLocked = useAppStore((state) => state.fullControlLocked);
-  const agentMode = useAppStore((state) => state.agentMode);
   const plannerProfileKey = useAppStore((state) => state.plannerProfileKey);
   const actorProfileKey = useAppStore((state) => state.actorProfileKey);
-  const setAgentMode = useAppStore((state) => state.setAgentMode);
-  const pushToast = useAppStore((state) => state.pushToast);
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -75,16 +72,6 @@ export const DockChat = () => {
     setValue('');
   };
 
-  const handleAgentModeChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    const next = event.target.value as AgentMode;
-    if (next === agentMode) return;
-    setAgentMode(next);
-    pushToast({
-      variant: 'info',
-      message: next === 'live' ? 'Live agents enabled. Mock mode disabled.' : 'Mock mode enabled for testing.',
-    });
-  };
-
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
@@ -121,21 +108,10 @@ export const DockChat = () => {
               {fullControlLocked && ' (locked)'}
             </span>
             <span className="text-[11px] uppercase tracking-wide text-slate-400">
-              Agent mode: {agentMode === 'mock' ? 'Mock (testing)' : `Live (${plannerLabel} -> ${actorLabel})`}
+              {plannerLabel} → {actorLabel}
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <label className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] uppercase tracking-wide text-slate-500">
-              <span>Mode</span>
-              <select
-                value={agentMode}
-                onChange={handleAgentModeChange}
-                className="rounded border border-slate-300 bg-white px-1 py-0.5 text-[11px] text-slate-600 focus:outline-none"
-              >
-                <option value="live">Live</option>
-                <option value="mock">Mock</option>
-              </select>
-            </label>
             {!fullControl && (
               <button
                 type="button"
@@ -271,9 +247,14 @@ export const DockChat = () => {
               <PaperclipIcon className="h-4 w-4" />
             </button>
             <div className="relative flex-1">
+              <label htmlFor="dockchat-input" className="sr-only">
+                Chat message
+              </label>
               <textarea
                 data-dock-chat-input
                 data-testid="dockchat-input"
+                id="dockchat-input"
+                name="message"
                 ref={inputRef}
                 value={value}
                 onChange={(event) => setValue(event.target.value)}

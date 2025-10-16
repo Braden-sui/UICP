@@ -37,7 +37,6 @@ describe('chat.plan-flow', () => {
       notepadOpen: false,
       toasts: [],
       telemetry: [],
-      agentMode: 'mock',
       desktopShortcuts: {},
       workspaceWindows: {},
       agentStatus: {
@@ -60,6 +59,15 @@ describe('chat.plan-flow', () => {
   });
 
   it('adds planner summary before auto apply and records apply telemetry', async () => {
+    runIntentMock.mockResolvedValue({
+      plan: validatePlan({ summary: 'Create a notepad window', batch: [] }),
+      batch: validateBatch([{ op: 'window.create', params: { id: 'win1', title: 'Notepad' } }, { op: 'dom.set', params: { windowId: 'win1', target: '#root', html: '<div>Notepad</div>' } }]),
+      notice: undefined,
+      traceId: 'trace-1',
+      timings: { planMs: 0, actMs: 0 },
+      channels: { planner: 'commentary' },
+      autoApply: false,
+    });
     useAppStore.setState({ fullControl: true });
     const { sendMessage } = useChatStore.getState();
     const sendPromise = sendMessage('create a notepad');
@@ -85,12 +93,19 @@ describe('chat.plan-flow', () => {
     const telemetry = useAppStore.getState().telemetry;
     expect(telemetry.length).toBeGreaterThanOrEqual(1);
     expect(telemetry[0]?.status).toBe('applied');
-    expect(telemetry[0]?.planMs).toBe(0);
-    expect(telemetry[0]?.actMs).toBe(0);
     expect(telemetry[0]?.applyMs).not.toBeNull();
   });
 
   it('stores plan preview and leaves status in acting when full control is disabled', async () => {
+    runIntentMock.mockResolvedValue({
+      plan: validatePlan({ summary: 'Assemble dashboard', batch: [] }),
+      batch: validateBatch([{ op: 'window.create', params: { id: 'win2', title: 'Dashboard' } }, { op: 'dom.set', params: { windowId: 'win2', target: '#root', html: '<div>Dashboard</div>' } }]),
+      notice: undefined,
+      traceId: 'trace-2',
+      timings: { planMs: 10, actMs: 20 },
+      channels: { planner: 'commentary' },
+      autoApply: false,
+    });
     const { sendMessage } = useChatStore.getState();
     const sendPromise = sendMessage('assemble a dashboard');
     await vi.advanceTimersByTimeAsync(200);
@@ -115,6 +130,15 @@ describe('chat.plan-flow', () => {
   });
 
   it('applies pending plan when full control is enabled later', async () => {
+    runIntentMock.mockResolvedValue({
+      plan: validatePlan({ summary: 'Create a notepad', batch: [] }),
+      batch: validateBatch([{ op: 'window.create', params: { id: 'win3', title: 'Notepad' } }, { op: 'dom.set', params: { windowId: 'win3', target: '#root', html: '<div>Notepad</div>' } }]),
+      notice: undefined,
+      traceId: 'trace-3',
+      timings: { planMs: 5, actMs: 15 },
+      channels: { planner: 'commentary' },
+      autoApply: false,
+    });
     const { sendMessage } = useChatStore.getState();
     const sendPromise = sendMessage('create a notepad');
     await vi.advanceTimersByTimeAsync(200);
@@ -178,7 +202,7 @@ describe('chat.plan-flow', () => {
 
     applyBatchMock.mockResolvedValueOnce({ success: true, applied: 1, errors: [] });
 
-    useAppStore.setState({ agentMode: 'live', fullControl: false, fullControlLocked: false });
+    useAppStore.setState({ fullControl: false, fullControlLocked: false });
 
     const { sendMessage } = useChatStore.getState();
     const promise = sendMessage('build a calculator');
@@ -203,7 +227,7 @@ describe('chat.plan-flow', () => {
   });
 
   it('surfaces planner failure details when orchestrator falls back', async () => {
-    useAppStore.setState({ agentMode: 'live', fullControl: false, fullControlLocked: false });
+    useAppStore.setState({ fullControl: false, fullControlLocked: false });
     const fallbackPlan = validatePlan({
       summary: 'Planner degraded: using actor-only',
       risks: ['planner_error: upstream offline'],

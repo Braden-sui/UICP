@@ -24,9 +24,10 @@ describe('uicp queue', () => {
 
   it('drops duplicates by idempotencyKey', async () => {
     const key = `k-${Math.random().toString(36).slice(2, 8)}`;
+    const safeHtml = '<div></div>';
     const batch = [
-      { op: 'dom.set', idempotencyKey: key, windowId: 'w1', params: { windowId: 'w1', target: '#t', html: '<div />' } },
-      { op: 'dom.set', idempotencyKey: key, windowId: 'w1', params: { windowId: 'w1', target: '#t', html: '<div />' } },
+      { op: 'dom.set', idempotencyKey: key, windowId: 'w1', params: { windowId: 'w1', target: '#t', html: safeHtml } },
+      { op: 'dom.set', idempotencyKey: key, windowId: 'w1', params: { windowId: 'w1', target: '#t', html: safeHtml } },
     ];
 
     const outcome = await enqueueBatch(batch as any);

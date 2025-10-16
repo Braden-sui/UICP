@@ -88,6 +88,8 @@ describe("<DockChat /> hotkeys", () => {
   it("opens the dock and focuses the textarea when '/' is pressed", async () => {
     await act(async () => { render(<DockChat />); });
     const input = screen.getByTestId('dockchat-input') as HTMLTextAreaElement;
+    expect(input.id).toBe('dockchat-input');
+    expect(input.name).toBe('message');
 
     expect(useAppStore.getState().chatOpen).toBe(false);
     expect(document.activeElement).not.toBe(input);

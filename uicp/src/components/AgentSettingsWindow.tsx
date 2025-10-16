@@ -133,7 +133,7 @@ const AgentSettingsWindow = () => {
       <div className="flex flex-col gap-4">
         <p className="text-sm text-slate-600">
           Select which model profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). DeepSeek and
-          Qwen remain the default pairing.
+          Qwen remain the default pairing. GLM 4.6 is available with 198K context window and advanced agentic capabilities.
         </p>
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-2 text-sm text-slate-600">

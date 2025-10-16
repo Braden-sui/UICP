@@ -354,7 +354,12 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
             <span className="font-mono lowercase text-slate-400">{logs.length} entries</span>
           </div>
           <div className="flex items-center gap-2 border-b border-slate-100 px-2 py-1">
+            <label htmlFor="compute-log-filter-job" className="sr-only">
+              Filter jobId
+            </label>
             <input
+              id="compute-log-filter-job"
+              name="filterJobId"
               aria-label="Filter jobId"
               placeholder="job id"
               className="w-36 rounded border border-slate-200 px-2 py-1 text-[11px]"

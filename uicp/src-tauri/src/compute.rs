@@ -1887,7 +1887,7 @@ mod with_runtime {
                 "ts": chrono::Utc::now().timestamp_millis(),
             }),
         );
-        crate::emit_or_log(&app, "compute.result.final", payload.clone());
+        crate::emit_or_log(&app, "compute-result-final", payload.clone());
         if spec.replayable && spec.cache == "readwrite" {
             let key = crate::compute_cache::compute_key(
                 &spec.task,
@@ -2871,7 +2871,7 @@ mod no_runtime {
                         "jobId": spec.job_id,
                         "task": spec.task,
                     }));
-                    crate::emit_or_log(&app, "compute.result.final", payload.clone());
+                    crate::emit_or_log(&app, "compute-result-final", payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
                         let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
                         let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));

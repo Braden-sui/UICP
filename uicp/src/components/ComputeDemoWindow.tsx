@@ -212,7 +212,12 @@ const ComputeDemoWindow = () => {
           </button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="compute-demo-workspace-path" className="sr-only">
+            Workspace file path
+          </label>
           <input
+            id="compute-demo-workspace-path"
+            name="workspacePath"
             value={wsPath}
             onChange={(e) => setWsPath(e.target.value)}
             className="min-w-[220px] flex-1 rounded border border-slate-300 bg-white/90 px-2 py-1 text-xs text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"

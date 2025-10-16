@@ -1,4 +1,4 @@
-import type { Batch, Envelope, OperationParamMap } from "./schemas";
+import { sanitizeHtmlStrict, type Batch, type Envelope, type OperationParamMap } from "./schemas";
 import { createFrameCoalescer, createId } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
@@ -1047,14 +1047,16 @@ const executeDomSet = (params: OperationParamMap["dom.set"]): CommandResult<stri
     if (!target) {
       return { success: false, error: `Target ${params.target} missing in window ${params.windowId}` };
     }
-    target.innerHTML = String(params.html);
+    const safeHtml = sanitizeHtmlStrict(String(params.html));
+    // WHY: Final DOM insertion must use the DOMPurify-cleansed payload, even if upstream validation passed.
+    target.innerHTML = safeHtml as unknown as string;
     return { success: true, value: params.windowId };
   } catch (error) {
     return toFailure(error);
   }
 };
 
-// Produces a lightweight mock component shell so MOCK mode mirrors planner output.
+// Produces a lightweight prototype component shell to enable rapid UI composition.
 const executeComponentRender = (
   params: OperationParamMap["component.render"],
 ): CommandResult<string> => {
@@ -1095,9 +1097,9 @@ const buildComponentMarkup = (params: OperationParamMap["component.render"]): st
     const title = typeof params.props === "object" && params.props && "title" in params.props
       ? String((params.props as Record<string, unknown>).title)
       : "Modal";
-    return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${title}</h2><p class="text-sm text-slate-600">Mock modal content.</p></div>`;
+    return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${title}</h2><p class="text-sm text-slate-600">Placeholder modal content.</p></div>`;
   }
-  // Default mock shell when type is unknown; avoid placeholder language in visible text.
+  // Default prototype shell when component type is unknown; avoid placeholder language in visible text.
   return '<div class="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">Prototype component</div>';
 };
 
@@ -1208,8 +1210,9 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
         if (!target) {
           return { success: false, error: `Target ${params.target} missing in window ${params.windowId}` };
         }
-        // html is schema-gated as SafeHtml; do not re-sanitize here.
-        target.insertAdjacentHTML("beforeend", String(params.html));
+        const safeHtml = sanitizeHtmlStrict(String(params.html));
+        // WHY: Append path also routes through sanitizer to stop partial bypass via later queue mutations.
+        target.insertAdjacentHTML("beforeend", safeHtml as unknown as string);
         return { success: true, value: params.windowId };
       } catch (error) {
         return toFailure(error);

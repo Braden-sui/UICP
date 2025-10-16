@@ -22,7 +22,7 @@ describe('buildEnvironmentSnapshot', () => {
 
     const snapshot = buildEnvironmentSnapshot();
     expect(snapshot).toContain('Environment Snapshot');
-    expect(snapshot).toMatch(/Agent: mode=/);
+    expect(snapshot).toMatch(/Agent: phase=/);
     expect(snapshot).toContain('WorkspaceWindows');
     expect(snapshot).toContain('win-sample');
   });

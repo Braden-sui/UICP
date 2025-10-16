@@ -5,7 +5,12 @@ if (!process.env.ROLLUP_SKIP_NODE_NATIVE) {
   process.env.ROLLUP_SKIP_NODE_NATIVE = "true";
 }
 
-const includePatterns = ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"];
+const includePatterns = [
+  "tests/unit/**/*.test.ts",
+  "tests/unit/**/*.test.tsx",
+  "src/lib/**/__tests__/**/*.test.ts",
+  "src/lib/**/__tests__/**/*.test.tsx",
+];
 
 if (process.env.OLLAMA_LIVE_TEST === "1") {
   includePatterns.push("tests/live/**/*.test.ts");

@@ -14,7 +14,6 @@ interface ImportMetaEnv {
   readonly VITE_WIL_ONLY?: string;
   readonly VITE_WIL_DEBUG?: string;
   readonly VITE_WIL_MAX_BUFFER_KB?: string;
-  readonly VITE_MOCK_MODE?: string;
   readonly VITE_PLANNER_TIMEOUT_MS?: string;
   readonly VITE_ACTOR_TIMEOUT_MS?: string;
   readonly VITE_CHAT_DEFAULT_TIMEOUT_MS?: string;

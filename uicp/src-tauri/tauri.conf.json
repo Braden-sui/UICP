@@ -22,7 +22,7 @@
     ],
     "security": {
       "capabilities": [
-        "events",
+        "default",
         "fs-desktop-write"
       ]
     }

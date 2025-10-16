@@ -254,6 +254,10 @@ export function streamOllamaCompletion(
       return;
     }
     if (payload.delta !== undefined) {
+      // Debug: Log what we receive
+      if (import.meta.env.DEV) {
+        console.debug('[ollama] received delta:', { delta: payload.delta, kind: payload.kind, type: typeof payload.delta });
+      }
       // Some providers stream raw text segments; attempt JSON parse but gracefully fall back to text.
       let chunk: unknown = payload.delta;
       if (typeof payload.delta === 'string') {
@@ -273,6 +277,10 @@ export function streamOllamaCompletion(
         } else if (kind === 'text') {
           // Non-JSON lines (status, prose) — keep them off primary JSON channels
           events = events.map((e) => (e.type === 'content' ? { ...e, channel: 'text' } : e));
+        }
+        // Debug: Log what we're emitting
+        if (import.meta.env.DEV) {
+          console.debug('[ollama] extracted events:', events);
         }
         for (const e of events) queue.push(e);
       } catch (err) {
