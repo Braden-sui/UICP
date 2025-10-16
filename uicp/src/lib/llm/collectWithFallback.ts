@@ -58,6 +58,10 @@ export async function collectWithFallback(
           } else if (event.type === 'content') {
             // Accumulate text content for fallback
             textParts.push(event.text);
+          } else if (event.type === 'return') {
+            if (typeof event.result === 'string') {
+              textParts.push(event.result);
+            }
           }
         }
       })(),

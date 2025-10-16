@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://uicp.local/schema/tauri/capabilities.json",
+  "title": "Tauri Capability",
+  "identifier": "__schema__",
+  "permissions": [],
+  "description": "Schema for Tauri v2 capability files (src-tauri/capabilities/*.json). Vendored locally to avoid network fetch errors.",
+  "type": "object",
+  "required": ["identifier", "permissions"],
+  "properties": {
+    "$schema": {
+      "description": "The JSON schema reference (optional).",
+      "type": ["string", "null"],
+      "default": "./schema.json"
+    },
+    "identifier": {
+      "description": "Identifier of the capability.",
+      "type": "string"
+    },
+    "description": {
+      "description": "Human-readable description of what the capability allows.",
+      "type": "string",
+      "default": ""
+    },
+    "remote": {
+      "description": "Remote URL patterns that can use the capability permissions.",
+      "anyOf": [
+        { "$ref": "#/definitions/CapabilityRemote" },
+        { "type": "null" }
+      ]
+    },
+    "local": {
+      "description": "Whether this capability is enabled for local app URLs.",
+      "type": "boolean",
+      "default": true
+    },
+    "windows": {
+      "description": "List of window labels or glob patterns affected by this capability.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "webviews": {
+      "description": "List of webview labels or glob patterns affected by this capability.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "permissions": {
+      "description": "List of permissions attached to this capability.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/PermissionEntry" },
+      "uniqueItems": true
+    },
+    "platforms": {
+      "description": "Limit which target platforms this capability applies to.",
+      "type": ["array", "null"],
+      "items": { "$ref": "#/definitions/Target" }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "CapabilityRemote": {
+      "description": "Configuration for remote URLs associated with the capability.",
+      "type": "object",
+      "required": ["urls"],
+      "properties": {
+        "urls": {
+          "description": "Remote domains using URLPattern standard.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PermissionEntry": {
+      "description": "Permission value can be an identifier string or an object with scope.",
+      "anyOf": [
+        {
+          "description": "Reference a permission or permission set by identifier.",
+          "allOf": [ { "$ref": "#/definitions/Identifier" } ]
+        },
+        {
+          "description": "Reference a permission with extended scope.",
+          "type": "object",
+          "required": ["identifier"],
+          "properties": {
+            "identifier": { "allOf": [ { "$ref": "#/definitions/Identifier" } ] },
+            "allow": {
+              "description": "Allowed scope values.",
+              "type": ["array", "null"],
+              "items": { "$ref": "#/definitions/Value" }
+            },
+            "deny": {
+              "description": "Denied scope values (takes precedence).",
+              "type": ["array", "null"],
+              "items": { "$ref": "#/definitions/Value" }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Identifier": { "type": "string" },
+    "Value": {
+      "description": "All supported ACL values.",
+      "anyOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "allOf": [ { "$ref": "#/definitions/Number" } ] },
+        { "type": "string" },
+        { "type": "array", "items": { "$ref": "#/definitions/Value" } },
+        { "type": "object", "additionalProperties": { "$ref": "#/definitions/Value" } }
+      ]
+    },
+    "Number": {
+      "description": "A valid ACL number.",
+      "anyOf": [
+        { "type": "integer", "format": "int64" },
+        { "type": "number", "format": "double" }
+      ]
+    },
+    "Target": {
+      "description": "Platform target.",
+      "oneOf": [
+        { "type": "string", "enum": ["macOS"] },
+        { "type": "string", "enum": ["windows"] },
+        { "type": "string", "enum": ["linux"] },
+        { "type": "string", "enum": ["android"] },
+        { "type": "string", "enum": ["iOS"] }
+      ]
+    }
+  }
+}
+

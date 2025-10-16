@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { planWithProfile, actWithProfile } from '../../src/lib/llm/orchestrator';
+import { planWithProfile, actWithProfile, tryParseBatchFromJson } from '../../src/lib/llm/orchestrator';
 import * as provider from '../../src/lib/llm/provider';
 import * as profiles from '../../src/lib/llm/profiles';
 import type { StreamEvent } from '../../src/lib/llm/ollama';
@@ -176,7 +176,10 @@ describe('orchestrator JSON-first mode', () => {
       const mockClient = {
         streamPlan: vi.fn(() =>
           mockToolStream([
-            { type: 'content', text: '{"batch": [{"op": "dom.set", "params": {"windowId": "win-test", "target": "#root", "html": "<p>Test</p>"}}]}' },
+            {
+              type: 'content',
+              text: 'emit_batch({"batch": [{"method": "dom.set", "idempotency_key": "idemp-dom", "params": {"window_id": "win-test", "target": "#root", "html": "<p>Test</p>"}}]})',
+            },
             { type: 'done' },
           ]),
         ),
@@ -191,6 +194,10 @@ describe('orchestrator JSON-first mode', () => {
 
       expect(result.batch).toHaveLength(1);
       expect(result.batch[0].op).toBe('dom.set');
+      if (result.batch[0].op === 'dom.set') {
+        expect(result.batch[0].idempotencyKey).toBe('idemp-dom');
+        expect(result.batch[0].params.windowId).toBe('win-test');
+      }
       expect(result.channelUsed).toBe('json');
     });
 
@@ -259,6 +266,23 @@ describe('orchestrator JSON-first mode', () => {
       expect(result.channelUsed).toBe('text');
       // Verify tool stream was NOT consumed
       expect(mockClient.streamIntent).toHaveBeenCalled();
+    });
+  });
+
+  describe('tryParseBatchFromJson', () => {
+    it('parses emit_batch text with snake_case envelope fields', () => {
+      const payload =
+        'emit_batch({"batch":[{"method":"dom.set","trace_id":"trace-1","params":{"window_id":"win-notes","target":"#root","html":"<p>Notes</p>"}}]})';
+      const batch = tryParseBatchFromJson(payload);
+      expect(batch).not.toBeNull();
+      if (!batch) throw new Error('Expected batch to parse');
+      expect(batch).toHaveLength(1);
+      const [entry] = batch;
+      expect(entry.op).toBe('dom.set');
+      expect(entry.traceId).toBe('trace-1');
+      if (entry.op === 'dom.set') {
+        expect(entry.params.windowId).toBe('win-notes');
+      }
     });
   });
 });

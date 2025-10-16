@@ -63,6 +63,22 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     out.push({ type: 'content', channel, text });
   };
 
+  const pushToolCall = (call: unknown, indexFallback = 0) => {
+    const record = asRecord(call);
+    if (!record) return;
+    const fnRecord = asRecord(record.function);
+    const name = typeof record.name === 'string' ? record.name : typeof fnRecord?.name === 'string' ? fnRecord.name : undefined;
+    const args = record.arguments !== undefined
+      ? record.arguments
+      : fnRecord?.arguments !== undefined
+        ? fnRecord.arguments
+        : undefined;
+    const id = typeof record.id === 'string' ? record.id : undefined;
+    const index = typeof record.index === 'number' ? record.index : indexFallback;
+    if (!name && args === undefined && !id) return;
+    out.push({ type: 'tool_call', index, id, name, arguments: args, isDelta: true });
+  };
+
   const emitContentValue = (channel: string | undefined, value: unknown) => {
     if (typeof value === 'string') {
       pushContent(channel, value);
@@ -75,11 +91,40 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
           return;
         }
         if (entry && typeof entry === 'object') {
+          const entryRecord = entry as Record<string, unknown>;
+          const entryType = typeof entryRecord.type === 'string' ? entryRecord.type.toLowerCase() : undefined;
+          if (entryType === 'tool_call' || entryType === 'tool_call_delta') {
+            const deltaRecord = asRecord(entryRecord.delta) ?? {};
+            const functionCall =
+              asRecord(entryRecord.function) ??
+              asRecord(deltaRecord.function_call ?? deltaRecord.function);
+            const argumentsValue =
+              entryRecord.arguments !== undefined
+                ? entryRecord.arguments
+                : deltaRecord.arguments !== undefined
+                  ? deltaRecord.arguments
+                  : functionCall?.arguments;
+            const nameValue =
+              typeof entryRecord.name === 'string'
+                ? entryRecord.name
+                : typeof functionCall?.name === 'string'
+                  ? functionCall.name
+                  : undefined;
+            const synthesized = {
+              id: typeof entryRecord.id === 'string' ? entryRecord.id : typeof entryRecord.tool_call_id === 'string' ? entryRecord.tool_call_id : undefined,
+              name: nameValue,
+              arguments: argumentsValue,
+              function: functionCall,
+            };
+            pushToolCall(synthesized);
+            return;
+          }
+
           const maybeText =
-            typeof (entry as Record<string, unknown>).text === 'string'
-              ? ((entry as Record<string, unknown>).text as string)
-              : typeof (entry as Record<string, unknown>).value === 'string'
-                ? ((entry as Record<string, unknown>).value as string)
+            typeof entryRecord.text === 'string'
+              ? entryRecord.text
+              : typeof entryRecord.value === 'string'
+                ? entryRecord.value
                 : undefined;
           if (maybeText) {
             pushContent(channel, maybeText);
@@ -100,22 +145,6 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
         pushContent(channel, maybeText);
       }
     }
-  };
-
-  const pushToolCall = (call: unknown, indexFallback = 0) => {
-    const record = asRecord(call);
-    if (!record) return;
-    const fnRecord = asRecord(record.function);
-    const name = typeof record.name === 'string' ? record.name : typeof fnRecord?.name === 'string' ? fnRecord.name : undefined;
-    const args = record.arguments !== undefined
-      ? record.arguments
-      : fnRecord?.arguments !== undefined
-        ? fnRecord.arguments
-        : undefined;
-    const id = typeof record.id === 'string' ? record.id : undefined;
-    const index = typeof record.index === 'number' ? record.index : indexFallback;
-    if (!name && args === undefined && !id) return;
-    out.push({ type: 'tool_call', index, id, name, arguments: args, isDelta: true });
   };
 
   const choicesRaw = root['choices'];
@@ -156,6 +185,11 @@ export function extractEventsFromChunk(input: unknown): StreamEvent[] {
     const msgRecord = root['message'] as Record<string, unknown>;
     if (msgRecord['content'] !== undefined) {
       emitContentValue(undefined, msgRecord['content']);
+    }
+    // WHY: GLM and other providers emit complete tool_calls in the final message object when using tool mode.
+    // INVARIANT: We must check message.tool_calls in addition to delta.tool_calls and root.tool_calls.
+    if (Array.isArray(msgRecord['tool_calls'])) {
+      msgRecord['tool_calls'].forEach((tc: unknown, index: number) => pushToolCall(tc, index));
     }
   }
 
@@ -269,7 +303,7 @@ export function streamOllamaCompletion(
       return fallback;
     }
   };
-  const DEFAULT_CHAT_TIMEOUT_MS = readMs('VITE_CHAT_DEFAULT_TIMEOUT_MS', 35_000);
+  const DEFAULT_CHAT_TIMEOUT_MS = readMs('VITE_CHAT_DEFAULT_TIMEOUT_MS', 180_000);
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const logCtx = () => ({
@@ -465,7 +499,7 @@ export function streamOllamaCompletion(
             events = events.map((e) => (e.type === 'content' ? { ...e, channel: 'text' } : e));
           }
           // Debug: Log what we're emitting
-          if (import.meta.env.DEV) {
+          if (import.meta.env.DEV && events.length > 0) {
             console.debug('[ollama] extracted events:', events);
           }
           for (const e of events) {

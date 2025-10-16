@@ -2,7 +2,7 @@
 
 Purpose: Migrate planner/actor from WIL text to JSON tool calling with safe fallbacks, observability, and tests. This is the authoritative checklist and spec for the transition.
 
-Status: Hybrid recommended now (JSON-first, WIL-fallback). Tools-only is a later cutover after proofs.
+Status: Planner = tool-first (JSON). Actor = tool-only (strict JSON) with orchestrator spawn guarantee backups.
 
 ---
 
@@ -28,6 +28,8 @@ Status: Hybrid recommended now (JSON-first, WIL-fallback). Tools-only is a later
 - Contract
   - Planner emits object `{ summary, risks?, actor_hints?, batch: Envelope[] }`
   - Actor emits object `{ batch: Envelope[] }`
+  - Spawn guarantee: if Actor emits no visible effect (no `window.create` and no `dom.*`/`component.*`), the orchestrator injects a safe
+    `window.create` + `dom.set` so DockChat always shows a window.
 - Invariants
   - `op` must be a valid operation.
   - `batch` validates with `validateBatch()` (`uicp/src/lib/uicp/schemas.ts`).
@@ -50,7 +52,7 @@ Status: Hybrid recommended now (JSON-first, WIL-fallback). Tools-only is a later
 ## Profiles (per-model capability)
 
 - File: `uicp/src/lib/llm/profiles.ts`
-- Set `capabilities.supportsTools: true` on planner/actor profiles that can use tool calling.
+- Set `capabilities.supportsTools: true` on planner/actor profiles that can use tool calling (GLM default; DeepSeek/Kimi/Qwen/GPT-OSS optional alternates).
 - Add dedicated profiles (e.g., `kimi-tools`, `qwen-tools`) to roll out per model without breaking existing profiles.
 
 ---
@@ -67,20 +69,57 @@ Status: Hybrid recommended now (JSON-first, WIL-fallback). Tools-only is a later
 
 ---
 
-## Orchestrator (JSON-first, WIL-fallback)
+## Tool Registry (MCP-ish)
+
+- LLM functions (visible to models)
+  - `emit_plan` (schema = `planSchema`)
+  - `emit_batch` (schema = `batchSchema`)
+  - Source: `uicp/src/lib/llm/tools.ts`, registry: `uicp/src/lib/llm/registry.ts`
+- Local operations (executed by adapter)
+  - window: `window.create`, `window.update`, `window.close` (risk: low)
+  - dom: `dom.set`, `dom.replace`, `dom.append` (risk: low; sanitized and size-capped)
+  - component: `component.render|update|destroy` (risk: low; allowed types only)
+  - state: `state.set|get|watch|unwatch` (risk: low; local only)
+  - txn: `txn.cancel` (risk: low)
+- api: `api.call` (risk: medium; permission-gated)
+- Source: `uicp/src/lib/uicp/schemas.ts`, registry: `uicp/src/lib/llm/registry.ts`
+
+---
+
+## Prompts (tool-only contract)
+
+- Planner prompt (`uicp/src/prompts/planner.txt`)
+  - Explicitly instructs the model to call `emit_plan` once, produce `{ "summary": "...", "batch": [] }`, and to use `gui:` risks / actor hints for execution guidance.
+- Actor prompt (`uicp/src/prompts/actor.txt`)
+  - Forces a single `emit_batch` invocation with fully qualified envelopes.
+  - Forbids WIL or plain text responses and highlights visible UI requirements (e.g., include `window.create` and `dom.set`).
+
+These prompts are treated as source of truth; any deviation is caught by orchestrator retries.
+
+---
+
+## Permissions (pilot)
+
+- Manager: `uicp/src/lib/permissions/PermissionManager.ts`
+- Allow-list: window/dom/component/state/txn
+- api.call: allowed for `uicp://`, `tauri://`, `http(s)` and `localhost` in dev; future UI prompt will persist allow/deny per origin+method
+- Unknown ops: deny by default
+
+---
+
+## Orchestrator (Tool-first)
 
 - File: `uicp/src/lib/llm/orchestrator.ts`
 - Planner (`planWithProfile`):
-  1) If `supportsTools && !cfg.wilOnly`: collect `tool_call` arguments for `emit_plan` into JSON; `validatePlan()`.
-  2) Else, attempt `tryParseBatchFromJson(text)` if the model sent final JSON as content.
-  3) Else, `collectTextFromChannels()` and parse outline sections via `parsePlannerOutline()` (legacy text path).
-  4) Retry once with `buildStructuredRetryMessage('emit_plan', err)` on schema failure.
+  1) When the selected profile supports tools, collect the `emit_plan` tool call and validate it.
+  2) If the model emits JSON content (no tool_call), attempt `tryParsePlanFromJson`.
+  3) As a last resort, parse the legacy outline sections (only used by the deterministic `wil` planner or older models).
+  4) On schema issues we retry once with a structured system message that reiterates the JSON contract.
 - Actor (`actWithProfile`):
-  1) If `supportsTools && !cfg.wilOnly`: collect `emit_batch` JSON and `validateBatch()`.
-  2) Else, try `tryParseBatchFromJson(text)`.
-  3) Else, parse WIL text via `parseWILBatch(text)` and validate.
-  4) `actor_nop:` still routes clarifier flow as today.
-- Keep `augmentPlan()` logic and clarifier flow unchanged.
+  1) For all tool-capable profiles, require a valid `emit_batch` call; plain text or WIL triggers an error and a structured retry message.
+  2) Tests can still enable WIL parsing via `MODE === 'test'`, but production ignores WIL text.
+  3) If the actor still returns nothing actionable, the orchestrator injects the spawn-guarantee window so the user is never left with a blank desktop.
+- Clarifier flow and metadata stamping remain unchanged.
 
 ---
 
@@ -207,4 +246,3 @@ Rollback: set `VITE_WIL_ONLY=true` and/or revert `supportsTools` to false in pro
 - Keep the WIL path until JSON success rate is proven with metrics and tests.
 - Avoid dual-mode ambiguity in prompts: be explicit per profile (tools-on vs WIL).
 - Ensure streaming cancel/timeout paths are symmetric across JSON and WIL.
-

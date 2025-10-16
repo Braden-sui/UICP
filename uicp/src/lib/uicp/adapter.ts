@@ -6,6 +6,8 @@ import { hasTauriBridge, tauriInvoke } from "../bridge/tauri";
 // Removed: tryRecoverJsonFromAttribute - strict JSON parsing only
 import { getBridgeWindow, getComputeBridge } from "../bridge/globals";
 import type { JobSpec } from "../../compute/types";
+import { checkPermission } from "../permissions/PermissionManager";
+import { useAppStore } from "../../state/app";
 
 const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
@@ -1103,6 +1105,27 @@ const buildComponentMarkup = (params: OperationParamMap["component.render"]): st
       : "Modal";
     return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${title}</h2><p class="text-sm text-slate-600">Placeholder modal content.</p></div>`;
   }
+  if (type.includes("button")) {
+    const label = typeof params.props === "object" && params.props && "label" in params.props
+      ? String((params.props as Record<string, unknown>).label)
+      : "Button";
+    const cmd = typeof params.props === "object" && params.props && "command" in params.props
+      ? String((params.props as Record<string, unknown>).command)
+      : undefined;
+    const dataAttr = cmd ? ` data-command="${cmd.replace(/"/g, '&quot;')}"` : '';
+    return `<button class="button-primary rounded px-3 py-2"${dataAttr}>${label}</button>`;
+  }
+  if (type.includes("cell")) {
+    const text = typeof params.props === "object" && params.props && "text" in params.props
+      ? String((params.props as Record<string, unknown>).text)
+      : "";
+    return `<div class="flex h-20 w-20 items-center justify-center rounded border border-slate-300 bg-white text-xl font-semibold">${text}</div>`;
+  }
+  if (type.includes("grid")) {
+    return '<div class="grid grid-cols-3 gap-2">' +
+      Array.from({ length: 9 }, () => '<div class="flex h-20 w-20 items-center justify-center rounded border border-slate-300 bg-white text-xl font-semibold"></div>').join('') +
+      '</div>';
+  }
   // Default prototype shell when component type is unknown; avoid placeholder language in visible text.
   return '<div class="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">Prototype component</div>';
 };
@@ -1140,6 +1163,15 @@ const getStateValue = (params: OperationParamMap["state.get"]) => {
 };
 
 const applyCommand = async (command: Envelope): Promise<CommandResult> => {
+  // Permission gate for risky operations (e.g., api.call). Low-risk ops are allow-listed.
+  try {
+    const decision = await checkPermission(command);
+    if (decision === 'deny') {
+      return { success: false, error: 'Denied by policy' };
+    }
+  } catch (err) {
+    return toFailure(err);
+  }
   switch (command.op) {
     case "window.create": {
       const params = command.params as OperationParamMap["window.create"];
@@ -1388,20 +1420,40 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
   const plannedJobs: Array<() => Promise<void>> = [];
   const errors: string[] = [];
   let applied = 0;
+  const emitAudit = (env: Envelope, outcome: 'applied' | 'error', ms: number, error?: string) => {
+    try {
+      const traceId = env.traceId ?? 'batch';
+      useAppStore.getState().upsertTelemetry(traceId, {
+        summary: `${env.op} ${outcome}`,
+        status: outcome === 'applied' ? 'applying' : 'error',
+        applyMs: ms,
+        ...(error ? { error } : {}),
+        updatedAt: Date.now(),
+      });
+    } catch {
+      // best-effort only
+    }
+  };
 
   for (const command of batch) {
     plannedJobs.push(async () => {
       try {
+        const t0 = performance.now();
         const result = await applyCommand(command);
+        const ms = Math.max(0, performance.now() - t0);
         if (result.success) {
           applied += 1;
+          emitAudit(command, 'applied', ms);
           // Persist command for replay on restart (async, fire-and-forget)
           void persistCommand(command);
           return;
         }
+        emitAudit(command, 'error', ms, result.error);
         errors.push(`${command.op}: ${result.error}`);
       } catch (error) {
-        errors.push(`${command.op}: ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        emitAudit(command, 'error', 0, message);
+        errors.push(`${command.op}: ${message}`);
       }
     });
   }

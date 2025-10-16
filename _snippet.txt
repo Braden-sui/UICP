@@ -1,0 +1,19 @@
+        "id": "win-weather",
+        "title": "Weather Snapshot",
+        "size": "md"
+      }
+    },
+    {
+      "op": "dom.set",
+      "params": {
+        "windowId": "win-weather",
+        "target": "#root",
+        "html": "<div class=\"stack gap-3\"><h1 class=\"title\">Current Weather</h1><p>72°F · Partly Cloudy</p><button class=\"button-primary\" data-command=\"refresh\">Refresh</button></div>"
+      }
+    }
+  ]
+})
+
+Failure Handling
+- If you detect missing critical data or cannot proceed safely, emit an empty `batch` (no envelopes). Do not create placeholder windows or generic UI.
+- Never fall back to WIL or send raw text. The orchestrator will retry with additional guidance if needed.

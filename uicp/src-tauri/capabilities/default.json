@@ -1,5 +1,5 @@
 {
-  "$schema": "https://schema.tauri.app/capabilities.schema.json",
+  "$schema": "./schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
   "local": true,

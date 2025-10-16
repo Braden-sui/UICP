@@ -1,0 +1,38 @@
+import { z } from 'zod';
+import { EMIT_PLAN, EMIT_BATCH } from './tools';
+import { OperationName } from '../uicp/schemas';
+
+export type Capability = 'window' | 'dom' | 'component' | 'state' | 'api' | 'txn' | 'compute' | 'media';
+export type Risk = 'low' | 'medium' | 'high';
+
+export type ToolDescriptor = {
+  name: string;
+  kind: 'llm-function' | 'local-operation';
+  capabilities: Capability[];
+  risk: Risk;
+  schema?: unknown;
+};
+
+export const LLM_TOOLS: ToolDescriptor[] = [
+  { name: 'emit_plan', kind: 'llm-function', capabilities: ['window','dom','component','state','api','txn'], risk: 'low', schema: (EMIT_PLAN as any).function.parameters },
+  { name: 'emit_batch', kind: 'llm-function', capabilities: ['window','dom','component','state','api','txn'], risk: 'low', schema: (EMIT_BATCH as any).function.parameters },
+];
+
+export const OPERATIONS: Record<z.infer<typeof OperationName>, ToolDescriptor> = {
+  'window.create':      { name: 'window.create', kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
+  'window.update':      { name: 'window.update', kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
+  'window.close':       { name: 'window.close',  kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
+  'dom.set':            { name: 'dom.set',       kind: 'local-operation', capabilities: ['dom'],       risk: 'low' },
+  'dom.replace':        { name: 'dom.replace',   kind: 'local-operation', capabilities: ['dom'],       risk: 'low' },
+  'dom.append':         { name: 'dom.append',    kind: 'local-operation', capabilities: ['dom'],       risk: 'low' },
+  'component.render':   { name: 'component.render',  kind: 'local-operation', capabilities: ['component'], risk: 'low' },
+  'component.update':   { name: 'component.update',  kind: 'local-operation', capabilities: ['component'], risk: 'low' },
+  'component.destroy':  { name: 'component.destroy', kind: 'local-operation', capabilities: ['component'], risk: 'low' },
+  'state.set':          { name: 'state.set',     kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
+  'state.get':          { name: 'state.get',     kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
+  'state.watch':        { name: 'state.watch',   kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
+  'state.unwatch':      { name: 'state.unwatch', kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
+  'api.call':           { name: 'api.call',      kind: 'local-operation', capabilities: ['api'],       risk: 'medium' },
+  'txn.cancel':         { name: 'txn.cancel',    kind: 'local-operation', capabilities: ['txn'],       risk: 'low' },
+} as const;
+

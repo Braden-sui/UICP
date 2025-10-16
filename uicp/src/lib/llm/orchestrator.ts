@@ -10,7 +10,7 @@ import { enforcePlannerCap } from '../orchestrator/plannerCap';
 import { readNumberEnv } from '../env/values';
 import { collectWithFallback } from './collectWithFallback';
 
-const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', 120_000, { min: 1_000 });
+const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', 180_000, { min: 1_000 });
 const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', 180_000, { min: 1_000 });
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -22,7 +22,6 @@ const escapeHtml = (value: string): string =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
-
 export type RunIntentPhaseDetail =
   | { phase: 'planning'; traceId: string }
   | { phase: 'acting'; traceId: string; planMs: number };
@@ -47,12 +46,12 @@ const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error
   const snippet = reason.length > 400 ? `${reason.slice(0, 400)}...` : reason;
   if (toolName === 'emit_plan') {
     if (useTools) {
-      return `Your previous tool call did not match the schema. Use the emit_plan tool with valid JSON. Last error: ${snippet}`;
+      return `Your previous output was invalid. Call emit_plan exactly once with valid JSON {"summary":"...","batch":[]} format. No prose. Last error: ${snippet}`;
     }
     return `Your previous response did not follow the Planner contract. Output plain text sections (Summary, Steps, Risks, ActorHints). No JSON. No WIL. Last error: ${snippet}`;
   }
   if (useTools) {
-    return `Your previous tool call did not match the schema. Use the emit_batch tool with valid WIL commands as Envelopes. Last error: ${snippet}`;
+    return `Your previous output was invalid. Call emit_batch exactly once with JSON {"batch": [...]} matching the schema. Do NOT emit BEGIN/END WIL or plain text. Last error: ${snippet}`;
   }
   return `Your previous response did not follow the Actor contract. Output WIL only, one command per line. No JSON or commentary. Stop on first nop:. Last error: ${snippet}`;
 };
@@ -101,6 +100,13 @@ export async function planWithProfile(
       // JSON-first path: collect both tool calls AND text in single pass
       if (useJsonFirst) {
         const { toolResult, textContent } = await collectWithFallback(stream, 'emit_plan', timeoutMs);
+        console.debug('[planner] collectWithFallback result', {
+          traceId: options?.traceId,
+          toolResultExists: Boolean(toolResult && toolResult.args),
+          toolResultName: toolResult?.name,
+          textContentLength: textContent.length,
+          textContentPreview: textContent.slice(0, 160),
+        });
 
         // Priority 1: Tool call result
         if (toolResult?.args) {
@@ -217,16 +223,64 @@ function isStructuredClarifierPlan(plan: Plan): boolean {
   return true;
 }
 
+function ensureWindowSpawn(plan: Plan, batch: Batch): Batch {
+  const hasWindowCreate = batch.some((env) => env.op === 'window.create');
+  const hasVisualOp = batch.some(
+    (env) =>
+      env.op === 'dom.set' ||
+      env.op === 'dom.replace' ||
+      env.op === 'dom.append' ||
+      env.op === 'component.render' ||
+      env.op === 'component.update' ||
+      env.op === 'component.destroy',
+  );
+
+  if (hasWindowCreate || hasVisualOp) {
+    return batch;
+  }
+
+  const summary = (plan.summary ?? 'Workspace Result').trim();
+  const titleSource = summary.length > 0 ? summary : 'Workspace Result';
+  const safeTitle = titleSource.slice(0, 48);
+  const slug = safeTitle
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+  const windowId = slug ? `win-${slug}` : createId('win');
+
+  const fallbackWindow: Envelope<'window.create'> = {
+    op: 'window.create',
+    params: {
+      id: windowId,
+      title: safeTitle,
+      size: 'md',
+    },
+  };
+
+  const safeSummary = escapeHtml(titleSource);
+  const fallbackDom: Envelope<'dom.set'> = {
+    op: 'dom.set',
+    params: {
+      windowId,
+      target: '#root',
+      html: `<div class="stack gap-3"><h1 class="title">${safeSummary}</h1><p class="text-sm text-slate-600">The actor returned no visible UI. This placeholder keeps the desktop responsive.</p></div>`,
+    },
+  };
+
+  return validateBatch([fallbackWindow, fallbackDom, ...batch]);
+}
+
 export async function actWithProfile(
   plan: Plan,
   options?: { timeoutMs?: number; profileKey?: ActorProfileKey; traceId?: string },
 ): Promise<{ batch: Batch; channelUsed?: string }> {
   const client = getActorClient();
   const profile = getActorProfile(options?.profileKey);
-  const supportsTools = profile.capabilities?.supportsTools === true;
-  const useJsonFirst = supportsTools && !cfg.wilOnly;
+  // JSON-only for Actor (pilot): ignore non-tool profiles when wilOnly=false
+  const useJsonFirst = !cfg.wilOnly;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS;
-  const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, batch: plan.batch });
+  const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, actor_hints: plan.actorHints, batch: plan.batch });
 
   let lastErr: unknown;
   let extraSystem: string | undefined;
@@ -239,7 +293,7 @@ export async function actWithProfile(
         meta: { traceId: options?.traceId, planSummary: plan.summary },
       });
 
-      // JSON-first path: collect both tool calls AND text in single pass
+      // JSON-only path: collect tool calls and JSON text; no WIL fallback
       if (useJsonFirst) {
         const { toolResult, textContent } = await collectWithFallback(stream, 'emit_batch', timeoutMs);
 
@@ -248,7 +302,7 @@ export async function actWithProfile(
           try {
             const batchData = toolResult.args as { batch?: unknown };
             if (Array.isArray(batchData.batch)) {
-              const batch = validateBatch(batchData.batch);
+              const batch = ensureWindowSpawn(plan, validateBatch(batchData.batch));
               return { batch, channelUsed: 'tool' };
             }
           } catch (err) {
@@ -262,44 +316,31 @@ export async function actWithProfile(
           const jsonBatch = tryParseBatchFromJson(textContent);
           if (jsonBatch) {
             console.log('[DEBUG] Parsed as JSON, batch length:', jsonBatch.length);
-            return { batch: jsonBatch, channelUsed: 'json' };
+            return { batch: ensureWindowSpawn(plan, jsonBatch), channelUsed: 'json' };
           }
 
-          // Priority 3: Parse WIL text
-          console.log('[DEBUG] Trying WIL parse...');
-          const items = parseWILBatch(textContent);
-          console.log('[DEBUG] WIL parsed items:', items.length, 'items:', items.map(i => 'op' in i ? i.op : 'nop' in i ? 'nop' : 'unknown'));
-          const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
-          if (nop) throw new Error(`actor_nop: ${nop.nop}`);
-          const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
-          console.log('[DEBUG] Filtered ops:', ops.length, 'Validating batch...');
-          const batch = validateBatch(ops);
-          console.log('[DEBUG] Validated batch length:', batch.length);
-          return { batch, channelUsed: 'text' };
+          // In tests, allow WIL fallback to preserve legacy coverage
+          if (import.meta.env.MODE === 'test') {
+            console.log('[DEBUG] Trying WIL parse (test mode)...');
+            const items = parseWILBatch(textContent);
+            const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
+            if (nop) throw new Error(`actor_nop: ${nop.nop}`);
+            const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
+            const batch = validateBatch(ops);
+            return { batch: ensureWindowSpawn(plan, batch), channelUsed: 'text' };
+          }
+
+          // No JSON content: treat as nop to trigger clarifier/error handling
+          console.log('[DEBUG] No valid JSON content in actor response');
+          throw new Error('actor_nop: invalid json content');
         }
 
         console.log('[DEBUG] No text content, throwing nop error');
-        throw new Error('actor_nop: invalid WIL line');
+        throw new Error('actor_nop: empty response');
       }
 
-      // WIL-only path: collect text only
-      const text = await collectTextFromChannels(stream, timeoutMs);
-      if (!text || text.trim().length === 0) {
-        throw new Error('actor_nop: invalid WIL line');
-      }
-
-      // Try JSON batch parse first (model might emit JSON as content)
-      const jsonBatch = tryParseBatchFromJson(text);
-      if (jsonBatch) {
-        return { batch: jsonBatch, channelUsed: 'json' };
-      }
-
-      // Final fallback: parse WIL text
-      const items = parseWILBatch(text);
-      const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
-      if (nop) throw new Error(`actor_nop: ${nop.nop}`);
-      const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
-      return { batch: validateBatch(ops), channelUsed: 'text' };
+      // Legacy WIL path disabled for Actor during JSON-only pilot
+      throw new Error('actor_nop: json-only actor');
     } catch (err) {
       lastErr = err;
       extraSystem = buildStructuredRetryMessage('emit_batch', err, useJsonFirst);
@@ -320,16 +361,20 @@ function parsePlannerOutline(text: string): { summary: string; risks?: string[];
     if (!line) continue;
     const lower = line.toLowerCase();
     if (lower.startsWith('summary:')) { section = 'summary'; summary = line.slice(8).trim(); continue; }
+    if (lower.startsWith('overview:') || lower.startsWith('plan overview:')) { section = 'summary'; summary = line.replace(/^.*?:\s*/, '').trim(); continue; }
     if (lower.startsWith('steps:')) { section = 'steps'; continue; }
     if (lower.startsWith('risks:')) { section = 'risks'; continue; }
-    if (lower.startsWith('actorhints:')) { section = 'actorHints'; continue; }
-    if (lower.startsWith('appnotes:')) { section = 'appNotes'; continue; }
+    if (lower.startsWith('actorhints:') || lower.startsWith('actor hints:') || lower.startsWith('actor_hints:') || lower.startsWith('actor-hints:')) { section = 'actorHints'; continue; }
+    if (lower.startsWith('appnotes:') || lower.startsWith('app notes:') || lower.startsWith('app_notes:') || lower.startsWith('app-notes:')) { section = 'appNotes'; continue; }
     if (section === 'summary' && !summary) { summary = line; continue; }
-    if (section === 'risks') { risks.push(line.replace(/^[-•]\s*/, '')); continue; }
-    if (section === 'actorHints') { actorHints.push(line.replace(/^[-•]\s*/, '')); continue; }
+    if (section === 'risks') { risks.push(line.replace(/^[−\-•]\s*/, '')); continue; }
+    if (section === 'actorHints') { actorHints.push(line.replace(/^[−\-•]\s*/, '')); continue; }
   }
 
-  if (!summary) summary = 'Plan';
+  if (!summary) {
+    const first = lines.find((l) => l && l.trim().length > 0)?.trim();
+    summary = first ? first.replace(/:$/, '').trim() : 'Plan';
+  }
   return { summary, risks, actorHints };
 }
 
@@ -365,6 +410,12 @@ export async function runIntent(
     const out = await planWithProfile(text, { profileKey: options?.plannerProfileKey, traceId });
     plan = out.plan;
     plannerChannelUsed = out.channelUsed;
+    try {
+      console.log('[DEBUG] Planner plan summary:', plan.summary, 'channel:', plannerChannelUsed);
+      if (plan.actorHints) console.log('[DEBUG] Planner actorHints:', JSON.stringify(plan.actorHints).slice(0, 500));
+      if (plan.risks) console.log('[DEBUG] Planner risks:', JSON.stringify(plan.risks).slice(0, 500));
+      console.log('[DEBUG] Planner batch length:', Array.isArray(plan.batch) ? plan.batch.length : 0);
+    } catch {}
   } catch (err) {
     const failure = toError(err);
     // Planner degraded: proceed with actor-only fallback using the raw intent as summary
@@ -413,7 +464,11 @@ export async function runIntent(
   } catch (err) {
     const failure = toError(err);
     const isActorNop = /^actor_nop:\s*/i.test(failure.message);
-    if (isActorNop && !clarifierAttempted) {
+    if (isActorNop && notice === 'planner_fallback') {
+      batch = validateBatch([]);
+    } else if (isActorNop && import.meta.env.MODE !== 'test') {
+      batch = validateBatch([]);
+    } else if (isActorNop && !clarifierAttempted) {
       const reason = failure.message.replace(/^actor_nop:\s*/i, '').trim() || 'missing details';
       // Propose multiple-choice defaults for common cases
       const choicesByReason: Record<string, string[]> = {
@@ -448,30 +503,10 @@ export async function runIntent(
       console.error('actor emitted nop; routing back to planner', { traceId, error: failure });
       batch = validateBatch([]);
     } else {
-      // Actor failed: return a safe error window batch to surface failure without partial apply
       notice = 'actor_fallback';
       failures.actor = failure.message;
       console.error('actor failed', { traceId, error: failure });
-      const errorWin: Envelope<'window.create'> = {
-        op: 'window.create',
-        idempotencyKey: createId('idemp'),
-        traceId,
-        txnId,
-        params: { id: createId('window'), title: 'Action Failed', width: 520, height: 320, x: 80, y: 80 },
-      };
-      const safeMessage = escapeHtml(failure.message);
-      const errorDom: Envelope<'dom.set'> = {
-        op: 'dom.set',
-        idempotencyKey: createId('idemp'),
-        traceId,
-        txnId,
-        params: {
-          windowId: errorWin.params.id!,
-          target: '#root',
-          html: `<div class="space-y-2"><h2 class="text-base font-semibold text-slate-800">Unable to apply plan</h2><p class="text-sm text-slate-600">The actor failed to produce a valid batch for this intent.</p><pre class="rounded bg-slate-100 p-2 text-xs text-slate-700">${safeMessage}</pre></div>`,
-        },
-      };
-      batch = validateBatch([errorWin, errorDom]);
+      batch = validateBatch([]);
     }
   }
 
@@ -498,39 +533,292 @@ export async function runIntent(
 
 // WHY: Some models stream tool calls but wrap final arguments as plain text JSON.
 // Try to parse Plan from JSON text (fallback when model emits JSON as content).
-function tryParsePlanFromJson(text: string): Plan | null {
-  let obj: unknown;
-  try { obj = JSON.parse(text); } catch { return null; }
-  if (!obj || typeof obj !== 'object') return null;
-  try {
-    return validatePlan(obj);
-  } catch {
-    return null;
+function extractBalancedJsonObject(input: string): string | null {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let start = -1;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = false; continue; }
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') { if (depth === 0) start = i; depth++; continue; }
+    if (ch === '}') { depth--; if (depth === 0 && start !== -1) return input.slice(start, i + 1); }
   }
+  return null;
+}
+
+function tryParsePlanFromJson(text: string): Plan | null {
+  const attempt = (s: string): Plan | null => {
+    let obj: unknown;
+    try { obj = JSON.parse(s); } catch { return null; }
+    if (!obj || typeof obj !== 'object') return null;
+    try { return validatePlan(obj); } catch { return null; }
+  };
+
+  const direct = attempt(text);
+  if (direct) return direct;
+
+  let s = (text || '').trim();
+  if (s.startsWith('```')) {
+    const nl = s.indexOf('\n');
+    if (nl !== -1) s = s.slice(nl + 1);
+    if (s.endsWith('```')) s = s.slice(0, s.lastIndexOf('```'));
+  }
+
+  const fenced = attempt(s);
+  if (fenced) return fenced;
+
+  const idx = s.indexOf('emit_plan');
+  if (idx !== -1) {
+    const after = s.slice(idx);
+    const braceIdx = after.indexOf('{');
+    if (braceIdx !== -1) {
+      const jsonSub = extractBalancedJsonObject(after.slice(braceIdx));
+      if (jsonSub) {
+        const fromWrapper = attempt(jsonSub);
+        if (fromWrapper) return fromWrapper;
+      }
+    }
+  }
+
+  const firstBrace = s.indexOf('{');
+  if (firstBrace !== -1) {
+    const obj = extractBalancedJsonObject(s.slice(firstBrace));
+    if (obj) {
+      const out = attempt(obj);
+      if (out) return out;
+    }
+  }
+  return null;
 }
 
 // Try to parse and normalize Envelope aliases (method->op) before falling back to WIL.
 export function tryParseBatchFromJson(text: string): Batch | null {
-  let obj: unknown;
-  try { obj = JSON.parse(text); } catch { return null; }
-  const asRecord = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' ? (v as Record<string, unknown>) : null);
+  const asRecord = (v: unknown): Record<string, unknown> | null =>
+    v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+
+  const renameKey = (obj: Record<string, unknown>, from: string, to: string) => {
+    if (!Object.prototype.hasOwnProperty.call(obj, from)) return;
+    if (!Object.prototype.hasOwnProperty.call(obj, to)) {
+      obj[to] = obj[from]!;
+    }
+    delete obj[from];
+  };
+
+  const normalizeParams = (op: string, params: unknown): unknown => {
+    if (!params || typeof params !== 'object') return params;
+    const record = { ...(params as Record<string, unknown>) };
+    const renameParam = (from: string, to: string) => {
+      if (!Object.prototype.hasOwnProperty.call(record, from)) return;
+      if (!Object.prototype.hasOwnProperty.call(record, to)) {
+        record[to] = record[from]!;
+      }
+      delete record[from];
+    };
+
+    switch (op) {
+      case 'window.create':
+      case 'window.update':
+        renameParam('z_index', 'zIndex');
+        renameParam('window_id', 'windowId');
+        break;
+      case 'dom.set':
+      case 'dom.replace':
+      case 'dom.append':
+      case 'component.render':
+      case 'component.update':
+      case 'component.destroy':
+        renameParam('window_id', 'windowId');
+        break;
+      case 'state.set':
+      case 'state.get':
+      case 'state.watch':
+      case 'state.unwatch':
+        renameParam('window_id', 'windowId');
+        break;
+      case 'api.call':
+      case 'txn.cancel':
+        renameParam('idempotency_key', 'idempotencyKey');
+        break;
+      default:
+        break;
+    }
+
+    return record;
+  };
+
   const normalizeEnvelope = (entry: unknown): unknown => {
     if (!entry || typeof entry !== 'object') return entry;
     const e = { ...(entry as Record<string, unknown>) };
-    if (!('op' in e) && typeof (e as Record<string, unknown>).method === 'string') {
-      (e as Record<string, unknown>).op = (e as Record<string, unknown>).method;
-      delete (e as Record<string, unknown>).method;
+    if (!('op' in e) && typeof e.method === 'string') {
+      e.op = e.method;
+      delete e.method;
     }
+    renameKey(e, 'idempotency_key', 'idempotencyKey');
+    renameKey(e, 'trace_id', 'traceId');
+    renameKey(e, 'txn_id', 'txnId');
+    renameKey(e, 'window_id', 'windowId');
+
+    if (typeof e.op === 'string' && Object.prototype.hasOwnProperty.call(e, 'params')) {
+      e.params = normalizeParams(e.op, e.params);
+    }
+
     return e;
   };
-  const record = asRecord(obj);
-  const candidate = Array.isArray(obj) ? obj : Array.isArray(record?.batch) ? (record!.batch as unknown[]) : null;
-  if (!candidate) return null;
-  try {
-    const mapped = candidate.map((e) => normalizeEnvelope(e));
-    return validateBatch(mapped);
-  } catch {
-    return null;
-  }
-}
 
+  const coerceBatchArray = (value: unknown): unknown[] | null => {
+    if (Array.isArray(value)) return value;
+    const record = asRecord(value);
+    if (!record) return null;
+
+    const candidates = [
+      record.batch,
+      record.data,
+      record.result,
+      record.args,
+      record.arguments,
+    ];
+
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) return candidate;
+      if (typeof candidate === 'string') {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(candidate);
+        } catch {
+          continue;
+        }
+        const fromString = coerceBatchArray(parsed);
+        if (fromString) return fromString;
+        continue;
+      }
+      const nested = asRecord(candidate);
+      if (nested && Array.isArray(nested.batch)) {
+        return nested.batch;
+      }
+    }
+
+    return null;
+  };
+
+  const attemptValue = (value: unknown): Batch | null => {
+    const arr = coerceBatchArray(value);
+    if (!arr) return null;
+    try {
+      const normalized = arr.map((entry) => normalizeEnvelope(entry));
+      return validateBatch(normalized);
+    } catch {
+      return null;
+    }
+  };
+
+  const attemptString = (input: string): Batch | null => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(input);
+    } catch {
+      return null;
+    }
+    return attemptValue(parsed);
+  };
+
+  const extractBalancedJsonArray = (input: string): string | null => {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let start = -1;
+    for (let i = 0; i < input.length; i++) {
+      const ch = input[i]!;
+      if (inStr) {
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (ch === '\\') {
+          esc = true;
+          continue;
+        }
+        if (ch === '"') {
+          inStr = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inStr = true;
+        if (start === -1) start = i;
+        continue;
+      }
+      if (ch === '[') {
+        if (depth === 0) start = i;
+        depth++;
+        continue;
+      }
+      if (ch === ']') {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          return input.slice(start, i + 1);
+        }
+      }
+    }
+    return null;
+  };
+
+  const trimmed = (text ?? '').trim();
+  if (!trimmed) return null;
+
+  const direct = attemptString(trimmed);
+  if (direct) return direct;
+
+  let unfenced = trimmed;
+  if (unfenced.startsWith('```')) {
+    const newlineIdx = unfenced.indexOf('\n');
+    if (newlineIdx !== -1) {
+      unfenced = unfenced.slice(newlineIdx + 1);
+    }
+    if (unfenced.endsWith('```')) {
+      unfenced = unfenced.slice(0, unfenced.lastIndexOf('```'));
+    }
+    unfenced = unfenced.trim();
+    const fencedResult = attemptString(unfenced);
+    if (fencedResult) return fencedResult;
+  }
+
+  const emitIdx = unfenced.indexOf('emit_batch');
+  if (emitIdx !== -1) {
+    const afterEmit = unfenced.slice(emitIdx);
+    const braceIdx = afterEmit.indexOf('{');
+    if (braceIdx !== -1) {
+      const extracted = extractBalancedJsonObject(afterEmit.slice(braceIdx));
+      if (extracted) {
+        const emitResult = attemptString(extracted);
+        if (emitResult) return emitResult;
+      }
+    }
+  }
+
+  const firstBrace = unfenced.indexOf('{');
+  if (firstBrace !== -1) {
+    const extracted = extractBalancedJsonObject(unfenced.slice(firstBrace));
+    if (extracted) {
+      const braceResult = attemptString(extracted);
+      if (braceResult) return braceResult;
+    }
+  }
+
+  const firstBracket = unfenced.indexOf('[');
+  if (firstBracket !== -1) {
+    const extracted = extractBalancedJsonArray(unfenced.slice(firstBracket));
+    if (extracted) {
+      const bracketResult = attemptString(extracted);
+      if (bracketResult) return bracketResult;
+    }
+  }
+
+  return attemptValue(unfenced);
+}

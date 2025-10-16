@@ -3,6 +3,8 @@ import { persist } from 'zustand/middleware';
 import {
   getDefaultPlannerProfileKey,
   getDefaultActorProfileKey,
+  setSelectedPlannerProfileKey,
+  setSelectedActorProfileKey,
   type PlannerProfileKey,
   type ActorProfileKey,
 } from '../lib/llm/profiles';
@@ -261,8 +263,14 @@ export const useAppStore = create<AppState>()(
       setNotepadOpen: (value) => set({ notepadOpen: value }),
       setAgentSettingsOpen: (value) => set({ agentSettingsOpen: value }),
       setComputeDemoOpen: (value) => set({ computeDemoOpen: value }),
-      setPlannerProfileKey: (key) => set({ plannerProfileKey: key }),
-      setActorProfileKey: (key) => set({ actorProfileKey: key }),
+      setPlannerProfileKey: (key) => {
+        setSelectedPlannerProfileKey(key);
+        set({ plannerProfileKey: key });
+      },
+      setActorProfileKey: (key) => {
+        setSelectedActorProfileKey(key);
+        set({ actorProfileKey: key });
+      },
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
           if (state.desktopShortcuts[id]) {
@@ -466,6 +474,15 @@ export const useAppStore = create<AppState>()(
         safeMode: state.safeMode,
         safeReason: state.safeReason,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        if (state.plannerProfileKey) {
+          setSelectedPlannerProfileKey(state.plannerProfileKey);
+        }
+        if (state.actorProfileKey) {
+          setSelectedActorProfileKey(state.actorProfileKey);
+        }
+      },
     },
   ),
 );
