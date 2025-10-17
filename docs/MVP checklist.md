@@ -269,17 +269,17 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 
 **Implemented**: Apps now persist across restarts via command persistence to SQLite.
 
-**Backend (Rust - main.rs:176-269)**:
+**Backend (Rust - main.rs)**:
 - `persist_command`: Inserts successfully executed commands into `tool_call` table
 - `get_workspace_commands`: Retrieves all persisted commands for replay on startup
 - `clear_workspace_commands`: Deletes all commands for current workspace
 - `delete_window_commands`: Deletes all commands associated with a specific window ID (called on window.close)
 
-**Frontend (TypeScript - adapter.ts:69-277)**:
+**Frontend (TypeScript - adapter.ts)**:
 - `persistCommand`: Fire-and-forget async function called after successful command execution
   - Skips ephemeral operations: `txn.cancel`, `state.get`, `state.watch`, `state.unwatch`
   - Errors logged but don't block execution
-- `replayWorkspace`: Called on Desktop component mount (Desktop.tsx:42-55)
+- `replayWorkspace`: Called on Desktop component mount (Desktop.tsx)
   - Fetches persisted commands from database
   - Reapplies commands in creation order
   - Returns `{ applied, errors }` for observability
@@ -326,7 +326,7 @@ Backlog
   - Batch op count capped at 64 (`batchSchema.max(64)`).
   - Per-op HTML length capped at 64KB (`Dom*Params.html.max(64 * 1024)`).
   - Total HTML per batch capped at 128KB via `batchSchema.superRefine`.
-  - See `uicp/src/lib/uicp/schemas.ts`.
+  - See `uicp/src/lib/uicp/schemas.ts` (re-exports from `uicp/src/lib/schema/index.ts`).
 - Error taxonomy alignment (TS/Rust):
   - Rust emits `Compute.Timeout`, `Compute.Resource.Limit`, `Compute.CapabilityDenied`, `Compute.Cancelled`; `Runtime.Fault` and `Task.NotFound` remain unprefixed.
   - TS mirrors codes in `uicp/src/compute/types.ts` and `uicp/src/lib/compute/errors.ts`.
@@ -336,7 +336,7 @@ Backlog
   - `uicp/src/lib/uicp/replay.test.ts`: replay de-dup applies identical ops once.
   - `uicp/src/lib/uicp/queue-cancel.test.ts`: txn.cancel short-circuits and applies immediately.
 - Data-command caps: per element serialized length <= 32KB and template tokens <= 16; enforced in `uicp/src/lib/uicp/adapter.ts` data-command handler.
-- DOM apply behavior: dom.set/dom.append accept validated HTML (no double-sanitize at apply); unsafe HTML rejected at validation via `uicp/src/lib/uicp/schemas.ts` envelope guard.
+- DOM apply behavior: dom.set/dom.append accept validated HTML and sanitize before DOM insertion (defense-in-depth). Unsafe HTML is rejected early by the envelope guard in `uicp/src/lib/schema/index.ts`.
 - Chat streaming idle timeout: backend enforces idle chunk timeout with `CHAT_IDLE_TIMEOUT_MS` (default 35000 ms) in `uicp/src-tauri/src/main.rs` `chat_completion()`. On timeout, emits a `ollama-completion` terminal event with error detail and requestId; frontend shows a toast and system message.
 - Notes:
   - Watcher/component teardown on `window.close` remains minimal (drag cleanup, persisted command removal). Full per-window watcher/component tracking is a follow-up.

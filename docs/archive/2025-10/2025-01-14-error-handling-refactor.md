@@ -16,11 +16,11 @@
 
 ## Confirmed Improvements
 
-- **Window lifecycle**: `emitWindowEvent` now aggregates listener errors and throws (`uicp/src/lib/uicp/adapter.ts:24`).
-- **Deterministic serialization**: `stableStringify` no longer falls back to lossy stringification (`uicp/src/lib/uicp/adapter.ts:41`).
-- **Pointer capture**: UI components removed the try/catch wrappers around `releasePointerCapture`, matching the doc (`uicp/src/components/DesktopWindow.tsx:61`, `uicp/src/components/DesktopIcon.tsx:78`).
-- **Compute bridge**: Cancellation and debug wiring now emit explicit `console.error` entries on failure (`uicp/src/lib/bridge/tauri.ts:209`, `uicp/src/lib/bridge/tauri.ts:596`).
-- **LLM streaming**: Abort/timeout handlers log backend cancellation failures (`uicp/src/lib/llm/ollama.ts:332`, `uicp/src/lib/llm/ollama.ts:358`).
+- **Window lifecycle**: `emitWindowEvent` now aggregates listener errors and throws (`uicp/src/lib/uicp/adapter.ts`).
+- **Deterministic serialization**: `stableStringify` no longer falls back to lossy stringification (`uicp/src/lib/uicp/adapter.ts`).
+- **Pointer capture**: UI components removed the try/catch wrappers around `releasePointerCapture`, matching the doc (`uicp/src/components/DesktopWindow.tsx`, `uicp/src/components/DesktopIcon.tsx`).
+- **Compute bridge**: Cancellation and debug wiring now emit explicit `console.error` entries on failure (`uicp/src/lib/bridge/tauri.ts`).
+- **LLM streaming**: Abort/timeout handlers log backend cancellation failures (`uicp/src/lib/llm/ollama.ts`).
 
 ---
 

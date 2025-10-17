@@ -11,6 +11,7 @@ import { createId } from '../../lib/utils';
 import { ComputeError } from '../compute/errors';
 import { asStatePath, type Batch } from '../uicp/schemas';
 import { OrchestratorEvent } from '../orchestrator/state-machine';
+import { type Result, createBridgeUnavailableError, toUICPError, UICPErrorCode } from './result';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -38,6 +39,22 @@ export const tauriInvoke = async <T>(command: string, args?: unknown): Promise<T
     throw new Error(`Tauri bridge unavailable for command ${command}`);
   }
   return invoke<T>(command, args as never);
+};
+
+// WHY: Universal invoke wrapper that returns Result<T, UICPError> for standardized error handling.
+// INVARIANT: All errors are tagged with E-UICP-xxx codes for consistent telemetry and debugging.
+// USAGE: const result = await inv<YourType>('command_name', { args }); if (!result.ok) handle(result.error);
+export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>> => {
+  if (!hasTauriBridge()) {
+    return { ok: false, error: createBridgeUnavailableError(command) };
+  }
+  
+  try {
+    const value = await invoke<T>(command, args as never);
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, error: toUICPError(error, UICPErrorCode.InvokeFailed) };
+  }
 };
 
 type OllamaEvent = {

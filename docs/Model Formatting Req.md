@@ -10,7 +10,7 @@ Summary
 - The runtime prepends an Environment Snapshot (agent flags, open windows, and trimmed DOM) before the developer prompt. **Do not** include your own snapshot copy.
 - Responses must be valid JSON with no surrounding prose, code fences, or channel markers. Harmony sentinels (`<|start|>`, `analysis`, `commentary`, `final`, etc.) are deprecated.
 - Planner output schema: `{ summary: string, risks?: string[], batch: Command[], actor_hints?: string[] }`.
-- Actor output schema: `{ batch: Command[] }`. Commands must validate against `uicp/src/lib/uicp/schemas.ts`.
+- Actor output schema: `{ batch: Command[] }`. Commands must validate against `uicp/src/lib/uicp/schemas.ts` (re-exports from `uicp/src/lib/schema/index.ts`).
 
 1. Request templates
 --------------------
@@ -44,7 +44,7 @@ Prompts already instruct the models to "Output JSON only." Do not add extra role
 - Keep HTML compact and safe: no `<script>`, `<style>`, inline event handlers, or `javascript:` URLs. Interactivity lives in `data-command` and `data-state-*` attributes.
 - Maximum batch size: 64 commands (`MAX_OPS_PER_BATCH`). Per-command HTML cap: 1,128 KB. Total HTML per batch: 2,256 KB.
 - Template tokens: Maximum 32 template substitutions per `data-command` attribute.
-- Planner and actor must never invent operations outside the enum in `schemas.ts`.
+- Planner and actor must never invent operations outside the enum in the schema package (`uicp/src/lib/schema/index.ts`).
 
 ### Planner-specific
 - `summary`: a concise sentence (<= 140 chars recommended).

@@ -1205,4 +1205,121 @@ mod tests_signature {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn provenance_roundtrip_serialization() {
+        let prov = ModuleProvenance {
+            task: "test.task".into(),
+            version: "1.0.0".into(),
+            origin_url: Some("https://example.com/modules".into()),
+            build_toolchain: Some("cargo-component 0.13.2".into()),
+            wit_world: Some("compute:task/v1".into()),
+            built_at: Some(1234567890),
+            source_revision: Some("abc123".into()),
+            builder: Some("CI-Build-Agent".into()),
+            metadata: Some(serde_json::json!({"custom": "value"})),
+        };
+
+        let json = serde_json::to_string(&prov).unwrap();
+        let deserialized: ModuleProvenance = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.task, "test.task");
+        assert_eq!(deserialized.version, "1.0.0");
+        assert_eq!(deserialized.origin_url, Some("https://example.com/modules".into()));
+        assert_eq!(deserialized.build_toolchain, Some("cargo-component 0.13.2".into()));
+        assert_eq!(deserialized.wit_world, Some("compute:task/v1".into()));
+        assert_eq!(deserialized.built_at, Some(1234567890));
+        assert_eq!(deserialized.source_revision, Some("abc123".into()));
+        assert_eq!(deserialized.builder, Some("CI-Build-Agent".into()));
+    }
+
+    #[test]
+    fn provenance_save_and_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let modules_dir = tmp.path();
+
+        let prov = ModuleProvenance {
+            task: "csv.parse".into(),
+            version: "1.2.0".into(),
+            origin_url: Some("https://registry.example.com".into()),
+            build_toolchain: Some("cargo-component 0.13.2".into()),
+            wit_world: Some("compute:csv/v1".into()),
+            built_at: Some(1700000000),
+            source_revision: Some("main@deadbeef".into()),
+            builder: Some("GitHub Actions".into()),
+            metadata: None,
+        };
+
+        // Save provenance
+        save_provenance(modules_dir, &prov).expect("save failed");
+
+        // Load it back
+        let loaded = load_provenance(modules_dir, "csv.parse", "1.2.0")
+            .expect("load failed")
+            .expect("provenance not found");
+
+        assert_eq!(loaded.task, "csv.parse");
+        assert_eq!(loaded.version, "1.2.0");
+        assert_eq!(loaded.origin_url, Some("https://registry.example.com".into()));
+        assert_eq!(loaded.built_at, Some(1700000000));
+    }
+
+    #[test]
+    fn provenance_detects_task_version_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let modules_dir = tmp.path();
+
+        let prov = ModuleProvenance {
+            task: "wrong.task".into(),
+            version: "2.0.0".into(),
+            origin_url: None,
+            build_toolchain: None,
+            wit_world: None,
+            built_at: None,
+            source_revision: None,
+            builder: None,
+            metadata: None,
+        };
+
+        save_provenance(modules_dir, &prov).expect("save failed");
+
+        // Try to load with different task/version
+        let err = load_provenance(modules_dir, "csv.parse", "1.2.0").unwrap_err();
+        assert!(
+            err.to_string().contains("provenance mismatch"),
+            "expected mismatch error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn provenance_missing_file_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let modules_dir = tmp.path();
+
+        let result = load_provenance(modules_dir, "nonexistent", "1.0.0").expect("should not error");
+        assert!(result.is_none(), "expected None for missing provenance file");
+    }
+
+    #[test]
+    fn provenance_optional_fields_omitted_in_json() {
+        let prov = ModuleProvenance {
+            task: "minimal".into(),
+            version: "1.0.0".into(),
+            origin_url: None,
+            build_toolchain: None,
+            wit_world: None,
+            built_at: None,
+            source_revision: None,
+            builder: None,
+            metadata: None,
+        };
+
+        let json = serde_json::to_string(&prov).unwrap();
+        // Optional fields should be omitted from JSON when None
+        assert!(!json.contains("origin_url"));
+        assert!(!json.contains("build_toolchain"));
+        assert!(!json.contains("wit_world"));
+        assert!(json.contains("\"task\""));
+        assert!(json.contains("\"version\""));
+    }
 }

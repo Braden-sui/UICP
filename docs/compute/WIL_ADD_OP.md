@@ -7,7 +7,7 @@
 ## Steps
 
 1. **Define or confirm the op schema (typed params)**
-   - Edit `uicp/src/lib/uicp/schemas.ts` if it’s a new op (or confirm existing shape).
+   - Edit `uicp/src/lib/schema/index.ts` (frozen schema package). `uicp/src/lib/uicp/schemas.ts` re-exports from this package for backward compatibility.
    - Keep params minimal and explicit; prefer enums for closed sets.
 
 2. **Add lexicon templates**

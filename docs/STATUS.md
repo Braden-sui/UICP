@@ -2,7 +2,7 @@
 
 Purpose: one-page, human-readable snapshot of what is Done, In Progress, Next, plus risks and CI health. This page is the entry point for status; deeper, authoritative checklists remain in docs/MVP checklist.md and docs/compute/COMPUTE_RUNTIME_CHECKLIST.md.
 
-Last updated: 2025-01-18 (Codex)
+Last updated: 2025-10-17
 
 ## Summary
 
@@ -18,6 +18,17 @@ Last updated: 2025-01-18 (Codex)
 
 ## Done (Recently)
 
+**October 2025 Work** (see `docs/IMPLEMENTATION_LOG.md` for details):
+
+- **Batch idempotency system**: FNV-1a hash-based deduplication prevents duplicate batch application from retries/races. In-memory LRU with 15-min TTL, telemetry events for skipped duplicates.
+- **Stream cancellation**: Explicit `cancel()` API with zero ghost echoes proven by soak tests. Cancelled streams never reach `onBatch` callback.
+- **Workspace registration guard**: Early batches queue until `Desktop.tsx` mounts, eliminating "Workspace root not registered" race condition.
+- **Telemetry ID tracking**: `batchId` and `runId` now tracked end-to-end. MetricsPanel and LogsPanel show full correlation. Enables plan→act→apply→batch debugging.
+- **JSON tool calling**: Production default for GLM 4.6 with 4-level cascading fallback (tool→json→WIL→commentary). `channelUsed` field tracks which path succeeded.
+- **Error handling refactor**: Eliminated silent error paths. `emitWindowEvent` throws on failures, `stableStringify` removed lossy fallback, JSON recovery limited to pre-validation cleanup.
+- **Circuit breaker observability**: Configurable thresholds via env vars, `debug_circuits` command, telemetry events for open/close transitions.
+- **SQLite maintenance**: Periodic WAL checkpoint, VACUUM, PRAGMA optimize. Schema versioning with migration guards.
+- **Performance improvements**: Ring buffer for telemetry (no array cloning), memoized compute metrics, chunked workspace replay with progress events, dynamic throttle sleep.
 - State & testing foundation documented (`docs/memory.md`, `docs/TEST_PLAN_LEAN.md`); error-handling note updated to match fail-loud behaviour.
 - Adapter `data-command` path throws `E-UICP-301` on malformed/empty payloads; LLM iterator teardown logs `E-UICP-401`.
 - UI bridge shims guard all `invoke` usage so Agent Settings, Compute Demo, and System Banner behave sensibly when Tauri is absent (prevents the “Cannot read properties of undefined (reading 'invoke')” crash).

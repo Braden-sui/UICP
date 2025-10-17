@@ -213,6 +213,12 @@ export const LogsPanel = () => {
                       <span>{entry.traceId}</span>
                       <span>{formatTimestamp(entry.startedAt)}</span>
                     </div>
+                    {(entry.batchId || entry.runId != null) && (
+                      <div className="flex flex-wrap gap-2 text-[9px] text-slate-400">
+                        {entry.batchId && <span>batch: {entry.batchId}</span>}
+                        {entry.runId != null && <span>run: #{entry.runId}</span>}
+                      </div>
+                    )}
                     <div className="text-[11px] font-semibold text-slate-600">{entry.summary || '—'}</div>
                     <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-500">
                       <span>plan {formatDuration(entry.planMs)}</span>

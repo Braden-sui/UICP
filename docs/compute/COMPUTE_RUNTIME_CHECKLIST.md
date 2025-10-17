@@ -153,7 +153,7 @@ Last updated: 2025-10-13
   - File: `uicp/tests/unit/compute.store.test.ts` covers new semantics and helpers
 
 - [x] UI affordances for compute
-  - Compute store tracks duration, cache hits, partial counters (`uicp/src/state/compute.ts:5`), and bridge toasts now map codes via `formatComputeErrorToast` (`uicp/src/lib/bridge/tauri.ts:152`).
+  - Compute store tracks duration, cache hits, partial counters (`uicp/src/state/compute.ts`), and bridge toasts now map codes via `formatComputeErrorToast` (`uicp/src/lib/bridge/tauri.ts`).
   - Metrics panel, Devtools compute panel, and the demo window surface partial frames + cache telemetry with indicator chips and per-job badges.
 
 -------------------------------------------------------------------------------
@@ -233,7 +233,7 @@ Last updated: 2025-10-13
   - Final envelopes include duration, cache hit, deadline budget, peak memory, fuel, and throttle counters (`uicp/src/state/compute.ts`). `summarizeComputeJobs` exposes p50/p95 snapshots consumed by Devtools panels and tested in `uicp/tests/unit/compute.summary.test.ts`.
 
   - [x] Logs/trace capture
-    - `wasi:logging/logging` is bridged to structured partial frames with byte throttling (`uicp/src-tauri/src/compute.rs:1562`); Devtools panels render the rolling buffer with tests in `uicp/tests/unit/devtools.compute.panel.test.tsx`.
+    - `wasi:logging/logging` is bridged to structured partial frames with byte throttling (`uicp/src-tauri/src/compute.rs`); Devtools panels render the rolling buffer with tests in `uicp/tests/unit/devtools.compute.panel.test.tsx`.
     - `performance.mark` and `workspace-replay-*` events instrument client-side replay; host spans cover module install, queue execution, and cache writes.
 
 -------------------------------------------------------------------------------
@@ -304,31 +304,31 @@ Last updated: 2025-10-13
 
 - [x] Replay ordering and window lifecycle
   - Guarantees destroy-before-create for same window id; DOM ops apply after create.
-  - Tests: `uicp/tests/unit/adapter.replay.test.ts:1`
+  - Tests: `uicp/tests/unit/adapter.replay.test.ts`
 
 - [x] Queue cancel short-circuit
   - Applies `txn.cancel` batch immediately; clears queued work.
-  - Tests: `uicp/src/lib/uicp/__tests__/queue-cancel.test.ts:1`
+  - Tests: `uicp/src/lib/uicp/__tests__/queue-cancel.test.ts`
 
 - [x] Data-command JSON safety and artifact cleanup
   - Recovers misquoted JSON in `data-command`; trims stray JSON tokens from labels; removes bracket-artifact text nodes.
-  - Tests: `uicp/tests/unit/cleanup.test.ts:1`
+  - Tests: `uicp/tests/unit/cleanup.test.ts`
 
 - [x] WIL lexicon + parse/map contract
   - Templates parse and map to typed ops (e.g., `api.call` yields `url`/`method`).
-  - Tests: `uicp/tests/unit/wil/lexicon_and_parse.test.ts:1`, `uicp/src/lib/wil/templates.extra.test.ts` (where present)
+  - Tests: `uicp/tests/unit/wil/lexicon_and_parse.test.ts`, `uicp/src/lib/wil/templates.extra.test.ts` (where present)
 
 - [x] LLM streaming: event extraction and cancel
   - Extracts JSON/text deltas and tool-calls; aborts active stream on cancel.
-  - Tests: `uicp/tests/unit/ollama.extract.test.ts:1`, `uicp/tests/unit/ollama.cancel.test.ts:1`
+  - Tests: `uicp/tests/unit/ollama.extract.test.ts`, `uicp/tests/unit/ollama.cancel.test.ts`
 
 - [x] Logs panel ingest/filter/clear (UI observability)
   - DevtoolsComputePanel processes `ui-debug-log`; supports filters and clear.
-  - Tests: `uicp/tests/unit/devtools.compute.panel.test.tsx:1`
+  - Tests: `uicp/tests/unit/devtools.compute.panel.test.tsx`
 
 - [x] Orchestrator fallback
   - Falls back to actor-only path when planner fails; validates error surfaces.
-  - Tests: `uicp/tests/unit/orchestrator.fallback.test.ts:1`, `uicp/tests/unit/orchestrator.timeout.test.ts:1`
+  - Tests: `uicp/tests/unit/orchestrator.fallback.test.ts`, `uicp/tests/unit/orchestrator.timeout.test.ts`
 
 Notes
 

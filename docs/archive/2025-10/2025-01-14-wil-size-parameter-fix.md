@@ -22,7 +22,7 @@ Contract mismatch between WIL documentation, parser templates, and Zod validator
 
 3. **Parser** (`uicp/src/lib/wil/parse.ts`) had partial handling in postProcess that converted "1200x800" to width/height
 
-4. **Schema** (`uicp/src/lib/uicp/schemas.ts`) only accepted preset tokens:
+4. **Schema** (`uicp/src/lib/uicp/schemas.ts` → re-exports from `uicp/src/lib/schema/index.ts`) only accepted preset tokens:
    ```typescript
    size: z.enum(['xs','sm','md','lg','xl']).optional()
    ```

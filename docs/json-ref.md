@@ -32,7 +32,7 @@ Status: Planner = tool-first (JSON). Actor = tool-only (strict JSON) with orches
     `window.create` + `dom.set` so DockChat always shows a window.
 - Invariants
   - `op` must be a valid operation.
-  - `batch` validates with `validateBatch()` (`uicp/src/lib/uicp/schemas.ts`).
+  - `batch` validates with `validateBatch()` (`uicp/src/lib/uicp/schemas.ts` → frozen in `uicp/src/lib/schema/index.ts`).
   - Fail loud on schema mismatch (no silent drop).
 
 ---

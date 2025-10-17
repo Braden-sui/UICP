@@ -2,7 +2,7 @@ WIL: Words → Intent → LEXICON
 
 Summary
 - Deterministic, typed mapping from constrained natural language to UICP operations.
-- Words are the contract. Templates and slots bind directly to `operationSchemas` in `uicp/src/lib/uicp/schemas.ts`.
+- Words are the contract. Templates and slots bind directly to `operationSchemas` (frozen in `uicp/src/lib/schema/index.ts`, re-exported via `uicp/src/lib/uicp/schemas.ts`).
 
 Key files
 - `uicp/src/lib/wil/lexicon.ts` — typed lexicon, exhaustive over `OperationNameT`.
@@ -16,9 +16,8 @@ Usage
 
 CI gates
 - The lexicon uses `satisfies` and a type test to enforce full coverage of `OperationNameT`.
-- Any new op added to `schemas.ts` must be reflected in `lexicon.ts` or the TS/type test will fail.
+- Any new op added to the schema package (`uicp/src/lib/schema/index.ts`) must be reflected in `lexicon.ts` or the TS/type test will fail.
 
 Notes
 - Parser removes lightweight “polite” prefixes (e.g., `please`) and supports common variations.
 - URL, numbers, and JSON-typed fields are coerced before final Zod validation.
-

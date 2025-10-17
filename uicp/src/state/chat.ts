@@ -299,6 +299,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           if (traceId) {
             app.upsertTelemetry(traceId, {
+              batchId: outcome.batchId,
+              runId: app.orchestratorContext.runId,
               applyMs: applyDuration,
               status: 'error',
               error: errorMessage,
@@ -314,6 +316,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           if (traceId) {
             app.upsertTelemetry(traceId, {
+              batchId: outcome.batchId,
+              runId: app.orchestratorContext.runId,
               applyMs: applyDuration,
               status: 'applied',
               error: undefined,
@@ -360,6 +364,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           if (traceId) {
             app.upsertTelemetry(traceId, {
+              batchId: outcome.batchId,
+              runId: app.orchestratorContext.runId,
               applyMs: applyDuration,
               status: 'error',
               error: errorMessage,
@@ -387,6 +393,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           if (traceId) {
             app.upsertTelemetry(traceId, {
+              batchId: outcome.batchId,
+              runId: app.orchestratorContext.runId,
               applyMs: applyDuration,
               status: 'applied',
               error: undefined,
@@ -486,6 +494,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
         if (plan.traceId) {
           app.upsertTelemetry(plan.traceId, {
+            batchId: outcome.batchId,
+            runId: app.orchestratorContext.runId,
             applyMs: applyDuration,
             status: 'error',
             error: errorMessage,
@@ -513,6 +523,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
         if (plan.traceId) {
           app.upsertTelemetry(plan.traceId, {
+            batchId: outcome.batchId,
+            runId: app.orchestratorContext.runId,
             applyMs: applyDuration,
             status: 'applied',
             error: undefined,

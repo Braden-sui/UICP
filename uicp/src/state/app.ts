@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
 import {
   getDefaultPlannerProfileKey,
   getDefaultActorProfileKey,
@@ -63,6 +64,8 @@ export type IntentTelemetryStatus = 'planning' | 'acting' | 'applying' | 'applie
 
 export type IntentTelemetry = {
   traceId: string;
+  batchId?: string; // Stable batch identifier from ApplyOutcome for deduplication tracking
+  runId?: number; // Orchestrator run counter for correlating plan→act→apply cycles
   summary: string;
   startedAt: number;
   planMs: number | null;
@@ -241,7 +244,7 @@ export type AppState = {
 
 export const useAppStore = create<AppState>()(
   persist(
-    (set, get) => ({
+    immer((set, get) => ({
       connectionStatus: 'disconnected',
       devMode: readBooleanEnv('VITE_DEV_MODE', true),
       fullControl: false,
@@ -613,7 +616,7 @@ export const useAppStore = create<AppState>()(
           return { orchestratorContext: newContext };
         }),
       canAutoApply: () => can_auto_apply(get().orchestratorContext),
-    }),
+    })),
     {
       name: 'uicp-app',
       partialize: (state) => ({
@@ -647,6 +650,8 @@ export const useAppSelector = <T>(selector: (state: AppState) => T): T => useApp
 
 export const selectComputeDemoOpen = (state: AppState) => state.computeDemoOpen;
 export const selectSetComputeDemoOpen = (state: AppState) => state.setComputeDemoOpen;
+export const selectModuleRegistryOpen = (state: AppState) => state.moduleRegistryOpen;
+export const selectSetModuleRegistryOpen = (state: AppState) => state.setModuleRegistryOpen;
 export const selectSafeMode = (state: AppState) => state.safeMode;
 export const selectSafeReason = (state: AppState) => state.safeReason;
 export const selectSetSafeMode = (state: AppState) => state.setSafeMode;

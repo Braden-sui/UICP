@@ -308,7 +308,7 @@ const MetricsPanel = () => {
           <table className="w-full table-fixed divide-y divide-slate-200 rounded border border-slate-200 bg-white/90 shadow-sm">
             <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="px-3 py-2 text-left">Trace</th>
+                <th className="px-3 py-2 text-left">Trace / Batch / Run</th>
                 <th className="px-3 py-2 text-left">Summary</th>
                 <th className="px-3 py-2">Plan</th>
                 <th className="px-3 py-2">Act</th>
@@ -321,6 +321,12 @@ const MetricsPanel = () => {
                 <tr key={entry.traceId} className="text-xs">
                   <td className="px-3 py-2 align-top font-mono text-[10px] text-slate-500">
                     <div>{entry.traceId}</div>
+                    {entry.batchId && (
+                      <div className="text-[9px] text-slate-400">batch: {entry.batchId}</div>
+                    )}
+                    {entry.runId != null && (
+                      <div className="text-[9px] text-slate-400">run: #{entry.runId}</div>
+                    )}
                     <div className="text-[9px] uppercase tracking-wide text-slate-400">{formatTimestamp(entry.startedAt)}</div>
                   </td>
                   <td className="px-3 py-2 align-top text-slate-700">

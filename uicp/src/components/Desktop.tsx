@@ -7,6 +7,7 @@ import NotepadWindow from './NotepadWindow';
 import MetricsPanel from './MetricsPanel';
 import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon } from '../icons';
 import ComputeDemoWindow from './ComputeDemoWindow';
+import ModuleRegistryWindow from './ModuleRegistryWindow';
 import AgentTraceWindow from './AgentTraceWindow';
 import { useAppSelector, type DesktopShortcutPosition } from '../state/app';
 import AgentSettingsWindow from './AgentSettingsWindow';
@@ -389,6 +390,7 @@ export const Desktop = () => {
       <LogsPanel />
       <AgentSettingsWindow />
       <ComputeDemoWindow />
+      <ModuleRegistryWindow />
       <AgentTraceWindow />
     </div>
   );
