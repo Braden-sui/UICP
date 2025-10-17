@@ -134,11 +134,7 @@ mod wasm_tests {
             .expect("job3 queueMs");
 
         // WHY: Tokio schedules join! futures in an unspecified order; sort so assertions target whichever job actually waited.
-        let mut queues = vec![
-            ("job1", queue1),
-            ("job2", queue2),
-            ("job3", queue3),
-        ];
+        let mut queues = vec![("job1", queue1), ("job2", queue2), ("job3", queue3)];
         queues.sort_by_key(|(_, q)| *q);
         // INVARIANT: queues[..] sorted ascending by queue duration (fastest first, slowest last).
         let fast_queue = queues[0].1;

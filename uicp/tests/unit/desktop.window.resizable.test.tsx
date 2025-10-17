@@ -2,6 +2,18 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, act } from '@testing-library/react';
 import DesktopWindow from '../../src/components/DesktopWindow';
 
+const getRuleStyle = (selector: string): CSSStyleDeclaration => {
+  const sheets = Array.from(document.styleSheets) as CSSStyleSheet[];
+  for (const sheet of sheets) {
+    const rule = Array.from(sheet.cssRules).find(
+      (cssRule): cssRule is CSSStyleRule =>
+        cssRule instanceof CSSStyleRule && cssRule.selectorText === selector,
+    );
+    if (rule) return rule.style;
+  }
+  throw new Error(`Style rule ${selector} not found`);
+};
+
 const renderWindow = () =>
   render(
     <DesktopWindow id="win" title="Test Window" isOpen={true} onClose={() => undefined}>
@@ -20,8 +32,9 @@ describe('DesktopWindow resizing', () => {
     const { container } = renderWindow();
     const dialog = container.querySelector('[data-desktop-window="win"]') as HTMLDivElement;
     const handle = dialog.querySelector('[data-resize-handle="southeast"]') as HTMLElement;
-    expect(dialog.style.width).toBe('420px');
-    expect(dialog.style.height).toBe('');
+    const style = getRuleStyle('[data-desktop-window="win"]');
+    expect(style.width).toBe('420px');
+    expect(style.getPropertyValue('height')).toBe('');
 
     await act(async () => {
       handle.dispatchEvent(
@@ -31,8 +44,9 @@ describe('DesktopWindow resizing', () => {
       handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true, clientX: 580, clientY: 520 }));
     });
 
-    expect(dialog.style.width).toBe('480px');
-    expect(dialog.style.height).toBe('380px');
+    const updatedStyle = getRuleStyle('[data-desktop-window="win"]');
+    expect(updatedStyle.width).toBe('480px');
+    expect(updatedStyle.height).toBe('380px');
   });
 
   it('enforces the configured minimum width when shrinking', async () => {
@@ -47,6 +61,7 @@ describe('DesktopWindow resizing', () => {
     });
 
     // default width is 420, minWidth resolves to floor(420 * 0.6) = 252
-    expect(dialog.style.width).toBe('252px');
+    const shrunkStyle = getRuleStyle('[data-desktop-window="win"]');
+    expect(shrunkStyle.width).toBe('252px');
   });
 });

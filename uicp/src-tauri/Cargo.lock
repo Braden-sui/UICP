@@ -6001,6 +6001,7 @@ dependencies = [
  "hex",
  "keyring",
  "once_cell",
+ "parking_lot",
  "pollster",
  "rand 0.8.5",
  "reqwest",

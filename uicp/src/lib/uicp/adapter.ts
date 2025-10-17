@@ -10,6 +10,12 @@ import type { JobSpec } from "../../compute/types";
 import { checkPermission } from "../permissions/PermissionManager";
 import { useAppStore } from "../../state/app";
 import { emitTelemetryEvent } from "../telemetry";
+import {
+  applyDynamicStyleRule,
+  removeDynamicStyleRule,
+  escapeForSelector,
+  type DynamicStyleDeclarations,
+} from "../css/dynamicStyles";
 
 const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
@@ -65,6 +71,7 @@ type WindowRecord = {
   wrapper: HTMLElement;
   content: HTMLElement;
   titleText: HTMLElement;
+  styleSelector: string;
 };
 
 // Deterministic stringify (sorted object keys; preserves array order) for stable op-hash.
@@ -362,6 +369,8 @@ const renderStructuredClarifierForm = (body: StructuredClarifierBody, command: E
     if (!root) {
       return { success: false, error: `Root container missing for ${windowId}` };
     }
+    // WHY: innerHTML='' is safe for clearing (no injection risk); only assignment of external data is dangerous.
+    // INVARIANT: Subsequent content is built via DOM APIs (createElement, textContent) to avoid XSS.
     root.innerHTML = '';
     const form = document.createElement('form');
     form.className = 'flex flex-col gap-3 p-4';
@@ -718,6 +727,8 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
   batchDedupeStore.clear();
   clearAllQueues();
   if (workspaceRoot) {
+    // WHY: innerHTML='' clears all children atomically without parsing HTML.
+    // INVARIANT: Safe clearing only; no dynamic content assignment.
     workspaceRoot.innerHTML = "";
   }
   if (hasTauriBridge()) {
@@ -838,6 +849,7 @@ function destroyWindow(id: string) {
     }
   }
   windowDragCleanup.delete(record.wrapper);
+  removeDynamicStyleRule(record.styleSelector);
   record.wrapper.remove();
   windows.delete(id);
   emitWindowEvent({ type: 'destroyed', id, title: record.titleText.textContent ?? id });
@@ -882,16 +894,19 @@ const titleizeWindowId = (id: string): string => {
   }
 };
 
-const applyWindowGeometry = (
-  record: WindowRecord,
-  params: OperationParamMap["window.create"] | OperationParamMap["window.update"],
-) => {
-  const style = record.wrapper.style;
-  if (params.x !== undefined) style.left = `${params.x}px`;
-  if (params.y !== undefined) style.top = `${params.y}px`;
-  if (params.width !== undefined) style.width = `${params.width}px`;
-  if (params.height !== undefined) style.height = `${params.height}px`;
-  if ("zIndex" in params && params.zIndex !== undefined) style.zIndex = String(params.zIndex);
+type WindowGeometryParams = Partial<
+  Pick<OperationParamMap["window.create"], "x" | "y" | "width" | "height" | "zIndex">
+>;
+
+const applyWindowGeometry = (record: WindowRecord, params: WindowGeometryParams) => {
+  const declarations: DynamicStyleDeclarations = {};
+  if (typeof params.x === "number") declarations.left = `${params.x}px`;
+  if (typeof params.y === "number") declarations.top = `${params.y}px`;
+  if (typeof params.width === "number") declarations.width = `${params.width}px`;
+  if (typeof params.height === "number") declarations.height = `${params.height}px`;
+  if (typeof params.zIndex === "number") declarations["z-index"] = String(params.zIndex);
+  if (Object.keys(declarations).length === 0) return;
+  applyDynamicStyleRule(record.styleSelector, declarations);
 };
 
 // Core command executors emit structured success so the queue can surface rich errors without throwing.
@@ -908,7 +923,13 @@ const executeWindowCreate = (
     );
 
     if (existing) {
-      applyWindowGeometry(existing, params);
+      applyWindowGeometry(existing, {
+        x: params.x,
+        y: params.y,
+        width: params.width,
+        height: params.height,
+        zIndex: params.zIndex,
+      });
       existing.titleText.textContent = params.title;
       emitWindowEvent({ type: 'updated', id, title: params.title });
       return { success: true, value: id };
@@ -916,18 +937,8 @@ const executeWindowCreate = (
 
     const wrapper = document.createElement("div");
     wrapper.dataset.windowId = id;
+    const styleSelector = `[data-window-id="${escapeForSelector(id)}"]`;
     wrapper.className = "workspace-window pointer-events-auto";
-    wrapper.style.position = "absolute";
-    wrapper.style.backdropFilter = "blur(16px) saturate(180%)";
-    wrapper.style.background = "linear-gradient(135deg, rgba(255,255,255,0.85) 0%, rgba(255,255,255,0.75) 100%)";
-    wrapper.style.border = "1px solid rgba(255,255,255,0.18)";
-    wrapper.style.borderRadius = "20px";
-    wrapper.style.boxShadow = "0 20px 50px rgba(15,23,42,0.15), 0 8px 20px rgba(15,23,42,0.08), inset 0 0 0 1px rgba(255,255,255,0.2)";
-    wrapper.style.padding = "0";
-    wrapper.style.display = "flex";
-    wrapper.style.flexDirection = "column";
-    wrapper.style.overflow = "hidden";
-    wrapper.style.transition = "transform 0.2s ease-out, box-shadow 0.2s ease-out";
 
     const chrome = document.createElement("div");
     chrome.className = "window-title flex items-center justify-between bg-gradient-to-r from-white/80 to-white/70 px-4 py-3 text-sm font-semibold text-slate-700 backdrop-blur-sm select-none cursor-grab border-b border-slate-200/40";
@@ -971,9 +982,15 @@ const executeWindowCreate = (
     wrapper.appendChild(content);
     root.appendChild(wrapper);
 
-    const record: WindowRecord = { id, wrapper, content, titleText };
+    const record: WindowRecord = { id, wrapper, content, titleText, styleSelector };
     windows.set(id, record);
-    applyWindowGeometry(record, params);
+    applyWindowGeometry(record, {
+      x: params.x,
+      y: params.y,
+      width: params.width,
+      height: params.height,
+      zIndex: params.zIndex,
+    });
     emitWindowEvent({ type: 'created', id, title: params.title });
 
     // Install lightweight pointer-drag on the chrome to move the window
@@ -1021,8 +1038,10 @@ const executeWindowCreate = (
         event.preventDefault();
         return;
       }
-      wrapper.style.left = `${Math.round(nextX)}px`;
-      wrapper.style.top = `${Math.round(nextY)}px`;
+      applyWindowGeometry(record, {
+        x: Math.round(nextX),
+        y: Math.round(nextY),
+      });
       originX = event.clientX;
       originY = event.clientY;
       event.preventDefault();
@@ -1096,6 +1115,7 @@ const executeDomSet = (params: OperationParamMap["dom.set"]): CommandResult<stri
     }
     const safeHtml = sanitizeHtmlStrict(String(params.html));
     // WHY: Final DOM insertion must use the DOMPurify-cleansed payload, even if upstream validation passed.
+    // eslint-disable-next-line no-restricted-syntax
     target.innerHTML = safeHtml as unknown as string;
     return { success: true, value: params.windowId };
   } catch (error) {
@@ -1121,6 +1141,8 @@ const executeComponentRender = (
     const node = document.createElement("div");
     node.dataset.componentId = id;
     node.className = "component-block";
+    // WHY: buildComponentMarkup now uses escapeHtml for all interpolation; safe from XSS.
+    // eslint-disable-next-line no-restricted-syntax
     node.innerHTML = buildComponentMarkup(params);
 
     target.appendChild(node);
@@ -1130,6 +1152,17 @@ const executeComponentRender = (
   } catch (error) {
     return toFailure(error);
   }
+};
+
+// WHY: HTML entity encoding prevents XSS when interpolating user data into markup.
+// INVARIANT: All dynamic content in buildComponentMarkup MUST pass through escapeHtml.
+const escapeHtml = (unsafe: string): string => {
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
 };
 
 const buildComponentMarkup = (params: OperationParamMap["component.render"]): string => {
@@ -1144,7 +1177,8 @@ const buildComponentMarkup = (params: OperationParamMap["component.render"]): st
     const title = typeof params.props === "object" && params.props && "title" in params.props
       ? String((params.props as Record<string, unknown>).title)
       : "Modal";
-    return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${title}</h2><p class="text-sm text-slate-600">Placeholder modal content.</p></div>`;
+    // WHY: Escape title to prevent XSS via modal title injection.
+    return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${escapeHtml(title)}</h2><p class="text-sm text-slate-600">Placeholder modal content.</p></div>`;
   }
   if (type.includes("button")) {
     const label = typeof params.props === "object" && params.props && "label" in params.props
@@ -1153,14 +1187,16 @@ const buildComponentMarkup = (params: OperationParamMap["component.render"]): st
     const cmd = typeof params.props === "object" && params.props && "command" in params.props
       ? String((params.props as Record<string, unknown>).command)
       : undefined;
-    const dataAttr = cmd ? ` data-command="${cmd.replace(/"/g, '&quot;')}"` : '';
-    return `<button class="button-primary rounded px-3 py-2"${dataAttr}>${label}</button>`;
+    // WHY: Escape both attribute and text content to prevent XSS.
+    const dataAttr = cmd ? ` data-command="${escapeHtml(cmd)}"` : '';
+    return `<button class="button-primary rounded px-3 py-2"${dataAttr}>${escapeHtml(label)}</button>`;
   }
   if (type.includes("cell")) {
     const text = typeof params.props === "object" && params.props && "text" in params.props
       ? String((params.props as Record<string, unknown>).text)
       : "";
-    return `<div class="flex h-20 w-20 items-center justify-center rounded border border-slate-300 bg-white text-xl font-semibold">${text}</div>`;
+    // WHY: Escape cell text to prevent XSS via component props.
+    return `<div class="flex h-20 w-20 items-center justify-center rounded border border-slate-300 bg-white text-xl font-semibold">${escapeHtml(text)}</div>`;
   }
   if (type.includes("grid")) {
     return '<div class="grid grid-cols-3 gap-2">' +
@@ -1246,7 +1282,13 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
           record.titleText.textContent = params.title;
           emitWindowEvent({ type: 'updated', id: params.id, title: params.title });
         }
-        applyWindowGeometry(record, params);
+        applyWindowGeometry(record, {
+          x: params.x,
+          y: params.y,
+          width: params.width,
+          height: params.height,
+          zIndex: params.zIndex,
+        });
         return { success: true, value: params.id };
       } catch (error) {
         return toFailure(error);

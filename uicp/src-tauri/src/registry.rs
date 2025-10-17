@@ -602,6 +602,8 @@ mod tests {
             filename: format!("{task}@{version}.wasm"),
             digest_sha256: digest_hex.to_string(),
             signature: sig_b64,
+            keyid: None,
+            signed_at: None,
         }
     }
 
@@ -943,7 +945,11 @@ fn provenance_path(modules_dir: &Path, task: &str, version: &str) -> PathBuf {
 
 /// Load provenance metadata for a module if it exists.
 /// Returns None if the file doesn't exist (not an error).
-pub fn load_provenance(modules_dir: &Path, task: &str, version: &str) -> Result<Option<ModuleProvenance>> {
+pub fn load_provenance(
+    modules_dir: &Path,
+    task: &str,
+    version: &str,
+) -> Result<Option<ModuleProvenance>> {
     let path = provenance_path(modules_dir, task, version);
     if !path.exists() {
         return Ok(None);
@@ -971,8 +977,7 @@ pub fn load_provenance(modules_dir: &Path, task: &str, version: &str) -> Result<
 #[allow(dead_code)]
 pub fn save_provenance(modules_dir: &Path, prov: &ModuleProvenance) -> Result<()> {
     let path = provenance_path(modules_dir, &prov.task, &prov.version);
-    let json = serde_json::to_string_pretty(prov)
-        .context("serialize provenance")?;
+    let json = serde_json::to_string_pretty(prov).context("serialize provenance")?;
     fs::write(&path, json.as_bytes())
         .with_context(|| format!("write provenance: {}", path.display()))?;
     Ok(())
@@ -1035,6 +1040,8 @@ mod tests_signature {
             filename: "demo@1.0.0.wasm".into(),
             digest_sha256: digest_hex,
             signature: Some(sig_b64),
+            keyid: None,
+            signed_at: None,
         };
 
         let ok = verify_entry_signature(&entry, vk.as_bytes()).unwrap();
@@ -1073,6 +1080,8 @@ mod tests_signature {
             filename: "module.wasm".into(),
             digest_sha256: "ab".repeat(32),
             signature: None,
+            keyid: None,
+            signed_at: None,
         };
         assert!(validate_manifest_entry(&entry).is_ok());
 
@@ -1092,6 +1101,8 @@ mod tests_signature {
                 filename: "task@1.0.0.wasm".into(),
                 digest_sha256: "aa".repeat(32),
                 signature: None,
+                keyid: None,
+                signed_at: None,
             },
             ModuleEntry {
                 task: "task".into(),
@@ -1099,6 +1110,8 @@ mod tests_signature {
                 filename: "task@1.2.0.wasm".into(),
                 digest_sha256: "bb".repeat(32),
                 signature: None,
+                keyid: None,
+                signed_at: None,
             },
             ModuleEntry {
                 task: "task".into(),
@@ -1106,6 +1119,8 @@ mod tests_signature {
                 filename: "task@1.1.9.wasm".into(),
                 digest_sha256: "cc".repeat(32),
                 signature: None,
+                keyid: None,
+                signed_at: None,
             },
         ];
 
@@ -1128,6 +1143,8 @@ mod tests_signature {
             filename: "task@latest.wasm".into(),
             digest_sha256: "aa".repeat(32),
             signature: None,
+            keyid: None,
+            signed_at: None,
         }];
 
         let err = select_manifest_entry(&entries, "task", "").unwrap_err();
@@ -1148,6 +1165,8 @@ mod tests_signature {
                     filename: "task@1.0.0.wasm".into(),
                     digest_sha256: "aa".repeat(32),
                     signature: None,
+                    keyid: None,
+                    signed_at: None,
                 },
                 ModuleEntry {
                     task: "task".into(),
@@ -1155,6 +1174,8 @@ mod tests_signature {
                     filename: "task@1.0.0b.wasm".into(),
                     digest_sha256: "bb".repeat(32),
                     signature: None,
+                    keyid: None,
+                    signed_at: None,
                 },
             ],
         };
@@ -1225,8 +1246,14 @@ mod tests_signature {
 
         assert_eq!(deserialized.task, "test.task");
         assert_eq!(deserialized.version, "1.0.0");
-        assert_eq!(deserialized.origin_url, Some("https://example.com/modules".into()));
-        assert_eq!(deserialized.build_toolchain, Some("cargo-component 0.13.2".into()));
+        assert_eq!(
+            deserialized.origin_url,
+            Some("https://example.com/modules".into())
+        );
+        assert_eq!(
+            deserialized.build_toolchain,
+            Some("cargo-component 0.13.2".into())
+        );
         assert_eq!(deserialized.wit_world, Some("compute:task/v1".into()));
         assert_eq!(deserialized.built_at, Some(1234567890));
         assert_eq!(deserialized.source_revision, Some("abc123".into()));
@@ -1260,7 +1287,10 @@ mod tests_signature {
 
         assert_eq!(loaded.task, "csv.parse");
         assert_eq!(loaded.version, "1.2.0");
-        assert_eq!(loaded.origin_url, Some("https://registry.example.com".into()));
+        assert_eq!(
+            loaded.origin_url,
+            Some("https://registry.example.com".into())
+        );
         assert_eq!(loaded.built_at, Some(1700000000));
     }
 
@@ -1269,6 +1299,7 @@ mod tests_signature {
         let tmp = tempfile::tempdir().unwrap();
         let modules_dir = tmp.path();
 
+        // Save provenance with mismatched task/version in content
         let prov = ModuleProvenance {
             task: "wrong.task".into(),
             version: "2.0.0".into(),
@@ -1281,9 +1312,12 @@ mod tests_signature {
             metadata: None,
         };
 
-        save_provenance(modules_dir, &prov).expect("save failed");
+        // Save as csv.parse@1.2.0.provenance.json but with mismatched content
+        let path = provenance_path(modules_dir, "csv.parse", "1.2.0");
+        let json = serde_json::to_string_pretty(&prov).unwrap();
+        std::fs::write(&path, json).unwrap();
 
-        // Try to load with different task/version
+        // Try to load - should detect mismatch
         let err = load_provenance(modules_dir, "csv.parse", "1.2.0").unwrap_err();
         assert!(
             err.to_string().contains("provenance mismatch"),
@@ -1296,8 +1330,12 @@ mod tests_signature {
         let tmp = tempfile::tempdir().unwrap();
         let modules_dir = tmp.path();
 
-        let result = load_provenance(modules_dir, "nonexistent", "1.0.0").expect("should not error");
-        assert!(result.is_none(), "expected None for missing provenance file");
+        let result =
+            load_provenance(modules_dir, "nonexistent", "1.0.0").expect("should not error");
+        assert!(
+            result.is_none(),
+            "expected None for missing provenance file"
+        );
     }
 
     #[test]

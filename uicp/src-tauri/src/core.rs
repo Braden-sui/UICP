@@ -60,7 +60,7 @@ impl Default for CircuitBreakerConfig {
 
 impl CircuitBreakerConfig {
     /// Load configuration from environment variables with fallback to defaults.
-    /// 
+    ///
     /// Environment variables:
     /// - UICP_CIRCUIT_MAX_FAILURES: Maximum consecutive failures before opening (default: 3)
     /// - UICP_CIRCUIT_OPEN_MS: Duration to keep circuit open in milliseconds (default: 15000)
@@ -69,13 +69,16 @@ impl CircuitBreakerConfig {
             .ok()
             .and_then(|v| v.parse::<u8>().ok())
             .unwrap_or(3);
-        
+
         let open_duration_ms = std::env::var("UICP_CIRCUIT_OPEN_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(15_000);
-        
-        Self { max_failures, open_duration_ms }
+
+        Self {
+            max_failures,
+            open_duration_ms,
+        }
     }
 }
 
@@ -135,10 +138,10 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     std::fs::create_dir_all(&*DATA_DIR).context("create data dir")?;
     let conn = Connection::open(db_path).context("open sqlite")?;
     configure_sqlite(&conn).context("configure sqlite init")?;
-    
+
     // Ensure schema_version table exists first for migration tracking
     ensure_schema_version_table(&conn).context("ensure schema_version table")?;
-    
+
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS workspace (
@@ -205,20 +208,20 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
-    
+
     // Apply compute_cache migration with versioning and error recovery
     migrate_compute_cache(&conn).context(
         "compute_cache migration failed. Recovery: Stop all UICP instances, backup data.db, \
         then run 'PRAGMA integrity_check' manually. If corrupt, restore from backup or \
-        delete compute_cache table to rebuild cache from scratch."
+        delete compute_cache table to rebuild cache from scratch.",
     )?;
-    
+
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_compute_cache_task_env ON compute_cache (workspace_id, task, env_hash)",
         [],
     )
     .context("ensure compute_cache task/env index")?;
-    
+
     // Record successful migration
     record_schema_version(&conn, SCHEMA_VERSION).context("record schema version")?;
 
@@ -284,7 +287,7 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    
+
     // Ensure the legacy table has the workspace column before we attempt to rebuild the PK.
     let mut has_workspace_column = false;
     {
@@ -310,7 +313,7 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
                 if msg.contains("duplicate column name") => {}
             Err(err) => {
                 return Err(err).context(
-                    "Failed to add workspace_id column. The database may be locked or corrupt."
+                    "Failed to add workspace_id column. The database may be locked or corrupt.",
                 )
             }
         }
@@ -387,7 +390,7 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
         "Failed to rebuild compute_cache table with composite primary key. \
         This migration deduplicates cache entries and adds proper workspace scoping. \
         If this fails repeatedly, the cache can be safely cleared by running: \
-        'DELETE FROM compute_cache' as it will rebuild automatically."
+        'DELETE FROM compute_cache' as it will rebuild automatically.",
     )?;
 
     Ok(())

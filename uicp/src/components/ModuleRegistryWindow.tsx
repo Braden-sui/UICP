@@ -141,7 +141,7 @@ const ModuleRegistryWindow = () => {
           </div>
         )}
 
-        <div className="flex flex-col gap-2 overflow-y-auto" style={{ maxHeight: '500px' }}>
+        <div className="flex max-h-[500px] flex-col gap-2 overflow-y-auto">
           {registry?.modules.map((mod) => {
             const moduleKey = `${mod.task}@${mod.version}`;
             const isExpanded = expandedModule === moduleKey;
@@ -319,7 +319,7 @@ const ModuleRegistryWindow = () => {
         </div>
 
         <div className="text-[11px] text-slate-500">
-          Museum labels for every skull: Each module's cryptographic digest, signature, and supply chain provenance.
+          Museum labels for every skull: Each module&apos;s cryptographic digest, signature, and supply chain provenance.
         </div>
       </div>
     </DesktopWindow>

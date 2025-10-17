@@ -1,12 +1,15 @@
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, SyncSender},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc as std_mpsc, Arc,
+    },
     thread,
     time::Duration,
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use blake3::Hasher;
@@ -16,15 +19,39 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    oneshot,
+};
 
 const HASH_DOMAIN: &[u8] = b"UICP-ACTION-LOG-V0";
-const DEFAULT_QUEUE_DEPTH: usize = 1_024;
+#[cfg(not(test))]
+// WHY: Compute stdout bursts can enqueue thousands of frames; 4k depth keeps writers non-blocking while remaining bounded.
+const DEFAULT_QUEUE_DEPTH: usize = 4_096;
+#[cfg(test)]
+const DEFAULT_QUEUE_DEPTH: usize = 16;
 const ENV_SIGNING_SEED: &str = "UICP_ACTION_LOG_SIGNING_SEED";
 const ENV_SIGNING_SEED_FALLBACK: &str = "UICP_MODULES_SIGNING_SEED";
 
+#[derive(Debug, Default)]
+struct ActionLogMetrics {
+    backpressure_events: AtomicU64,
+    enqueue_failures: AtomicU64,
+    reply_failures: AtomicU64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ActionLogStatsSnapshot {
+    pub backpressure_events: u64,
+    pub enqueue_failures: u64,
+    pub reply_failures: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ActionLogHandle {
-    tx: SyncSender<ActionLogCommand>,
+    tx: mpsc::Sender<ActionLogCommand>,
+    metrics: Arc<ActionLogMetrics>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -47,7 +74,7 @@ pub struct ActionLogEntry<'a> {
 enum ActionLogCommand {
     Append {
         entry: ActionLogEntry<'static>,
-        reply: mpsc::Sender<anyhow::Result<ActionLogReceipt>>,
+        reply: oneshot::Sender<anyhow::Result<ActionLogReceipt>>,
     },
 }
 
@@ -72,14 +99,25 @@ impl ActionLogService {
         db_path: &Path,
         signing_seed: Option<[u8; 32]>,
     ) -> anyhow::Result<ActionLogHandle> {
+        Self::start_with_seed_with_capacity(db_path, signing_seed, DEFAULT_QUEUE_DEPTH)
+    }
+
+    fn start_with_seed_with_capacity(
+        db_path: &Path,
+        signing_seed: Option<[u8; 32]>,
+        queue_depth: usize,
+    ) -> anyhow::Result<ActionLogHandle> {
         ensure_parent_dir(db_path)?;
-        let (tx, rx) = mpsc::sync_channel(DEFAULT_QUEUE_DEPTH);
-        let (ready_tx, ready_rx) = mpsc::channel::<anyhow::Result<()>>();
+        let (tx, rx) = mpsc::channel(queue_depth);
+        let (ready_tx, ready_rx) = std_mpsc::channel::<anyhow::Result<()>>();
         let path: PathBuf = db_path.to_path_buf();
+        let metrics = Arc::new(ActionLogMetrics::default());
+        let metrics_for_worker = metrics.clone();
 
         thread::Builder::new()
             .name("action-log-worker".into())
             .spawn(move || {
+                let mut rx = rx;
                 let init = (|| -> anyhow::Result<()> {
                     let mut conn = Connection::open(&path)
                         .with_context(|| format!("open sqlite for action log {:?}", path))?;
@@ -91,7 +129,13 @@ impl ActionLogService {
                         .send(Ok(()))
                         .context("signal action log worker ready")?;
 
-                    worker_loop(&mut conn, signing_key.as_ref(), &mut rng, rx)
+                    worker_loop(
+                        &mut conn,
+                        signing_key.as_ref(),
+                        &mut rng,
+                        &mut rx,
+                        metrics_for_worker,
+                    )
                 })();
 
                 if let Err(err) = init {
@@ -105,35 +149,87 @@ impl ActionLogService {
             .context("await action log worker init")?
             .context("action log worker failed to initialize")?;
 
-        Ok(ActionLogHandle { tx })
+        Ok(ActionLogHandle { tx, metrics })
     }
 }
 
 impl ActionLogHandle {
-    pub fn append_json(&self, kind: &str, payload: &Value) -> anyhow::Result<ActionLogReceipt> {
+    pub fn stats_snapshot(&self) -> ActionLogStatsSnapshot {
+        ActionLogStatsSnapshot {
+            backpressure_events: self.metrics.backpressure_events.load(Ordering::Relaxed),
+            enqueue_failures: self.metrics.enqueue_failures.load(Ordering::Relaxed),
+            reply_failures: self.metrics.reply_failures.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn append_json_blocking(
+        &self,
+        kind: &str,
+        payload: &Value,
+    ) -> anyhow::Result<ActionLogReceipt> {
+        tauri::async_runtime::block_on(self.append_json(kind, payload))
+    }
+
+    pub async fn append_json(
+        &self,
+        kind: &str,
+        payload: &Value,
+    ) -> anyhow::Result<ActionLogReceipt> {
         let json = serde_json::to_string(payload).context("serialize action log payload")?;
         let entry = ActionLogEntry {
             ts: Utc::now().timestamp_millis(),
             kind: Cow::Owned(kind.to_owned()),
             payload_json: Cow::Owned(json),
         };
-        self.append(entry)
+        self.append(entry).await
     }
 
-    pub fn append(&self, entry: ActionLogEntry<'_>) -> anyhow::Result<ActionLogReceipt> {
+    pub fn append_blocking(&self, entry: ActionLogEntry<'_>) -> anyhow::Result<ActionLogReceipt> {
+        tauri::async_runtime::block_on(self.append(entry))
+    }
+
+    pub async fn append(&self, entry: ActionLogEntry<'_>) -> anyhow::Result<ActionLogReceipt> {
         let entry_owned = ActionLogEntry {
             ts: entry.ts,
             kind: Cow::Owned(entry.kind.into_owned()),
             payload_json: Cow::Owned(entry.payload_json.into_owned()),
         };
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.tx
-            .send(ActionLogCommand::Append {
-                entry: entry_owned,
-                reply: reply_tx,
-            })
-            .context("queue action log append")?;
-        reply_rx.recv().context("await action log receipt")?
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        match self.tx.try_send(ActionLogCommand::Append {
+            entry: entry_owned,
+            reply: reply_tx,
+        }) {
+            Ok(()) => {}
+            Err(TrySendError::Full(cmd)) => {
+                // WHY: Record when writers encounter backpressure so operators can alert before logs stall.
+                self.metrics
+                    .backpressure_events
+                    .fetch_add(1, Ordering::Relaxed);
+                self.tx.send(cmd).await.map_err(|err| {
+                    self.metrics
+                        .enqueue_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    anyhow!("E-UICP-0601: action log channel closed while flushing backlog: {err}")
+                })?;
+            }
+            Err(TrySendError::Closed(_cmd)) => {
+                self.metrics
+                    .enqueue_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                anyhow::bail!("E-UICP-0602: action log worker not available");
+            }
+        }
+
+        match reply_rx.await {
+            Ok(result) => result,
+            Err(err) => {
+                self.metrics.reply_failures.fetch_add(1, Ordering::Relaxed);
+                Err(anyhow!(
+                    "E-UICP-0603: action log worker dropped reply: {err}"
+                ))
+            }
+        }
     }
 }
 
@@ -141,13 +237,16 @@ fn worker_loop(
     conn: &mut Connection,
     signing_key: Option<&SigningKey>,
     rng: &mut OsRng,
-    rx: Receiver<ActionLogCommand>,
+    rx: &mut mpsc::Receiver<ActionLogCommand>,
+    metrics: Arc<ActionLogMetrics>,
 ) -> anyhow::Result<()> {
-    while let Ok(cmd) = rx.recv() {
+    while let Some(cmd) = rx.blocking_recv() {
         match cmd {
             ActionLogCommand::Append { entry, reply } => {
                 let result = append_entry(conn, signing_key, rng, entry);
-                let _ = reply.send(result);
+                if reply.send(result).is_err() {
+                    metrics.reply_failures.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -422,17 +521,21 @@ fn update_len_prefixed(hasher: &mut Hasher, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::tempdir;
+    use tokio::{sync::Barrier, task::JoinSet};
 
     #[test]
-    fn append_and_verify_chain() -> anyhow::Result<()> {
+    fn blocking_append_and_verify_chain() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let db_path = dir.path().join("test.db");
         let seed = [7u8; 32];
         let handle = ActionLogService::start_with_seed(&db_path, Some(seed))?;
 
-        let first = handle.append_json("test.event", &serde_json::json!({"msg": "first"}))?;
-        let second = handle.append_json("test.event", &serde_json::json!({"msg": "second"}))?;
+        let first =
+            handle.append_json_blocking("test.event", &serde_json::json!({"msg": "first"}))?;
+        let second =
+            handle.append_json_blocking("test.event", &serde_json::json!({"msg": "second"}))?;
 
         assert_ne!(first.id, second.id);
         assert_ne!(first.hash, second.hash);
@@ -453,6 +556,66 @@ mod tests {
         let parsed = parse_pubkey(&vk_b64)?;
         assert_eq!(parsed.to_bytes(), signing.verifying_key().to_bytes());
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn append_and_verify_chain_async() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let db_path = dir.path().join("test-async.db");
+        let seed = [5u8; 32];
+        let handle = ActionLogService::start_with_seed(&db_path, Some(seed))?;
+
+        let first = handle
+            .append_json("test.event", &serde_json::json!({"msg": "first"}))
+            .await?;
+        let second = handle
+            .append_json("test.event", &serde_json::json!({"msg": "second"}))
+            .await?;
+
+        assert_eq!(
+            second.prev_hash.expect("prev hash"),
+            first.hash,
+            "INVARIANT: chain links to previous hash"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn records_backpressure_when_queue_starves() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let db_path = dir.path().join("test-backpressure.db");
+        let seed = [9u8; 32];
+        let handle = ActionLogService::start_with_seed(&db_path, Some(seed))?;
+
+        // WHY: Barrier forces all tasks to enqueue concurrently, increasing pressure on the bounded queue.
+        let concurrency = 64usize;
+        let barrier = Arc::new(Barrier::new(concurrency + 1));
+        let mut join_set: JoinSet<anyhow::Result<_>> = JoinSet::new();
+        for idx in 0..concurrency {
+            let handle = handle.clone();
+            let barrier = barrier.clone();
+            let payload = serde_json::json!({
+                "msg": format!("burst-{idx}"),
+                // WHY: Inflate payload so sqlite work is non-trivial, keeping the worker busy.
+                "blob": "x".repeat(8 * 1024),
+            });
+            join_set.spawn(async move {
+                barrier.wait().await;
+                handle.append_json("test.burst", &payload).await
+            });
+        }
+
+        barrier.wait().await;
+        while let Some(outcome) = join_set.join_next().await {
+            outcome??;
+        }
+
+        let stats = handle.stats_snapshot();
+        assert!(
+            stats.backpressure_events > 0,
+            "expected at least one backpressure event, stats={stats:?}"
+        );
         Ok(())
     }
 }

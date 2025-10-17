@@ -27,7 +27,7 @@ pub struct CircuitDebugInfo {
 
 /// Check if circuit is open for the given host.
 /// Returns Some(until) if circuit is open, None if closed or half-open.
-/// 
+///
 /// WHY: Fast-path read avoids write lock contention under load.
 /// INVARIANT: Expired circuits are lazily cleared on next write operation.
 pub async fn circuit_is_open(
@@ -71,11 +71,11 @@ pub async fn circuit_record_success(
     let entry = guard.entry(host.to_string()).or_default();
     let was_open = entry.opened_until.is_some();
     let had_failures = entry.consecutive_failures > 0;
-    
+
     entry.consecutive_failures = 0;
     entry.opened_until = None;
     entry.total_successes = entry.total_successes.saturating_add(1);
-    
+
     // Emit circuit.close event if transitioning from open/degraded to healthy
     if was_open || had_failures {
         emit_telemetry(
@@ -103,11 +103,11 @@ pub async fn circuit_record_failure(
     entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
     entry.total_failures = entry.total_failures.saturating_add(1);
     entry.last_failure_at = Some(Instant::now());
-    
+
     if entry.consecutive_failures >= config.max_failures {
         let until = Instant::now() + Duration::from_millis(config.open_duration_ms);
         entry.opened_until = Some(until);
-        
+
         // Emit circuit.open event
         emit_telemetry(
             "circuit-open",
@@ -118,7 +118,7 @@ pub async fn circuit_record_failure(
                 "totalFailures": entry.total_failures,
             }),
         );
-        
+
         Some(until)
     } else {
         None
@@ -132,7 +132,7 @@ pub async fn get_circuit_debug_info(
 ) -> Vec<CircuitDebugInfo> {
     let guard = circuits.read().await;
     let now = Instant::now();
-    
+
     guard
         .iter()
         .map(|(host, state)| {
@@ -143,11 +143,11 @@ pub async fn get_circuit_debug_info(
                     None
                 }
             });
-            
-            let last_failure_ms_ago = state.last_failure_at.map(|at| {
-                now.saturating_duration_since(at).as_millis() as u64
-            });
-            
+
+            let last_failure_ms_ago = state
+                .last_failure_at
+                .map(|at| now.saturating_duration_since(at).as_millis() as u64);
+
             let state_str = if state.opened_until.is_some() && opened_until_ms.is_some() {
                 "open"
             } else if state.consecutive_failures > 0 {
@@ -155,7 +155,7 @@ pub async fn get_circuit_debug_info(
             } else {
                 "healthy"
             };
-            
+
             CircuitDebugInfo {
                 host: host.clone(),
                 consecutive_failures: state.consecutive_failures,

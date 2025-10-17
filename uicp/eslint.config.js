@@ -24,6 +24,23 @@ export default [
       ],
     },
   },
+  // Ban innerHTML usage (XSS prevention)
+  {
+    files: ['src/**/*.{ts,tsx,js,jsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'MemberExpression[property.name="innerHTML"][parent.type="AssignmentExpression"][parent.operator="="][parent.right.type!="Literal"][parent.right.value!=""]',
+          message: 'E-SEC-0001: innerHTML assignment with dynamic content is forbidden (XSS risk). Use DOM APIs (createElement, textContent) or escapeHtml() for dynamic content.',
+        },
+        {
+          selector: 'MemberExpression[property.name="innerHTML"][parent.type="AssignmentExpression"][parent.operator="="][parent.right.type="TemplateLiteral"]',
+          message: 'E-SEC-0002: innerHTML with template literals is forbidden (XSS risk). Use DOM APIs (createElement, textContent) or pass through escapeHtml().',
+        },
+      ],
+    },
+  },
   {
     files: ['**/*.{ts,tsx}', '**/*.{js,jsx}'],
     languageOptions: {

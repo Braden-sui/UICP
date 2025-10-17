@@ -1,6 +1,8 @@
-import { useCallback, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import clsx from 'clsx';
 import type { DesktopShortcutPosition } from '../state/app';
+import { useDynamicStyleRule } from '../hooks/useDynamicStyleRule';
+import { escapeForSelector } from '../lib/css/dynamicStyles';
 
 const ICON_WIDTH = 96; // Tailwind w-24
 const ICON_HEIGHT = 104; // Icon + label stack footprint
@@ -115,6 +117,17 @@ const DesktopIcon = ({
     }
   }, []);
 
+  const iconSelector = useMemo(() => `[data-shortcut-id="${escapeForSelector(id)}"]`, [id]);
+
+  useDynamicStyleRule(
+    iconSelector,
+    {
+      left: `${position.x}px`,
+      top: `${position.y}px`,
+    },
+    [position.x, position.y],
+  );
+
   return (
     <div
       role="button"
@@ -126,7 +139,6 @@ const DesktopIcon = ({
         dragging && 'scale-[1.02]',
         active && 'active',
       )}
-      style={{ left: position.x, top: position.y }}
       onDoubleClick={handleOpen}
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}

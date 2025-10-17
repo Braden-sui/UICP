@@ -52,19 +52,9 @@ use core::CircuitBreakerConfig;
 
 // Re-export shared core items so crate::... references in submodules remain valid
 pub use core::{
-    APP_NAME,
-    OLLAMA_CLOUD_HOST_DEFAULT,
-    OLLAMA_LOCAL_BASE_DEFAULT,
-    DATA_DIR,
-    LOGS_DIR,
-    FILES_DIR,
-    files_dir_path,
-    configure_sqlite,
-    emit_or_log,
-    remove_compute_job,
-    AppState,
-    init_database,
-    ensure_default_workspace,
+    configure_sqlite, emit_or_log, ensure_default_workspace, files_dir_path, init_database,
+    remove_compute_job, AppState, APP_NAME, DATA_DIR, FILES_DIR, LOGS_DIR,
+    OLLAMA_CLOUD_HOST_DEFAULT, OLLAMA_LOCAL_BASE_DEFAULT,
 };
 
 static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
@@ -153,16 +143,20 @@ async fn compute_call(
         return Err(format!("Duplicate job id {}", spec.job_id));
     }
 
-    if let Err(err) = state.action_log.append_json(
-        "compute.job.submit",
-        &serde_json::json!({
-            "jobId": spec.job_id.clone(),
-            "task": spec.task.clone(),
-            "cache": spec.cache.clone(),
-            "workspaceId": spec.workspace_id.clone(),
-            "ts": chrono::Utc::now().timestamp_millis(),
-        }),
-    ) {
+    if let Err(err) = state
+        .action_log
+        .append_json(
+            "compute.job.submit",
+            &serde_json::json!({
+                "jobId": spec.job_id.clone(),
+                "task": spec.task.clone(),
+                "cache": spec.cache.clone(),
+                "workspaceId": spec.workspace_id.clone(),
+                "ts": chrono::Utc::now().timestamp_millis(),
+            }),
+        )
+        .await
+    {
         return Err(format!("Action log append failed: {err}"));
     }
 
@@ -187,9 +181,10 @@ async fn compute_call(
                     .entry("metrics")
                     .or_insert_with(|| serde_json::json!({}));
                 if metrics.is_object() {
+                    // SAFETY: Checked is_object() above
                     metrics
                         .as_object_mut()
-                        .unwrap()
+                        .expect("metrics.is_object() checked above")
                         .insert("cacheHit".into(), serde_json::json!(true));
                 } else {
                     *metrics = serde_json::json!({ "cacheHit": true });
@@ -905,7 +900,7 @@ async fn chat_completion(
                 let _ = handle.emit("debug-log", payload);
             }
         };
-        
+
         let emit_circuit_telemetry = |event_name: &str, payload: serde_json::Value| {
             let handle = app_handle.clone();
             let name = event_name.to_string();
@@ -1458,7 +1453,12 @@ async fn chat_completion(
                     }
 
                     if let Some(host) = host_for_attempt.as_deref() {
-                        circuit::circuit_record_success(&circuit_breakers, host, emit_circuit_telemetry).await;
+                        circuit::circuit_record_success(
+                            &circuit_breakers,
+                            host,
+                            emit_circuit_telemetry,
+                        )
+                        .await;
                     }
 
                     if debug_on {
@@ -1647,7 +1647,7 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
 }
 
 /// Spawn periodic database maintenance task for WAL checkpointing and vacuuming.
-/// 
+///
 /// Runs every 24 hours by default (configurable via UICP_DB_MAINTENANCE_INTERVAL_HOURS).
 /// Performs:
 /// - WAL checkpoint (TRUNCATE) to prevent unbounded WAL growth
@@ -1659,54 +1659,56 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(24);
-        
+
         let vacuum_interval_days = std::env::var("UICP_DB_VACUUM_INTERVAL_DAYS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(7);
-        
+
         let mut ticker = interval(Duration::from_secs(interval_hours * 60 * 60));
         let mut ticks_since_vacuum = 0u64;
         let ticks_per_vacuum = (vacuum_interval_days * 24) / interval_hours;
-        
+
         loop {
             ticker.tick().await;
             let state: State<'_, AppState> = app_handle.state();
-            
+
             // Skip maintenance in safe mode to avoid interfering with recovery
             if *state.safe_mode.read().await {
                 continue;
             }
-            
+
             #[cfg(feature = "otel_spans")]
-            let span = tracing::info_span!("db_maintenance", run_vacuum = ticks_since_vacuum >= ticks_per_vacuum).entered();
+            let span = tracing::info_span!(
+                "db_maintenance",
+                run_vacuum = ticks_since_vacuum >= ticks_per_vacuum
+            )
+            .entered();
             #[cfg(feature = "otel_spans")]
             let started = Instant::now();
-            
+
             let should_vacuum = ticks_since_vacuum >= ticks_per_vacuum;
             ticks_since_vacuum += 1;
-            
+
             let res = state
                 .db_rw
                 .call(
                     move |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
                         // Always checkpoint and optimize
-                        c.execute_batch(
-                            "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;"
-                        )
-                        .map_err(tokio_rusqlite::Error::from)?;
-                        
+                        c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
+                            .map_err(tokio_rusqlite::Error::from)?;
+
                         // Periodically vacuum to reclaim fragmented space
                         if should_vacuum {
                             c.execute_batch("VACUUM;")
                                 .map_err(tokio_rusqlite::Error::from)?;
                         }
-                        
+
                         Ok(())
                     },
                 )
                 .await;
-            
+
             match &res {
                 Ok(_) => {
                     if should_vacuum {
@@ -1716,8 +1718,8 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                     {
                         let ms = started.elapsed().as_millis() as i64;
                         tracing::info!(
-                            target = "uicp", 
-                            duration_ms = ms, 
+                            target = "uicp",
+                            duration_ms = ms,
                             vacuumed = should_vacuum,
                             "db maintenance completed"
                         );
@@ -1729,9 +1731,9 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                     {
                         let ms = started.elapsed().as_millis() as i64;
                         tracing::warn!(
-                            target = "uicp", 
-                            duration_ms = ms, 
-                            error = %e, 
+                            target = "uicp",
+                            duration_ms = ms,
+                            error = %e,
                             "db maintenance failed"
                         );
                     }
@@ -1746,7 +1748,7 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                     );
                 }
             }
-            
+
             #[cfg(feature = "otel_spans")]
             drop(span);
         }
@@ -1837,7 +1839,7 @@ fn main() {
         }
     };
 
-    if let Err(err) = action_log.append_json(
+    if let Err(err) = action_log.append_json_blocking(
         "system.boot",
         &serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
@@ -1961,11 +1963,13 @@ fn main() {
 
 /// Get debug information for all circuit breakers.
 /// Returns per-host state including failures, open status, and telemetry counters.
-/// 
+///
 /// WHY: Provides runtime visibility into circuit breaker state for debugging and monitoring.
 /// INVARIANT: Read-only operation; does not modify circuit state.
 #[tauri::command]
-async fn debug_circuits(state: State<'_, AppState>) -> Result<Vec<circuit::CircuitDebugInfo>, String> {
+async fn debug_circuits(
+    state: State<'_, AppState>,
+) -> Result<Vec<circuit::CircuitDebugInfo>, String> {
     let info = circuit::get_circuit_debug_info(&state.circuit_breakers).await;
     Ok(info)
 }
@@ -2582,7 +2586,9 @@ async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, Str
     tokio::fs::create_dir_all(&logs_dir)
         .await
         .map_err(|e| format!("{e}"))?;
-    tokio::fs::write(&path, serde_json::to_vec_pretty(&bundle).unwrap())
+    let json_bytes =
+        serde_json::to_vec_pretty(&bundle).map_err(|e| format!("serialize diagnostics: {e}"))?;
+    tokio::fs::write(&path, json_bytes)
         .await
         .map_err(|e| format!("{e}"))?;
     Ok(serde_json::json!({"path": path.display().to_string()}))
@@ -2637,11 +2643,9 @@ async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64
 async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("compact_log_after_last_checkpoint").entered();
-    let ts_opt = last_checkpoint_ts(app).await?;
-    if ts_opt.is_none() {
+    let Some(since) = last_checkpoint_ts(app).await? else {
         return Ok(0);
-    }
-    let since = ts_opt.unwrap();
+    };
     let state: State<'_, AppState> = app.state();
     let deleted = state
         .db_rw
@@ -2660,11 +2664,9 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
 async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("rollback_to_last_checkpoint").entered();
-    let ts_opt = last_checkpoint_ts(app).await?;
-    if ts_opt.is_none() {
+    let Some(since) = last_checkpoint_ts(app).await? else {
         return Ok(0);
-    }
-    let since = ts_opt.unwrap();
+    };
     let state: State<'_, AppState> = app.state();
     let truncated = state
         .db_rw

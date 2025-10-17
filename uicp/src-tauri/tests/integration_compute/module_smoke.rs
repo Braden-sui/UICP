@@ -12,9 +12,8 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Once;
 use uicp::{
-    compute::preflight_component_imports,
-    registry, test_support::ComputeTestHarness, ComputeCapabilitiesSpec, ComputeJobSpec,
-    ComputeProvenanceSpec,
+    compute::preflight_component_imports, registry, test_support::ComputeTestHarness,
+    ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec,
 };
 
 fn skip_contract_verify() {

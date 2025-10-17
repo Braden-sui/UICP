@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import clsx from 'clsx';
+import { useDynamicStyleRule } from '../hooks/useDynamicStyleRule';
+import { escapeForSelector } from '../lib/css/dynamicStyles';
 
 export type DesktopWindowProps = {
   id: string;
@@ -247,20 +249,35 @@ const DesktopWindow = ({
     _onClose?.();
   }, [_onClose]);
 
+  const windowSelector = useMemo(
+    () => `[data-desktop-window="${escapeForSelector(id)}"]`,
+    [id],
+  );
+
+  const normalizedHeight = typeof size.height === 'number' ? size.height : null;
+
+  useDynamicStyleRule(
+    windowSelector,
+    {
+      left: `${position.x}px`,
+      top: `${position.y}px`,
+      width: `${size.width}px`,
+      'min-width': `${minWidth}px`,
+      'min-height': `${minHeight}px`,
+      height: normalizedHeight !== null ? `${normalizedHeight}px` : null,
+    },
+    [position.x, position.y, size.width, normalizedHeight, minWidth, minHeight],
+  );
+
   return (
     <div className="pointer-events-none absolute inset-0 z-40" aria-hidden={!isOpen}>
       <div
         ref={windowRef}
-        className={clsx('pointer-events-auto absolute', (dragging || resizing) && 'transition-none')}
-        style={{
-          left: position.x,
-          top: position.y,
-          width: size.width,
-          minHeight,
-          minWidth,
-          height: size.height,
-          display: isOpen ? 'block' : 'none',
-        }}
+        className={clsx(
+          'pointer-events-auto absolute',
+          (dragging || resizing) && 'transition-none',
+          !isOpen && 'hidden',
+        )}
         role="dialog"
         aria-labelledby={titleId}
         data-desktop-window={id}

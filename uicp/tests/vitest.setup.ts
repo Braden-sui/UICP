@@ -43,5 +43,12 @@ beforeEach(() => {
     (window as typeof window & {
       __TAURI__?: { core?: { invoke?: unknown } };
     }).__TAURI__ = { core: { invoke: tauriMocks.invokeMock } };
+
+    const dynamicAttr = "data-uicp-dynamic-styles";
+    if (!document.querySelector(`[${dynamicAttr}]`)) {
+      const styleEl = document.createElement("style");
+      styleEl.setAttribute(dynamicAttr, "");
+      document.head.appendChild(styleEl);
+    }
   }
 });

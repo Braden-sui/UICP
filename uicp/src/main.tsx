@@ -6,15 +6,34 @@ const LOADER_ID = 'uicp-loading-screen';
 const mountLoadingScreen = () => {
   if (typeof document === 'undefined') return;
   if (document.getElementById(LOADER_ID)) return;
+
+  // WHY: Use DOM APIs instead of innerHTML to eliminate XSS risk entirely.
+  // INVARIANT: No string interpolation, no dynamic content.
   const loader = document.createElement('div');
   loader.id = LOADER_ID;
-  loader.innerHTML = `
-    <div class="loading-shell">
-      <div class="loading-logo">UICP</div>
-      <p class="loading-text">Preparing workspace…</p>
-      <div class="loading-bar"><div class="loading-bar-fill"></div></div>
-    </div>
-  `;
+
+  const shell = document.createElement('div');
+  shell.className = 'loading-shell';
+
+  const logo = document.createElement('div');
+  logo.className = 'loading-logo';
+  logo.textContent = 'UICP';
+
+  const text = document.createElement('p');
+  text.className = 'loading-text';
+  text.textContent = 'Preparing workspace…';
+
+  const bar = document.createElement('div');
+  bar.className = 'loading-bar';
+  const barFill = document.createElement('div');
+  barFill.className = 'loading-bar-fill';
+  bar.appendChild(barFill);
+
+  shell.appendChild(logo);
+  shell.appendChild(text);
+  shell.appendChild(bar);
+  loader.appendChild(shell);
+
   document.body.appendChild(loader);
 };
 

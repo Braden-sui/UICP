@@ -13,7 +13,6 @@ describe('DesktopIcon', () => {
     const view = render(
       <div
         ref={containerRef}
-        style={{ position: 'relative', width: '800px', height: '600px' }}
         data-testid="desktop-overlay"
       >
         <DesktopIcon

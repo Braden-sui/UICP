@@ -59,7 +59,11 @@ pub fn canonicalize_input(value: &Value) -> String {
                     // key
                     write(&Value::String(k.to_string()), out);
                     out.push(':');
-                    write(map.get(k).unwrap(), out);
+                    // SAFETY: k came from keys iterator, so must exist in map
+                    write(
+                        map.get(k).expect("key from iterator must exist in map"),
+                        out,
+                    );
                 }
                 out.push('}');
             }
@@ -126,18 +130,21 @@ mod tests {
         // Test that identical IEEE 754 values produce identical canonical forms.
         // NOTE: 0.3 and (0.1 + 0.2) have DIFFERENT IEEE representations (classic precision issue).
         // We test that the same IEEE value, created multiple ways, canonicalizes identically.
-        
+
         let value = 0.3f64; // Exact IEEE representation
-        let canonical_a = canonicalize_input(&Value::Number(Number::from_f64(value).expect("finite")));
-        let canonical_b = canonicalize_input(&Value::Number(Number::from_f64(value).expect("finite")));
+        let canonical_a =
+            canonicalize_input(&Value::Number(Number::from_f64(value).expect("finite")));
+        let canonical_b =
+            canonicalize_input(&Value::Number(Number::from_f64(value).expect("finite")));
         assert_eq!(
             canonical_a, canonical_b,
             "identical IEEE 754 values must canonicalize identically"
         );
-        
+
         // Verify that DIFFERENT IEEE values produce DIFFERENT canonical forms (cache correctness).
         let different = 0.1f64 + 0.2f64; // Different IEEE representation from 0.3
-        let canonical_c = canonicalize_input(&Value::Number(Number::from_f64(different).expect("finite")));
+        let canonical_c =
+            canonicalize_input(&Value::Number(Number::from_f64(different).expect("finite")));
         assert_ne!(
             canonical_a, canonical_c,
             "different IEEE 754 values (0.3 vs 0.1+0.2) must canonicalize differently for cache correctness"
@@ -146,9 +153,18 @@ mod tests {
 
     #[test]
     fn serde_refuses_non_finite_numbers() {
-        assert!(Number::from_f64(f64::NAN).is_none(), "serde_json::Number must reject NaN");
-        assert!(Number::from_f64(f64::INFINITY).is_none(), "serde_json::Number must reject +INF");
-        assert!(Number::from_f64(f64::NEG_INFINITY).is_none(), "serde_json::Number must reject -INF");
+        assert!(
+            Number::from_f64(f64::NAN).is_none(),
+            "serde_json::Number must reject NaN"
+        );
+        assert!(
+            Number::from_f64(f64::INFINITY).is_none(),
+            "serde_json::Number must reject +INF"
+        );
+        assert!(
+            Number::from_f64(f64::NEG_INFINITY).is_none(),
+            "serde_json::Number must reject -INF"
+        );
     }
 
     #[test]

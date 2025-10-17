@@ -15,8 +15,6 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
 use tauri::{Emitter, Manager, Runtime};
-#[cfg(feature = "wasm_compute")]
-use tokio::sync::mpsc;
 use tokio::sync::OwnedSemaphorePermit;
 
 #[cfg(feature = "wasm_compute")]
@@ -69,16 +67,22 @@ mod with_runtime {
     use pollster::block_on;
     use serde_json;
     use sha2::{Digest, Sha256};
+    use std::collections::BTreeSet;
     use std::convert::TryFrom;
     use std::io::Cursor;
-    use std::collections::BTreeSet;
     use std::path::Path;
     use std::sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc,
     };
     use tauri::AppHandle;
-    use tokio::sync::mpsc::error::TryRecvError;
+    use tokio::sync::{
+        mpsc::{
+            self,
+            error::{TryRecvError, TrySendError},
+        },
+        Mutex,
+    };
     use tokio::time::{sleep, Duration as TokioDuration};
     use wasmtime::{
         component::{Component, Linker, Resource, ResourceTable},
@@ -123,6 +127,7 @@ mod with_runtime {
         fn emit_partial_json(&self, payload: serde_json::Value);
     }
 
+    #[derive(Clone)]
     enum UiEvent {
         Debug(serde_json::Value),
         PartialEvent(crate::ComputePartialEvent),
@@ -257,7 +262,7 @@ mod with_runtime {
             loop {
                 let wait_for;
                 {
-                    let mut rl = self.logger_rate.lock().unwrap();
+                    let mut rl = self.logger_rate.blocking_lock();
                     let avail = rl.available();
                     if avail >= total {
                         rl.consume(total);
@@ -332,46 +337,41 @@ mod with_runtime {
     const MAX_PARTIAL_FRAME_BYTES: usize = 64 * 1024;
 
     struct QueueingEmitter {
-        tx: Mutex<mpsc::Sender<UiEvent>>,
+        tx: mpsc::Sender<UiEvent>,
     }
 
     impl Clone for QueueingEmitter {
         fn clone(&self) -> Self {
-            let tx = self.tx.lock().unwrap().clone();
-            Self { tx: Mutex::new(tx) }
+            Self {
+                tx: self.tx.clone(),
+            }
+        }
+    }
+
+    impl QueueingEmitter {
+        fn push_with_backoff(&self, mut event: UiEvent) {
+            loop {
+                match self.tx.try_send(event) {
+                    Ok(()) => break,
+                    Err(TrySendError::Full(returned)) => {
+                        event = returned;
+                        cooperative_backoff();
+                    }
+                    Err(TrySendError::Closed(_)) => break,
+                }
+            }
         }
     }
 
     impl TelemetryEmitter for QueueingEmitter {
         fn emit_debug(&self, payload: serde_json::Value) {
-            loop {
-                let tx = self.tx.lock().unwrap();
-                if tx.try_send(UiEvent::Debug(payload.clone())).is_ok() {
-                    break;
-                }
-                drop(tx);
-                cooperative_backoff();
-            }
+            self.push_with_backoff(UiEvent::Debug(payload));
         }
         fn emit_partial(&self, event: crate::ComputePartialEvent) {
-            loop {
-                let tx = self.tx.lock().unwrap();
-                if tx.try_send(UiEvent::PartialEvent(event.clone())).is_ok() {
-                    break;
-                }
-                drop(tx);
-                cooperative_backoff();
-            }
+            self.push_with_backoff(UiEvent::PartialEvent(event));
         }
         fn emit_partial_json(&self, payload: serde_json::Value) {
-            loop {
-                let tx = self.tx.lock().unwrap();
-                if tx.try_send(UiEvent::PartialJson(payload.clone())).is_ok() {
-                    break;
-                }
-                drop(tx);
-                cooperative_backoff();
-            }
+            self.push_with_backoff(UiEvent::PartialJson(payload));
         }
     }
 
@@ -443,7 +443,7 @@ mod with_runtime {
         async fn ready(&mut self) {
             loop {
                 let wait_for = {
-                    let mut rl = self.shared.partial_rate.lock().unwrap();
+                    let mut rl = self.shared.partial_rate.lock().await;
                     if rl.try_take_event() {
                         return;
                     }
@@ -487,9 +487,12 @@ mod with_runtime {
         }
 
         fn check_write(&mut self) -> StreamResult<usize> {
-            let mut rl = self.shared.partial_rate.lock().unwrap();
-            if rl.peek_tokens() >= 1.0 {
-                Ok(usize::MAX)
+            if let Ok(mut rl) = self.shared.partial_rate.try_lock() {
+                if rl.peek_tokens() >= 1.0 {
+                    Ok(usize::MAX)
+                } else {
+                    Ok(0)
+                }
             } else {
                 Ok(0)
             }
@@ -537,7 +540,7 @@ mod with_runtime {
             loop {
                 let wait_for;
                 {
-                    let mut rl = self.shared.log_rate.lock().unwrap();
+                    let mut rl = self.shared.log_rate.blocking_lock();
                     let avail = rl.available();
                     if avail >= len {
                         rl.consume(len);
@@ -555,7 +558,7 @@ mod with_runtime {
                     std::thread::sleep(wait_for);
                 }
             }
-            let mut buf = self.shared.buf.lock().unwrap();
+            let mut buf = self.shared.buf.blocking_lock();
             buf.extend_from_slice(bytes);
             // Emit one event per completed line
             loop {
@@ -589,7 +592,7 @@ mod with_runtime {
 
                     // WHY: Append to the durable action_log before UI emission to preserve append-first semantics.
                     let full_b64 = BASE64_ENGINE.encode(to_emit);
-                    if let Err(err) = self.shared.action_log.append_json(
+                    if let Err(err) = self.shared.action_log.append_json_blocking(
                         "compute.log",
                         &serde_json::json!({
                             "jobId": self.shared.job_id,
@@ -1076,9 +1079,8 @@ mod with_runtime {
                 }
             });
             let _ = drain;
-            let telemetry: Arc<dyn TelemetryEmitter> = Arc::new(QueueingEmitter {
-                tx: Mutex::new(tx_ui),
-            });
+            let telemetry: Arc<dyn TelemetryEmitter> =
+                Arc::new(QueueingEmitter { tx: tx_ui.clone() });
             let partial_seq = Arc::new(AtomicU64::new(0));
             let partial_frames = Arc::new(AtomicU64::new(0));
             let invalid_partials = Arc::new(AtomicU64::new(0));
@@ -1134,7 +1136,7 @@ mod with_runtime {
 
                         // stdout/stderr
                         {
-                            let mut rl = log_rate_c.lock().unwrap();
+                            let mut rl = log_rate_c.lock().await;
                             let cur = rl.rate_per_sec();
                             if ewma_log >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
@@ -1146,7 +1148,7 @@ mod with_runtime {
                         }
                         // logger
                         {
-                            let mut rl = logger_rate_c.lock().unwrap();
+                            let mut rl = logger_rate_c.lock().await;
                             let cur = rl.rate_per_sec();
                             if ewma_logger >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
@@ -1162,7 +1164,7 @@ mod with_runtime {
                         }
                         // partial events
                         {
-                            let mut rl = partial_rate_c.lock().unwrap();
+                            let mut rl = partial_rate_c.lock().await;
                             let cur = rl.rate_per_sec();
                             if ewma_partial >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as u32;
@@ -1981,15 +1983,15 @@ mod with_runtime {
         let (stdout_burst, stdout_rate, logger_burst, logger_rate, partial_burst, partial_rate) = {
             let ctx = store.data();
             let (stdout_burst, stdout_rate) = {
-                let rl = ctx.log_rate.lock().unwrap();
+                let rl = ctx.log_rate.blocking_lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             let (logger_burst, logger_rate) = {
-                let rl = ctx.logger_rate.lock().unwrap();
+                let rl = ctx.logger_rate.blocking_lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             let (partial_burst, partial_rate) = {
-                let rl = ctx.partial_rate.lock().unwrap();
+                let rl = ctx.partial_rate.blocking_lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             (
@@ -2346,7 +2348,8 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn wasi_logging_bridge_emits_partial_event() {
-            use std::sync::{Arc, Mutex};
+            use parking_lot::Mutex;
+            use std::sync::Arc;
 
             struct TestEmitter {
                 partials: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -2362,11 +2365,11 @@ mod with_runtime {
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    self.debugs.lock().unwrap().push(payload);
+                    self.debugs.lock().push(payload);
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, payload: serde_json::Value) {
-                    self.partials.lock().unwrap().push(payload);
+                    self.partials.lock().push(payload);
                 }
             }
 
@@ -2416,11 +2419,7 @@ mod with_runtime {
             }
 
             // Verify a partial event was captured with expected fields
-            let part = captured_partials
-                .lock()
-                .unwrap()
-                .pop()
-                .expect("one partial emitted");
+            let part = captured_partials.lock().pop().expect("one partial emitted");
             assert_eq!(part.get("kind").and_then(|v| v.as_str()), Some("log"));
             assert_eq!(
                 part.get("stream").and_then(|v| v.as_str()),
@@ -2432,9 +2431,10 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn wasi_logging_guest_component_emits_partial_event() {
+            use parking_lot::Mutex;
             use std::path::PathBuf;
             use std::process::Command as PCommand;
-            use std::sync::{Arc, Mutex};
+            use std::sync::Arc;
             use tokio::runtime::Runtime;
 
             // Build the tiny log test component
@@ -2477,14 +2477,15 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, payload: serde_json::Value) {
-                    self.partials.lock().unwrap().push(payload);
+                    self.partials.lock().push(payload);
                 }
             }
 
             let engine = build_engine().expect("engine");
             let mut linker: Linker<Ctx> = Linker::new(&engine);
+            let app = registry::test_app_handle();
             add_wasi_and_host(&mut linker).expect("wasi+host add ok");
-            let component = Component::from_file(&engine, &wasm).expect("component");
+            let component = Component::from_file(&app, &wasm).expect("component");
 
             // Minimal job context
             let tele = Arc::new(TestEmitter::default());
@@ -2581,7 +2582,7 @@ mod with_runtime {
                     .expect("call run");
             });
 
-            let captured = tele.partials.lock().unwrap().clone();
+            let captured = tele.partials.lock().clone();
             assert!(
                 captured
                     .iter()
@@ -2750,26 +2751,24 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn collect_metrics_accumulates_counters_and_mempeak() {
-            use wasmtime::ResourceLimiter;
             #[derive(Clone, Default)]
             struct TestEmitter {
-                debugs: Arc<Mutex<Vec<serde_json::Value>>>,
+                debugs: Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    self.debugs.lock().unwrap().push(payload);
+                    *self.debugs.lock() = payload;
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
             }
 
-            let engine = build_engine().expect("engine");
+            let num = rng_counter_post.load(Ordering::Relaxed);
             let tele: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter::default());
             let limits = LimitsWithPeak::new(64 * 1024 * 1024);
             let mut store: Store<Ctx> = Store::new(
                 &engine,
                 Ctx {
-                    wasi: WasiCtxBuilder::new().build(),
                     table: ResourceTable::new(),
                     emitter: tele,
                     job_id: "metrics-job".into(),

@@ -332,10 +332,13 @@ pub fn canonicalize_task_input(spec: &ComputeJobSpec) -> Result<serde_json::Valu
                 "select": select,
             });
             if let Some((col, needle)) = where_opt {
-                obj.as_object_mut().unwrap().insert(
-                    "where_contains".into(),
-                    serde_json::json!({ "col": col, "needle": needle }),
-                );
+                // SAFETY: json! macro with object literal always creates Value::Object
+                obj.as_object_mut()
+                    .expect("json! object literal must be Value::Object")
+                    .insert(
+                        "where_contains".into(),
+                        serde_json::json!({ "col": col, "needle": needle }),
+                    );
             }
             Ok(obj)
         }

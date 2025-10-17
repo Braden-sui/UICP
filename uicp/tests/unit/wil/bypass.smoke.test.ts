@@ -4,6 +4,18 @@ import { parseWILBatch } from '../../../src/lib/orchestrator/parseWILBatch';
 import { validateBatch } from '../../../src/lib/uicp/schemas';
 import { getTauriMocks } from '../../mocks/tauri';
 
+const getRuleStyle = (selector: string): CSSStyleDeclaration => {
+  const sheets = Array.from(document.styleSheets) as CSSStyleSheet[];
+  for (const sheet of sheets) {
+    const rule = Array.from(sheet.cssRules).find(
+      (cssRule): cssRule is CSSStyleRule =>
+        cssRule instanceof CSSStyleRule && cssRule.selectorText === selector,
+    );
+    if (rule) return rule.style;
+  }
+  throw new Error(`Style rule ${selector} missing`);
+};
+
 describe('LLM-bypass window smoke test', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -27,7 +39,8 @@ describe('LLM-bypass window smoke test', () => {
 
     const el = document.querySelector(`[data-window-id="${smoke!.id}"]`) as HTMLElement | null;
     expect(el).not.toBeNull();
-    expect(el!.style.width).toContain('320px');
-    expect(el!.style.height).toContain('200px');
+    const style = getRuleStyle(`[data-window-id="${smoke!.id}"]`);
+    expect(style.width).toBe('320px');
+    expect(style.height).toBe('200px');
   });
 });
