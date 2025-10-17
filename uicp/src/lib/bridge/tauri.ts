@@ -545,9 +545,11 @@ export async function initializeTauriBridge() {
           }
         }
         let flushed = false;
+        let wasCancelled = false;
         try {
-          await agg.flush();
-          flushed = true;
+          const flushResult = await agg.flush();
+          flushed = !flushResult?.cancelled;
+          wasCancelled = flushResult?.cancelled ?? false;
         } catch (error) {
           handleAggregatorError(error);
         }
@@ -555,9 +557,13 @@ export async function initializeTauriBridge() {
         if (flushed) {
           aggregatorFailed = false;
         }
+        // WHY: Emit stream.closed event to signal stream termination with reason
+        // INVARIANT: reason is 'user_cancel' if cancelled, 'normal' otherwise
+        const closeReason = wasCancelled ? 'user_cancel' : 'normal';
         if (currentTraceId) {
-          console.info('[ollama] stream finished', { traceId: currentTraceId, gen: activeStream });
-          emitUiDebug('stream_finished', { traceId: currentTraceId, gen: activeStream, flushed });
+          console.info('[ollama] stream finished', { traceId: currentTraceId, gen: activeStream, reason: closeReason });
+          emitUiDebug('stream_finished', { traceId: currentTraceId, gen: activeStream, flushed, reason: closeReason });
+          emitUiDebug('stream_closed', { traceId: currentTraceId, gen: activeStream, reason: closeReason });
           currentTraceId = null;
         }
         aggregators.delete(activeStream);
@@ -568,6 +574,14 @@ export async function initializeTauriBridge() {
         try {
           // Reset failure latch when a new stream starts so future runs can surface their own errors.
           if (!useAppStore.getState().streaming) {
+            // WHY: Cancel previous stream if it exists to prevent ghost echoes
+            const prevAgg = aggregators.get(activeStream);
+            if (prevAgg) {
+              prevAgg.cancel();
+              if (import.meta.env.DEV) {
+                console.debug('[ollama] cancelling superseded stream', { gen: activeStream });
+              }
+            }
             activeStream = ++streamGen;
             aggregatorFailed = false;
             currentTraceId = createId('trace');

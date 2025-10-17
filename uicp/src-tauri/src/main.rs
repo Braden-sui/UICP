@@ -7,16 +7,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Context;
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use chrono::Utc;
-use dirs::data_dir;
 use dotenvy::dotenv;
 use keyring::Entry;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Url};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
@@ -50,27 +48,29 @@ pub use policy::{
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
-use core::{CircuitBreakerConfig, CircuitState};
+use core::CircuitBreakerConfig;
 
-static APP_NAME: &str = "UICP";
-static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
-static OLLAMA_LOCAL_BASE_DEFAULT: &str = "http://127.0.0.1:11434/v1";
-static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
-    if let Ok(dir) = std::env::var("UICP_DATA_DIR") {
-        return PathBuf::from(dir);
-    }
-    let base = data_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(APP_NAME)
-});
+// Re-export shared core items so crate::... references in submodules remain valid
+pub use core::{
+    APP_NAME,
+    OLLAMA_CLOUD_HOST_DEFAULT,
+    OLLAMA_LOCAL_BASE_DEFAULT,
+    DATA_DIR,
+    LOGS_DIR,
+    FILES_DIR,
+    files_dir_path,
+    configure_sqlite,
+    emit_or_log,
+    remove_compute_job,
+    AppState,
+    init_database,
+    ensure_default_workspace,
+};
+
 static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
 static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
-static LOGS_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("logs"));
-static FILES_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("files"));
 
-// Expose workspace files directory for host runtimes (e.g., WASI preopens)
-pub(crate) fn files_dir_path() -> &'static std::path::Path {
-    &*FILES_DIR
-}
+// files_dir_path is re-exported from core
 
 /// Remove a chat request handle from the ongoing map (helper for consistent cleanup).
 pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
@@ -78,19 +78,7 @@ pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_i
     state.ongoing.write().await.remove(request_id);
 }
 
-// CircuitState and CircuitBreakerConfig now defined in core module
-
-pub(crate) fn configure_sqlite(conn: &Connection) -> anyhow::Result<()> {
-    conn.busy_timeout(Duration::from_millis(5_000))
-        .context("sqlite busy_timeout 5s")?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .context("sqlite journal_mode=WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")
-        .context("sqlite synchronous=NORMAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")
-        .context("sqlite foreign_keys=ON")?;
-    Ok(())
-}
+// CircuitState and CircuitBreakerConfig now defined in core module; configure_sqlite re-exported
 
 // Circuit breaker functions moved to circuit.rs module
 
@@ -120,26 +108,7 @@ fn emit_problem_detail(
     );
 }
 
-pub struct AppState {
-    db_path: PathBuf,
-    db_ro: AsyncConn,
-    db_rw: AsyncConn,
-    last_save_ok: RwLock<bool>,
-    ollama_key: RwLock<Option<String>>,
-    use_direct_cloud: RwLock<bool>,
-    debug_enabled: RwLock<bool>,
-    http: Client,
-    ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
-    compute_ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
-    compute_sem: Arc<Semaphore>,
-    compute_cancel: RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>,
-    safe_mode: RwLock<bool>,
-    safe_reason: RwLock<Option<String>>,
-    circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
-    circuit_config: CircuitBreakerConfig,
-    #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
-    action_log: action_log::ActionLogHandle,
-}
+// AppState is re-exported from core
 
 #[derive(Clone, Serialize)]
 struct SaveIndicatorPayload {
@@ -1519,269 +1488,7 @@ async fn chat_completion(
     Ok(())
 }
 
-/// Current database schema version. Increment when making schema changes.
-const SCHEMA_VERSION: i64 = 1;
-
-fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
-    std::fs::create_dir_all(&*DATA_DIR).context("create data dir")?;
-    let conn = Connection::open(db_path).context("open sqlite")?;
-    configure_sqlite(&conn).context("configure sqlite init")?;
-    
-    // Ensure schema_version table exists first for migration tracking
-    ensure_schema_version_table(&conn).context("ensure schema_version table")?;
-    
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS workspace (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS window (
-            id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            size TEXT NOT NULL,
-            x REAL,
-            y REAL,
-            width REAL,
-            height REAL,
-            z_index INTEGER,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS window_content (
-            id TEXT PRIMARY KEY,
-            window_id TEXT NOT NULL,
-            html TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY(window_id) REFERENCES window(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS tool_call (
-            id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            tool TEXT NOT NULL,
-            args_json TEXT NOT NULL,
-            result_json TEXT,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS compute_cache (
-            workspace_id TEXT NOT NULL,
-            key TEXT NOT NULL,
-            task TEXT NOT NULL,
-            env_hash TEXT NOT NULL,
-            value_json TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            PRIMARY KEY (workspace_id, key)
-        );
-        "#,
-    )
-    .context("apply migrations")?;
-    action_log::ensure_action_log_schema(&conn)
-        .context("ensure action_log schema (init_database)")?;
-
-    match conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
-        Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-            if msg.contains("duplicate column name") => {}
-        Err(err) => return Err(err.into()),
-    }
-    match conn.execute("ALTER TABLE window ADD COLUMN height REAL DEFAULT 480", []) {
-        Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-            if msg.contains("duplicate column name") => {}
-        Err(err) => return Err(err.into()),
-    }
-    // Apply compute_cache migration with versioning and error recovery
-    migrate_compute_cache(&conn).context(
-        "compute_cache migration failed. Recovery: Stop all UICP instances, backup data.db, \
-        then run 'PRAGMA integrity_check' manually. If corrupt, restore from backup or \
-        delete compute_cache table to rebuild cache from scratch."
-    )?;
-    
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_compute_cache_task_env ON compute_cache (workspace_id, task, env_hash)",
-        [],
-    )
-    .context("ensure compute_cache task/env index")?;
-    
-    // Record successful migration
-    record_schema_version(&conn, SCHEMA_VERSION).context("record schema version")?;
-
-    Ok(())
-}
-
-/// Ensure schema_version table exists for tracking migrations.
-fn ensure_schema_version_table(conn: &Connection) -> anyhow::Result<()> {
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS schema_version (
-            component TEXT PRIMARY KEY,
-            version INTEGER NOT NULL,
-            applied_at INTEGER NOT NULL
-        );
-        "#,
-    )
-    .context("create schema_version table")?;
-    Ok(())
-}
-
-/// Record a successful schema migration.
-fn record_schema_version(conn: &Connection, version: i64) -> anyhow::Result<()> {
-    let now = Utc::now().timestamp();
-    conn.execute(
-        "INSERT OR REPLACE INTO schema_version (component, version, applied_at) \
-         VALUES ('compute_cache', ?1, ?2)",
-        params![version, now],
-    )
-    .context("record schema version")?;
-    Ok(())
-}
-
-/// Get current schema version for a component.
-fn get_schema_version(conn: &Connection, component: &str) -> anyhow::Result<Option<i64>> {
-    let version = conn
-        .query_row(
-            "SELECT version FROM schema_version WHERE component = ?1",
-            params![component],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("query schema version")?;
-    Ok(version)
-}
-
-fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
-    // Check if migration was already completed using schema version
-    if let Ok(Some(version)) = get_schema_version(conn, "compute_cache") {
-        if version >= SCHEMA_VERSION {
-            return Ok(());
-        }
-    }
-    
-    // Ensure the legacy table has the workspace column before we attempt to rebuild the PK.
-    let mut has_workspace_column = false;
-    {
-        let mut stmt = conn
-            .prepare("PRAGMA table_info('compute_cache')")
-            .context("inspect compute_cache schema")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let name: String = row.get(1)?;
-            if name == "workspace_id" {
-                has_workspace_column = true;
-                break;
-            }
-        }
-    }
-    if !has_workspace_column {
-        match conn.execute(
-            "ALTER TABLE compute_cache ADD COLUMN workspace_id TEXT DEFAULT 'default'",
-            [],
-        ) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") => {}
-            Err(err) => {
-                return Err(err).context(
-                    "Failed to add workspace_id column. The database may be locked or corrupt."
-                )
-            }
-        }
-    }
-
-    // Tighten NULLs that may have slipped in before the composite key existed.
-    conn.execute(
-        "UPDATE compute_cache SET workspace_id = 'default' WHERE workspace_id IS NULL",
-        [],
-    )
-    .context("backfill null workspace_id values")?;
-
-    // Detect if the composite primary key is already in place.
-    let mut pk_columns: Vec<String> = Vec::new();
-    {
-        let mut stmt = conn
-            .prepare("PRAGMA table_info('compute_cache')")
-            .context("inspect compute_cache primary key")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let name: String = row.get(1)?;
-            let pk_pos: i32 = row.get(5)?;
-            if pk_pos > 0 {
-                pk_columns.push(name);
-            }
-        }
-    }
-    pk_columns.sort();
-    if pk_columns == ["key".to_string(), "workspace_id".to_string()] {
-        // Migration already complete, just update version tracking
-        return Ok(());
-    }
-
-    // Clean up any failed migration artifacts
-    conn.execute("DROP TABLE IF EXISTS compute_cache_new", [])
-        .context("drop stale compute_cache_new helper table")?;
-
-    // Execute migration in transaction with enhanced error context
-    conn.execute_batch(
-        r#"
-        BEGIN IMMEDIATE;
-        CREATE TABLE compute_cache_new (
-            workspace_id TEXT NOT NULL,
-            key TEXT NOT NULL,
-            task TEXT NOT NULL,
-            env_hash TEXT NOT NULL,
-            value_json TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            PRIMARY KEY (workspace_id, key)
-        );
-        INSERT INTO compute_cache_new (workspace_id, key, task, env_hash, value_json, created_at)
-        SELECT workspace_id, key, task, env_hash, value_json, created_at
-        FROM (
-            SELECT
-                workspace_id,
-                key,
-                task,
-                env_hash,
-                value_json,
-                created_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY workspace_id, key
-                    ORDER BY created_at DESC, rowid DESC
-                ) AS rn
-            FROM compute_cache
-        )
-        WHERE rn = 1;
-        DROP TABLE compute_cache;
-        ALTER TABLE compute_cache_new RENAME TO compute_cache;
-        COMMIT;
-        "#,
-    )
-    .context(
-        "Failed to rebuild compute_cache table with composite primary key. \
-        This migration deduplicates cache entries and adds proper workspace scoping. \
-        If this fails repeatedly, the cache can be safely cleared by running: \
-        'DELETE FROM compute_cache' as it will rebuild automatically."
-    )?;
-
-    Ok(())
-}
-
-fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
-    let conn = Connection::open(db_path).context("open sqlite for default workspace")?;
-    configure_sqlite(&conn).context("configure sqlite for default workspace")?;
-    let now = Utc::now().timestamp();
-    conn.execute(
-        "INSERT OR IGNORE INTO workspace (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-        params!["default", "Default Workspace", now],
-    )
-    .context("insert default workspace")?;
-    Ok(())
-}
+// Database schema management is implemented in core::init_database and helpers.
 
 fn load_env_key(state: &AppState) -> anyhow::Result<()> {
     // Try to load API key from keyring first
@@ -1899,24 +1606,7 @@ fn derive_size_token(width: f64, height: f64) -> String {
     }
 }
 
-pub(crate) fn emit_or_log<R, T>(app_handle: &tauri::AppHandle<R>, event: &str, payload: T)
-where
-    R: tauri::Runtime,
-    T: serde::Serialize + Clone,
-{
-    if let Err(err) = app_handle.emit(event, payload) {
-        eprintln!("Failed to emit {event}: {err}");
-    }
-}
-
-/// Remove a compute job from the ongoing map. Used by the compute host to release state.
-pub(crate) async fn remove_compute_job<R: tauri::Runtime>(
-    app_handle: &tauri::AppHandle<R>,
-    job_id: &str,
-) {
-    let state: State<'_, AppState> = app_handle.state();
-    state.compute_ongoing.write().await.remove(job_id);
-}
+// emit_or_log and remove_compute_job are re-exported from core
 
 fn spawn_autosave(app_handle: tauri::AppHandle) {
     spawn(async move {
@@ -2239,6 +1929,7 @@ fn main() {
             get_paths,
             copy_into_files,
             get_modules_info,
+            get_modules_registry,
             verify_modules,
             open_path,
             load_api_key,
@@ -2433,6 +2124,40 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
         "ws:/files/{}",
         dest.file_name().and_then(|s| s.to_str()).unwrap_or(&fname)
     ))
+}
+
+/// Returns detailed module registry information with provenance for supply chain transparency.
+/// Used by the devtools panel to display "museum labels" for each module.
+#[tauri::command]
+async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("get_modules_registry").entered();
+    let dir = crate::registry::modules_dir(&app);
+    let manifest = crate::registry::load_manifest(&app).map_err(|e| e.to_string())?;
+
+    let mut modules = Vec::new();
+    for entry in manifest.entries {
+        // Load provenance for each module (best-effort)
+        let provenance = crate::registry::load_provenance(&dir, &entry.task, &entry.version)
+            .ok()
+            .flatten();
+
+        modules.push(serde_json::json!({
+            "task": entry.task,
+            "version": entry.version,
+            "filename": entry.filename,
+            "digest": entry.digest_sha256,
+            "signature": entry.signature,
+            "keyid": entry.keyid,
+            "signedAt": entry.signed_at,
+            "provenance": provenance,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "dir": dir.display().to_string(),
+        "modules": modules,
+    }))
 }
 
 #[tauri::command]

@@ -68,13 +68,13 @@ Last updated: 2025-10-13
   - `error_codes` centralized; trap mapping returns `Timeout`, `Resource.Limit`, `Task.NotFound`, `CapabilityDenied`, `Runtime.Fault`
 
 - [x] Telemetry and cache writes
-  - Emits `debug-log`, `compute.result.final`; caches deterministic payloads when replayable
+  - Emits `debug-log`, `compute-result-final`; caches deterministic payloads when replayable
 
   - [x] WASI imports
     - Current state: Preview 2 core wiring lives behind `uicp_wasi_enable`; when disabled, `add_wasi_and_host` returns a guidance error instead of silently missing imports.
     - Implemented (host: `uicp/src-tauri/src/compute.rs`):
       - [x] Per-workspace readonly preopen via `WasiCtxBuilder::new().preopened_dir(filesDir, "/ws/files", DirPerms::READ, FilePerms::READ)`; enabled only when `capabilities.fs_read|fs_write` includes `ws:/files/**`. Host helpers still enforce `sanitize_ws_files_path()` and `fs_read_allowed()` for host-mediated reads.
-      - [x] Deterministic stdio/log handling: line-buffered WASI stdout/stderr emit `compute.result.partial` log frames with `{ jobId, task, seq, kind:"log", stream, tick, bytesLen, previewB64, truncated }`; increments per-job `log_count`. Mapping `wasi:logging/logging` to structured partials is planned.
+      - [x] Deterministic stdio/log handling: line-buffered WASI stdout/stderr emit `compute-result-partial` log frames with `{ jobId, task, seq, kind:"log", stream, tick, bytesLen, previewB64, truncated }`; increments per-job `log_count`. Mapping `wasi:logging/logging` to structured partials is planned.
       - [x] Host shims for `uicp:host/control` (open_partial_sink, should_cancel, deadline_ms, remaining_ms) and `uicp:host/rng` (next_u64, fill). Logical tick is tracked internally for telemetry; guests use standard `wasi:clocks/monotonic-clock`.
       - [x] Diagnostics toggle `UICP_WASI_DIAG=1` (also `uicp_wasi_diag`) emits a one-time `wasi_diag` event with mounts/imports.
       - [x] Deterministic seed contract - AC: job has a stable seed, either `JobSpec.jobSeed` or `SHA256(jobId||envHash)`, logged and replayed.
@@ -227,7 +227,7 @@ Last updated: 2025-10-13
 ## 6) Observability
 
 - [x] Structured events
-  - `debug-log`, `compute.result.final`, `compute.debug` telemetry; replay telemetry
+  - `debug-log`, `compute-result-final`, `compute-debug` telemetry; replay telemetry
 
   - [x] Per-task metrics
   - Final envelopes include duration, cache hit, deadline budget, peak memory, fuel, and throttle counters (`uicp/src/state/compute.ts`). `summarizeComputeJobs` exposes p50/p95 snapshots consumed by Devtools panels and tested in `uicp/tests/unit/compute.summary.test.ts`.

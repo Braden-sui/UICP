@@ -37,7 +37,7 @@
 Host shims:
 
 - `uicp:host/control` exposes `should_cancel(job)`, `deadline_ms(job)`, `remaining_ms(job)`, and `open_partial_sink(job)` for structured log frames.
-- `wasi:logging/logging` is mapped to `compute.result.partial` events with rate limiting.
+- `wasi:logging/logging` is mapped to `compute-result-partial` events with rate limiting.
 - `wasi:io/streams` is limited to the stream returned by `open_partial_sink`; no other stdio is linked.
 - `wasi:clocks/monotonic-clock` provides a deterministic `now` view—exposed via the host deadline tracker.
 
@@ -109,7 +109,7 @@ await (window as any).uicpComputeCall({
 });
 ```
 
-- The bridge listens for `compute.result.partial` and `compute.result.final`.
+- The bridge listens for `compute-result-partial` and `compute-result-final`.
 - On final ok, it writes the `output` to each `bind[].toStatePath` via workspace `state.set`.
 
 ## Trap mapping (planned)

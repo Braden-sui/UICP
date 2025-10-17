@@ -12,7 +12,7 @@ Race condition where batches could arrive before Desktop.tsx registers the works
 
 ```
 1. main.tsx: initializeTauriBridge() runs
-2. Bridge: listen('ollama-completion'), listen('compute.final'), etc.
+2. Bridge: listen('ollama-completion'), listen('compute-result-final'), etc.
 3. Events arrive → enqueueBatch() → executeWindowCreate() → ensureRoot() ❌ throws
 4. Desktop.tsx mounts (later) → registerWorkspaceRoot() ✓
 ```
@@ -25,7 +25,7 @@ Race condition where batches could arrive before Desktop.tsx registers the works
 
 **Affected Flows**:
 - Streaming LLM completions (`ollama-completion` events)
-- Compute final events (`compute.final` events)
+- Compute final events (`compute-result-final` events)
 - Any early `enqueueBatch()` calls before Desktop mounts
 
 ## Solution

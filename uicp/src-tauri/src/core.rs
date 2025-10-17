@@ -47,7 +47,6 @@ pub fn files_dir_path() -> &'static std::path::Path {
 pub struct CircuitBreakerConfig {
     pub max_failures: u8,
     pub open_duration_ms: u64,
-    pub half_open_probability: f64,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -55,7 +54,6 @@ impl Default for CircuitBreakerConfig {
         Self {
             max_failures: 3,
             open_duration_ms: 15_000,
-            half_open_probability: 0.1,
         }
     }
 }
@@ -66,7 +64,6 @@ impl CircuitBreakerConfig {
     /// Environment variables:
     /// - UICP_CIRCUIT_MAX_FAILURES: Maximum consecutive failures before opening (default: 3)
     /// - UICP_CIRCUIT_OPEN_MS: Duration to keep circuit open in milliseconds (default: 15000)
-    /// - UICP_CIRCUIT_HALF_OPEN_PROB: Probability of allowing requests in half-open state (default: 0.1)
     pub fn from_env() -> Self {
         let max_failures = std::env::var("UICP_CIRCUIT_MAX_FAILURES")
             .ok()
@@ -78,17 +75,7 @@ impl CircuitBreakerConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(15_000);
         
-        let half_open_probability = std::env::var("UICP_CIRCUIT_HALF_OPEN_PROB")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.1)
-            .clamp(0.0, 1.0);
-        
-        Self {
-            max_failures,
-            open_duration_ms,
-            half_open_probability,
-        }
+        Self { max_failures, open_duration_ms }
     }
 }
 
@@ -410,7 +397,10 @@ pub fn emit_or_log<R: Runtime, T>(app_handle: &tauri::AppHandle<R>, event: &str,
 where
     T: serde::Serialize + Clone,
 {
-    // WHY: Tauri v2 enforces stricter event name rules; replace dots with dashes for compliance.
+    // WHY: Tauri v2 restricts event names (avoid dots). We normalize
+    // names by replacing '.' with '-' before emitting so callers may
+    // use either form. Prefer dashed names in new code and docs.
+    // INVARIANT: All emitted event names are dash-normalized.
     let evt = if event.contains('.') {
         event.replace('.', "-")
     } else {

@@ -27,11 +27,44 @@ pub struct ModuleEntry {
     pub digest_sha256: String, // hex-encoded
     #[serde(default)]
     pub signature: Option<String>, // optional, hex/base64
+    #[serde(default)]
+    pub keyid: Option<String>, // identifier of signing key (e.g., fingerprint, key name)
+    #[serde(default)]
+    pub signed_at: Option<i64>, // unix timestamp of signature creation
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModuleManifest {
     pub entries: Vec<ModuleEntry>,
+}
+
+/// Provenance metadata for supply chain transparency.
+/// Stored as {task}@{version}.provenance.json alongside each .wasm module.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleProvenance {
+    pub task: String,
+    pub version: String,
+    /// Origin URL where the module was sourced (e.g., registry, git repo, local build)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_url: Option<String>,
+    /// Build toolchain information (e.g., "cargo-component 0.13.2", "wit-bindgen 0.25.0")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_toolchain: Option<String>,
+    /// WIT world interface definition this component implements
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wit_world: Option<String>,
+    /// Unix timestamp when the module was built
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_at: Option<i64>,
+    /// Source commit hash or version identifier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<String>,
+    /// Builder identity (CI system, developer, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<String>,
+    /// Additional freeform metadata
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
@@ -40,6 +73,9 @@ pub struct ModuleRef {
     #[allow(dead_code)]
     pub entry: ModuleEntry,
     pub path: PathBuf,
+    /// Provenance metadata if available
+    #[allow(dead_code)]
+    pub provenance: Option<ModuleProvenance>,
 }
 
 fn resolve_modules_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
@@ -405,9 +441,23 @@ pub fn find_module<R: Runtime>(
                     entry.task, entry.version
                 )
             })?;
+            // Load provenance if available (best-effort, not required)
+            let provenance = load_provenance(&dir, &entry.task, &entry.version)
+                .ok()
+                .flatten();
+            #[cfg(feature = "otel_spans")]
+            if provenance.is_some() {
+                tracing::debug!(
+                    target = "uicp",
+                    task = %entry.task,
+                    version = %entry.version,
+                    "loaded provenance metadata"
+                );
+            }
             Ok(Some(ModuleRef {
                 entry: entry.clone(),
                 path,
+                provenance,
             }))
         }
         Ok(false) => anyhow::bail!("digest mismatch for {}", entry.filename),
@@ -883,6 +933,49 @@ fn replace_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
 #[cfg(not(windows))]
 fn replace_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
     fs::rename(tmp, dest)
+}
+
+/// Returns the expected provenance file path for a module.
+/// E.g., "csv.parse@1.2.0.provenance.json"
+fn provenance_path(modules_dir: &Path, task: &str, version: &str) -> PathBuf {
+    modules_dir.join(format!("{}@{}.provenance.json", task, version))
+}
+
+/// Load provenance metadata for a module if it exists.
+/// Returns None if the file doesn't exist (not an error).
+pub fn load_provenance(modules_dir: &Path, task: &str, version: &str) -> Result<Option<ModuleProvenance>> {
+    let path = provenance_path(modules_dir, task, version);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("read provenance: {}", path.display()))?;
+    let prov: ModuleProvenance = serde_json::from_str(&text)
+        .with_context(|| format!("parse provenance: {}", path.display()))?;
+
+    // Validate that provenance task/version matches the expected values
+    if prov.task != task || prov.version != version {
+        anyhow::bail!(
+            "provenance mismatch: file claims {}@{} but expected {}@{}",
+            prov.task,
+            prov.version,
+            task,
+            version
+        );
+    }
+    Ok(Some(prov))
+}
+
+/// Save provenance metadata for a module.
+/// This is typically called by module build tools, not at runtime.
+#[allow(dead_code)]
+pub fn save_provenance(modules_dir: &Path, prov: &ModuleProvenance) -> Result<()> {
+    let path = provenance_path(modules_dir, &prov.task, &prov.version);
+    let json = serde_json::to_string_pretty(prov)
+        .context("serialize provenance")?;
+    fs::write(&path, json.as_bytes())
+        .with_context(|| format!("write provenance: {}", path.display()))?;
+    Ok(())
 }
 
 /// Tri-state signature verification outcome.

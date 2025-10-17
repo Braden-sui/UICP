@@ -138,6 +138,7 @@ These prompts are treated as source of truth; any deviation is caught by orchest
 
 - File: `uicp/src-tauri/src/main.rs`
   - Emits `ollama-completion` SSE-like events.
+  - Event naming: backend normalizes event names by replacing `.` with `-`. Prefer dashed names in new code and listeners.
   - On upstream errors: sends `{ done: true, error: { status, code, detail, requestId, retryAfterMs? } }`.
 - File: `uicp/src/lib/llm/ollama.ts`
   - On `payload.done && payload.error`, now fails the queue (no silent completion) and ends the stream.

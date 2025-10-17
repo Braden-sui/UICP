@@ -11,6 +11,19 @@ export default [
     ignores: ['dist', 'node_modules', 'target'],
   },
   js.configs.recommended,
+  // Enforce no `as any` in uicp boundary code
+  {
+    files: ['src/lib/uicp/**/*.ts', 'src/lib/uicp/**/*.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'TSAsExpression > TSAnyKeyword',
+          message: 'E-UICP-0001: Do not use "as any" in uicp boundary code. Use precise types or proper narrowing.',
+        },
+      ],
+    },
+  },
   {
     files: ['**/*.{ts,tsx}', '**/*.{js,jsx}'],
     languageOptions: {

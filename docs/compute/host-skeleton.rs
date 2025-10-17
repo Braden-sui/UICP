@@ -49,7 +49,7 @@ fn link_host(imports: &mut Linker<Ctx>) -> Result<()> {
 
   // Wire uicp:host/control (cancel-pollable, open-partial-sink, log)
   // Use custom implementations that enforce per-job policy and map to the event bus.
-  // e.g., create a pipe-backed output-stream that feeds compute.result.partial events.
+  // e.g., create a pipe-backed output-stream that feeds compute-result-partial events.
   Ok(())
 }
 

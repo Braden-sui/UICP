@@ -1,4 +1,5 @@
-import { sanitizeHtmlStrict, type Batch, type Envelope, type OperationParamMap, computeBatchHash } from "./schemas";
+import { type Batch, type Envelope, type OperationParamMap, computeBatchHash } from "./schemas";
+import { sanitizeHtmlStrict } from "../sanitizer";
 import { createFrameCoalescer, createId } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
@@ -199,7 +200,7 @@ const persistCommand = async (command: Envelope): Promise<void> => {
     return;
   }
   if (command.op === 'api.call') {
-    const params = command.params as OperationParamMap['api.call'];
+    const params = command.params;
     if (typeof params?.url === 'string' && params.url.startsWith('uicp://intent')) {
       return;
     }
@@ -740,8 +741,7 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
   // WHY: Allow replay under Vitest where __TAURI__ is absent but mocks are installed.
   // INVARIANT: Proceed when either Tauri is present or test mocks are registered; otherwise, no-op.
   const tauriWindow = getBridgeWindow();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const hasMocks = typeof (globalThis as any).__TAURI_MOCKS__ !== 'undefined';
+  const hasMocks = typeof (globalThis as { __TAURI_MOCKS__?: unknown }).__TAURI_MOCKS__ !== 'undefined';
   const hasTauri = typeof tauriWindow?.__TAURI__ !== 'undefined' || hasMocks;
 
   if (!hasTauri) {
@@ -1215,11 +1215,11 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
   }
   switch (command.op) {
     case "window.create": {
-      const params = command.params as OperationParamMap["window.create"];
+      const params = command.params;
       return executeWindowCreate(params);
     }
     case "dom.set": {
-      const params = command.params as OperationParamMap["dom.set"];
+      const params = command.params;
       if (!windows.has(params.windowId)) {
         const ensured = await ensureWindowExists(params.windowId);
         if (!ensured.success) return ensured;
@@ -1228,7 +1228,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "window.update": {
       try {
-        const params = command.params as OperationParamMap["window.update"];
+        const params = command.params;
         let record = windows.get(params.id);
         if (!record) {
           const ensured = await ensureWindowExists(params.id, {
@@ -1254,7 +1254,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "window.close": {
       try {
-        const params = command.params as OperationParamMap["window.close"];
+        const params = command.params;
         destroyWindow(params.id);
         return { success: true, value: params.id };
       } catch (error) {
@@ -1262,7 +1262,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
       }
     }
     case "dom.replace": {
-      const params = command.params as OperationParamMap["dom.replace"];
+      const params = command.params;
       if (!windows.has(params.windowId)) {
         const ensured = await ensureWindowExists(params.windowId);
         if (!ensured.success) return ensured;
@@ -1276,7 +1276,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "dom.append": {
       try {
-        const params = command.params as OperationParamMap["dom.append"];
+        const params = command.params;
         let record = windows.get(params.windowId);
         if (!record) {
           const ensured = await ensureWindowExists(params.windowId);
@@ -1296,7 +1296,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
       }
     }
     case "component.render": {
-      const params = command.params as OperationParamMap["component.render"];
+      const params = command.params;
       if (!windows.has(params.windowId)) {
         const ensured = await ensureWindowExists(params.windowId);
         if (!ensured.success) return ensured;
@@ -1305,7 +1305,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "component.update": {
       try {
-        const params = command.params as OperationParamMap["component.update"];
+        const params = command.params;
         updateComponent(params);
         return { success: true, value: params.id };
       } catch (error) {
@@ -1314,7 +1314,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "component.destroy": {
       try {
-        const params = command.params as OperationParamMap["component.destroy"];
+        const params = command.params;
         destroyComponent(params);
         return { success: true, value: params.id };
       } catch (error) {
@@ -1323,7 +1323,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "state.set": {
       try {
-        const params = command.params as OperationParamMap["state.set"];
+        const params = command.params;
         setStateValue(params);
         return { success: true, value: params.key };
       } catch (error) {
@@ -1332,7 +1332,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "state.get": {
       try {
-        const params = command.params as OperationParamMap["state.get"];
+        const params = command.params;
         return { success: true, value: getStateValue(params) };
       } catch (error) {
         return toFailure(error);
@@ -1341,7 +1341,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     case "state.watch":
     case "state.unwatch": {
       try {
-        const params = command.params as OperationParamMap["state.watch"];
+        const params = command.params;
         return { success: true, value: params.key };
       } catch (error) {
         return toFailure(error);
@@ -1349,7 +1349,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "api.call": {
       try {
-        const params = command.params as OperationParamMap["api.call"];
+        const params = command.params;
         const url = params.url;
         // UICP compute plane submission: uicp://compute.call (body = JobSpec)
         if (url.startsWith('uicp://compute.call')) {
@@ -1503,7 +1503,7 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
     }
     case "txn.cancel": {
       try {
-        const params = command.params as OperationParamMap["txn.cancel"];
+        const params = command.params;
         components.clear();
         return { success: true, value: params.id ?? "txn" };
       } catch (error) {

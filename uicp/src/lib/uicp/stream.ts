@@ -30,8 +30,11 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
   let finalBuffer = '';
   let jsonBuffer = '';
   const toolCallAccumulators = new Map<number, ToolCallAccumulator>();
+  let cancelled = false;
 
   const processDelta = async (raw: string) => {
+    // WHY: Short-circuit if stream was cancelled to avoid processing stale deltas
+    if (cancelled) return;
     let chunk: unknown = raw;
     if (typeof raw === 'string') {
       try {
@@ -101,7 +104,11 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     }
   };
 
-  const flush = async () => {
+  const flush = async (): Promise<{ cancelled: boolean }> => {
+    // WHY: Return early if cancelled, no batch application
+    if (cancelled) {
+      return { cancelled: true };
+    }
     const finalText = finalBuffer.trim();
     const jsonText = jsonBuffer.trim();
     const commentaryText = commentaryBuffer.trim();
@@ -149,7 +156,7 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     }
 
     if (!batch || !Array.isArray(batch) || batch.length === 0) {
-      return;
+      return { cancelled: false };
     }
 
     try {
@@ -159,11 +166,18 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
         const details = applied.errors.join('; ');
         throw new Error(details || 'enqueueBatch reported failure');
       }
+      return { cancelled: false };
     } catch (err) {
       console.error('enqueueBatch failed', err);
       throw err instanceof Error ? err : new Error(String(err));
     }
   };
 
-  return { processDelta, flush };
+  const cancel = () => {
+    // WHY: Mark stream as cancelled to prevent further delta processing
+    // INVARIANT: Once cancelled, processDelta and flush become no-ops
+    cancelled = true;
+  };
+
+  return { processDelta, flush, cancel, isCancelled: () => cancelled };
 };

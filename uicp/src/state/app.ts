@@ -135,6 +135,7 @@ export type DevtoolsAnalyticsContext = {
   notepadOpen: boolean;
   agentSettingsOpen: boolean;
   computeDemoOpen: boolean;
+  moduleRegistryOpen: boolean;
   workspaceWindows: number;
   devMode: boolean;
   fullControl: boolean;
@@ -182,6 +183,7 @@ export type AppState = {
   notepadOpen: boolean;
   agentSettingsOpen: boolean;
   computeDemoOpen: boolean;
+  moduleRegistryOpen: boolean;
   agentTraceOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
@@ -213,6 +215,7 @@ export type AppState = {
   setNotepadOpen: (value: boolean) => void;
   setAgentSettingsOpen: (value: boolean) => void;
   setComputeDemoOpen: (value: boolean) => void;
+  setModuleRegistryOpen: (value: boolean) => void;
   setAgentTraceOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
@@ -263,6 +266,7 @@ export const useAppStore = create<AppState>()(
       notepadOpen: false,
       agentSettingsOpen: false,
       computeDemoOpen: false,
+      moduleRegistryOpen: false,
       agentTraceOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
@@ -318,6 +322,7 @@ export const useAppStore = create<AppState>()(
       setNotepadOpen: (value) => set({ notepadOpen: value }),
       setAgentSettingsOpen: (value) => set({ agentSettingsOpen: value }),
       setComputeDemoOpen: (value) => set({ computeDemoOpen: value }),
+      setModuleRegistryOpen: (value) => set({ moduleRegistryOpen: value }),
       setAgentTraceOpen: (value) => set({ agentTraceOpen: value }),
       setPlannerProfileKey: (key) => {
         setSelectedPlannerProfileKey(key);
@@ -621,6 +626,7 @@ export const useAppStore = create<AppState>()(
         actorProfileKey: state.actorProfileKey,
         agentSettingsOpen: state.agentSettingsOpen,
         computeDemoOpen: state.computeDemoOpen,
+        moduleRegistryOpen: state.moduleRegistryOpen,
         safeMode: state.safeMode,
         safeReason: state.safeReason,
       }),

@@ -7,7 +7,7 @@
   - SQLite persistence and configuration (WAL, `synchronous=NORMAL`, 5s busy timeout)
   - Ollama Cloud/local API access
   - Tool/command queue and replay
-  - Event streaming to the frontend (Tauri emit)
+- Event streaming to the frontend (Tauri emit)
   - Optional Wasm compute plane (feature-gated)
 - Data Storage: Local SQLite under `~/Documents/UICP/`.
 
@@ -34,6 +34,18 @@
 - Base URL (local): <http://127.0.0.1:11434/v1>.
 - Endpoints: `POST /api/chat` (stream), `GET /api/tags` (validate key), local `GET /v1/models`.
 - Frontend subscribes to `ollama-completion` and parses deltas into planner/actor events.
+
+## Event Naming
+
+- Convention: use dashed event names (no dots) for Tauri v2 compliance.
+- Backend normalizes any dotted names to dashed on emit.
+- Canonical events:
+  - `ollama-completion` (LLM streaming deltas and final/error)
+  - `compute-result-partial` (WASI host partial frames: logs, progress, tool outputs)
+  - `compute-result-final` (WASI host final payload: Ok/Err)
+  - `compute-debug` (diagnostic frames from compute host/policy)
+  - `save-indicator` (periodic save health ping)
+  - `replay-telemetry` (replay/recovery telemetry)
 
 ## Persistence & Replay
 

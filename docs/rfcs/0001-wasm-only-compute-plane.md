@@ -77,7 +77,7 @@ Runtime choice: Wasmtime embedded in Tauri (mature P2 support, limits, strong Ru
 - Compute Host (Rust/Tauri) — embeds Wasmtime, instantiates components in isolated Stores; provides `uicp:host` and selected WASI imports; enforces limits.
 - Module Registry — list of `.wasm` components with metadata (task name, version, digest, capabilities).
 - Job Queue + Result Store — persistent FIFO; content‑addressed cache: `H = hash(task, canonical(input), moduleVersion, envHash)`.
-- Event Bus — emits `compute.result.partial` and `compute.result.final`.
+- Event Bus — emits `compute-result-partial` and `compute-result-final`.
 
 6.2 Key types (host/TS sketches mirroring WIT per‑task IO)
 
@@ -157,7 +157,7 @@ Guests use `uicp:host/control.open-partial-sink` to stream typed CBOR/JSON chunk
 - Adapter → enqueue → JobQueue → dispatch → Compute Host
 - Host: lookup module, verify digest/capabilities, instantiate Store (limits, fuel, epoch), provide imports + partial sink, call `task.run(jobId, input)`
 - Guest: write progress/partials to output‑stream; cooperatively check cancel‑pollable; return final Output
-- Host: emit `compute.result.partial`; on final Ok/Err: `compute.result.final` → Adapter
+ - Host: emit `compute-result-partial`; on final Ok/Err: `compute-result-final` → Adapter
 - Adapter: apply bindings (state.set), persist envelope, update status
 
 6.5 Determinism & Idempotency
@@ -377,7 +377,7 @@ Frontend ops
 
 Guest (Rust with cargo‑component) — export `run(job, input)`; stream partial progress via host sink; return final rows.
 
-Host — map partial CBOR chunks to `compute.result.partial` events; on final Ok, apply `state.set("/tables/sales", rows)`.
+Host — map partial CBOR chunks to `compute-result-partial` events; on final Ok, apply `state.set("/tables/sales", rows)`.
 
 13) Bottom line
 
