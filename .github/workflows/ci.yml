@@ -185,3 +185,62 @@ jobs:
         working-directory: uicp/src-tauri
         run: |
           cargo build --no-default-features --features wasm_compute,uicp_wasi_enable --locked --verbose
+
+  rust-release-boundary:
+    name: Verify Test/Runtime Boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Install GTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev libpango1.0-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@5d458579430fc14a04a08a1e7d3694f545e91ce6
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@7939da402645ba29a2df566723491a2c856e8f8a
+        with:
+          workspaces: |
+            uicp/src-tauri
+
+      - name: Build release binary (no test features)
+        working-directory: uicp/src-tauri
+        run: |
+          cargo build --release --no-default-features --locked --verbose
+
+      - name: Verify test symbols excluded
+        working-directory: uicp/src-tauri
+        run: |
+          # INVARIANT: Release binary must not contain test infrastructure symbols
+          # This proves cfg(test) and cfg(feature = "compute_harness") gates work correctly
+          binary="target/release/uicp"
+          
+          echo "Checking for test symbol leakage in release binary..."
+          
+          # Extract symbol table (nm outputs: address type name)
+          # Filter for test_support module symbols
+          if nm "$binary" 2>/dev/null | grep -i "test_support\|ComputeTestHarness" | grep -v "RUST_MIN_STACK"; then
+            echo "ERROR: Test symbols found in release binary!"
+            echo "The test/runtime boundary is violated - test infrastructure leaked into production."
+            exit 1
+          fi
+          
+          # Also check for harness feature gate leaks
+          if nm "$binary" 2>/dev/null | grep -i "compute_harness" | grep -v "RUST_MIN_STACK"; then
+            echo "ERROR: Harness symbols found in release binary!"
+            exit 1
+          fi
+          
+          echo "✓ Release binary clean - no test symbols detected"
+          
+          # Report binary size for monitoring bloat
+          size_bytes=$(stat -c%s "$binary" 2>/dev/null || stat -f%z "$binary")
+          size_mb=$((size_bytes / 1024 / 1024))
+          echo "Release binary size: ${size_mb}MB"

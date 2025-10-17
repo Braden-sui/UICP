@@ -1932,6 +1932,7 @@ fn main() {
             copy_into_files,
             get_modules_info,
             get_modules_registry,
+            get_action_log_stats,
             verify_modules,
             open_path,
             load_api_key,
@@ -1972,14 +1973,6 @@ async fn debug_circuits(
 ) -> Result<Vec<circuit::CircuitDebugInfo>, String> {
     let info = circuit::get_circuit_debug_info(&state.circuit_breakers).await;
     Ok(info)
-}
-
-#[cfg(any(test, feature = "compute_harness"))]
-pub mod harness;
-
-#[cfg(test)]
-pub mod test_support {
-    pub use crate::harness::ComputeTestHarness;
 }
 
 /// Verify that all module entries listed in the manifest exist and match their digests.
@@ -2185,6 +2178,13 @@ async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, St
         "hasManifest": exists,
         "entries": entries,
     }))
+}
+
+#[tauri::command]
+async fn get_action_log_stats(state: State<'_, AppState>) -> Result<crate::action_log::ActionLogStatsSnapshot, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("get_action_log_stats").entered();
+    Ok(state.action_log.stats_snapshot())
 }
 
 #[tauri::command]

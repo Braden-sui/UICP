@@ -2,51 +2,69 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 
 const LOADER_ID = 'uicp-loading-screen';
+const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flash)
 
-const mountLoadingScreen = () => {
-  if (typeof document === 'undefined') return;
-  if (document.getElementById(LOADER_ID)) return;
+// Ensure loader exists (either from static HTML or create it)
+const ensureLoader = () => {
+  let loader = document.getElementById(LOADER_ID);
+  if (loader) return loader;
 
-  // WHY: Use DOM APIs instead of innerHTML to eliminate XSS risk entirely.
-  // INVARIANT: No string interpolation, no dynamic content.
-  const loader = document.createElement('div');
+  // Fallback: create loader if HTML didn't include it
+  loader = document.createElement('div');
   loader.id = LOADER_ID;
-
-  const shell = document.createElement('div');
-  shell.className = 'loading-shell';
-
-  const logo = document.createElement('div');
-  logo.className = 'loading-logo';
-  logo.textContent = 'UICP';
-
-  const text = document.createElement('p');
-  text.className = 'loading-text';
-  text.textContent = 'Preparing workspace…';
-
-  const bar = document.createElement('div');
-  bar.className = 'loading-bar';
-  const barFill = document.createElement('div');
-  barFill.className = 'loading-bar-fill';
-  bar.appendChild(barFill);
-
-  shell.appendChild(logo);
-  shell.appendChild(text);
-  shell.appendChild(bar);
-  loader.appendChild(shell);
-
+  loader.setAttribute('role', 'status');
+  loader.setAttribute('aria-live', 'polite');
+  loader.setAttribute('aria-busy', 'true');
+  loader.setAttribute('aria-label', 'Initializing application');
+  loader.className = 'loading-screen-fallback';
+  
+  // Simple fallback styles if critical.css didn't load
+  loader.style.cssText = 'position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;z-index:9999;';
+  loader.textContent = 'Loading...';
+  
   document.body.appendChild(loader);
+  return loader;
 };
 
 const removeLoadingScreen = () => {
   const loader = document.getElementById(LOADER_ID);
   if (!loader) return;
+
+  // Update A11y attributes
+  loader.setAttribute('aria-busy', 'false');
+  loader.setAttribute('aria-hidden', 'true');
+
+  // CRITICAL: Disable pointer events BEFORE fade-out so UI becomes interactive immediately
+  loader.style.pointerEvents = 'none';
+
   loader.classList.add('fade-out');
+
+  // Calculate actual transition duration from computed styles
+  const computeTransitionMs = (): number => {
+    const d = getComputedStyle(loader).transitionDuration || '0.6s';
+    const n = parseFloat(d);
+    return d.endsWith('ms') ? n : n * 1000;
+  };
+
   const cleanup = () => loader.remove();
   loader.addEventListener('transitionend', cleanup, { once: true });
-  window.setTimeout(cleanup, 500);
+  // Fallback with computed duration + buffer
+  window.setTimeout(cleanup, computeTransitionMs() + 100);
 };
 
-mountLoadingScreen();
+// Ensure loader is present and track when shown
+ensureLoader();
+const loaderShownAt = Date.now();
+
+const finalizeLoader = () => {
+  // Ensure loader displays for minimum duration to prevent jarring flash
+  const elapsed = Date.now() - loaderShownAt;
+  const remaining = Math.max(0, MIN_LOADER_DISPLAY_MS - elapsed);
+  
+  setTimeout(() => {
+    removeLoadingScreen();
+  }, remaining);
+};
 
 const rootElement = document.getElementById('root') as HTMLElement | null;
 if (!rootElement) {
@@ -58,7 +76,7 @@ let paintReady = false;
 let bridgeReady = false;
 const maybeHideLoader = () => {
   if (paintReady && bridgeReady) {
-    removeLoadingScreen();
+    finalizeLoader();
   }
 };
 

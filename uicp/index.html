@@ -1,18 +1,31 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Generative Desktop</title>
-    <link rel="stylesheet" href="/src/styles/bootloader.css" />
-    <link rel="stylesheet" href="/dynamic.css" data-uicp-dynamic-styles />
+    <!-- Critical CSS inlined for instant LCP (no server dependency) -->
+    <style>
+#uicp-loading-screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0a0a0f;z-index:9999;transition:opacity .6s cubic-bezier(.4,0,.2,1);overflow:hidden}#uicp-loading-screen.fade-out{opacity:0;pointer-events:none}#uicp-loading-screen::before{content:'';position:absolute;inset:-50%;background:radial-gradient(circle at 30% 50%,rgba(99,102,241,.08) 0%,transparent 50%),radial-gradient(circle at 70% 50%,rgba(139,92,246,.06) 0%,transparent 50%);animation:gradient-drift 20s ease-in-out infinite}#uicp-loading-screen .loading-shell{position:relative;display:flex;flex-direction:column;align-items:center;gap:48px}.hex-cluster{position:relative;width:120px;height:120px}.hex{position:absolute;width:32px;height:32px;transform-origin:center}.hex::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(99,102,241,.4),rgba(139,92,246,.2));clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);animation:hex-glow 3s ease-in-out infinite;will-change:transform,opacity}.hex:nth-child(3){top:0;left:44px}.hex:nth-child(4){top:22px;left:16px}.hex:nth-child(5){top:22px;left:72px}.hex:nth-child(6){top:44px;left:44px}.hex:nth-child(7){top:66px;left:16px}.hex:nth-child(8){top:66px;left:72px}.hex:nth-child(9){top:88px;left:44px}.hex:nth-child(3)::before{animation-delay:0s}.hex:nth-child(4)::before{animation-delay:.15s}.hex:nth-child(5)::before{animation-delay:.3s}.hex:nth-child(6)::before{animation-delay:.45s}.hex:nth-child(7)::before{animation-delay:.6s}.hex:nth-child(8)::before{animation-delay:.75s}.hex:nth-child(9)::before{animation-delay:.9s}.loading-core{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:8px;height:8px;border-radius:50%;background:rgba(139,92,246,.9);box-shadow:0 0 20px rgba(139,92,246,.6),0 0 40px rgba(139,92,246,.3);animation:core-pulse 2s ease-in-out infinite}.loading-text{font-size:11px;font-weight:400;letter-spacing:.2em;text-transform:uppercase;color:rgba(255,255,255,.4);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}.orbit-ring{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);border:1px solid rgba(99,102,241,.15);border-radius:50%;animation:orbit-rotate 8s linear infinite;will-change:transform}.orbit-ring:nth-child(1){width:140px;height:140px}.orbit-ring:nth-child(2){width:180px;height:180px;animation-duration:12s;animation-direction:reverse}@keyframes hex-glow{0%,100%{opacity:.3;transform:scale(.95)}50%{opacity:1;transform:scale(1.05)}}@keyframes core-pulse{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:.9}50%{transform:translate(-50%,-50%) scale(1.3);opacity:1}}@keyframes orbit-rotate{from{transform:translate(-50%,-50%) rotate(0deg)}to{transform:translate(-50%,-50%) rotate(360deg)}}@keyframes gradient-drift{0%,100%{transform:translate(0,0) rotate(0deg)}33%{transform:translate(10%,-10%) rotate(120deg)}66%{transform:translate(-10%,10%) rotate(240deg)}}#uicp-loading-screen.fade-out,#uicp-loading-screen.fade-out *{animation:none!important}@media (prefers-reduced-motion:reduce){#uicp-loading-screen::before,.hex::before,.orbit-ring,.loading-core{animation:none!important}}
+    </style>
+    <link rel="stylesheet" href="/dynamic.css" />
   </head>
   <body>
-    <div id="uicp-loading-screen">
+    <div id="uicp-loading-screen" role="status" aria-live="polite" aria-busy="true" aria-label="Initializing application">
       <div class="loading-shell">
-        <div class="loading-logo">UICP</div>
-        <p class="loading-text">Preparing workspace…</p>
-        <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+        <div class="hex-cluster">
+          <div class="orbit-ring"></div>
+          <div class="orbit-ring"></div>
+          <div class="hex"></div>
+          <div class="hex"></div>
+          <div class="hex"></div>
+          <div class="hex"></div>
+          <div class="hex"></div>
+          <div class="hex"></div>
+          <div class="hex"></div>
+          <div class="loading-core"></div>
+        </div>
+        <p class="loading-text">Initializing</p>
       </div>
     </div>
     <div id="root"></div>

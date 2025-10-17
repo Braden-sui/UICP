@@ -52,10 +52,7 @@ pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
     crate::compute_cache::compute_key(task, input, env_hash)
 }
 
+// Test support infrastructure (test_support/) is only compiled when running tests
+// or when the compute_harness feature is enabled. It is excluded from release builds.
 #[cfg(any(test, feature = "compute_harness"))]
-mod harness;
-
-#[cfg(any(test, feature = "compute_harness"))]
-pub mod test_support {
-    pub use crate::harness::ComputeTestHarness;
-}
+pub mod test_support;

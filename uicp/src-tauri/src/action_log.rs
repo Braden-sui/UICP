@@ -5,7 +5,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc as std_mpsc, Arc,
     },
-    thread,
     time::Duration,
 };
 
@@ -18,18 +17,21 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{
     mpsc::{self, error::TrySendError},
     oneshot,
 };
+use tokio::time::timeout;
 
 const HASH_DOMAIN: &[u8] = b"UICP-ACTION-LOG-V0";
 #[cfg(not(test))]
-// WHY: Compute stdout bursts can enqueue thousands of frames; 4k depth keeps writers non-blocking while remaining bounded.
-const DEFAULT_QUEUE_DEPTH: usize = 4_096;
+// WHY: Compute stdout bursts can enqueue thousands of frames; 256 depth keeps writers mostly non-blocking while remaining bounded.
+const DEFAULT_QUEUE_DEPTH: usize = 256;
 #[cfg(test)]
 const DEFAULT_QUEUE_DEPTH: usize = 16;
+const ACTION_LOG_SEND_TIMEOUT_MS: u64 = 500;
 const ENV_SIGNING_SEED: &str = "UICP_ACTION_LOG_SIGNING_SEED";
 const ENV_SIGNING_SEED_FALLBACK: &str = "UICP_MODULES_SIGNING_SEED";
 
@@ -38,14 +40,17 @@ struct ActionLogMetrics {
     backpressure_events: AtomicU64,
     enqueue_failures: AtomicU64,
     reply_failures: AtomicU64,
+    dropped_appends: AtomicU64,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActionLogStatsSnapshot {
     pub backpressure_events: u64,
     pub enqueue_failures: u64,
     pub reply_failures: u64,
+    pub dropped_appends: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +81,8 @@ enum ActionLogCommand {
         entry: ActionLogEntry<'static>,
         reply: oneshot::Sender<anyhow::Result<ActionLogReceipt>>,
     },
+    #[cfg(test)]
+    Shutdown,
 }
 
 pub struct ActionLogService;
@@ -114,35 +121,41 @@ impl ActionLogService {
         let metrics = Arc::new(ActionLogMetrics::default());
         let metrics_for_worker = metrics.clone();
 
-        thread::Builder::new()
-            .name("action-log-worker".into())
-            .spawn(move || {
-                let mut rx = rx;
-                let init = (|| -> anyhow::Result<()> {
-                    let mut conn = Connection::open(&path)
-                        .with_context(|| format!("open sqlite for action log {:?}", path))?;
-                    crate::configure_sqlite(&conn).context("configure sqlite (action log)")?;
-                    ensure_action_log_schema(&conn)?;
-                    let signing_key = signing_seed.map(|seed| SigningKey::from_bytes(&seed));
-                    let mut rng = OsRng;
-                    ready_tx
-                        .send(Ok(()))
-                        .context("signal action log worker ready")?;
+        let worker_join = tauri::async_runtime::spawn_blocking(move || {
+            let mut rx = rx;
+            let init = (|| -> anyhow::Result<()> {
+                let mut conn = Connection::open(&path)
+                    .with_context(|| format!("open sqlite for action log {:?}", path))?;
+                crate::configure_sqlite(&conn).context("configure sqlite (action log)")?;
+                ensure_action_log_schema(&conn)?;
+                let signing_key = signing_seed.map(|seed| SigningKey::from_bytes(&seed));
+                let mut rng = OsRng;
+                ready_tx
+                    .send(Ok(()))
+                    .context("signal action log worker ready")?;
 
-                    worker_loop(
-                        &mut conn,
-                        signing_key.as_ref(),
-                        &mut rng,
-                        &mut rx,
-                        metrics_for_worker,
-                    )
-                })();
-
-                if let Err(err) = init {
-                    let _ = ready_tx.send(Err(err));
+                if let Err(err) = worker_loop(
+                    &mut conn,
+                    signing_key.as_ref(),
+                    &mut rng,
+                    &mut rx,
+                    metrics_for_worker,
+                ) {
+                    eprintln!("action_log worker terminated with error: {err:?}");
                 }
-            })
-            .context("spawn action log worker thread")?;
+                Ok(())
+            })();
+
+            if let Err(err) = init {
+                let _ = ready_tx.send(Err(err));
+            }
+        });
+
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = worker_join.await {
+                eprintln!("action_log worker join failed: {err:?}");
+            }
+        });
 
         ready_rx
             .recv()
@@ -159,7 +172,14 @@ impl ActionLogHandle {
             backpressure_events: self.metrics.backpressure_events.load(Ordering::Relaxed),
             enqueue_failures: self.metrics.enqueue_failures.load(Ordering::Relaxed),
             reply_failures: self.metrics.reply_failures.load(Ordering::Relaxed),
+            dropped_appends: self.metrics.dropped_appends.load(Ordering::Relaxed),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn close_channel_for_test(&self) {
+        let _ = self.tx.send(ActionLogCommand::Shutdown).await;
+        self.tx.closed().await;
     }
 
     pub fn append_json_blocking(
@@ -206,16 +226,40 @@ impl ActionLogHandle {
                 self.metrics
                     .backpressure_events
                     .fetch_add(1, Ordering::Relaxed);
-                self.tx.send(cmd).await.map_err(|err| {
-                    self.metrics
-                        .enqueue_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    anyhow!("E-UICP-0601: action log channel closed while flushing backlog: {err}")
-                })?;
+                match timeout(
+                    Duration::from_millis(ACTION_LOG_SEND_TIMEOUT_MS),
+                    self.tx.send(cmd),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        self.metrics
+                            .enqueue_failures
+                            .fetch_add(1, Ordering::Relaxed);
+                        self.metrics
+                            .dropped_appends
+                            .fetch_add(1, Ordering::Relaxed);
+                        anyhow::bail!(
+                            "E-UICP-0601: action log channel closed while flushing backlog: {err}"
+                        );
+                    }
+                    Err(_) => {
+                        self.metrics
+                            .dropped_appends
+                            .fetch_add(1, Ordering::Relaxed);
+                        anyhow::bail!(
+                            "E-UICP-0604: action log channel saturated after {ACTION_LOG_SEND_TIMEOUT_MS}ms backpressure window"
+                        );
+                    }
+                }
             }
             Err(TrySendError::Closed(_cmd)) => {
                 self.metrics
                     .enqueue_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .dropped_appends
                     .fetch_add(1, Ordering::Relaxed);
                 anyhow::bail!("E-UICP-0602: action log worker not available");
             }
@@ -247,6 +291,10 @@ fn worker_loop(
                 if reply.send(result).is_err() {
                     metrics.reply_failures.fetch_add(1, Ordering::Relaxed);
                 }
+            }
+            #[cfg(test)]
+            ActionLogCommand::Shutdown => {
+                break;
             }
         }
     }
@@ -616,6 +664,25 @@ mod tests {
             stats.backpressure_events > 0,
             "expected at least one backpressure event, stats={stats:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn increments_drop_counter_when_channel_closed() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let db_path = dir.path().join("test-drop.db");
+        let seed = [3u8; 32];
+        let handle = ActionLogService::start_with_seed(&db_path, Some(seed))?;
+
+        handle.close_channel_for_test().await;
+        let result = handle
+            .append_json("test.event", &serde_json::json!({ "msg": "drop-me" }))
+            .await;
+        assert!(result.is_err(), "append should fail after channel close");
+
+        let stats = handle.stats_snapshot();
+        assert_eq!(stats.enqueue_failures, 1);
+        assert_eq!(stats.dropped_appends, 1);
         Ok(())
     }
 }

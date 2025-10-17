@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { summarizeComputeJobs, useComputeStore } from '../state/compute';
+import { hasTauriBridge, inv } from '../lib/bridge/tauri';
 
 type DevtoolsComputePanelProps = {
   /**
@@ -7,6 +8,13 @@ type DevtoolsComputePanelProps = {
    * In dev builds, the panel auto-opens unless explicitly overridden.
    */
   defaultOpen?: boolean;
+};
+
+type ActionLogStats = {
+  backpressureEvents: number;
+  enqueueFailures: number;
+  replyFailures: number;
+  droppedAppends: number;
 };
 
 const formatBytes = (value?: number | null) => {
@@ -46,6 +54,7 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [filterJobId, setFilterJobId] = useState<string>('');
   const [filterLevel, setFilterLevel] = useState<string>('');
+  const [actionLogStats, setActionLogStats] = useState<ActionLogStats | null>(null);
 
   useEffect(() => {
     // Preserve existing behavior: auto-open in dev when caller did not specify.
@@ -95,6 +104,26 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
     window.addEventListener('ui-debug-log', onUiDebug);
     return () => window.removeEventListener('ui-debug-log', onUiDebug);
   }, []);
+
+  useEffect(() => {
+    if (!open) {
+      setActionLogStats(null);
+      return;
+    }
+    if (!hasTauriBridge()) return;
+    let cancelled = false;
+    const loadStats = async () => {
+      const result = await inv<ActionLogStats>('get_action_log_stats');
+      if (!result.ok || cancelled) return;
+      setActionLogStats(result.value);
+    };
+    void loadStats();
+    const id = window.setInterval(loadStats, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open]);
 
   // Compute hooks unconditionally before early return to satisfy Rules of Hooks
   const entries = Object.values(jobs).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -245,6 +274,32 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
               {chip.label}: {chip.value}
             </span>
           ))}
+        </div>
+      )}
+      {actionLogStats && (
+        <div className="mb-3 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+          <div className="rounded border border-slate-200 bg-slate-50/80 p-2">
+            <div className="text-[9px] uppercase tracking-wide text-slate-500">Backpressure</div>
+            <div className="font-mono text-[11px] text-slate-700">{actionLogStats.backpressureEvents}</div>
+          </div>
+          <div className="rounded border border-slate-200 bg-slate-50/80 p-2">
+            <div className="text-[9px] uppercase tracking-wide text-slate-500">Enqueue failures</div>
+            <div className="font-mono text-[11px] text-slate-700">{actionLogStats.enqueueFailures}</div>
+          </div>
+          <div className="rounded border border-slate-200 bg-slate-50/80 p-2">
+            <div className="text-[9px] uppercase tracking-wide text-slate-500">Reply failures</div>
+            <div className="font-mono text-[11px] text-slate-700">{actionLogStats.replyFailures}</div>
+          </div>
+          <div
+            className={`rounded border p-2 ${
+              actionLogStats.droppedAppends > 0
+                ? 'border-amber-400 bg-amber-50/80 text-amber-700'
+                : 'border-slate-200 bg-slate-50/80 text-slate-700'
+            }`}
+          >
+            <div className="text-[9px] uppercase tracking-wide">Dropped appends</div>
+            <div className="font-mono text-[11px]">{actionLogStats.droppedAppends}</div>
+          </div>
         </div>
       )}
       {entries.length === 0 ? (

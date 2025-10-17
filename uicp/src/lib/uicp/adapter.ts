@@ -33,6 +33,41 @@ const ALLOWED_BASE_DIRECTORIES: Record<string, BaseDirectory> = {
 const DEFAULT_EXPORT_DIRECTORY = BaseDirectory.AppData;
 const ALLOWED_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH']);
 
+const sanitizePathForPrompt = (path: string): string => {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return 'the requested file';
+  }
+  const segments = trimmed.split(/[\\/]/).filter(Boolean);
+  if (segments.length === 0) {
+    return trimmed;
+  }
+  // Show at most two segments so the user can identify the export without leaking unnecessary filesystem structure.
+  const tail = segments.slice(-2).join('/');
+  return tail || trimmed;
+};
+
+// WHY: Desktop exports are sensitive; require explicit user approval every time.
+// INVARIANT: Without explicit confirmation we MUST NOT write to the Desktop base directory.
+// ERROR: E-UICP-6201 confirmation unavailable; E-UICP-6202 user denied the export.
+const requireDesktopExportConfirmation = async (path: string): Promise<void> => {
+  try {
+    const mod = await import('@tauri-apps/plugin-dialog');
+    const ok = await mod.confirm(
+      `Allow the agent to export ${sanitizePathForPrompt(path)} to your Desktop?`,
+      { title: 'Desktop export' },
+    );
+    if (!ok) {
+      throw new Error('E-UICP-6202: Desktop export denied by user');
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('E-UICP-6202')) {
+      throw error;
+    }
+    throw new Error('E-UICP-6201: Desktop export confirmation unavailable');
+  }
+};
+
 // Safety caps for data-command attributes
 const MAX_DATA_COMMAND_LEN = 32768; // 32KB serialized JSON
 const MAX_TEMPLATE_TOKENS = 16; // maximum {{token}} substitutions per element
@@ -1429,11 +1464,22 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
               : undefined;
           const dir = (dirToken ? ALLOWED_BASE_DIRECTORIES[dirToken] : undefined) ?? DEFAULT_EXPORT_DIRECTORY;
           try {
+            if (dir === BaseDirectory.Desktop) {
+              await requireDesktopExportConfirmation(path);
+            }
             // Do not fire-and-forget; persist failures so the calling batch aborts and surfaces to the user.
             await writeTextFile(path, contents, { baseDir: dir });
           } catch (error) {
-            console.error('tauri fs write failed', { path, directory: dirToken, error });
+            const logPayload = { path, directory: dirToken, error };
+            if (dir === BaseDirectory.Desktop) {
+              console.warn('desktop export declined or unavailable', logPayload);
+            } else {
+              console.error('tauri fs write failed', logPayload);
+            }
             return toFailure(error);
+          }
+          if (dir === BaseDirectory.Desktop) {
+            console.info('desktop export confirmed', { path, directory: dirToken });
           }
           return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
         }

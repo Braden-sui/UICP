@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fsPlugin from '@tauri-apps/plugin-fs';
 
+const confirmMock = vi.fn<(message: string, options?: { title?: string }) => Promise<boolean>>();
+
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  confirm: confirmMock,
+}));
+
 // Mock permissions to allow api.call operations in tests
 vi.mock('../../src/lib/permissions/PermissionManager', () => ({
   checkPermission: vi.fn().mockResolvedValue('allow'),
@@ -14,6 +20,8 @@ import { getTauriMocks } from '../mocks/tauri';
 // Adapter test ensures batches create DOM windows as expected.
 describe('adapter.applyBatch', () => {
   beforeEach(() => {
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
     resetWorkspace();
     const root = document.createElement('div');
     root.id = 'workspace-root';
@@ -174,6 +182,66 @@ describe('adapter.applyBatch', () => {
       expect(outcome.errors[0]).toContain('fs denied');
     } finally {
       errorSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+  });
+
+  it('requires user confirmation before writing to Desktop and aborts when denied', async () => {
+    confirmMock.mockResolvedValueOnce(false);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const writeSpy = vi.spyOn(fsPlugin, 'writeTextFile').mockResolvedValue();
+    try {
+      const batch = validateBatch([
+        {
+          op: 'api.call',
+          params: {
+            url: 'tauri://fs/writeTextFile',
+            body: { path: 'exports/report.txt', contents: 'hi there', directory: 'Desktop' },
+          },
+        },
+      ]);
+
+      const outcome = await applyBatch(batch);
+      await nextFrame();
+      expect(outcome.success).toBe(false);
+      expect(outcome.errors[0]).toContain('E-UICP-6202');
+      expect(confirmMock).toHaveBeenCalledWith(
+        expect.stringContaining('exports/report.txt'),
+        expect.objectContaining({ title: 'Desktop export' }),
+      );
+      expect(writeSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+  });
+
+  it('writes to Desktop after confirmation succeeds', async () => {
+    const writeSpy = vi.spyOn(fsPlugin, 'writeTextFile').mockResolvedValue();
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const batch = validateBatch([
+        {
+          op: 'api.call',
+          params: {
+            url: 'tauri://fs/writeTextFile',
+            body: { path: 'exports/ok.txt', contents: 'hello', directory: 'Desktop' },
+          },
+        },
+      ]);
+
+      const outcome = await applyBatch(batch);
+      await nextFrame();
+      expect(outcome.success).toBe(true);
+      expect(confirmMock).toHaveBeenCalled();
+      expect(writeSpy).toHaveBeenCalledWith(
+        'exports/ok.txt',
+        'hello',
+        expect.objectContaining({ baseDir: fsPlugin.BaseDirectory.Desktop }),
+      );
+      expect(infoSpy).toHaveBeenCalledWith('desktop export confirmed', expect.any(Object));
+    } finally {
+      infoSpy.mockRestore();
       writeSpy.mockRestore();
     }
   });
