@@ -13,6 +13,17 @@ const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
 type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;
 
+const ALLOWED_BASE_DIRECTORIES: Record<string, BaseDirectory> = {
+  AppConfig: BaseDirectory.AppConfig,
+  AppData: BaseDirectory.AppData,
+  AppLocalData: BaseDirectory.AppLocalData,
+  Document: BaseDirectory.Document,
+  Desktop: BaseDirectory.Desktop,
+  Download: BaseDirectory.Download,
+};
+
+const DEFAULT_EXPORT_DIRECTORY = BaseDirectory.AppData;
+
 // Safety caps for data-command attributes
 const MAX_DATA_COMMAND_LEN = 32768; // 32KB serialized JSON
 const MAX_TEMPLATE_TOKENS = 16; // maximum {{token}} substitutions per element
@@ -743,11 +754,11 @@ export const replayWorkspace = async (): Promise<{ applied: number; errors: stri
           continue;
         }
         dedup.add(key);
-        const envelope: Envelope = {
-          op: cmd.tool as Envelope['op'],
-          params: cmd.args as OperationParamMap[Envelope['op']],
+        const envelope = {
+          op: cmd.tool,
+          params: cmd.args,
           idempotencyKey: cmd.id,
-        };
+        } as Envelope;
         const result = await applyCommand(envelope);
         if (result.success) {
           applied += 1;
@@ -1336,12 +1347,15 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
         }
         // Tauri FS special-case
         if (url.startsWith('tauri://fs/writeTextFile')) {
-          // Expect body: { path: string, contents: string, directory?: 'Desktop' | 'Document' | ... }
+          // Expect body: { path: string, contents: string, directory?: 'AppData' | 'Desktop' | ... }
           const body = (params.body ?? {}) as Record<string, unknown>;
           const path = String(body.path ?? 'uicp.txt');
           const contents = String(body.contents ?? '');
-          const dirToken = String(body.directory ?? 'Desktop');
-          const dir = (BaseDirectory as unknown as Record<string, BaseDirectory>)[dirToken] ?? BaseDirectory.Desktop;
+          const dirToken =
+            typeof body.directory === 'string' && body.directory.trim().length > 0
+              ? body.directory.trim()
+              : undefined;
+          const dir = (dirToken ? ALLOWED_BASE_DIRECTORIES[dirToken] : undefined) ?? DEFAULT_EXPORT_DIRECTORY;
           try {
             // Do not fire-and-forget; persist failures so the calling batch aborts and surfaces to the user.
             await writeTextFile(path, contents, { baseDir: dir });

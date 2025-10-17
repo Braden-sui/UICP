@@ -40,6 +40,12 @@ describe('sanitizeHtml', () => {
     expect(sanitizeHtml(payload)).toBe('');
   });
 
+  it('removes svg containers even when namespace attributes are present', () => {
+    const payload =
+      '<SVG xmlns="http://www.w3.org/2000/svg"><use xlink:href="https://cdn.example.com/icon.svg#ref"></use></SVG>';
+    expect(sanitizeHtml(payload)).toBe('');
+  });
+
   it('adds noopener/noreferrer to target=_blank links', () => {
     const input = '<a href="https://example.com" target="_blank">Open</a>';
     const out = sanitizeHtml(input);
@@ -57,6 +63,21 @@ describe('sanitizeHtml', () => {
     const input = '<img srcset="https://cdn.example.com/a.png 1x, javascript:alert(1) 2x, /assets/img@3x.png 3x">';
     const out = sanitizeHtml(input);
     expect(out).toBe('<img srcset="https://cdn.example.com/a.png 1x, /assets/img@3x.png 3x">');
+  });
+
+  it('removes srcset entirely when no safe candidates remain', () => {
+    const input = '<img srcset=" javascript:alert(1) , data:image/png;base64,AAAA ">';
+    const out = sanitizeHtml(input);
+    expect(out).toBe('<img>');
+  });
+
+  it('scrubs unsafe srcset entries on <source> nodes within <picture>', () => {
+    const input =
+      '<picture><source srcset="https://cdn.example.com/a.webp 1x, javascript:alert(1) 2x" type="image/webp"><img src="https://cdn.example.com/a.png"></picture>';
+    const out = sanitizeHtml(input);
+    expect(out).toBe(
+      '<picture><source srcset="https://cdn.example.com/a.webp 1x" type="image/webp"><img src="https://cdn.example.com/a.png"></picture>',
+    );
   });
 
   it('preserves safe ids and classes', () => {

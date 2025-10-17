@@ -4,78 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Generative Desktop</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-    <style>
-      #uicp-loading-screen {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: linear-gradient(135deg, #f5f5f8 0%, #eaecff 100%);
-        z-index: 9999;
-        transition: opacity 0.4s ease;
-      }
-      #uicp-loading-screen.fade-out {
-        opacity: 0;
-        pointer-events: none;
-      }
-      #uicp-loading-screen .loading-shell {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 16px;
-        padding: 32px 40px;
-        border-radius: 28px;
-        background: rgba(255, 255, 255, 0.82);
-        box-shadow: 0 24px 70px rgba(31, 41, 55, 0.12);
-        backdrop-filter: blur(28px);
-        text-align: center;
-      }
-      #uicp-loading-screen .loading-logo {
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.48em;
-        color: #6366f1;
-      }
-      #uicp-loading-screen .loading-text {
-        font-size: 16px;
-        font-weight: 500;
-        color: #475467;
-      }
-      #uicp-loading-screen .loading-bar {
-        position: relative;
-        width: 160px;
-        height: 4px;
-        border-radius: 999px;
-        background: linear-gradient(90deg, rgba(99, 102, 241, 0.18), rgba(236, 72, 153, 0.18));
-        overflow: hidden;
-      }
-      #uicp-loading-screen .loading-bar-fill {
-        position: absolute;
-        inset: 0;
-        width: 40%;
-        border-radius: inherit;
-        background: linear-gradient(90deg, #6366f1, #ec4899);
-        animation: loading-bar-sweep 1.6s ease-in-out infinite;
-      }
-      @keyframes loading-bar-sweep {
-        0% {
-          transform: translateX(-100%);
-        }
-        50% {
-          transform: translateX(120%);
-        }
-        100% {
-          transform: translateX(120%);
-        }
-      }
-    </style>
+    <link rel="stylesheet" href="/src/styles/bootloader.css" />
   </head>
   <body>
     <div id="uicp-loading-screen">

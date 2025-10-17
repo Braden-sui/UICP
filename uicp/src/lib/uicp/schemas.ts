@@ -199,15 +199,22 @@ export type OperationParamMap = {
 
 export type OperationNameT = z.infer<typeof OperationName>;
 
-export type Envelope<T extends OperationNameT = OperationNameT> = {
+type EnvelopeBaseFields = {
   id?: string;
   idempotencyKey?: string;
   traceId?: string;
   txnId?: string;
   windowId?: string;
-  op: T;
-  params: OperationParamMap[T];
 };
+
+type EnvelopeRecord = {
+  [K in OperationNameT]: EnvelopeBaseFields & {
+    op: K;
+    params: OperationParamMap[K];
+  };
+};
+
+export type Envelope<T extends OperationNameT = OperationNameT> = EnvelopeRecord[T];
 
 export class UICPValidationError extends Error {
   pointer: string;

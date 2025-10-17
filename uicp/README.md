@@ -61,4 +61,4 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 - All HTML from planner commands is sanitized before insertion.
 - Planner validation failures raise typed errors and surface through toast + system message.
 - Full control is opt-in; STOP enqueues `txn.cancel`, locks control until modal consent toggles it back on, and the streaming transport is canceled best-effort via `cancel_chat`.
-- File save in Tauri builds: use `api.call` with `url: "tauri://fs/writeTextFile"` and body `{ path, contents, directory?: "Desktop" }` from planner output.
+- File save in Tauri builds: use `api.call` with `url: "tauri://fs/writeTextFile"` and body `{ path, contents, directory?: "AppData" | "Desktop" }` (defaults to AppData) from planner output.

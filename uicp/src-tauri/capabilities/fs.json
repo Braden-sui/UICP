@@ -1,8 +1,25 @@
 {
   "$schema": "https://schema.tauri.app/capabilities.schema.json",
   "identifier": "fs-desktop-write",
-  "description": "Allow the main window to persist files to the user's Desktop via the Tauri fs plugin.",
+  "description": "Allow the main window to persist files within the UICP AppData scope and opt-in Desktop exports via the Tauri fs plugin.",
   "local": true,
   "windows": ["main"],
-  "permissions": ["fs:default", "fs:allow-desktop-write"]
+  "permissions": [
+    "fs:default",
+    "fs:allow-appdata-read",
+    "fs:allow-appdata-write",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "fs:allow-exists",
+    "fs:allow-mkdir",
+    "fs:allow-remove",
+    "fs:allow-desktop-write",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPDATA/uicp/**" },
+        { "path": "$DESKTOP/**" }
+      ]
+    }
+  ]
 }

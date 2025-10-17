@@ -116,8 +116,8 @@ Example structured clarifier:
 ### File operations
 
 * `tauri://fs/writeTextFile`
-  * Body: `{ path: string, contents: string, directory?: "Desktop" | "Document" | ... }`
-  * Writes `contents` to `path` under the given base directory (defaults to Desktop)
+  * Body: `{ path: string, contents: string, directory?: "AppData" | "Desktop" | ... }`
+  * Writes `contents` to `path` under the given base directory (defaults to AppData)
 
 ### HTTP requests
 

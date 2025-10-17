@@ -1,4 +1,4 @@
-import { BaseDirectory, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { BaseDirectory, exists, mkdir, readTextFile, remove, writeTextFile } from '@tauri-apps/plugin-fs';
 import type { Envelope } from '../uicp/schemas';
 
 export type Decision = 'allow' | 'deny' | 'prompt';
@@ -10,22 +10,57 @@ export type PolicyKey =
 
 export type Policy = Record<PolicyKey, Decision>;
 
-const POLICY_PATH = 'permissions.json';
+const POLICY_ROOT = 'uicp';
+const POLICY_FILENAME = 'permissions.json';
+const POLICY_PATH = `${POLICY_ROOT}/${POLICY_FILENAME}`;
+const LEGACY_POLICY_PATH = 'permissions.json';
 
 let policyCache: Policy | null = null;
+
+const ensurePolicyDir = async () => {
+  if (await exists(POLICY_ROOT, { baseDir: BaseDirectory.AppData })) {
+    return;
+  }
+  await mkdir(POLICY_ROOT, { baseDir: BaseDirectory.AppData, recursive: true });
+};
+
+const readPolicyFile = async (relativePath: string): Promise<Policy | null> => {
+  try {
+    const txt = await readTextFile(relativePath, { baseDir: BaseDirectory.AppData });
+    return JSON.parse(txt) as Policy;
+  } catch {
+    return null;
+  }
+};
+
 const readPolicy = async (): Promise<Policy> => {
   if (policyCache) return policyCache;
-  try {
-    const txt = await readTextFile(POLICY_PATH, { baseDir: BaseDirectory.AppData });
-    policyCache = JSON.parse(txt) as Policy;
-  } catch {
-    policyCache = {} as Policy;
+
+  const current = await readPolicyFile(POLICY_PATH);
+  if (current) {
+    policyCache = current;
+    return policyCache;
   }
+
+  const legacy = await readPolicyFile(LEGACY_POLICY_PATH);
+  if (legacy) {
+    policyCache = legacy;
+    try {
+      await writePolicy(legacy);
+      await remove(LEGACY_POLICY_PATH, { baseDir: BaseDirectory.AppData }).catch(() => undefined);
+    } catch {
+      // Ignore migration errors; legacy data stays in cache.
+    }
+    return policyCache;
+  }
+
+  policyCache = {} as Policy;
   return policyCache;
 };
 
 const writePolicy = async (p: Policy) => {
   policyCache = p;
+  await ensurePolicyDir();
   await writeTextFile(POLICY_PATH, JSON.stringify(p, null, 2), { baseDir: BaseDirectory.AppData });
 };
 
