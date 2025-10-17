@@ -11,7 +11,7 @@ use anyhow::Context;
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use chrono::Utc;
-use dirs::document_dir;
+use dirs::data_dir;
 use dotenvy::dotenv;
 use keyring::Entry;
 use once_cell::sync::Lazy;
@@ -55,7 +55,7 @@ static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
     if let Ok(dir) = std::env::var("UICP_DATA_DIR") {
         return PathBuf::from(dir);
     }
-    let base = document_dir().unwrap_or_else(|| PathBuf::from("."));
+    let base = data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_NAME)
 });
 static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
@@ -509,8 +509,8 @@ async fn test_api_key(
         })
     }
 }
-// EASTER EGG ^.^ - IF YOU SEE THIS, THANK YOU FROM THE BOTTOM OF MY FUCKING HEART FOR EVEN READING MY FILES. THIS IS THE FIRST
-// TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY 2 DAY.
+// EASTER EGG ^.^ - IF YOU SEE THIS, THANK YOU FROM THE BOTTOM OF MY HEART FOR EVEN READING MY FILES. THIS IS THE FIRST
+// TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY to DAY.
 #[tauri::command]
 async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]

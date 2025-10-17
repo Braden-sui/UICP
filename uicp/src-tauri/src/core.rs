@@ -8,7 +8,7 @@ use std::{
 use crate::action_log;
 use anyhow::Context;
 use chrono::Utc;
-use dirs::document_dir;
+use dirs::data_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection};
@@ -28,7 +28,7 @@ pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
     if let Ok(dir) = std::env::var("UICP_DATA_DIR") {
         return PathBuf::from(dir);
     }
-    let base = document_dir().unwrap_or_else(|| PathBuf::from("."));
+    let base = data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_NAME)
 });
 
