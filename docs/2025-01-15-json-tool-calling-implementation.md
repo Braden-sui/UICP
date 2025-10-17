@@ -24,23 +24,25 @@ Implemented JSON-first tool calling for planner and actor with automatic WIL fal
 - Returns `{ toolResult?, textContent }` enabling graceful fallback
 - Error codes: `E-UICP-0105` (timeout), `E-UICP-0106` (collection failed)
 
+#### `jsonParsing.ts` (NEW)
+- `parseToolFromText()`: Extracts `emit_plan`/`emit_batch` payloads from mixed text (code fences, balanced braces, concatenated JSON)
+- `normalizePlanJson()`: Unwraps aliases and validates plan payloads (camel/snake hints, nested tool outputs)
+- `normalizeBatchJson()`: Normalises batch payloads (method/op alias, snake_case params) before schema validation
+- Consolidates all JSON-ish → Plan/Batch conversions for orchestrator and streaming apply paths
+
 ### 2. Orchestrator Updates
 
 #### `planWithProfile()` - JSON-first with cascading fallback
-1. **Priority 1**: Tool call result (`emit_plan`) → validate → return with `channelUsed: 'tool'`
-2. **Priority 2**: JSON parse from text content → validate → return with `channelUsed: 'json'`
+1. **Priority 1**: Tool call result (`emit_plan`) → `normalizePlanJson()` → return with `channelUsed: 'tool'`
+2. **Priority 2**: JSON parse from text content → `normalizePlanJson()` → return with `channelUsed: 'json'`
 3. **Priority 3**: Parse text outline (legacy) → return with `channelUsed: 'text'`
 4. **Gate**: Only activates when `supportsTools: true` AND `cfg.wilOnly: false`
 
 #### `actWithProfile()` - Same pattern for actor
-1. **Priority 1**: Tool call result (`emit_batch`) → validate batch schema
-2. **Priority 2**: JSON parse from text content
+1. **Priority 1**: Tool call result (`emit_batch`) → `normalizeBatchJson()` → ensure window spawn
+2. **Priority 2**: JSON parse from text content → `normalizeBatchJson()`
 3. **Priority 3**: WIL text parsing
 4. **Gate**: Same as planner
-
-#### `tryParsePlanFromJson()` (NEW)
-- Attempts to parse Plan schema from JSON text
-- Used when models emit JSON as content instead of tool calls
 
 ### 3. Retry Logic Enhancement
 - Updated `buildStructuredRetryMessage()` to accept `useTools` parameter
@@ -106,7 +108,7 @@ From `docs/json-ref.md`:
 - [x] Add tests for tool collection, JSON parsing, WIL fallback
 - [x] Keep WIL tests (all 176 tests passing, 3 pre-existing failures unrelated to this work)
 - [ ] Flip `supportsTools: true` on chosen profiles (deferred until ready for production rollout)
-- [ ] Extend aggregator to accept `json` channel for streaming apply (deferred - needs bridge changes)
+- [x] Extend aggregator to accept `json` channel for streaming apply (uses `normalizeBatchJson`)
 - [ ] Update prompts to mention tool calling when enabled (deferred)
 - [ ] Add CI matrix jobs: WIL-only and Hybrid (deferred)
 - [ ] Document `FALLBACK_CLOUD_MODEL` in README (deferred)
@@ -148,6 +150,7 @@ None. This is additive infrastructure. Current behavior (WIL-only) unchanged.
 
 - `uicp/src/lib/llm/collectToolArgs.ts` (NEW)
 - `uicp/src/lib/llm/collectWithFallback.ts` (NEW)
+- `uicp/src/lib/llm/jsonParsing.ts` (NEW)
 - `uicp/src/lib/llm/orchestrator.ts` (modified)
 - `uicp/tests/unit/collectToolArgs.test.ts` (NEW)
 - `uicp/tests/unit/orchestrator.json-first.test.ts` (NEW)

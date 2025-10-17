@@ -111,8 +111,8 @@ These prompts are treated as source of truth; any deviation is caught by orchest
 
 - File: `uicp/src/lib/llm/orchestrator.ts`
 - Planner (`planWithProfile`):
-  1) When the selected profile supports tools, collect the `emit_plan` tool call and validate it.
-  2) If the model emits JSON content (no tool_call), attempt `tryParsePlanFromJson`.
+  1) When the selected profile supports tools, collect the `emit_plan` tool call and normalise via `normalizePlanJson()`.
+  2) If the model emits JSON content (no tool_call), reuse `normalizePlanJson()` to validate and coerce aliases.
   3) As a last resort, parse the legacy outline sections (only used by the deterministic `wil` planner or older models).
   4) On schema issues we retry once with a structured system message that reiterates the JSON contract.
 - Actor (`actWithProfile`):
@@ -126,9 +126,9 @@ These prompts are treated as source of truth; any deviation is caught by orchest
 ## Streaming Aggregator (Apply path)
 
 - Current: `uicp/src/lib/uicp/stream.ts` aggregates text → WIL via `parseWILBatch()`.
-- JSON extension (to implement):
-  - Accumulate `json` channel text; on `flush()`, parse `{ batch: [...] }` and `validateBatch()`.
-  - Alternatively, accumulate `tool_call` deltas for `emit_batch` and apply final args.
+- JSON extension:
+  - Accumulate `json` channel text; on `flush()`, normalise via `normalizeBatchJson()` and enqueue.
+  - Accumulate `tool_call` deltas for `emit_batch`, then run `normalizeBatchJson()` on the merged payload.
   - Gate by: `supportsTools && !cfg.wilOnly`.
 - Bridge integration: `uicp/src/lib/bridge/tauri.ts` chooses aggregator; keep WIL aggregator for fallback and tests.
 

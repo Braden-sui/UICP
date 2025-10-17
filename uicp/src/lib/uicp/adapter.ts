@@ -1,4 +1,4 @@
-import { sanitizeHtmlStrict, type Batch, type Envelope, type OperationParamMap } from "./schemas";
+import { sanitizeHtmlStrict, type Batch, type Envelope, type OperationParamMap, computeBatchHash } from "./schemas";
 import { createFrameCoalescer, createId } from "../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { writeTextFile, BaseDirectory } from "@tauri-apps/plugin-fs";
@@ -8,6 +8,7 @@ import { getBridgeWindow, getComputeBridge } from "../bridge/globals";
 import type { JobSpec } from "../../compute/types";
 import { checkPermission } from "../permissions/PermissionManager";
 import { useAppStore } from "../../state/app";
+import { emitTelemetryEvent } from "../telemetry";
 
 const coalescer = createFrameCoalescer();
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
@@ -23,6 +24,7 @@ const ALLOWED_BASE_DIRECTORIES: Record<string, BaseDirectory> = {
 };
 
 const DEFAULT_EXPORT_DIRECTORY = BaseDirectory.AppData;
+const ALLOWED_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH']);
 
 // Safety caps for data-command attributes
 const MAX_DATA_COMMAND_LEN = 32768; // 32KB serialized JSON
@@ -111,6 +113,33 @@ if (bridgeWindow && !bridgeWindow.__UICP_STATE_STORE__) {
     writable: false,
   });
 }
+
+// Batch deduplication store: tracks recently-applied batches by hash to prevent double-application.
+// WHY: Prevents the same batch from being applied twice (e.g., network retry, race conditions).
+// INVARIANT: Each hash maps to {batchId, timestamp, appliedCount} and expires after TTL.
+const BATCH_DEDUPE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const BATCH_DEDUPE_MAX_SIZE = 500; // LRU-style cleanup threshold
+
+type BatchDedupeEntry = {
+  batchId: string;
+  timestamp: number;
+  appliedCount: number;
+  opsHash: string;
+};
+
+const batchDedupeStore = new Map<string, BatchDedupeEntry>();
+
+// Cleanup expired batch dedupe entries when store grows beyond threshold
+const cleanupBatchDedupe = () => {
+  const now = Date.now();
+  if (batchDedupeStore.size <= BATCH_DEDUPE_MAX_SIZE) return;
+  
+  for (const [hash, entry] of batchDedupeStore.entries()) {
+    if (now - entry.timestamp > BATCH_DEDUPE_TTL_MS) {
+      batchDedupeStore.delete(hash);
+    }
+  }
+};
 
 // Track per-window drag cleanup so we can detach listeners on destroy.
 const windowDragCleanup = new WeakMap<HTMLElement, () => void>();
@@ -685,6 +714,7 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
   windows.clear();
   components.clear();
   for (const scope of stateStore.values()) scope.clear();
+  batchDedupeStore.clear();
   clearAllQueues();
   if (workspaceRoot) {
     workspaceRoot.innerHTML = "";
@@ -1385,21 +1415,82 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
         }
         // Basic fetch for http(s)
         if (url.startsWith('http://') || url.startsWith('https://')) {
-          const init: FetchRequestInit = { method: params.method ?? 'GET', headers: params.headers };
+          const method = (params.method ?? 'GET').toUpperCase();
+          const traceId = command.traceId;
+          const urlObj = new URL(url);
+
+          if (!ALLOWED_HTTP_METHODS.has(method)) {
+            if (traceId) {
+              emitTelemetryEvent('api_call', {
+                traceId,
+                span: 'api',
+                status: 'error',
+                data: { reason: 'method_not_allowed', method, origin: urlObj.origin },
+              });
+            }
+            return { success: false, error: `Method ${method} not allowed` };
+          }
+
+          const init: FetchRequestInit = { method, headers: params.headers };
           if (params.body !== undefined) {
-            init.body = typeof params.body === 'string' ? params.body : JSON.stringify(params.body);
+            try {
+              init.body = typeof params.body === 'string' ? params.body : JSON.stringify(params.body);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              if (traceId) {
+                emitTelemetryEvent('api_call', {
+                  traceId,
+                  span: 'api',
+                  status: 'error',
+                  data: { reason: 'body_serialization_failed', method, origin: urlObj.origin, error: message },
+                });
+              }
+              return { success: false, error: 'Body serialization failed' };
+            }
             init.headers = { 'content-type': 'application/json', ...(params.headers ?? {}) };
           }
+
+          const startedAt = performance.now();
           try {
-            // Fail loud when remote endpoints reject or networking breaks so queues don't report false success.
             const response = await fetch(url, init);
+            const duration = Math.round(performance.now() - startedAt);
+            if (traceId) {
+              emitTelemetryEvent('api_call', {
+                traceId,
+                span: 'api',
+                durationMs: duration,
+                status: response.ok ? 'ok' : 'error',
+                data: {
+                  method,
+                  origin: urlObj.origin,
+                  pathname: urlObj.pathname,
+                  status: response.status,
+                },
+              });
+            }
             if (!response.ok) {
               const statusText = response.statusText?.trim();
               const label = statusText ? `${response.status} ${statusText}` : `${response.status}`;
               return { success: false, error: `HTTP ${label}` };
             }
           } catch (error) {
-            console.error('api.call fetch failed', { url, error });
+            const duration = Math.round(performance.now() - startedAt);
+            const message = error instanceof Error ? error.message : String(error);
+            if (traceId) {
+              emitTelemetryEvent('api_call', {
+                traceId,
+                span: 'api',
+                durationMs: duration,
+                status: 'error',
+                data: {
+                  method,
+                  origin: urlObj.origin,
+                  pathname: urlObj.pathname,
+                  error: message,
+                },
+              });
+            }
+            console.error('api.call fetch failed', { traceId, url, error: message });
             return toFailure(error);
           }
           return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
@@ -1427,10 +1518,46 @@ const applyCommand = async (command: Envelope): Promise<CommandResult> => {
 export type ApplyOutcome = {
   success: boolean;
   applied: number;
+  skippedDuplicates: number;
   errors: string[];
+  batchId?: string;
 };
 
 export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
+  // Generate stable batch identity for idempotency tracking
+  const batchId = createId('batch');
+  const opsHash = computeBatchHash(batch);
+  const now = Date.now();
+
+  // Check if this exact batch was recently applied (idempotency guard)
+  const existingEntry = batchDedupeStore.get(opsHash);
+  if (existingEntry && (now - existingEntry.timestamp) < BATCH_DEDUPE_TTL_MS) {
+    // Batch duplicate detected: skip application, emit telemetry
+    const traceIds = new Set(batch.map(env => env.traceId).filter(Boolean));
+    for (const traceId of traceIds) {
+      emitTelemetryEvent('batch_duplicate_skipped', {
+        traceId: traceId as string,
+        span: 'batch',
+        status: 'skipped',
+        data: {
+          batchId: existingEntry.batchId,
+          opsHash,
+          originalBatchId: existingEntry.batchId,
+          skippedCount: batch.length,
+          ageMs: now - existingEntry.timestamp,
+        },
+      });
+    }
+    
+    return {
+      success: true,
+      applied: 0,
+      skippedDuplicates: batch.length,
+      errors: [],
+      batchId: existingEntry.batchId,
+    };
+  }
+
   const plannedJobs: Array<() => Promise<void>> = [];
   const errors: string[] = [];
   let applied = 0;
@@ -1473,7 +1600,7 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
   }
 
   if (!plannedJobs.length) {
-    return { success: true, applied: 0, errors: [] };
+    return { success: true, applied: 0, skippedDuplicates: 0, errors: [], batchId };
   }
 
   await new Promise<void>((resolve) => {
@@ -1490,6 +1617,17 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
       });
     });
   });
+
+  // Record successful batch in dedupe store for idempotency tracking
+  if (errors.length === 0 && applied > 0) {
+    batchDedupeStore.set(opsHash, {
+      batchId,
+      timestamp: now,
+      appliedCount: applied,
+      opsHash,
+    });
+    cleanupBatchDedupe();
+  }
 
   // After successful apply, record a lightweight state checkpoint for determinism probe.
   if (errors.length === 0) {
@@ -1522,6 +1660,8 @@ export const applyBatch = async (batch: Batch): Promise<ApplyOutcome> => {
   return {
     success: errors.length === 0,
     applied,
+    skippedDuplicates: 0,
     errors,
+    batchId,
   };
 };

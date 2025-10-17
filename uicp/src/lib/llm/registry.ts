@@ -14,8 +14,20 @@ export type ToolDescriptor = {
 };
 
 export const LLM_TOOLS: ToolDescriptor[] = [
-  { name: 'emit_plan', kind: 'llm-function', capabilities: ['window','dom','component','state','api','txn'], risk: 'low', schema: (EMIT_PLAN as any).function.parameters },
-  { name: 'emit_batch', kind: 'llm-function', capabilities: ['window','dom','component','state','api','txn'], risk: 'low', schema: (EMIT_BATCH as any).function.parameters },
+  {
+    name: 'emit_plan',
+    kind: 'llm-function',
+    capabilities: ['window', 'dom', 'component', 'state', 'api', 'txn'],
+    risk: 'low',
+    schema: EMIT_PLAN.function.parameters,
+  },
+  {
+    name: 'emit_batch',
+    kind: 'llm-function',
+    capabilities: ['window', 'dom', 'component', 'state', 'api', 'txn'],
+    risk: 'low',
+    schema: EMIT_BATCH.function.parameters,
+  },
 ];
 
 export const OPERATIONS: Record<z.infer<typeof OperationName>, ToolDescriptor> = {
@@ -35,4 +47,3 @@ export const OPERATIONS: Record<z.infer<typeof OperationName>, ToolDescriptor> =
   'api.call':           { name: 'api.call',      kind: 'local-operation', capabilities: ['api'],       risk: 'medium' },
   'txn.cancel':         { name: 'txn.cancel',    kind: 'local-operation', capabilities: ['txn'],       risk: 'low' },
 } as const;
-

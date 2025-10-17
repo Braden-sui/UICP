@@ -9,6 +9,7 @@ import { composeClarifier } from '../orchestrator/clarifier';
 import { enforcePlannerCap } from '../orchestrator/plannerCap';
 import { readNumberEnv } from '../env/values';
 import { collectWithFallback } from './collectWithFallback';
+import { emitTelemetryEvent } from '../telemetry';
 
 const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', 180_000, { min: 1_000 });
 const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', 180_000, { min: 1_000 });
@@ -72,7 +73,10 @@ export async function planWithProfile(
       profileKey: profile.key,
       meta: { traceId: options?.traceId, intent },
     });
-    const text = await collectTextFromChannels(stream, timeoutMs);
+    const text = await collectTextFromChannels(stream, timeoutMs, {
+      traceId: options?.traceId,
+      phase: 'planner',
+    });
     if (!text || text.trim().length === 0) {
       throw new Error('planner_empty');
     }
@@ -99,13 +103,9 @@ export async function planWithProfile(
 
       // JSON-first path: collect both tool calls AND text in single pass
       if (useJsonFirst) {
-        const { toolResult, textContent } = await collectWithFallback(stream, 'emit_plan', timeoutMs);
-        console.debug('[planner] collectWithFallback result', {
+        const { toolResult, textContent } = await collectWithFallback(stream, 'emit_plan', timeoutMs, {
           traceId: options?.traceId,
-          toolResultExists: Boolean(toolResult && toolResult.args),
-          toolResultName: toolResult?.name,
-          textContentLength: textContent.length,
-          textContentPreview: textContent.slice(0, 160),
+          phase: 'planner',
         });
 
         // Priority 1: Tool call result
@@ -114,7 +114,19 @@ export async function planWithProfile(
             const plan = validatePlan(toolResult.args);
             return { plan, channelUsed: 'tool' };
           } catch (err) {
-            console.warn('Tool args failed validation, trying text fallback', err);
+            if (options?.traceId) {
+              emitTelemetryEvent('tool_args_parsed', {
+                traceId: options.traceId,
+                span: 'planner',
+                status: 'error',
+                data: {
+                  reason: 'validation_failed',
+                  target: toolResult.name ?? 'emit_plan',
+                  attempt: attempt + 1,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              });
+            }
           }
         }
 
@@ -122,11 +134,34 @@ export async function planWithProfile(
         if (textContent && textContent.trim().length > 0) {
           const jsonPlan = tryParsePlanFromJson(textContent);
           if (jsonPlan) {
+            if (options?.traceId) {
+              emitTelemetryEvent('json_text_parsed', {
+                traceId: options.traceId,
+                span: 'planner',
+                data: {
+                  length: textContent.length,
+                  channel: 'json',
+                  attempt: attempt + 1,
+                },
+              });
+            }
             return { plan: jsonPlan, channelUsed: 'json' };
           }
 
           // Priority 3: Parse text outline
           const outline = parsePlannerOutline(textContent);
+          if (options?.traceId) {
+            emitTelemetryEvent('json_text_parsed', {
+              traceId: options.traceId,
+              span: 'planner',
+              data: {
+                length: textContent.length,
+                channel: 'text',
+                parser: 'outline',
+                attempt: attempt + 1,
+              },
+            });
+          }
           return {
             plan: validatePlan({
               summary: outline.summary,
@@ -142,7 +177,10 @@ export async function planWithProfile(
       }
 
       // WIL-only path: collect text only
-      const text = await collectTextFromChannels(stream, timeoutMs);
+      const text = await collectTextFromChannels(stream, timeoutMs, {
+        traceId: options?.traceId,
+        phase: 'planner',
+      });
       if (!text || text.trim().length === 0) {
         throw new Error('planner_empty');
       }
@@ -295,7 +333,10 @@ export async function actWithProfile(
 
       // JSON-only path: collect tool calls and JSON text; no WIL fallback
       if (useJsonFirst) {
-        const { toolResult, textContent } = await collectWithFallback(stream, 'emit_batch', timeoutMs);
+        const { toolResult, textContent } = await collectWithFallback(stream, 'emit_batch', timeoutMs, {
+          traceId: options?.traceId,
+          phase: 'actor',
+        });
 
         // Priority 1: Tool call result
         if (toolResult?.args) {
@@ -306,36 +347,64 @@ export async function actWithProfile(
               return { batch, channelUsed: 'tool' };
             }
           } catch (err) {
-            console.warn('Tool args failed validation, trying text fallback', err);
+            if (options?.traceId) {
+              emitTelemetryEvent('tool_args_parsed', {
+                traceId: options.traceId,
+                span: 'actor',
+                status: 'error',
+                data: {
+                  reason: 'validation_failed',
+                  target: toolResult.name ?? 'emit_batch',
+                  attempt: attempt + 1,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              });
+            }
           }
         }
 
         // Priority 2: Parse JSON from text content
         if (textContent && textContent.trim().length > 0) {
-          console.log('[DEBUG] Text content length:', textContent.length, 'First 200 chars:', textContent.slice(0, 200));
           const jsonBatch = tryParseBatchFromJson(textContent);
           if (jsonBatch) {
-            console.log('[DEBUG] Parsed as JSON, batch length:', jsonBatch.length);
+            if (options?.traceId) {
+              emitTelemetryEvent('json_text_parsed', {
+                traceId: options.traceId,
+                span: 'actor',
+                data: {
+                  length: textContent.length,
+                  batchSize: jsonBatch.length,
+                  attempt: attempt + 1,
+                },
+              });
+            }
             return { batch: ensureWindowSpawn(plan, jsonBatch), channelUsed: 'json' };
           }
 
           // In tests, allow WIL fallback to preserve legacy coverage
           if (import.meta.env.MODE === 'test') {
-            console.log('[DEBUG] Trying WIL parse (test mode)...');
             const items = parseWILBatch(textContent);
             const nop = items.find((i) => 'nop' in i) as { nop: string } | undefined;
             if (nop) throw new Error(`actor_nop: ${nop.nop}`);
             const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
             const batch = validateBatch(ops);
+            if (options?.traceId) {
+              emitTelemetryEvent('wil_fallback', {
+                traceId: options.traceId,
+                span: 'actor',
+                data: {
+                  reason: 'test_mode',
+                  attempt: attempt + 1,
+                },
+              });
+            }
             return { batch: ensureWindowSpawn(plan, batch), channelUsed: 'text' };
           }
 
           // No JSON content: treat as nop to trigger clarifier/error handling
-          console.log('[DEBUG] No valid JSON content in actor response');
           throw new Error('actor_nop: invalid json content');
         }
 
-        console.log('[DEBUG] No text content, throwing nop error');
         throw new Error('actor_nop: empty response');
       }
 
@@ -399,6 +468,15 @@ export async function runIntent(
   const txnId = createId('txn');
   const failures: RunIntentResult['failures'] = {};
 
+  emitTelemetryEvent('planner_start', {
+    traceId,
+    span: 'planner',
+    data: {
+      intentLength: text.length,
+      plannerProfile: options?.plannerProfileKey ?? 'default',
+    },
+  });
+
   hooks?.onPhaseChange?.({ phase: 'planning', traceId });
 
   const planningStarted = now();
@@ -410,12 +488,6 @@ export async function runIntent(
     const out = await planWithProfile(text, { profileKey: options?.plannerProfileKey, traceId });
     plan = out.plan;
     plannerChannelUsed = out.channelUsed;
-    try {
-      console.log('[DEBUG] Planner plan summary:', plan.summary, 'channel:', plannerChannelUsed);
-      if (plan.actorHints) console.log('[DEBUG] Planner actorHints:', JSON.stringify(plan.actorHints).slice(0, 500));
-      if (plan.risks) console.log('[DEBUG] Planner risks:', JSON.stringify(plan.risks).slice(0, 500));
-      console.log('[DEBUG] Planner batch length:', Array.isArray(plan.batch) ? plan.batch.length : 0);
-    } catch {}
   } catch (err) {
     const failure = toError(err);
     // Planner degraded: proceed with actor-only fallback using the raw intent as summary
@@ -436,6 +508,18 @@ export async function runIntent(
   }
 
   const planMs = Math.max(0, Math.round(now() - planningStarted));
+  emitTelemetryEvent('planner_finish', {
+    traceId,
+    span: 'planner',
+    durationMs: planMs,
+    status: failures.planner ? 'error' : undefined,
+    data: {
+      channel: plannerChannelUsed,
+      fallback: notice === 'planner_fallback',
+      summary: plan.summary,
+      error: failures.planner,
+    },
+  });
   hooks?.onPhaseChange?.({ phase: 'acting', traceId, planMs });
 
   if (isClarifier) {
@@ -452,6 +536,15 @@ export async function runIntent(
   }
 
   const actingStarted = now();
+  emitTelemetryEvent('actor_start', {
+    traceId,
+    span: 'actor',
+    data: {
+      plannerFallback: notice === 'planner_fallback',
+      planSummaryLength: plan.summary?.length ?? 0,
+      actorProfile: options?.actorProfileKey ?? 'default',
+    },
+  });
 
   // Step 2: Act
   let batch: Batch;
@@ -520,6 +613,19 @@ export async function runIntent(
 
   // Orchestrator wiring to preview/apply is handled by chat/UI layers
   const actMs = Math.max(0, Math.round(now() - actingStarted));
+  emitTelemetryEvent('actor_finish', {
+    traceId,
+    span: 'actor',
+    durationMs: actMs,
+    status: failures.actor ? 'error' : undefined,
+    data: {
+      channel: actorChannelUsed,
+      batchSize: batch.length,
+      plannerFallback: notice === 'planner_fallback',
+      clarifierAttempted,
+      error: failures.actor,
+    },
+  });
   return {
     plan,
     batch: stamped,

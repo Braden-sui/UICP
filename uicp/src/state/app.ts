@@ -10,6 +10,18 @@ import {
 } from '../lib/llm/profiles';
 import { createId } from '../lib/utils';
 import { readBooleanEnv } from '../lib/env/values';
+import type { TraceEvent } from '../lib/telemetry/types';
+import {
+  type OrchestratorContext,
+  type StateTransition,
+  type OrchestratorEventName,
+  create_initial_context,
+  increment_run_id,
+  execute_transition,
+  can_auto_apply,
+ 
+
+} from '../lib/orchestrator/state-machine';
 
 // AppState keeps cross-cutting UI control flags so DockChat, modal flows, and transport logic stay in sync.
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -71,6 +83,8 @@ export type TelemetryBuffer = {
 };
 
 const TELEMETRY_CAPACITY = 25;
+const TRACE_EVENTS_PER_TRACE = 80;
+const TRACE_TRACE_CAPACITY = 25;
 
 const createTelemetryBuffer = (capacity = TELEMETRY_CAPACITY): TelemetryBuffer => ({
   capacity,
@@ -158,6 +172,8 @@ export type AppState = {
   // When true, aggregator will not auto-apply or preview parsed batches.
   // Used to prevent duplicate application while orchestrator-driven flows run.
   suppressAutoApply: boolean;
+  // Orchestrator state machine context - tracks current state, run ID, and transitions
+  orchestratorContext: OrchestratorContext;
   grantModalOpen: boolean;
   // Controls visibility of the LogsPanel.
   logsOpen: boolean;
@@ -166,6 +182,7 @@ export type AppState = {
   notepadOpen: boolean;
   agentSettingsOpen: boolean;
   computeDemoOpen: boolean;
+  agentTraceOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
@@ -174,6 +191,9 @@ export type AppState = {
   workspaceWindows: Record<string, WorkspaceWindowMeta>;
   telemetryBuffer: TelemetryBuffer;
   telemetry: IntentTelemetry[];
+  traceEvents: Record<string, TraceEvent[]>;
+  traceOrder: string[];
+  traceEventVersion: number;
   devtoolsAnalytics: DevtoolsAnalyticsEvent[];
   devtoolsAssumedOpen: boolean;
   toasts: Toast[];
@@ -193,6 +213,7 @@ export type AppState = {
   setNotepadOpen: (value: boolean) => void;
   setAgentSettingsOpen: (value: boolean) => void;
   setComputeDemoOpen: (value: boolean) => void;
+  setAgentTraceOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
@@ -204,14 +225,20 @@ export type AppState = {
   transitionAgentPhase: (phase: AgentPhase, patch?: Partial<Omit<AgentStatus, 'phase'>>) => void;
   upsertTelemetry: (traceId: string, patch: Partial<Omit<IntentTelemetry, 'traceId'>>) => void;
   clearTelemetry: () => void;
+  recordTraceEvent: (event: TraceEvent) => void;
+  clearTraceEvents: (traceId?: string) => void;
   recordDevtoolsAnalytics: (payload: DevtoolsAnalyticsPayload) => void;
   clearDevtoolsAnalytics: () => void;
   setDevtoolsAssumedOpen: (value: boolean) => void;
+  // Orchestrator state machine methods
+  transitionOrchestrator: (event: OrchestratorEventName, metadata?: Record<string, unknown>) => StateTransition | null;
+  startNewOrchestratorRun: () => void;
+  canAutoApply: () => boolean;
 };
 
 export const useAppStore = create<AppState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       connectionStatus: 'disconnected',
       devMode: readBooleanEnv('VITE_DEV_MODE', true),
       fullControl: false,
@@ -220,37 +247,65 @@ export const useAppStore = create<AppState>()(
       streaming: false,
       agentStatus: {
         phase: 'idle',
-        traceId: undefined,
         planMs: null,
         actMs: null,
         applyMs: null,
         startedAt: null,
         lastUpdatedAt: null,
-        error: undefined,
       },
       safeMode: false,
       safeReason: undefined,
       suppressAutoApply: false,
+      orchestratorContext: create_initial_context({ fullControl: false, fullControlLocked: false }),
       grantModalOpen: false,
       logsOpen: false,
       metricsOpen: false,
       notepadOpen: false,
       agentSettingsOpen: false,
       computeDemoOpen: false,
+      agentTraceOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
       desktopShortcuts: {},
       workspaceWindows: {},
       telemetryBuffer: createTelemetryBuffer(),
       telemetry: [],
+      traceEvents: {},
+      traceOrder: [],
+      traceEventVersion: 0,
       devtoolsAnalytics: [],
       devtoolsAssumedOpen: false,
       toasts: [],
       setConnectionStatus: (status) => set({ connectionStatus: status }),
       setDevMode: (devMode) => set({ devMode }),
-      setFullControl: (value) => set({ fullControl: value, fullControlLocked: false }),
-      lockFullControl: () => set({ fullControl: false, fullControlLocked: true }),
-      unlockFullControl: () => set({ fullControlLocked: false }),
+      setFullControl: (value) =>
+        set((state) => ({
+          fullControl: value,
+          fullControlLocked: false,
+          orchestratorContext: {
+            ...state.orchestratorContext,
+            fullControl: value,
+            fullControlLocked: false,
+          },
+        })),
+      lockFullControl: () =>
+        set((state) => ({
+          fullControl: false,
+          fullControlLocked: true,
+          orchestratorContext: {
+            ...state.orchestratorContext,
+            fullControl: false,
+            fullControlLocked: true,
+          },
+        })),
+      unlockFullControl: () =>
+        set((state) => ({
+          fullControlLocked: false,
+          orchestratorContext: {
+            ...state.orchestratorContext,
+            fullControlLocked: false,
+          },
+        })),
       setChatOpen: (value) => set({ chatOpen: value }),
       setStreaming: (value) => set({ streaming: value }),
       setSuppressAutoApply: (value) => set({ suppressAutoApply: value }),
@@ -263,6 +318,7 @@ export const useAppStore = create<AppState>()(
       setNotepadOpen: (value) => set({ notepadOpen: value }),
       setAgentSettingsOpen: (value) => set({ agentSettingsOpen: value }),
       setComputeDemoOpen: (value) => set({ computeDemoOpen: value }),
+      setAgentTraceOpen: (value) => set({ agentTraceOpen: value }),
       setPlannerProfileKey: (key) => {
         setSelectedPlannerProfileKey(key);
         set({ plannerProfileKey: key });
@@ -430,6 +486,59 @@ export const useAppStore = create<AppState>()(
             telemetry: [],
           };
         }),
+      recordTraceEvent: (event) =>
+        set((state) => {
+          const existing = state.traceEvents[event.traceId] ?? [];
+          const appended = [...existing, event];
+          if (appended.length > TRACE_EVENTS_PER_TRACE) {
+            appended.splice(0, appended.length - TRACE_EVENTS_PER_TRACE);
+          }
+
+          const nextTraceEvents = {
+            ...state.traceEvents,
+            [event.traceId]: appended,
+          };
+
+          const updatedOrder = [event.traceId, ...state.traceOrder.filter((id) => id !== event.traceId)];
+          let trimmedOrder = updatedOrder;
+          let trimmedEvents = nextTraceEvents;
+
+          if (updatedOrder.length > TRACE_TRACE_CAPACITY) {
+            const keep = updatedOrder.slice(0, TRACE_TRACE_CAPACITY);
+            trimmedOrder = keep;
+            trimmedEvents = {};
+            for (const id of keep) {
+              trimmedEvents[id] = nextTraceEvents[id] ?? [];
+            }
+          }
+
+          return {
+            traceEvents: trimmedEvents,
+            traceOrder: trimmedOrder,
+            traceEventVersion: state.traceEventVersion + 1,
+          };
+        }),
+      clearTraceEvents: (traceId) =>
+        set((state) => {
+          if (!traceId) {
+            if (state.traceOrder.length === 0) return {};
+            return {
+              traceEvents: {},
+              traceOrder: [],
+              traceEventVersion: state.traceEventVersion + 1,
+            };
+          }
+          if (!state.traceEvents[traceId]) {
+            return {};
+          }
+          const next = { ...state.traceEvents };
+          delete next[traceId];
+          return {
+            traceEvents: next,
+            traceOrder: state.traceOrder.filter((id) => id !== traceId),
+            traceEventVersion: state.traceEventVersion + 1,
+          };
+        }),
       recordDevtoolsAnalytics: (payload) =>
         set((state) => {
           if (!payload) return {};
@@ -458,6 +567,47 @@ export const useAppStore = create<AppState>()(
         }),
       clearDevtoolsAnalytics: () => set({ devtoolsAnalytics: [] }),
       setDevtoolsAssumedOpen: (value) => set({ devtoolsAssumedOpen: value }),
+      // Orchestrator state machine methods
+      transitionOrchestrator: (event, metadata) => {
+        let transition: StateTransition | null = null;
+        set((state) => {
+          try {
+            const result = execute_transition(state.orchestratorContext, event, metadata);
+            transition = result.transition;
+
+            // WHY: Log state transitions for debugging and audit trail
+            if (import.meta.env.DEV) {
+              console.debug('[orchestrator] state transition', {
+                from: transition.from,
+                to: transition.to,
+                event: transition.event,
+                runId: transition.runId,
+                metadata: transition.metadata,
+              });
+            }
+
+            return { orchestratorContext: result.context };
+          } catch (error) {
+            // WHY: Invalid transitions should be logged but not crash the app
+            console.error('[orchestrator] invalid transition', {
+              currentState: state.orchestratorContext.state,
+              event,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return {};
+          }
+        });
+        return transition;
+      },
+      startNewOrchestratorRun: () =>
+        set((state) => {
+          const newContext = increment_run_id(state.orchestratorContext);
+          if (import.meta.env.DEV) {
+            console.debug('[orchestrator] starting new run', { runId: newContext.runId });
+          }
+          return { orchestratorContext: newContext };
+        }),
+      canAutoApply: () => can_auto_apply(get().orchestratorContext),
     }),
     {
       name: 'uicp-app',
@@ -486,6 +636,8 @@ export const useAppStore = create<AppState>()(
     },
   ),
 );
+
+export const useAppSelector = <T>(selector: (state: AppState) => T): T => useAppStore(selector);
 
 export const selectComputeDemoOpen = (state: AppState) => state.computeDemoOpen;
 export const selectSetComputeDemoOpen = (state: AppState) => state.setComputeDemoOpen;

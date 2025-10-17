@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import DesktopWindow from './DesktopWindow';
-import { useAppStore } from '../state/app';
+import { useAppSelector, useAppStore } from '../state/app';
 import {
   listPlannerProfiles,
   listActorProfiles,
@@ -15,12 +15,12 @@ const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
 
 const AgentSettingsWindow = () => {
-  const agentSettingsOpen = useAppStore((state) => state.agentSettingsOpen);
-  const setAgentSettingsOpen = useAppStore((state) => state.setAgentSettingsOpen);
-  const plannerProfileKey = useAppStore((state) => state.plannerProfileKey);
-  const actorProfileKey = useAppStore((state) => state.actorProfileKey);
-  const setPlannerProfileKey = useAppStore((state) => state.setPlannerProfileKey);
-  const setActorProfileKey = useAppStore((state) => state.setActorProfileKey);
+  const agentSettingsOpen = useAppSelector((state) => state.agentSettingsOpen);
+  const setAgentSettingsOpen = useAppSelector((state) => state.setAgentSettingsOpen);
+  const plannerProfileKey = useAppSelector((state) => state.plannerProfileKey);
+  const actorProfileKey = useAppSelector((state) => state.actorProfileKey);
+  const setPlannerProfileKey = useAppSelector((state) => state.setPlannerProfileKey);
+  const setActorProfileKey = useAppSelector((state) => state.setActorProfileKey);
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);

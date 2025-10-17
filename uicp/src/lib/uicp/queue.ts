@@ -1,6 +1,7 @@
 import type { Batch } from "./schemas";
 import { validateBatch } from "./schemas";
 import { applyBatch, deferBatchIfNotReady, type ApplyOutcome } from "./adapter";
+import { emitTelemetryEvent } from "../telemetry";
 
 // Per-window FIFO queue with idempotency and txn cancel support.
 // - Commands with the same windowId run sequentially
@@ -41,16 +42,24 @@ export const clearAllQueues = () => {
   seenIdempotency.clear();
 };
 
-// Filters envelopes by idempotencyKey; returns filtered Batch and how many were dropped.
-const filterByIdempotency = (batch: Batch): { filtered: Batch; dropped: number } => {
+// Filters envelopes by idempotencyKey; returns filtered Batch, drop count, and drops grouped by trace.
+const filterByIdempotency = (
+  batch: Batch,
+): { filtered: Batch; dropped: number; dropsByTrace: Map<string, number> } => {
   const now = Date.now();
+  const dropsByTrace = new Map<string, number>();
 
   const filtered = batch.filter((env) => {
     const key = env.idempotencyKey;
     if (!key) return true;
 
     const seen = seenIdempotency.get(key);
-    if (seen && now - seen < IDEMPOTENCY_TTL_MS) return false;
+    if (seen && now - seen < IDEMPOTENCY_TTL_MS) {
+      if (env.traceId) {
+        dropsByTrace.set(env.traceId, (dropsByTrace.get(env.traceId) ?? 0) + 1);
+      }
+      return false;
+    }
 
     seenIdempotency.set(key, now);
     return true;
@@ -65,7 +74,7 @@ const filterByIdempotency = (batch: Batch): { filtered: Batch; dropped: number }
     }
   }
 
-  return { filtered, dropped: batch.length - filtered.length };
+  return { filtered, dropped: batch.length - filtered.length, dropsByTrace };
 };
 
 // Partitions the batch by windowId (or GLOBAL_KEY when absent) while preserving order within each partition.
@@ -85,9 +94,11 @@ const mergeOutcomes = (outcomes: ApplyOutcome[]): ApplyOutcome => {
     (acc, cur) => ({
       success: acc.success && cur.success,
       applied: acc.applied + cur.applied,
+      skippedDuplicates: acc.skippedDuplicates + cur.skippedDuplicates,
       errors: acc.errors.concat(cur.errors),
+      batchId: acc.batchId ?? cur.batchId,
     }),
-    { success: true, applied: 0, errors: [] },
+    { success: true, applied: 0, skippedDuplicates: 0, errors: [] },
   );
 };
 
@@ -112,15 +123,32 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
     return outcome;
   }
 
-  const { filtered } = filterByIdempotency(batch);
+  const { filtered, dropsByTrace } = filterByIdempotency(batch);
+  for (const [traceId, count] of dropsByTrace.entries()) {
+    emitTelemetryEvent('queue_dropped_idempotent', {
+      traceId,
+      span: 'queue',
+      status: 'dropped',
+      data: {
+        count,
+        ttlMs: IDEMPOTENCY_TTL_MS,
+      },
+    });
+  }
   if (!filtered.length) {
-    return { success: true, applied: 0, errors: [] };
+    return { success: true, applied: 0, skippedDuplicates: 0, errors: [] };
   }
 
   const partitions = partitionByWindow(filtered);
   const results: Promise<ApplyOutcome>[] = [];
 
   for (const [windowId, group] of partitions.entries()) {
+    const traceCounts = new Map<string, number>();
+    for (const env of group) {
+      if (!env.traceId) continue;
+      traceCounts.set(env.traceId, (traceCounts.get(env.traceId) ?? 0) + 1);
+    }
+
     const run = async (): Promise<ApplyOutcome> => {
       const t0 = performance.now();
       const outcome = await applyBatch(group);
@@ -128,13 +156,29 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
       if (outcome.success) {
         for (const fn of appliedListeners) fn({ windowId, applied: outcome.applied, ms });
       }
+      for (const [traceId, count] of traceCounts.entries()) {
+        emitTelemetryEvent('enqueue_applied', {
+          traceId,
+          span: 'queue',
+          durationMs: ms,
+          status: outcome.success ? 'ok' : 'error',
+          data: {
+            windowId,
+            applied: outcome.applied,
+            skippedDuplicates: outcome.skippedDuplicates,
+            batchId: outcome.batchId,
+            errors: outcome.success ? undefined : outcome.errors.slice(0, 3),
+            traceCommands: count,
+          },
+        });
+      }
       return outcome;
     };
 
-    const prev = chains.get(windowId) ?? Promise.resolve({ success: true, applied: 0, errors: [] });
+    const prev = chains.get(windowId) ?? Promise.resolve({ success: true, applied: 0, skippedDuplicates: 0, errors: [] });
     const next = prev
       .then(run)
-      .catch((err) => ({ success: false, applied: 0, errors: [String(err)] }));
+      .catch((err) => ({ success: false, applied: 0, skippedDuplicates: 0, errors: [String(err)] }));
 
     chains.set(windowId, next);
     results.push(next);

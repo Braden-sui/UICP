@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import DesktopWindow from './DesktopWindow';
-import { useAppStore } from '../state/app';
+import { useAppSelector } from '../state/app';
 import { createId } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
@@ -24,9 +24,9 @@ const openDialog = async (opts: { multiple?: boolean }): Promise<string | null> 
 type DemoResult = { ok: boolean; message: string };
 
 const ComputeDemoWindow = () => {
-  const isOpen = useAppStore((s) => s.computeDemoOpen);
-  const setOpen = useAppStore((s) => s.setComputeDemoOpen);
-  const pushToast = useAppStore((s) => s.pushToast);
+  const isOpen = useAppSelector((s) => s.computeDemoOpen);
+  const setOpen = useAppSelector((s) => s.setComputeDemoOpen);
+  const pushToast = useAppSelector((s) => s.pushToast);
   const copyToClipboard = useCallback(
     async (value: string) => {
       try {
@@ -74,7 +74,7 @@ const ComputeDemoWindow = () => {
         workspaceId: 'default',
       };
       await computeCall(spec);
-      setLast({ ok: true, message: 'Submitted csv.parse@1.2.0 → /tables/demoCsv' });
+      setLast({ ok: true, message: 'Submitted csv.parse@1.2.0 to /tables/demoCsv' });
     } catch (err) {
       setLast({ ok: false, message: (err as Error)?.message ?? String(err) });
     } finally {
@@ -114,7 +114,7 @@ const ComputeDemoWindow = () => {
         workspaceId: 'default',
       };
       await computeCall(spec);
-      setLast({ ok: true, message: 'Submitted table.query@0.1.0 → /tables/demoQuery' });
+      setLast({ ok: true, message: 'Submitted table.query@0.1.0 to /tables/demoQuery' });
     } catch (err) {
       setLast({ ok: false, message: (err as Error)?.message ?? String(err) });
     } finally {

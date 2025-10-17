@@ -34,7 +34,6 @@ const emitUiDebug = (event: string, extra?: Record<string, unknown>) => {
       }),
     );
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.error(`Failed to emit ui-debug-log ${event}`, error);
   }
 };

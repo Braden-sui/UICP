@@ -11,7 +11,7 @@ use chrono::Utc;
 use dirs::data_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::{RwLock, Semaphore};
 use tokio_rusqlite::Connection as AsyncConn;
@@ -40,13 +40,69 @@ pub fn files_dir_path() -> &'static std::path::Path {
 }
 
 // ----------------------------------------------------------------------------
+// Circuit breaker configuration
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct CircuitBreakerConfig {
+    pub max_failures: u8,
+    pub open_duration_ms: u64,
+    pub half_open_probability: f64,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            max_failures: 3,
+            open_duration_ms: 15_000,
+            half_open_probability: 0.1,
+        }
+    }
+}
+
+impl CircuitBreakerConfig {
+    /// Load configuration from environment variables with fallback to defaults.
+    /// 
+    /// Environment variables:
+    /// - UICP_CIRCUIT_MAX_FAILURES: Maximum consecutive failures before opening (default: 3)
+    /// - UICP_CIRCUIT_OPEN_MS: Duration to keep circuit open in milliseconds (default: 15000)
+    /// - UICP_CIRCUIT_HALF_OPEN_PROB: Probability of allowing requests in half-open state (default: 0.1)
+    pub fn from_env() -> Self {
+        let max_failures = std::env::var("UICP_CIRCUIT_MAX_FAILURES")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or(3);
+        
+        let open_duration_ms = std::env::var("UICP_CIRCUIT_OPEN_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(15_000);
+        
+        let half_open_probability = std::env::var("UICP_CIRCUIT_HALF_OPEN_PROB")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.1)
+            .clamp(0.0, 1.0);
+        
+        Self {
+            max_failures,
+            open_duration_ms,
+            half_open_probability,
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
 // App state
 // ----------------------------------------------------------------------------
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CircuitState {
     pub consecutive_failures: u8,
     pub opened_until: Option<Instant>,
+    pub last_failure_at: Option<Instant>,
+    pub total_failures: u64,
+    pub total_successes: u64,
 }
 
 pub struct AppState {
@@ -65,6 +121,7 @@ pub struct AppState {
     pub safe_mode: RwLock<bool>,
     pub safe_reason: RwLock<Option<String>>,
     pub circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
+    pub circuit_config: CircuitBreakerConfig,
     pub action_log: action_log::ActionLogHandle,
 }
 
@@ -84,10 +141,17 @@ pub fn configure_sqlite(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Current database schema version. Increment when making schema changes.
+const SCHEMA_VERSION: i64 = 1;
+
 pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     std::fs::create_dir_all(&*DATA_DIR).context("create data dir")?;
     let conn = Connection::open(db_path).context("open sqlite")?;
     configure_sqlite(&conn).context("configure sqlite init")?;
+    
+    // Ensure schema_version table exists first for migration tracking
+    ensure_schema_version_table(&conn).context("ensure schema_version table")?;
+    
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS workspace (
@@ -154,12 +218,22 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
-    migrate_compute_cache(&conn).context("migrate compute_cache schema")?;
+    
+    // Apply compute_cache migration with versioning and error recovery
+    migrate_compute_cache(&conn).context(
+        "compute_cache migration failed. Recovery: Stop all UICP instances, backup data.db, \
+        then run 'PRAGMA integrity_check' manually. If corrupt, restore from backup or \
+        delete compute_cache table to rebuild cache from scratch."
+    )?;
+    
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_compute_cache_task_env ON compute_cache (workspace_id, task, env_hash)",
         [],
     )
     .context("ensure compute_cache task/env index")?;
+    
+    // Record successful migration
+    record_schema_version(&conn, SCHEMA_VERSION).context("record schema version")?;
 
     Ok(())
 }
@@ -176,7 +250,54 @@ pub fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Ensure schema_version table exists for tracking migrations.
+fn ensure_schema_version_table(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_version (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at INTEGER NOT NULL
+        );
+        "#,
+    )
+    .context("create schema_version table")?;
+    Ok(())
+}
+
+/// Record a successful schema migration.
+fn record_schema_version(conn: &Connection, version: i64) -> anyhow::Result<()> {
+    let now = Utc::now().timestamp();
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_version (component, version, applied_at) \
+         VALUES ('compute_cache', ?1, ?2)",
+        params![version, now],
+    )
+    .context("record schema version")?;
+    Ok(())
+}
+
+/// Get current schema version for a component.
+fn get_schema_version(conn: &Connection, component: &str) -> anyhow::Result<Option<i64>> {
+    let version = conn
+        .query_row(
+            "SELECT version FROM schema_version WHERE component = ?1",
+            params![component],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("query schema version")?;
+    Ok(version)
+}
+
 fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
+    // Check if migration was already completed using schema version
+    if let Ok(Some(version)) = get_schema_version(conn, "compute_cache") {
+        if version >= SCHEMA_VERSION {
+            return Ok(());
+        }
+    }
+    
     // Ensure the legacy table has the workspace column before we attempt to rebuild the PK.
     let mut has_workspace_column = false;
     {
@@ -200,7 +321,11 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
             Ok(_) => {}
             Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
                 if msg.contains("duplicate column name") => {}
-            Err(err) => return Err(err.into()),
+            Err(err) => {
+                return Err(err).context(
+                    "Failed to add workspace_id column. The database may be locked or corrupt."
+                )
+            }
         }
     }
 
@@ -228,12 +353,15 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
     }
     pk_columns.sort();
     if pk_columns == ["key".to_string(), "workspace_id".to_string()] {
+        // Migration already complete, just update version tracking
         return Ok(());
     }
 
+    // Clean up any failed migration artifacts
     conn.execute("DROP TABLE IF EXISTS compute_cache_new", [])
         .context("drop stale compute_cache_new helper table")?;
 
+    // Execute migration in transaction with enhanced error context
     conn.execute_batch(
         r#"
         BEGIN IMMEDIATE;
@@ -268,7 +396,12 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
         COMMIT;
         "#,
     )
-    .context("rebuild compute_cache with composite primary key")?;
+    .context(
+        "Failed to rebuild compute_cache table with composite primary key. \
+        This migration deduplicates cache entries and adds proper workspace scoping. \
+        If this fails repeatedly, the cache can be safely cleared by running: \
+        'DELETE FROM compute_cache' as it will rebuild automatically."
+    )?;
 
     Ok(())
 }

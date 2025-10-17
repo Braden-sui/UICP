@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { telemetryBufferToArray, useAppStore } from '../../src/state/app';
+import { emitTelemetryEvent } from '../../src/lib/telemetry';
 
 describe('app telemetry buffer', () => {
   beforeEach(() => {
@@ -42,5 +43,34 @@ describe('app telemetry buffer', () => {
     const limited = telemetryBufferToArray(useAppStore.getState().telemetryBuffer, 2);
     expect(limited).toHaveLength(2);
     expect(limited.map((entry) => entry.traceId)).toEqual(['trace-c', 'trace-b']);
+  });
+});
+
+describe('trace event log', () => {
+  beforeEach(() => {
+    useAppStore.getState().clearTraceEvents();
+  });
+
+  afterEach(() => {
+    useAppStore.getState().clearTraceEvents();
+  });
+
+  it('records events by trace id and updates order', () => {
+    emitTelemetryEvent('planner_start', { traceId: 'trace-a', data: { intentLength: 5 } });
+    emitTelemetryEvent('actor_start', { traceId: 'trace-b', data: { planSummaryLength: 1 } });
+    const state = useAppStore.getState();
+    expect(state.traceOrder[0]).toBe('trace-b');
+    expect(state.traceOrder[1]).toBe('trace-a');
+    expect(state.traceEvents['trace-b']?.[0]?.name).toBe('actor_start');
+  });
+
+  it('enforces per-trace capacity', () => {
+    const max = 85;
+    for (let i = 0; i < max; i += 1) {
+      emitTelemetryEvent('planner_start', { traceId: 'trace-cap', data: { idx: i } });
+    }
+    const events = useAppStore.getState().traceEvents['trace-cap'] ?? [];
+    expect(events.length).toBeLessThanOrEqual(80);
+    expect(events[events.length - 1]?.data?.idx).toBe(max - 1);
   });
 });

@@ -1,20 +1,42 @@
 import type { StreamEvent } from "../llm/ollama";
+import { emitTelemetryEvent } from "../telemetry";
+import type { TraceSpan } from "../telemetry/types";
 
 const PRIMARY = new Set(["json", "final", "assistant", "commentary", "text"]);
 
+export type TextCollectionContext = {
+  traceId?: string;
+  span?: TraceSpan;
+  phase?: 'planner' | 'actor';
+};
+
+const resolveSpan = (context?: TextCollectionContext): TraceSpan | undefined => {
+  if (!context) return undefined;
+  if (context.span) return context.span;
+  if (context.phase === 'planner') return 'planner';
+  if (context.phase === 'actor') return 'actor';
+  return undefined;
+};
+
+// WHY: Planner and Actor need text-only responses when tools are disabled; this collects from primary channels only.
+// INVARIANT: Returns trimmed string; empty string if no content received before timeout or done event.
+// ERROR: E-UICP-0501 LLM timeout, E-UICP-0502 iterator cleanup failed
 export async function collectTextFromChannels(
   stream: AsyncIterable<StreamEvent>,
   timeoutMs = 30_000,
+  context?: TextCollectionContext,
 ): Promise<string> {
   const iterator = stream[Symbol.asyncIterator]();
   let out = "";
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  const traceId = context?.traceId;
+  const span = resolveSpan(context);
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
-      reject(new Error(`LLM timeout after ${timeoutMs}ms`));
+      reject(new Error(`E-UICP-0501 LLM timeout after ${timeoutMs}ms`));
     }, timeoutMs);
   });
 
@@ -50,10 +72,31 @@ export async function collectTextFromChannels(
 
   try {
     return await Promise.race([consume, timeoutPromise]);
+  } catch (err) {
+    if (timedOut && traceId) {
+      emitTelemetryEvent('collect_timeout', {
+        traceId,
+        span: span ?? 'collector',
+        status: 'timeout',
+        data: { timeoutMs },
+      });
+    }
+    throw err;
   } finally {
     if (timer) clearTimeout(timer);
+    // WHY: Iterator cleanup must run after timeout to release backend resources; failures here are non-fatal.
+    // INVARIANT: Timeout error is already thrown and returned to caller; cleanup errors are logged but not re-thrown.
+    // ERROR: E-UICP-0502 iterator cleanup failed (logged only, does not block timeout error)
     if (timedOut && typeof iterator.return === "function") {
-      try { await iterator.return(); } catch { /* ignore */ }
+      try {
+        await iterator.return();
+      } catch (cleanupErr) {
+        console.error('E-UICP-0502 iterator cleanup failed after timeout', {
+          traceId,
+          timeoutMs,
+          error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+        });
+      }
     }
   }
 }

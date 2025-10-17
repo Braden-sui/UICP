@@ -322,6 +322,56 @@ export const batchSchema = z
 
 export type Batch = z.infer<typeof batchSchema>;
 
+// Batch metadata for idempotency tracking
+export type BatchMetadata = {
+  batchId: string;
+  opsHash: string;
+  timestamp: number;
+};
+
+// Deterministic hash computation for batch operations
+export function computeBatchHash(batch: Batch): string {
+  // Stable stringify: sort object keys, preserve array order
+  const stableStringify = (input: unknown): string => {
+    const seen = new WeakSet<object>();
+    const walk = (value: unknown): unknown => {
+      if (value === null) return null;
+      const t = typeof value;
+      if (t === 'undefined' || t === 'function' || t === 'symbol') return null;
+      if (t !== 'object') return value;
+      const obj = value as Record<string, unknown>;
+      if (seen.has(obj)) return null;
+      seen.add(obj);
+      if (Array.isArray(obj)) {
+        return obj.map((v) => walk(v));
+      }
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(obj).sort()) {
+        out[key] = walk(obj[key]);
+      }
+      return out;
+    };
+    return JSON.stringify(walk(input));
+  };
+
+  // Extract operation signatures (op + params) for hashing
+  const ops = batch.map((env) => ({
+    op: env.op,
+    params: env.params,
+    windowId: env.windowId,
+  }));
+
+  const serialized = stableStringify(ops);
+  
+  // Simple hash function for batch identity (FNV-1a)
+  let hash = 2166136261;
+  for (let i = 0; i < serialized.length; i++) {
+    hash ^= serialized.charCodeAt(i);
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 export function validateBatch(input: unknown, pointer = '/'): Batch {
   try {
     return batchSchema.parse(input);
@@ -430,7 +480,6 @@ export function validatePlan(input: unknown, pointer = '/'): Plan {
 // Lightweight type guards for callers that only need a boolean check
 export const isBatch = (input: unknown): input is Batch => batchSchema.safeParse(input).success;
 export const isPlan = (input: unknown): input is Plan => planSchema.safeParse(input).success;
-
 
 
 

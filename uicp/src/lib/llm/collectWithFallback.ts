@@ -1,9 +1,25 @@
 import type { StreamEvent } from './ollama';
 import type { CollectedToolArgs } from './collectToolArgs';
+import { emitTelemetryEvent } from '../telemetry';
+import type { TelemetryEventPayload, TraceSpan } from '../telemetry/types';
 
 export type CollectionResult = {
   toolResult?: CollectedToolArgs;
   textContent: string;
+};
+
+export type CollectionContext = {
+  traceId?: string;
+  span?: TraceSpan;
+  phase?: 'planner' | 'actor';
+};
+
+const resolveSpan = (context?: CollectionContext): TraceSpan | undefined => {
+  if (!context) return undefined;
+  if (context.span) return context.span;
+  if (context.phase === 'planner') return 'planner';
+  if (context.phase === 'actor') return 'actor';
+  return undefined;
 };
 
 const looksLikeEnvelope = (value: unknown): boolean => {
@@ -70,6 +86,17 @@ const splitConcatenatedJson = (input: string): string[] => {
   return out.length ? out : [input];
 };
 
+const ensureBatchPayload = (value: unknown): Record<string, unknown> => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (Object.prototype.hasOwnProperty.call(value, 'batch')) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return {
+    batch: value,
+  };
+};
+
 const extractToolFromText = (text: string, fallbackName: string): { name: string; payload: Record<string, unknown> } | null => {
   const segments = text
     .split('\n')
@@ -106,6 +133,7 @@ export async function collectWithFallback(
   stream: AsyncIterable<StreamEvent>,
   targetToolName: string,
   timeoutMs: number,
+  context?: CollectionContext,
 ): Promise<CollectionResult> {
   type ToolAccumulator = {
     index: number;
@@ -115,12 +143,30 @@ export async function collectWithFallback(
     objectArg?: unknown;
   };
 
+  const traceId = context?.traceId;
+  const span = resolveSpan(context);
+  const emit = (
+    name: Parameters<typeof emitTelemetryEvent>[0],
+    payload?: Omit<TelemetryEventPayload, 'traceId'>,
+  ) => {
+    if (!traceId) return;
+    emitTelemetryEvent(name, {
+      traceId,
+      span,
+      ...(payload ?? {}),
+    });
+  };
+
   const accumulators = new Map<number, ToolAccumulator>();
   const textParts: string[] = [];
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`E-UICP-0105: Collection timeout after ${timeoutMs}ms`)), timeoutMs);
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`E-UICP-0105: Collection timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
   });
 
   try {
@@ -164,8 +210,13 @@ export async function collectWithFallback(
       timeoutPromise,
     ]);
   } catch (err) {
-    if (err instanceof Error && err.message.startsWith('E-UICP-0105')) {
-      throw err;
+    if (timeoutId) clearTimeout(timeoutId);
+    if (timedOut) {
+      emit('collect_timeout', {
+        status: 'timeout',
+        data: { targetToolName, timeoutMs },
+      });
+      throw err instanceof Error ? err : new Error(String(err));
     }
     throw new Error(`E-UICP-0106: Collection failed: ${err}`);
   } finally {
@@ -191,7 +242,15 @@ export async function collectWithFallback(
         try {
           parsedArgs = JSON.parse(buffer);
         } catch (err) {
-          console.warn(`Failed to parse tool args for ${targetToolName}:`, err);
+          emit('tool_args_parsed', {
+            status: 'error',
+            data: {
+              reason: 'json_parse_failed',
+              target: targetToolName,
+              index: match.index,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
         }
       }
 
@@ -202,28 +261,46 @@ export async function collectWithFallback(
           name: match.name ?? targetToolName,
           args: parsedArgs,
         };
+        emit('tool_args_parsed', {
+          data: {
+            index: toolResult.index,
+            name: toolResult.name ?? targetToolName,
+            source: 'stream',
+          },
+        });
       }
     }
   }
 
   if (!toolResult && candidates.length > 1) {
-    try {
-      const summary = candidates.map(({ index, id, name }) => ({ index, id, name }));
-      console.debug(`[collectWithFallback] No matching tool ${targetToolName} found; candidates: ${JSON.stringify(summary)}`);
-    } catch {
-      // Safe to ignore debug serialization errors
-    }
+    emit('tool_args_parsed', {
+      status: 'error',
+      data: {
+        reason: 'no_match',
+        target: targetToolName,
+        candidates: candidates.map(({ index, name }) => ({ index, name })),
+      },
+    });
   }
 
   if (!toolResult) {
     const maybeTool = extractToolFromText(textContent, targetToolName);
     if (maybeTool) {
+      const normalizedArgs =
+        targetToolName === 'emit_batch' ? ensureBatchPayload(maybeTool.payload) : maybeTool.payload;
       toolResult = {
         index: candidates[0]?.index ?? 0,
         id: candidates[0]?.id,
         name: maybeTool.name,
-        args: maybeTool.payload,
+        args: normalizedArgs,
       };
+      emit('tool_args_parsed', {
+        data: {
+          index: toolResult.index,
+          name: toolResult.name ?? targetToolName,
+          source: 'text_fallback',
+        },
+      });
     }
   }
 

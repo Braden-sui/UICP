@@ -4,7 +4,7 @@ import { cfg } from '../config';
 import type { ApplyOutcome } from './adapter';
 import { validateBatch, type Batch } from './schemas';
 import { parseWILBatch } from '../orchestrator/parseWILBatch';
-import { tryParseBatchFromJson } from '../llm/orchestrator';
+import { normalizeBatchJson } from '../llm/jsonParsing';
 
 // Streaming aggregator for Ollama/OpenAI-like SSE chunks.
 // Supports JSON-first (tool calls + json channel) with WIL fallback.
@@ -22,6 +22,7 @@ type ToolCallAccumulator = {
   id?: string;
   name?: string;
   argsBuffer: string;
+  payload?: unknown;
 };
 
 export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<ApplyOutcome | void> | ApplyOutcome | void) => {
@@ -62,7 +63,8 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
             acc.argsBuffer += args;
           } else if (args !== undefined && args !== null) {
             // Complete object received (non-delta mode)
-            acc.argsBuffer = JSON.stringify(args);
+            acc.payload = args;
+            acc.argsBuffer = '';
           }
         }
         continue;
@@ -113,16 +115,14 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     // Priority 1: Tool call result (emit_batch)
     if (toolCallAccumulators.size > 0) {
       for (const acc of toolCallAccumulators.values()) {
-        if (acc.name === 'emit_batch' && acc.argsBuffer.length > 0) {
+        if (acc.name === 'emit_batch') {
           try {
-            const args = JSON.parse(acc.argsBuffer);
-            const batchData = args as { batch?: unknown };
-            if (Array.isArray(batchData.batch)) {
-              batch = validateBatch(batchData.batch);
-              break; // Use first valid tool call
-            }
+            const payload = acc.payload ?? (acc.argsBuffer.length > 0 ? acc.argsBuffer : undefined);
+            if (payload === undefined) continue;
+            batch = normalizeBatchJson(payload);
+            break; // Use first valid tool call
           } catch (err) {
-            console.warn('Tool call parse failed, trying text fallback', err);
+            console.warn('E-UICP-0421 tool call normalization failed, trying text fallback', err);
           }
         }
       }
@@ -131,7 +131,11 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
 
     // Priority 2: JSON channel content
     if (!batch && jsonText) {
-      batch = tryParseBatchFromJson(jsonText) || undefined;
+      try {
+        batch = normalizeBatchJson(jsonText);
+      } catch {
+        batch = undefined;
+      }
     }
 
     // Priority 3: Final channel (WIL)

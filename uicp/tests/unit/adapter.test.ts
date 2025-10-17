@@ -1,5 +1,11 @@
-﻿import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fsPlugin from '@tauri-apps/plugin-fs';
+
+// Mock permissions to allow api.call operations in tests
+vi.mock('../../src/lib/permissions/PermissionManager', () => ({
+  checkPermission: vi.fn().mockResolvedValue('allow'),
+}));
+
 import { applyBatch, registerWorkspaceRoot, resetWorkspace, closeWorkspaceWindow, listWorkspaceWindows } from '../../src/lib/uicp/adapter';
 import { validateBatch } from '../../src/lib/uicp/schemas';
 import { nextFrame } from '../../src/lib/utils';
@@ -122,11 +128,9 @@ describe('adapter.applyBatch', () => {
 
   it('fails loudly when api.call network request rejects', async () => {
     const originalFetch = globalThis.fetch;
-    const fetchMock = vi.fn().mockRejectedValue(new Error('network offline'));
-    globalThis.fetch = fetchMock as typeof globalThis.fetch;
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
     try {
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('network offline'));
       const batch = validateBatch([
         {
           op: 'api.call',

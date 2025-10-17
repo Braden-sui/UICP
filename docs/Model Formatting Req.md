@@ -1,7 +1,7 @@
 Model formatting for the planner/actor pipeline (JSON only)
 ================================================================
 
-Last reviewed: 2025-10-11  
+Last reviewed: 2025-10-11
 Audience: engineers editing prompts, profiles, or backend integrations for the planner (`getPlannerClient`) and actor (`getActorClient`) flows.
 
 Summary
@@ -33,7 +33,7 @@ Summary
 ]
 ```
 
-Prompts already instruct the models to “Output JSON only.” Do not add extra role turns unless you are extending the orchestrator.
+Prompts already instruct the models to "Output JSON only." Do not add extra role turns unless you are extending the orchestrator.
 
 2. Response requirements
 ------------------------
@@ -42,7 +42,8 @@ Prompts already instruct the models to “Output JSON only.” Do not add extra 
 - First non-whitespace character must be `{` (object) or `[` (array). No preambles, explanations, or markdown fences.
 - Strings must be valid UTF‑8 with the UTF‑8 BOM removed. The orchestrator strips a BOM defensively, but keep prompts strict to avoid leniency.
 - Keep HTML compact and safe: no `<script>`, `<style>`, inline event handlers, or `javascript:` URLs. Interactivity lives in `data-command` and `data-state-*` attributes.
-- Maximum batch size: 64 commands (`MAX_OPS_PER_BATCH`). Per-command HTML cap: 64 KB. Total HTML per batch: 128 KB.
+- Maximum batch size: 64 commands (`MAX_OPS_PER_BATCH`). Per-command HTML cap: 1,128 KB. Total HTML per batch: 2,256 KB.
+- Template tokens: Maximum 32 template substitutions per `data-command` attribute.
 - Planner and actor must never invent operations outside the enum in `schemas.ts`.
 
 ### Planner-specific

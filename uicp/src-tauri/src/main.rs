@@ -32,12 +32,14 @@ use tokio_rusqlite::Connection as AsyncConn;
 use tokio_stream::StreamExt;
 
 mod action_log;
+mod circuit;
 mod commands;
 #[cfg(feature = "wasm_compute")]
 mod component_bindings;
 mod compute;
 mod compute_cache;
 mod compute_input;
+mod core;
 mod policy;
 mod registry;
 #[cfg(feature = "wasm_compute")]
@@ -47,6 +49,8 @@ pub use policy::{
     enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
+
+use core::{CircuitBreakerConfig, CircuitState};
 
 static APP_NAME: &str = "UICP";
 static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
@@ -74,11 +78,7 @@ pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_i
     state.ongoing.write().await.remove(request_id);
 }
 
-#[derive(Default)]
-struct CircuitState {
-    consecutive_failures: u8,
-    opened_until: Option<Instant>,
-}
+// CircuitState and CircuitBreakerConfig now defined in core module
 
 pub(crate) fn configure_sqlite(conn: &Connection) -> anyhow::Result<()> {
     conn.busy_timeout(Duration::from_millis(5_000))
@@ -92,61 +92,7 @@ pub(crate) fn configure_sqlite(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn circuit_is_open(
-    circuits: &Arc<RwLock<HashMap<String, CircuitState>>>,
-    host: &str,
-) -> Option<Instant> {
-    // Fast-path read to avoid serializing callers under load.
-    let now = Instant::now();
-    {
-        let guard = circuits.read().await;
-        if let Some(state) = guard.get(host) {
-            if let Some(until) = state.opened_until {
-                if now < until {
-                    return Some(until);
-                }
-            }
-        }
-    }
-    // Upgrade to write only to clear expired state.
-    let mut guard = circuits.write().await;
-    if let Some(state) = guard.get_mut(host) {
-        if let Some(until) = state.opened_until {
-            if now >= until {
-                state.opened_until = None;
-                state.consecutive_failures = 0;
-            } else {
-                return Some(until);
-            }
-        }
-    }
-    None
-}
-
-async fn circuit_record_success(circuits: &Arc<RwLock<HashMap<String, CircuitState>>>, host: &str) {
-    let mut guard = circuits.write().await;
-    let entry = guard.entry(host.to_string()).or_default();
-    entry.consecutive_failures = 0;
-    entry.opened_until = None;
-}
-
-async fn circuit_record_failure(
-    circuits: &Arc<RwLock<HashMap<String, CircuitState>>>,
-    host: &str,
-    open_after: u8,
-    open_for: Duration,
-) -> Option<Instant> {
-    let mut guard = circuits.write().await;
-    let entry = guard.entry(host.to_string()).or_default();
-    entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
-    if entry.consecutive_failures >= open_after {
-        let until = Instant::now() + open_for;
-        entry.opened_until = Some(until);
-        Some(until)
-    } else {
-        None
-    }
-}
+// Circuit breaker functions moved to circuit.rs module
 
 fn emit_problem_detail(
     app_handle: &tauri::AppHandle,
@@ -190,6 +136,7 @@ pub struct AppState {
     safe_mode: RwLock<bool>,
     safe_reason: RwLock<Option<String>>,
     circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
+    circuit_config: CircuitBreakerConfig,
     #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
     action_log: action_log::ActionLogHandle,
 }
@@ -958,8 +905,7 @@ async fn chat_completion(
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(35_000),
     );
-    let circuit_open_after = 3u8;
-    let circuit_open_for = Duration::from_secs(15);
+    let circuit_config = state.circuit_config.clone();
     let user_agent = format!("{}/tauri {}", APP_NAME, env!("CARGO_PKG_VERSION"));
 
     let join: JoinHandle<()> = spawn(async move {
@@ -989,6 +935,14 @@ async fn chat_completion(
             async move {
                 let _ = handle.emit("debug-log", payload);
             }
+        };
+        
+        let emit_circuit_telemetry = |event_name: &str, payload: serde_json::Value| {
+            let handle = app_handle.clone();
+            let name = event_name.to_string();
+            tokio::spawn(async move {
+                let _ = handle.emit(&name, payload);
+            });
         };
 
         if debug_on {
@@ -1049,7 +1003,7 @@ async fn chat_completion(
                 .or_else(|| base_host.clone());
 
             if let Some(host) = host_for_attempt.as_deref() {
-                if let Some(until) = circuit_is_open(&circuit_breakers, host).await {
+                if let Some(until) = circuit::circuit_is_open(&circuit_breakers, host).await {
                     let wait_ms =
                         until.saturating_duration_since(Instant::now()).as_millis() as u64;
                     if debug_on {
@@ -1107,26 +1061,13 @@ async fn chat_completion(
                         tokio::spawn(emit_debug(ev));
                     }
                     if let Some(host) = host_for_attempt.as_deref() {
-                        if let Some(until) = circuit_record_failure(
+                        circuit::circuit_record_failure(
                             &circuit_breakers,
                             host,
-                            circuit_open_after,
-                            circuit_open_for,
+                            &circuit_config,
+                            emit_circuit_telemetry,
                         )
-                        .await
-                        {
-                            if debug_on {
-                                let ev = serde_json::json!({
-                                    "ts": Utc::now().timestamp_millis(),
-                                    "event": "circuit_opened",
-                                    "requestId": rid_for_task,
-                                    "host": host,
-                                    "retryMs": until.saturating_duration_since(Instant::now()).as_millis() as u64,
-                                });
-                                tokio::spawn(append_trace(ev.clone()));
-                                tokio::spawn(emit_debug(ev));
-                            }
-                        }
+                        .await;
                     }
                     if attempt_local < max_attempts {
                         let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
@@ -1160,26 +1101,13 @@ async fn chat_completion(
                         tokio::spawn(emit_debug(ev));
                     }
                     if let Some(host) = host_for_attempt.as_deref() {
-                        if let Some(until) = circuit_record_failure(
+                        circuit::circuit_record_failure(
                             &circuit_breakers,
                             host,
-                            circuit_open_after,
-                            circuit_open_for,
+                            &circuit_config,
+                            emit_circuit_telemetry,
                         )
-                        .await
-                        {
-                            if debug_on {
-                                let ev = serde_json::json!({
-                                    "ts": Utc::now().timestamp_millis(),
-                                    "event": "circuit_opened",
-                                    "requestId": rid_for_task,
-                                    "host": host,
-                                    "retryMs": until.saturating_duration_since(Instant::now()).as_millis() as u64,
-                                });
-                                tokio::spawn(append_trace(ev.clone()));
-                                tokio::spawn(emit_debug(ev));
-                            }
-                        }
+                        .await;
                     }
                     let transient = err.is_timeout() || err.is_connect();
                     if transient && attempt_local < max_attempts {
@@ -1218,11 +1146,11 @@ async fn chat_completion(
                             .map(|secs| secs.saturating_mul(1_000));
 
                         if let Some(host) = host_for_attempt.as_deref() {
-                            let opened = circuit_record_failure(
+                            circuit::circuit_record_failure(
                                 &circuit_breakers,
                                 host,
-                                circuit_open_after,
-                                circuit_open_for,
+                                &circuit_config,
+                                emit_circuit_telemetry,
                             )
                             .await;
                             if debug_on {
@@ -1236,19 +1164,6 @@ async fn chat_completion(
                                 });
                                 tokio::spawn(append_trace(ev.clone()));
                                 tokio::spawn(emit_debug(ev));
-                            }
-                            if let Some(until) = opened {
-                                if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "circuit_opened",
-                                        "requestId": rid_for_task,
-                                        "host": host,
-                                        "retryMs": until.saturating_duration_since(Instant::now()).as_millis() as u64,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
                             }
                         }
 
@@ -1562,11 +1477,11 @@ async fn chat_completion(
 
                     if stream_failed {
                         if let Some(host) = host_for_attempt.as_deref() {
-                            circuit_record_failure(
+                            circuit::circuit_record_failure(
                                 &circuit_breakers,
                                 host,
-                                circuit_open_after,
-                                circuit_open_for,
+                                &circuit_config,
+                                emit_circuit_telemetry,
                             )
                             .await;
                         }
@@ -1574,7 +1489,7 @@ async fn chat_completion(
                     }
 
                     if let Some(host) = host_for_attempt.as_deref() {
-                        circuit_record_success(&circuit_breakers, host).await;
+                        circuit::circuit_record_success(&circuit_breakers, host, emit_circuit_telemetry).await;
                     }
 
                     if debug_on {
@@ -1604,10 +1519,17 @@ async fn chat_completion(
     Ok(())
 }
 
+/// Current database schema version. Increment when making schema changes.
+const SCHEMA_VERSION: i64 = 1;
+
 fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     std::fs::create_dir_all(&*DATA_DIR).context("create data dir")?;
     let conn = Connection::open(db_path).context("open sqlite")?;
     configure_sqlite(&conn).context("configure sqlite init")?;
+    
+    // Ensure schema_version table exists first for migration tracking
+    ensure_schema_version_table(&conn).context("ensure schema_version table")?;
+    
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS workspace (
@@ -1674,17 +1596,73 @@ fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             if msg.contains("duplicate column name") => {}
         Err(err) => return Err(err.into()),
     }
-    migrate_compute_cache(&conn).context("migrate compute_cache schema")?;
+    // Apply compute_cache migration with versioning and error recovery
+    migrate_compute_cache(&conn).context(
+        "compute_cache migration failed. Recovery: Stop all UICP instances, backup data.db, \
+        then run 'PRAGMA integrity_check' manually. If corrupt, restore from backup or \
+        delete compute_cache table to rebuild cache from scratch."
+    )?;
+    
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_compute_cache_task_env ON compute_cache (workspace_id, task, env_hash)",
         [],
     )
     .context("ensure compute_cache task/env index")?;
+    
+    // Record successful migration
+    record_schema_version(&conn, SCHEMA_VERSION).context("record schema version")?;
 
     Ok(())
 }
 
+/// Ensure schema_version table exists for tracking migrations.
+fn ensure_schema_version_table(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_version (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at INTEGER NOT NULL
+        );
+        "#,
+    )
+    .context("create schema_version table")?;
+    Ok(())
+}
+
+/// Record a successful schema migration.
+fn record_schema_version(conn: &Connection, version: i64) -> anyhow::Result<()> {
+    let now = Utc::now().timestamp();
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_version (component, version, applied_at) \
+         VALUES ('compute_cache', ?1, ?2)",
+        params![version, now],
+    )
+    .context("record schema version")?;
+    Ok(())
+}
+
+/// Get current schema version for a component.
+fn get_schema_version(conn: &Connection, component: &str) -> anyhow::Result<Option<i64>> {
+    let version = conn
+        .query_row(
+            "SELECT version FROM schema_version WHERE component = ?1",
+            params![component],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("query schema version")?;
+    Ok(version)
+}
+
 fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
+    // Check if migration was already completed using schema version
+    if let Ok(Some(version)) = get_schema_version(conn, "compute_cache") {
+        if version >= SCHEMA_VERSION {
+            return Ok(());
+        }
+    }
+    
     // Ensure the legacy table has the workspace column before we attempt to rebuild the PK.
     let mut has_workspace_column = false;
     {
@@ -1708,7 +1686,11 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
             Ok(_) => {}
             Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
                 if msg.contains("duplicate column name") => {}
-            Err(err) => return Err(err.into()),
+            Err(err) => {
+                return Err(err).context(
+                    "Failed to add workspace_id column. The database may be locked or corrupt."
+                )
+            }
         }
     }
 
@@ -1736,14 +1718,15 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
     }
     pk_columns.sort();
     if pk_columns == ["key".to_string(), "workspace_id".to_string()] {
-        // Already migrated.
+        // Migration already complete, just update version tracking
         return Ok(());
     }
 
-    // Drop any previous failed migration artifacts so the transaction below can succeed.
+    // Clean up any failed migration artifacts
     conn.execute("DROP TABLE IF EXISTS compute_cache_new", [])
         .context("drop stale compute_cache_new helper table")?;
 
+    // Execute migration in transaction with enhanced error context
     conn.execute_batch(
         r#"
         BEGIN IMMEDIATE;
@@ -1778,7 +1761,12 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
         COMMIT;
         "#,
     )
-    .context("rebuild compute_cache with composite primary key")?;
+    .context(
+        "Failed to rebuild compute_cache table with composite primary key. \
+        This migration deduplicates cache entries and adds proper workspace scoping. \
+        If this fails repeatedly, the cache can be safely cleared by running: \
+        'DELETE FROM compute_cache' as it will rebuild automatically."
+    )?;
 
     Ok(())
 }
@@ -1968,36 +1956,109 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
     });
 }
 
+/// Spawn periodic database maintenance task for WAL checkpointing and vacuuming.
+/// 
+/// Runs every 24 hours by default (configurable via UICP_DB_MAINTENANCE_INTERVAL_HOURS).
+/// Performs:
+/// - WAL checkpoint (TRUNCATE) to prevent unbounded WAL growth
+/// - PRAGMA optimize for query planner statistics
+/// - VACUUM every 7 days to reclaim fragmented space
 fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
     spawn(async move {
-        let mut ticker = interval(Duration::from_secs(24 * 60 * 60));
+        let interval_hours = std::env::var("UICP_DB_MAINTENANCE_INTERVAL_HOURS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(24);
+        
+        let vacuum_interval_days = std::env::var("UICP_DB_VACUUM_INTERVAL_DAYS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(7);
+        
+        let mut ticker = interval(Duration::from_secs(interval_hours * 60 * 60));
+        let mut ticks_since_vacuum = 0u64;
+        let ticks_per_vacuum = (vacuum_interval_days * 24) / interval_hours;
+        
         loop {
             ticker.tick().await;
             let state: State<'_, AppState> = app_handle.state();
-            // Best-effort: run optimize and compact WAL periodically
+            
+            // Skip maintenance in safe mode to avoid interfering with recovery
+            if *state.safe_mode.read().await {
+                continue;
+            }
+            
             #[cfg(feature = "otel_spans")]
-            let span = tracing::info_span!("db_maintenance").entered();
-            let _started = Instant::now();
-            let _res = state
+            let span = tracing::info_span!("db_maintenance", run_vacuum = ticks_since_vacuum >= ticks_per_vacuum).entered();
+            #[cfg(feature = "otel_spans")]
+            let started = Instant::now();
+            
+            let should_vacuum = ticks_since_vacuum >= ticks_per_vacuum;
+            ticks_since_vacuum += 1;
+            
+            let res = state
                 .db_rw
                 .call(
-                    |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                        c.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);")
-                            .map_err(tokio_rusqlite::Error::from)
+                    move |c: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                        // Always checkpoint and optimize
+                        c.execute_batch(
+                            "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;"
+                        )
+                        .map_err(tokio_rusqlite::Error::from)?;
+                        
+                        // Periodically vacuum to reclaim fragmented space
+                        if should_vacuum {
+                            c.execute_batch("VACUUM;")
+                                .map_err(tokio_rusqlite::Error::from)?;
+                        }
+                        
+                        Ok(())
                     },
                 )
                 .await;
-            #[cfg(feature = "otel_spans")]
-            {
-                let ms = started.elapsed().as_millis() as i64;
-                match &res {
-                    Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "db maintenance ok"),
-                    Err(e) => {
-                        tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "db maintenance failed")
+            
+            match &res {
+                Ok(_) => {
+                    if should_vacuum {
+                        ticks_since_vacuum = 0;
+                    }
+                    #[cfg(feature = "otel_spans")]
+                    {
+                        let ms = started.elapsed().as_millis() as i64;
+                        tracing::info!(
+                            target = "uicp", 
+                            duration_ms = ms, 
+                            vacuumed = should_vacuum,
+                            "db maintenance completed"
+                        );
                     }
                 }
-                drop(span);
+                Err(e) => {
+                    eprintln!("Database maintenance failed: {e:?}");
+                    #[cfg(feature = "otel_spans")]
+                    {
+                        let ms = started.elapsed().as_millis() as i64;
+                        tracing::warn!(
+                            target = "uicp", 
+                            duration_ms = ms, 
+                            error = %e, 
+                            "db maintenance failed"
+                        );
+                    }
+                    // Emit diagnostic event for UI monitoring
+                    let _ = app_handle.emit(
+                        "db-maintenance-error",
+                        serde_json::json!({
+                            "error": format!("{e:?}"),
+                            "timestamp": Utc::now().timestamp(),
+                            "recommendation": "Database maintenance failed. Consider running health_quick_check."
+                        }),
+                    );
+                }
             }
+            
+            #[cfg(feature = "otel_spans")]
+            drop(span);
         }
     });
 }
@@ -2017,7 +2078,17 @@ fn main() {
 
     let db_path = DB_PATH.clone();
 
-    // Initialize resident async SQLite connections (one writer, one read-only)
+    // Initialize database and ensure directory exists BEFORE opening connections
+    if let Err(err) = init_database(&db_path) {
+        eprintln!("Failed to initialize database: {err:?}");
+        std::process::exit(1);
+    }
+    if let Err(err) = ensure_default_workspace(&db_path) {
+        eprintln!("Failed to ensure default workspace: {err:?}");
+        std::process::exit(1);
+    }
+
+    // Now open resident async SQLite connections (one writer, one read-only)
     let db_rw = tauri::async_runtime::block_on(AsyncConn::open(&db_path))
         .expect("open sqlite rw connection");
     let db_ro = tauri::async_runtime::block_on(AsyncConn::open_with_flags(
@@ -2111,17 +2182,10 @@ fn main() {
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),
         circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
+        circuit_config: CircuitBreakerConfig::from_env(),
         action_log,
     };
 
-    if let Err(err) = init_database(&db_path) {
-        eprintln!("Failed to initialize database: {err:?}");
-        std::process::exit(1);
-    }
-    if let Err(err) = ensure_default_workspace(&db_path) {
-        eprintln!("Failed to ensure default workspace: {err:?}");
-        std::process::exit(1);
-    }
     if let Err(err) = load_env_key(&state) {
         eprintln!("Failed to load environment keys: {err:?}");
         std::process::exit(1);
@@ -2197,10 +2261,22 @@ fn main() {
             chat_completion,
             cancel_chat,
             compute_call,
-            compute_cancel
+            compute_cancel,
+            debug_circuits
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Get debug information for all circuit breakers.
+/// Returns per-host state including failures, open status, and telemetry counters.
+/// 
+/// WHY: Provides runtime visibility into circuit breaker state for debugging and monitoring.
+/// INVARIANT: Read-only operation; does not modify circuit state.
+#[tauri::command]
+async fn debug_circuits(state: State<'_, AppState>) -> Result<Vec<circuit::CircuitDebugInfo>, String> {
+    let info = circuit::get_circuit_debug_info(&state.circuit_breakers).await;
+    Ok(info)
 }
 
 #[cfg(any(test, feature = "compute_harness"))]

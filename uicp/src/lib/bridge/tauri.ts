@@ -10,6 +10,7 @@ import { useChatStore } from '../../state/chat';
 import { createId } from '../../lib/utils';
 import { ComputeError } from '../compute/errors';
 import { asStatePath, type Batch } from '../uicp/schemas';
+import { OrchestratorEvent } from '../orchestrator/state-machine';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -322,17 +323,66 @@ export async function initializeTauriBridge() {
   // Factory to create a new aggregator that respects Full Control and preview gating.
   const applyAggregatedBatch = async (batch: Batch) => {
     const app = useAppStore.getState();
-    // If an orchestrator-managed run is in flight, avoid duplicate apply/preview.
-    if (app.suppressAutoApply) return;
 
-    const canAutoApply = app.fullControl && !app.fullControlLocked;
-    if (canAutoApply) {
-      const outcome = await enqueueBatch(batch);
-      if (!outcome.success) {
-        throw new Error(outcome.errors.join('; ') || 'enqueueBatch failed');
+    // WHY: Check if orchestrator-managed run is in flight using state machine
+    // INVARIANT: suppressAutoApply takes precedence for backward compatibility during transition
+    if (app.suppressAutoApply) {
+      if (import.meta.env.DEV) {
+        console.debug('[aggregator] skipping batch due to suppressAutoApply');
       }
-      return outcome;
+      return;
     }
+
+    // WHY: Use state machine to determine if auto-apply is allowed
+    // INVARIANT: Only auto-apply when state machine and Full Control flags both allow it
+    const canAutoApply = app.canAutoApply();
+
+    if (canAutoApply) {
+      // WHY: Transition to Applying state before executing batch
+      const transition = app.transitionOrchestrator(OrchestratorEvent.StartApplying, {
+        batchSize: batch.length,
+        source: 'aggregator',
+      });
+
+      if (transition && import.meta.env.DEV) {
+        console.debug('[aggregator] auto-applying batch', {
+          batchSize: batch.length,
+          runId: app.orchestratorContext.runId,
+          transition: { from: transition.from, to: transition.to },
+        });
+      }
+
+      try {
+        const outcome = await enqueueBatch(batch);
+        if (!outcome.success) {
+          throw new Error(outcome.errors.join('; ') || 'enqueueBatch failed');
+        }
+
+        // WHY: Transition to Idle after successful apply
+        app.transitionOrchestrator(OrchestratorEvent.ApplyComplete, {
+          applied: outcome.applied,
+        });
+
+        return outcome;
+      } catch (error) {
+        // WHY: On error, transition to Cancelled state
+        app.transitionOrchestrator(OrchestratorEvent.Cancel, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }
+
+    // WHY: Cannot auto-apply, so show preview
+    if (import.meta.env.DEV) {
+      console.debug('[aggregator] showing preview', {
+        batchSize: batch.length,
+        fullControl: app.fullControl,
+        fullControlLocked: app.fullControlLocked,
+        runId: app.orchestratorContext.runId,
+      });
+    }
+
     const chat = useChatStore.getState();
     if (!chat.pendingPlan) {
       useChatStore.setState({
