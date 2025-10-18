@@ -46,20 +46,20 @@ describe('adapter data-command strict parsing', () => {
     );
     document.getElementById('workspace-root')?.appendChild(button);
 
-    // Malformed JSON should surface an error event with E-UICP-301.
-    const captured: Error[] = [];
-    const handler = (evt: ErrorEvent) => {
-      evt.preventDefault();
-      const err = evt.error instanceof Error ? evt.error : new Error(evt.message);
-      captured.push(err);
-    };
-    window.addEventListener('error', handler);
+    // Spy on console.error to capture the error
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    
     const event = new MouseEvent('click', { bubbles: true });
     button.dispatchEvent(event);
-    window.removeEventListener('error', handler);
     await Promise.resolve();
-    expect(captured.length).toBeGreaterThanOrEqual(1);
-    expect(captured[0]?.message).toMatch(/E-UICP-301/);
+    
+    // Should have logged error with E-UICP-301
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/E-UICP-301/),
+      expect.any(Error)
+    );
+    
+    consoleErrorSpy.mockRestore();
 
     // Should NOT have enqueued anything due to parse failure
     const enqueueSpy = vi.mocked(enqueueBatch);
@@ -103,19 +103,21 @@ describe('adapter data-command strict parsing', () => {
     button.setAttribute('data-command', '{"batch":[]}');
     document.getElementById('workspace-root')?.appendChild(button);
 
-    const captured: Error[] = [];
-    const handler = (evt: ErrorEvent) => {
-      evt.preventDefault();
-      const err = evt.error instanceof Error ? evt.error : new Error(evt.message);
-      captured.push(err);
-    };
-    window.addEventListener('error', handler);
+    // Spy on console.error to capture the error
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    
     const event = new MouseEvent('click', { bubbles: true });
     button.dispatchEvent(event);
-    window.removeEventListener('error', handler);
     await Promise.resolve();
-    expect(captured.length).toBeGreaterThanOrEqual(1);
-    expect(captured[0]?.message).toMatch(/E-UICP-301/);
+    
+    // Should have logged error with E-UICP-301
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/E-UICP-301/),
+      expect.any(Error)
+    );
+    
+    consoleErrorSpy.mockRestore();
+    
     expect(vi.mocked(enqueueBatch)).not.toHaveBeenCalled();
   });
 });

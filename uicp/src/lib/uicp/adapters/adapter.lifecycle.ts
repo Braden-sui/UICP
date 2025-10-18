@@ -20,6 +20,8 @@ import {
 } from "./adapter.persistence";
 import { routeApiCall } from "./adapter.api";
 // NOTE: StructuredClarifierBody and isStructuredClarifierBody remain local since renderStructuredClarifierForm is still here
+import { ADAPTER_V2_ENABLED } from "./adapter.featureFlags";
+import { dispatchCommand, type CommandExecutorDeps } from "./adapter.commands";
 import {
   applyDynamicStyleRule,
   removeDynamicStyleRule,
@@ -27,7 +29,6 @@ import {
   type DynamicStyleDeclarations,
 } from "../../css/dynamicStyles";
 import type { ApplyOutcome } from "./schemas";
-import type { JobSpec } from "../../../compute/types";
 
 const coalescer = createFrameCoalescer();
 
@@ -46,10 +47,6 @@ export const runJobsInFrame = (jobs: Array<() => Promise<void>>): Promise<void> 
     });
   });
 };
-
-type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;
-
-const ALLOWED_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH']);
 
 type WindowLifecycleEvent =
   | { type: 'created'; id: string; title: string }
@@ -1184,6 +1181,41 @@ export const applyCommand = async (command: Envelope, ctx: ApplyContext = {}): P
   } catch (err) {
     return toFailure(err);
   }
+  
+  // V2 PATH: Use modular command dispatcher when flag is enabled
+  if (ADAPTER_V2_ENABLED) {
+    const deps: CommandExecutorDeps = {
+      executeWindowCreate,
+      executeWindowUpdate: async (params, ensureExists) => {
+        if (ensureExists && !windows.has(params.id)) {
+          const ensured = await ensureWindowExists(params.id, params);
+          if (!ensured.success) return ensured;
+        }
+        const record = windows.get(params.id);
+        if (!record) return { success: false, error: `Window ${params.id} not found` };
+        if (params.title) {
+          record.titleText.textContent = params.title;
+          emitWindowEvent({ type: 'updated', id: params.id, title: params.title });
+        }
+        applyWindowGeometry(record, params);
+        return { success: true, value: params.id };
+      },
+      destroyWindow,
+      ensureWindowExists,
+      executeDomSet,
+      executeComponentRender,
+      updateComponent,
+      destroyComponent,
+      setStateValue,
+      getStateValue,
+      renderStructuredClarifierForm,
+      windows,
+      components,
+    };
+    return await dispatchCommand(command, ctx, deps);
+  }
+  
+  // V1 PATH: Legacy monolithic switch statement
   switch (command.op) {
     case "window.create": {
       const params = command.params;
