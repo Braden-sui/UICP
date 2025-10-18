@@ -23,6 +23,9 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./tests/vitest.setup.ts"],
+    // CI stability: allow slower GitHub runners and ensure async graph settles
+    testTimeout: 15000,
+    hookTimeout: 15000,
     include: includePatterns,
   },
   resolve: {

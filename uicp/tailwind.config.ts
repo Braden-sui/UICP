@@ -1,6 +1,8 @@
 import type { Config } from 'tailwindcss'
 
 export default {
+  // Enable dark mode with class strategy
+  darkMode: 'class',
   content: [
     './index.html',
     './src/**/*.{ts,tsx}',
@@ -17,6 +19,13 @@ export default {
           foreground: '#ffffff',
         },
         muted: '#0f1117',
+        // Theme-aware semantic colors using CSS variables
+        background: 'var(--color-background)',
+        foreground: 'var(--color-foreground)',
+        surface: 'var(--color-surface)',
+        'surface-hover': 'var(--color-surface-hover)',
+        border: 'var(--color-border)',
+        'border-subtle': 'var(--color-border-subtle)',
       },
       fontFamily: {
         sans: [
