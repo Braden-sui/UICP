@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { invoke } from '@tauri-apps/api/core';
 
 const LOADER_ID = 'uicp-loading-screen';
 const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flash)
@@ -76,6 +77,12 @@ let paintReady = false;
 let bridgeReady = false;
 const maybeHideLoader = () => {
   if (paintReady && bridgeReady) {
+    // Notify Tauri backend to close splash and show main window
+    try {
+      void invoke('frontend_ready');
+    } catch {
+      // Best-effort notification; ignore if Tauri bridge unavailable
+    }
     finalizeLoader();
   }
 };

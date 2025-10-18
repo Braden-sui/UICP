@@ -1,11 +1,29 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock adapter.applyBatch so we can inspect the cancel batch
-const applyBatchMock = vi.fn(async (batch: any[]) => {
-  return { success: true, applied: batch.length, errors: [] };
+const applyBatchMock = vi.fn(async (batch: any[]) => ({
+  success: true,
+  applied: batch.length,
+  errors: [],
+  skippedDupes: 0,
+  skippedDuplicates: 0,
+}));
+
+// Mock lifecycle to avoid workspace registration requirement
+vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
+    '../../src/lib/uicp/adapters/adapter.lifecycle',
+  );
+  return {
+    ...actual,
+    applyCommand: vi.fn(async () => ({ success: true, value: 'ok' })),
+    persistCommand: vi.fn(async () => {}),
+    recordStateCheckpoint: vi.fn(async () => {}),
+    deferBatchIfNotReady: () => null,
+  };
 });
 
-vi.mock('../../src/lib/uicp/adapter', () => ({
+vi.mock('../../src/lib/uicp/adapters/adapter', () => ({
   applyBatch: (batch: any) => applyBatchMock(batch),
 }));
 

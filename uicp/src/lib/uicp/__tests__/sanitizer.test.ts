@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { sanitizeHtml } from '../../utils';
-import { validateBatch } from '../schemas';
+import { validateBatch } from '../adapters/schemas';
 
 describe('sanitizeHtml', () => {
   it('removes <script> and <style> blocks', () => {

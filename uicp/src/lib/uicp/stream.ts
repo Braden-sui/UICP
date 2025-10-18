@@ -1,8 +1,7 @@
 import { extractEventsFromChunk } from '../llm/ollama';
-import { enqueueBatch } from './queue';
+import { enqueueBatch } from './adapters/queue';
 import { cfg } from '../config';
-import type { ApplyOutcome } from './adapter';
-import { validateBatch, type Batch } from './schemas';
+import { validateBatch, type Batch, type ApplyOutcome } from './adapters/schemas';
 import { parseWILBatch } from '../orchestrator/parseWILBatch';
 import { normalizeBatchJson } from '../llm/jsonParsing';
 
@@ -161,7 +160,7 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
 
     try {
       const outcome = onBatch ? await onBatch(batch) : await enqueueBatch(batch);
-      const applied = outcome ?? { success: true, applied: batch.length, errors: [] };
+      const applied = outcome ?? { success: true, applied: batch.length, errors: [], skippedDupes: 0, skippedDuplicates: 0 };
       if (!applied.success) {
         const details = applied.errors.join('; ');
         throw new Error(details || 'enqueueBatch reported failure');

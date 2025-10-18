@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import type { Batch } from '../schemas';
-import type { ApplyOutcome } from '../adapter';
+import type { Batch } from '../adapters/schemas';
+import type { ApplyOutcome } from '../adapters/adapter';
 
-vi.mock('../adapter', async () => {
+vi.mock('../adapters/adapter', async () => {
   return {
     // WHY: In these tests we only need a deterministic, successful apply that
     // returns the batch length. This isolates queue behavior around txn.cancel.
@@ -11,14 +11,15 @@ vi.mock('../adapter', async () => {
       success: true,
       applied: _batch.length ?? 1,
       errors: [],
+      skippedDupes: 0,
       skippedDuplicates: 0,
     })),
     deferBatchIfNotReady: () => null, // WHY: Queue tests assume workspace ready; skip deferral logic.
   };
 });
 
-import { enqueueBatch, clearAllQueues } from '../queue';
-import { applyBatch } from '../adapter';
+import { enqueueBatch, clearAllQueues } from '../adapters/queue';
+import { applyBatch } from '../adapters/adapter';
 
 // SAFETY: Vitest's Mock<T> accepts a single function type parameter.
 const mockedApply = applyBatch as unknown as Mock<(batch: Batch) => Promise<ApplyOutcome>>;

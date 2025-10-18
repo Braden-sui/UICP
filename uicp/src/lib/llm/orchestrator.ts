@@ -214,7 +214,7 @@ export async function planWithProfile(
 // - Reuse a stable window id derived from the summary when none is suggested.
 // - Encourage inclusion of a small aria-live status region for progress.
 function augmentPlan(input: Plan): Plan {
-  const risks = Array.isArray(input.risks) ? input.risks.slice() : [];
+  const risks: string[] = Array.isArray(input.risks) ? [...input.risks] : [];
   const hasReuseId = risks.some((r) => /gui:\s*(reuse|create)\s*window\s*id/i.test(r));
   const hasStatus = risks.some((r) => /aria-live|status\s*region/i.test(r));
   const hasDeclarativeEvents = risks.some((r) => /data-command|no\s*event\.addlistener/i.test(r));
@@ -242,7 +242,7 @@ const CLARIFIER_TOKEN = 'clarifier:structured';
 function isStructuredClarifierPlan(plan: Plan): boolean {
   const summary = (plan.summary ?? '').trim();
   if (!summary || !summary.endsWith('?')) return false;
-  const risks = Array.isArray(plan.risks) ? plan.risks : [];
+  const risks: string[] = Array.isArray(plan.risks) ? [...plan.risks] : [];
   const hasClarifierRisk = risks.some((risk) => risk.trim().toLowerCase().startsWith(CLARIFIER_TOKEN));
   if (!hasClarifierRisk) return false;
   if (!Array.isArray(plan.batch) || plan.batch.length !== 1) return false;

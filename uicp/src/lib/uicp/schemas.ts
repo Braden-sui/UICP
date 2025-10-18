@@ -1,5 +1,4 @@
-import { sanitizeHtmlStrict as sanitizeHtmlStrictImpl } from '../sanitizer';
-// Re-export frozen schema package for backward compatibility within the uicp lib.
+// Re-export from adapters folder for backward compatibility
 export type {
   SafeHtml,
   WindowId,
@@ -11,7 +10,7 @@ export type {
   Batch,
   BatchMetadata,
   Plan,
-} from '../schema';
+} from './adapters/schemas';
 
 export {
   MAX_OPS_PER_BATCH,
@@ -28,7 +27,7 @@ export {
   isBatch,
   isPlan,
   UICPValidationError,
-} from '../schema';
-// Maintain back-compat for callers importing helpers from ./schemas
-export { asWindowId, asStatePath } from '../schema';
-export const sanitizeHtmlStrict = sanitizeHtmlStrictImpl;
+  asWindowId,
+  asStatePath,
+  sanitizeHtmlStrict,
+} from './adapters/schemas';

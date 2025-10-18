@@ -47,7 +47,7 @@ export type WorkspaceWindowMeta = {
   kind: WorkspaceWindowKind;
 };
 
-export type AgentPhase = 'idle' | 'planning' | 'acting' | 'applying';
+export type AgentPhase = 'idle' | 'planning' | 'acting' | 'previewing' | 'applying' | 'complete' | 'cancelled';
 
 export type AgentStatus = {
   phase: AgentPhase;
@@ -60,7 +60,14 @@ export type AgentStatus = {
   error?: string;
 };
 
-export type IntentTelemetryStatus = 'planning' | 'acting' | 'applying' | 'applied' | 'error' | 'cancelled';
+export type IntentTelemetryStatus =
+  | 'planning'
+  | 'acting'
+  | 'previewing'
+  | 'applying'
+  | 'applied'
+  | 'error'
+  | 'cancelled';
 
 export type IntentTelemetry = {
   traceId: string;

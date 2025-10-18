@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateBatch } from '../schemas';
+import { validateBatch } from '../adapters/schemas';
 
 describe('batch budgets', () => {
   it('rejects batches over 64 operations', () => {

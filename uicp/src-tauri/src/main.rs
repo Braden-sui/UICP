@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
     async_runtime::{spawn, JoinHandle},
-    Emitter, Manager, State,
+    Emitter, Manager, State, WebviewUrl,
 };
 use tokio::{
     io::AsyncWriteExt,
@@ -31,6 +31,8 @@ use tokio_stream::StreamExt;
 
 mod action_log;
 mod circuit;
+#[cfg(test)]
+mod circuit_tests;
 mod commands;
 #[cfg(feature = "wasm_compute")]
 mod component_bindings;
@@ -56,6 +58,9 @@ pub use core::{
     remove_compute_job, AppState, APP_NAME, DATA_DIR, FILES_DIR, LOGS_DIR,
     OLLAMA_CLOUD_HOST_DEFAULT, OLLAMA_LOCAL_BASE_DEFAULT,
 };
+
+// Minimal inline splash script to render the futuristic loader instantly without contacting dev server.
+// This runs inside a separate splash window. Keep it compact and self-contained.
 
 static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
 static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
@@ -1918,6 +1923,92 @@ fn main() {
             spawn_autosave(app.handle().clone());
             // Periodic DB maintenance to keep WAL and stats tidy
             spawn_db_maintenance(app.handle().clone());
+
+            // Create a native splash window using a bundled asset served by the frontend (works in dev and prod).
+            let splash_html = r#"<!doctype html><html lang=\"en\"><head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+  <meta name=\"color-scheme\" content=\"dark\">
+  <title>UICP</title>
+  <style>
+    html,body{height:100%;margin:0}
+    body{background:#0a0a0f;color:#cbd5e1;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .shell{position:relative;display:flex;flex-direction:column;align-items:center;gap:42px}
+    .text{font:500 11px -apple-system,BlinkMacSystemFont,Segoe UI,system-ui,sans-serif;letter-spacing:.22em;text-transform:uppercase;color:rgba(255,255,255,.6)}
+    .cluster{position:relative;width:120px;height:120px}
+    .hex{position:absolute;width:32px;height:32px;transform-origin:center}
+    .hex::before{content:\"\";position:absolute;inset:0;background:linear-gradient(135deg,rgba(99,102,241,.4),rgba(139,92,246,.2));clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);animation:hex 3s ease-in-out infinite;will-change:transform,opacity}
+    .hex:nth-child(3){top:0;left:44px}
+    .hex:nth-child(4){top:22px;left:16px}
+    .hex:nth-child(5){top:22px;left:72px}
+    .hex:nth-child(6){top:44px;left:44px}
+    .hex:nth-child(7){top:66px;left:16px}
+    .hex:nth-child(8){top:66px;left:72px}
+    .hex:nth-child(9){top:88px;left:44px}
+    .hex:nth-child(3)::before{animation-delay:0s}
+    .hex:nth-child(4)::before{animation-delay:.15s}
+    .hex:nth-child(5)::before{animation-delay:.3s}
+    .hex:nth-child(6)::before{animation-delay:.45s}
+    .hex:nth-child(7)::before{animation-delay:.6s}
+    .hex:nth-child(8)::before{animation-delay:.75s}
+    .hex:nth-child(9)::before{animation-delay:.9s}
+    .core{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:8px;height:8px;border-radius:50%;background:rgba(139,92,246,.9);box-shadow:0 0 20px rgba(139,92,246,.6),0 0 40px rgba(139,92,246,.3);animation:core 2s ease-in-out infinite}
+    .ring{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);border:1px solid rgba(99,102,241,.12);border-radius:50%;animation:spin 8s linear infinite;will-change:transform}
+    .ring.r2{width:180px;height:180px;animation-duration:12s;animation-direction:reverse}
+    .ring.r1{width:140px;height:140px}
+    body::before{content:\"\";position:absolute;inset:-50%;background:radial-gradient(circle at 30% 50%,rgba(99,102,241,.08) 0%,transparent 50%),radial-gradient(circle at 70% 50%,rgba(139,92,246,.06) 0%,transparent 50%);animation:drift 20s ease-in-out infinite}
+    @keyframes hex{0%,100%{opacity:.3;transform:scale(.95)}50%{opacity:1;transform:scale(1.05)}}
+    @keyframes core{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:.9}50%{transform:translate(-50%,-50%) scale(1.3);opacity:1}}
+    @keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
+    @keyframes drift{0%,100%{transform:translate(0,0) rotate(0)}33%{transform:translate(10%,-10%) rotate(120deg)}66%{transform:translate(-10%,10%) rotate(240deg)}}
+    @media (prefers-reduced-motion: reduce){*,*::before{animation:none!important}}
+  </style>
+</head>
+<body>
+  <div class=\"shell\" role=\"status\" aria-live=\"polite\" aria-busy=\"true\" aria-label=\"Initializing application\">
+    <div class=\"cluster\">
+      <div class=\"ring r1\"></div>
+      <div class=\"ring r2\"></div>
+      <div class=\"hex\"></div>
+      <div class=\"hex\"></div>
+      <div class=\"hex\"></div>
+      <div class=\"hex\"></div>
+      <div class=\"hex\"></div>
+      <div class=\"hex\"></div>
+      <div class=\"hex\"></div>
+      <div class=\"core\"></div>
+    </div>
+    <p class=\"text\">Initializing</p>
+  </div>
+</body></html>"#;
+            // Try bundled asset first (works in prod). If unavailable in current environment, fall back to data: URL.
+            let splash_try_app = tauri::WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash.html".into()))
+                .title("UICP")
+                .decorations(false)
+                .resizable(false)
+                .inner_size(420.0, 280.0)
+                .center()
+                .visible(true)
+                .build();
+            if let Err(err) = splash_try_app {
+                eprintln!("splash app:// failed, falling back to data URL: {err:?}");
+                let data_url = format!("data:text/html;base64,{}", BASE64_ENGINE.encode(splash_html));
+                let splash_fallback = tauri::WebviewWindowBuilder::new(app, "splash", WebviewUrl::External(
+                    Url::parse(&data_url).expect("valid data url")
+                ))
+                    .title("UICP")
+                    .decorations(false)
+                    .resizable(false)
+                    .inner_size(420.0, 280.0)
+                    .center()
+                    .visible(true)
+                    .build();
+                if let Err(err2) = splash_fallback {
+                    eprintln!("failed to create splash window (data URL fallback): {err2:?}");
+                }
+            }
+
+            // Frontend will call the `frontend_ready` command; see handler below.
             // Run DB health check at startup; enter Safe Mode on failure
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1956,10 +2047,24 @@ fn main() {
             cancel_chat,
             compute_call,
             compute_cancel,
-            debug_circuits
+            debug_circuits,
+            frontend_ready
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Command invoked by the frontend when the UI is fully ready.
+#[tauri::command]
+fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+    if let Some(splash) = app.get_webview_window("splash") {
+        let _ = splash.close();
+    }
+    Ok(())
 }
 
 /// Get debug information for all circuit breakers.

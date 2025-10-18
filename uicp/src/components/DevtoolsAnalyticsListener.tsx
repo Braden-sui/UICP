@@ -50,6 +50,7 @@ const DevtoolsAnalyticsListener = () => {
         notepadOpen: store.notepadOpen,
         agentSettingsOpen: store.agentSettingsOpen,
         computeDemoOpen: store.computeDemoOpen,
+        moduleRegistryOpen: store.moduleRegistryOpen,
         workspaceWindows: Object.keys(store.workspaceWindows).length,
         devMode: store.devMode,
         fullControl: store.fullControl,
@@ -78,6 +79,7 @@ const DevtoolsAnalyticsListener = () => {
           devMode: context.devMode,
           fullControl: context.fullControl,
           fullControlLocked: context.fullControlLocked,
+          moduleRegistryOpen: context.moduleRegistryOpen,
         });
       } catch (error) {
         console.error('Failed to emit devtools_shortcut debug event', error);

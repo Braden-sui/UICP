@@ -5,14 +5,18 @@
       "version": "1.2.0",
       "filename": "csv.parse@1.2.0.wasm",
       "digest_sha256": "9d322012aeb64218e7027e96449b3259a60e297b9f52bac2a4b2910db6c9fbe7",
-      "signature": "z2Kt6Qe7NlDBWq7tk5hEgnPkgWp4Q6wByXHAQmBfUSWNX/oAWGQyYST3/ETkxhTzYutb62BIIHGFyonStpoUAA=="
+      "signature": "XGfgK4Y/dPEhSiLoE9Js/wvY8LpZwrHhoaYcqvXcLbjTgINRjRoOO9c3AzoUx/aqErTV+YzMVMS+7SKyi5PKBw==",
+      "keyid": "dev-seed",
+      "signed_at": 1760742002
     },
     {
       "task": "table.query",
       "version": "0.1.0",
       "filename": "table.query@0.1.0.wasm",
       "digest_sha256": "2841c2ea7f5a6fcf03522b447fd82cc2f3a31c4b294e4d880601a6ecce78b953",
-      "signature": "gHkjht3MUfctzTCN+PB4mljvt2sUOSZpjxUqhcv0ziTONRsuFIR9RJSDYbVnjLY6L6bROwyIDhgUF5aXZfzBDA=="
+      "signature": "gHkjht3MUfctzTCN+PB4mljvt2sUOSZpjxUqhcv0ziTONRsuFIR9RJSDYbVnjLY6L6bROwyIDhgUF5aXZfzBDA==",
+      "keyid": "dev-seed",
+      "signed_at": 1760742002
     }
   ]
 }

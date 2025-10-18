@@ -1,0 +1,6 @@
+*** Begin Patch
+*** Update File: uicp/src/lib/uicp/adapters/adapter.queue.ts
+@@
+-import { useAppStore } from "../../state/app";
++import { useAppStore } from "../../../state/app";
+*** End Patch

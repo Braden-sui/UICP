@@ -5,17 +5,21 @@ import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
 import { useAppStore, type AgentPhase } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon, ClarifierIcon } from '../icons';
+import type { Batch } from '../lib/uicp/schemas';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 import { strings } from '../strings';
 import { LiquidGlass } from '@liquidglass/react';
 import { cancelActiveChat } from '../lib/llm/ollama';
 
-const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'applying'];
+const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'previewing', 'applying'];
 const STATUS_PHASE_LABEL: Record<AgentPhase, string> = {
   idle: 'Idle',
   planning: 'Planning',
   acting: 'Acting',
+  previewing: 'Previewing',
   applying: 'Applying',
+  complete: 'Complete',
+  cancelled: 'Cancelled',
 };
 
 // DockChat is the single control surface for the agent. It handles proximity reveal, input, plan review, and actions.
@@ -211,7 +215,7 @@ export const DockChat = () => {
               </div>
               <p className="mt-2 text-sm text-slate-600">{pendingPlan.summary}</p>
               <ol className="mt-3 space-y-1 text-xs text-slate-500">
-                {pendingPlan.batch.map((command, index) => (
+                {pendingPlan.batch.map((command: Batch[number], index: number) => (
                   <li key={`${pendingPlan.id}-${index}`}>
                     <span className="font-mono text-[11px]">{command.op}</span>
                     {command.windowId ? ` - ${command.windowId}` : ''}
@@ -299,3 +303,4 @@ export const DockChat = () => {
   );
 };
 export default DockChat;
+

@@ -17,6 +17,18 @@ import { validateBatch } from '../../src/lib/uicp/schemas';
 import { nextFrame } from '../../src/lib/utils';
 import { getTauriMocks } from '../mocks/tauri';
 
+const getRuleStyle = (selector: string): CSSStyleDeclaration => {
+  const sheets = Array.from(document.styleSheets) as CSSStyleSheet[];
+  for (const sheet of sheets) {
+    const rule = Array.from(sheet.cssRules).find(
+      (cssRule): cssRule is CSSStyleRule =>
+        cssRule instanceof CSSStyleRule && cssRule.selectorText === selector,
+    );
+    if (rule) return rule.style;
+  }
+  throw new Error(`Style rule ${selector} not found`);
+};
+
 // Adapter test ensures batches create DOM windows as expected.
 describe('adapter.applyBatch', () => {
   beforeEach(() => {
@@ -81,7 +93,7 @@ describe('adapter.applyBatch', () => {
     await applyBatch(batch);
     await nextFrame();
     const snapshot = listWorkspaceWindows();
-    expect(snapshot.find((entry) => entry.id === 'win-close')?.title).toBe('Closable');
+    expect(snapshot.find((entry: { id: string; title: string }) => entry.id === 'win-close')?.title).toBe('Closable');
 
     const { invokeMock } = getTauriMocks();
     invokeMock.mockClear();
@@ -91,6 +103,93 @@ describe('adapter.applyBatch', () => {
       'delete_window_commands',
       expect.objectContaining({ windowId: 'win-close' }),
     );
+  });
+
+  it('supports manual resize via window handles', async () => {
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1600 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 900 });
+
+    try {
+      const batch = validateBatch([
+        {
+          op: 'window.create',
+          params: { id: 'win-resize', title: 'Resizable', x: 40, y: 60, width: 360, height: 320 },
+        },
+      ]);
+
+      await applyBatch(batch);
+      await nextFrame();
+
+      const wrapper = document.querySelector('[data-window-id="win-resize"]') as HTMLDivElement | null;
+      expect(wrapper).not.toBeNull();
+
+      wrapper!.getBoundingClientRect = () => ({
+        left: 100,
+        top: 120,
+        width: 360,
+        height: 320,
+        right: 460,
+        bottom: 440,
+        x: 100,
+        y: 120,
+        toJSON: () => ({}),
+      });
+
+      const eastHandle = wrapper!.querySelector('[data-resize-handle="east"]') as HTMLElement | null;
+      expect(eastHandle).not.toBeNull();
+
+      const styleBefore = getRuleStyle('[data-window-id="win-resize"]');
+      expect(styleBefore.width).toBe('360px');
+      expect(styleBefore.height).toBe('320px');
+
+      eastHandle!.dispatchEvent(
+        new PointerEvent('pointerdown', { pointerId: 1, bubbles: true, button: 0, clientX: 460, clientY: 260 }),
+      );
+      eastHandle!.dispatchEvent(
+        new PointerEvent('pointermove', { pointerId: 1, bubbles: true, clientX: 520, clientY: 260 }),
+      );
+      eastHandle!.dispatchEvent(
+        new PointerEvent('pointerup', { pointerId: 1, bubbles: true, clientX: 520, clientY: 260 }),
+      );
+      await nextFrame();
+
+      wrapper!.getBoundingClientRect = () => ({
+        left: 100,
+        top: 120,
+        width: 420,
+        height: 320,
+        right: 520,
+        bottom: 440,
+        x: 100,
+        y: 120,
+        toJSON: () => ({}),
+      });
+
+      const styleAfterWidth = getRuleStyle('[data-window-id="win-resize"]');
+      expect(styleAfterWidth.width).toBe('420px');
+
+      const southHandle = wrapper!.querySelector('[data-resize-handle="south"]') as HTMLElement | null;
+      expect(southHandle).not.toBeNull();
+
+      southHandle!.dispatchEvent(
+        new PointerEvent('pointerdown', { pointerId: 2, bubbles: true, button: 0, clientX: 320, clientY: 440 }),
+      );
+      southHandle!.dispatchEvent(
+        new PointerEvent('pointermove', { pointerId: 2, bubbles: true, clientX: 320, clientY: 500 }),
+      );
+      southHandle!.dispatchEvent(
+        new PointerEvent('pointerup', { pointerId: 2, bubbles: true, clientX: 320, clientY: 500 }),
+      );
+      await nextFrame();
+
+      const styleAfterHeight = getRuleStyle('[data-window-id="win-resize"]');
+      expect(styleAfterHeight.height).toBe('380px');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: originalInnerHeight });
+    }
   });
 
   it('renders structured clarifier form via intent metadata', async () => {

@@ -1,10 +1,36 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const applyBatchMock = vi.fn(async (batch: any[]) => ({ success: true, applied: batch.length, errors: [] }));
-
-vi.mock('../../src/lib/uicp/adapter', () => ({
-  applyBatch: (batch: any) => applyBatchMock(batch),
+const applyBatchMock = vi.fn(async (batch: any[]) => ({
+  success: true,
+  applied: batch.length,
+  errors: [],
+  skippedDupes: 0,
+  skippedDuplicates: 0,
 }));
+
+// Mock lifecycle module to avoid workspace registration requirement
+vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
+    '../../src/lib/uicp/adapters/adapter.lifecycle',
+  );
+  return {
+    ...actual,
+    applyCommand: vi.fn(async () => ({ success: true, value: 'ok' })),
+    persistCommand: vi.fn(async () => {}),
+    recordStateCheckpoint: vi.fn(async () => {}),
+    deferBatchIfNotReady: () => null,
+  };
+});
+
+vi.mock('../../src/lib/uicp/adapters/adapter', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter')>(
+    '../../src/lib/uicp/adapters/adapter',
+  );
+  return {
+    ...actual,
+    applyBatch: (batch: any) => applyBatchMock(batch),
+  };
+});
 
 const runIntentMock = vi.fn();
 
@@ -21,7 +47,7 @@ describe('chat.plan-flow', () => {
     vi.useFakeTimers();
     runIntentMock.mockReset();
     applyBatchMock.mockClear();
-    applyBatchMock.mockResolvedValue({ success: true, applied: 2, errors: [] });
+    applyBatchMock.mockResolvedValue({ success: true, applied: 2, errors: [], skippedDupes: 0, skippedDuplicates: 0 });
 
     useAppStore.setState({
       connectionStatus: 'disconnected',
@@ -122,10 +148,10 @@ describe('chat.plan-flow', () => {
     expect(pending?.traceId).toBeTruthy();
 
     const status = useAppStore.getState().agentStatus;
-    expect(status.phase).toBe('acting');
+    expect(status.phase).toBe('previewing');
 
     const telemetry = useAppStore.getState().telemetry;
-    expect(telemetry[0]?.status).toBe('acting');
+    expect(telemetry[0]?.status).toBe('previewing');
     expect(telemetry[0]?.batchSize).toBe(2);
   });
 
@@ -200,7 +226,7 @@ describe('chat.plan-flow', () => {
       autoApply: true,
     });
 
-    applyBatchMock.mockResolvedValueOnce({ success: true, applied: 1, errors: [] });
+    applyBatchMock.mockResolvedValueOnce({ success: true, applied: 1, errors: [], skippedDupes: 0, skippedDuplicates: 0 });
 
     useAppStore.setState({ fullControl: false, fullControlLocked: false });
 
@@ -255,4 +281,3 @@ describe('chat.plan-flow', () => {
     expect(telemetry[0]?.error).toContain('upstream offline');
   });
 });
-

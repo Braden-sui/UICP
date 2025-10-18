@@ -30,6 +30,7 @@ const EVENT_DEFAULTS: Record<TelemetryEventName, EventDefaults> = {
   permissions_prompt: { span: 'permissions', kind: 'instant', status: 'prompt' },
   permissions_allow: { span: 'permissions', kind: 'instant', status: 'ok' },
   permissions_deny: { span: 'permissions', kind: 'instant', status: 'error' },
+  safe_write: { span: 'fs', kind: 'instant' },
   api_call: { span: 'api', kind: 'instant' },
 };
 

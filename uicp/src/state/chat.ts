@@ -1,10 +1,11 @@
 import { create } from "zustand";
-import { applyBatch } from "../lib/uicp/adapter";
-import type { Batch } from "../lib/uicp/schemas";
-import { UICPValidationError, validateBatch, validatePlan } from "../lib/uicp/schemas";
+import { applyBatch } from "../lib/uicp/adapters/adapter";
+import type { Batch, Envelope } from "../lib/uicp/adapters/schemas";
+import { UICPValidationError, validateBatch, validatePlan } from "../lib/uicp/adapters/schemas";
 import { createId } from "../lib/utils";
 import { useAppStore } from "./app";
 import { runIntent } from "../lib/llm/orchestrator";
+import { OrchestratorEvent } from "../lib/orchestrator/state-machine";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -45,13 +46,13 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 const ensureBatchMetadata = (input: Batch, fallbackTraceId?: string): { batch: Batch; traceId: string } => {
-  let trace = fallbackTraceId ?? input.find((env) => env.traceId)?.traceId;
+  let trace = fallbackTraceId ?? input.find((env: Envelope) => env.traceId)?.traceId;
   if (!trace) {
     trace = createId("trace");
   }
-  let txn = input.find((env) => env.txnId)?.txnId ?? createId("txn");
+  let txn = input.find((env: Envelope) => env.txnId)?.txnId ?? createId("txn");
 
-  const stamped = input.map((env) => ({
+  const stamped = input.map((env: Envelope) => ({
     ...env,
     idempotencyKey: env.idempotencyKey ?? createId("idemp"),
     traceId: env.traceId ?? trace!,
@@ -89,6 +90,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     const messageId = createId("msg");
+    app.startNewOrchestratorRun();
+    app.transitionOrchestrator(OrchestratorEvent.StartPlanning, { messageId, prompt });
     set((state) => ({
       messages: [
         ...state.messages,
@@ -119,6 +122,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let summary: string;
       let notice: 'planner_fallback' | 'actor_fallback' | undefined;
       let planAutoApply = false;
+      let needsPreview = true;
 
       // Orchestrator path: DeepSeek (planner) -> Qwen (actor) via streaming transport.
       app.setSuppressAutoApply(true);
@@ -146,6 +150,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   planMs: planDuration,
                   actMs: null,
                 });
+                app.transitionOrchestrator(OrchestratorEvent.PlannerCompleted, {
+                  traceId,
+                  planMs: detail.planMs,
+                });
               }
             },
           },
@@ -164,7 +172,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         actDuration = result.timings.actMs;
         const autoApply = Boolean(result.autoApply);
         planAutoApply = autoApply;
-        const stamped = ensureBatchMetadata(safeBatch, result.traceId);
+        needsPreview = !planAutoApply;
+          const stamped = ensureBatchMetadata(safeBatch, result.traceId);
         batch = stamped.batch;
         traceId = stamped.traceId;
         app.transitionAgentPhase('acting', {
@@ -172,13 +181,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
           planMs: planDuration,
           actMs: actDuration,
         });
+        const orchestratorAfterPlan = useAppStore.getState().orchestratorContext.state;
+        if (orchestratorAfterPlan === 'planning') {
+          app.transitionOrchestrator(OrchestratorEvent.PlannerCompleted, {
+            traceId,
+            planMs: planDuration,
+          });
+        }
         const telemetryPatch: Parameters<typeof app.upsertTelemetry>[1] = {
           summary,
           startedAt,
           planMs: planDuration,
           actMs: actDuration,
           batchSize: batch.length,
-          status: autoApply || (app.fullControl && !app.fullControlLocked) ? 'applying' : 'acting',
+          status: needsPreview ? 'previewing' : 'applying',
         };
         const failureMessages = [plannerFailure, actorFailure].filter((msg): msg is string => Boolean(msg));
         if (failureMessages.length > 0) {
@@ -189,9 +205,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (notice === 'planner_fallback' && actorFailure) {
           get().pushSystemMessage(`Clarifier needed: ${actorFailure}`, 'clarifier_needed');
         }
-        const plannerRisks = (safePlan.risks ?? []).filter((risk) => !risk.trim().toLowerCase().startsWith('clarifier:'));
+        const plannerRisks = (safePlan.risks ?? []).filter((risk: string) => !risk.trim().toLowerCase().startsWith('clarifier:'));
         if (plannerRisks.length > 0) {
-          const lines = plannerRisks.map((r) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
+          const lines = plannerRisks.map((r: string) => (r.startsWith('gui:') ? r : `risk: ${r}`)).join('\n');
           get().pushSystemMessage(`Planner hints${traceId ? ` [${traceId}]` : ''}:\n${lines}`, 'planner_hints');
         }
         if (notice === 'planner_fallback') {
@@ -242,10 +258,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       // Surface the planner summary as an assistant message before we consider auto-apply.
-      const summaryContent =
-        (planAutoApply || (app.fullControl && !app.fullControlLocked))
-          ? summary
-          : `${summary}\nReview the plan and press Apply when ready.`;
+      const summaryContent = needsPreview ? `${summary}\nReview the plan and press Apply when ready.` : summary;
 
       set((state) => ({
         messages: [
@@ -261,12 +274,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
 
       const fullControlEnabled = app.fullControl && !app.fullControlLocked;
-      if (plan.autoApply) {
+      if (!needsPreview) {
         const applyStarted = nowMs();
         app.transitionAgentPhase('applying', {
           traceId,
           planMs: planDuration,
           actMs: actDuration,
+        });
+        app.transitionOrchestrator(OrchestratorEvent.AutoApply, {
+          traceId,
+          planMs: planDuration,
+          actMs: actDuration,
+          source: 'clarifier',
         });
         if (traceId) {
           app.upsertTelemetry(traceId, {
@@ -306,6 +325,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
               error: errorMessage,
             });
           }
+        app.transitionOrchestrator(OrchestratorEvent.ApplyFailed, {
+          traceId,
+          batchId: outcome.batchId,
+          applied: outcome.applied,
+          errors: outcome.errors,
+        });
           set({ pendingPlan: plan });
         } else {
           app.transitionAgentPhase('idle', {
@@ -400,8 +425,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
               error: undefined,
             });
           }
+          app.transitionOrchestrator(OrchestratorEvent.ApplySucceeded, {
+            traceId,
+            batchId: outcome.batchId,
+            applied: outcome.applied,
+          });
+          app.startNewOrchestratorRun();
         }
       } else {
+        app.transitionAgentPhase('previewing', {
+          traceId,
+          planMs: planDuration,
+          actMs: actDuration,
+        });
+        app.transitionOrchestrator(OrchestratorEvent.RequirePreview, {
+          traceId,
+          reason: fullControlEnabled ? 'auto_apply_ready' : 'user_review',
+        });
         set({ pendingPlan: plan });
       }
     } catch (error) {
@@ -440,6 +480,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
           error: message,
         });
       }
+      const orchestratorState = useAppStore.getState().orchestratorContext.state;
+      if (orchestratorState === 'planning') {
+        app.transitionOrchestrator(OrchestratorEvent.PlannerFailed, {
+          traceId,
+          error: message,
+        });
+      } else if (orchestratorState === 'acting' || orchestratorState === 'previewing') {
+        app.transitionOrchestrator(OrchestratorEvent.Cancel, {
+          traceId,
+          error: message,
+        });
+      } else if (orchestratorState === 'applying') {
+        app.transitionOrchestrator(OrchestratorEvent.ApplyFailed, {
+          traceId,
+          error: message,
+        });
+      }
+      app.startNewOrchestratorRun();
       useAppStore.getState().pushToast({ variant: 'error', message: 'Planner failed. Check system message for details.' });
     } finally {
       app.setStreaming(false);
@@ -455,6 +513,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
     app.setStreaming(true);
+    const currentOrchestrator = useAppStore.getState().orchestratorContext;
+    if (currentOrchestrator.state !== 'previewing') {
+      app.startNewOrchestratorRun();
+      app.transitionOrchestrator(OrchestratorEvent.StartPlanning, {
+        traceId: plan.traceId,
+        resume: true,
+      });
+      app.transitionOrchestrator(OrchestratorEvent.PlannerCompleted, {
+        traceId: plan.traceId,
+        planMs: plan.timings?.planMs ?? null,
+      });
+      app.transitionOrchestrator(OrchestratorEvent.RequirePreview, {
+        traceId: plan.traceId,
+        reason: 'retry',
+      });
+    }
+    app.transitionOrchestrator(OrchestratorEvent.PreviewAccepted, {
+      traceId: plan.traceId,
+      planMs: plan.timings?.planMs ?? null,
+      actMs: plan.timings?.actMs ?? null,
+    });
     app.transitionAgentPhase('applying', {
       traceId: plan.traceId,
       planMs: plan.timings?.planMs ?? null,
@@ -501,6 +580,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             error: errorMessage,
           });
         }
+        app.transitionOrchestrator(OrchestratorEvent.ApplyFailed, {
+          traceId: plan.traceId,
+          batchId: outcome.batchId,
+          applied: outcome.applied,
+          errors: outcome.errors,
+        });
       } else {
         const appliedMessage = `Applied ${outcome.applied} commands in ${applyDuration} ms${plan.traceId ? ` [${plan.traceId}]` : ''}.`;
         set((state) => ({
@@ -530,6 +615,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             error: undefined,
           });
         }
+        app.transitionOrchestrator(OrchestratorEvent.ApplySucceeded, {
+          traceId: plan.traceId,
+          batchId: outcome.batchId,
+          applied: outcome.applied,
+        });
+        app.startNewOrchestratorRun();
       }
     } finally {
       set({ pendingPlan: undefined });
@@ -548,6 +639,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     void applyBatch(cancelBatch);
     app.lockFullControl();
     const lastTrace = app.agentStatus.traceId;
+    app.transitionOrchestrator(OrchestratorEvent.Cancel, {
+      traceId: lastTrace,
+      reason: 'user_cancel',
+    });
     app.transitionAgentPhase('idle', {
       traceId: undefined,
       planMs: null,
@@ -575,6 +670,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
       ],
     }));
+
+    app.startNewOrchestratorRun();
   },
   pushSystemMessage(content: string, errorCode?: string) {
     set((state) => ({

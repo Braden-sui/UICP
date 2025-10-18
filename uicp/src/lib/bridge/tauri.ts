@@ -2,14 +2,14 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
-import { enqueueBatch, addQueueAppliedListener } from '../uicp/queue';
+import { enqueueBatch, addQueueAppliedListener } from '../uicp/adapters/queue';
 import { finalEventSchema, type JobSpec, type ComputeFinalEvent } from '../../compute/types';
 import { useComputeStore } from '../../state/compute';
 import { useAppStore } from '../../state/app';
 import { useChatStore } from '../../state/chat';
 import { createId } from '../../lib/utils';
 import { ComputeError } from '../compute/errors';
-import { asStatePath, type Batch } from '../uicp/schemas';
+import { asStatePath, type Batch, type ApplyOutcome } from '../uicp/adapters/schemas';
 import { OrchestratorEvent } from '../orchestrator/state-machine';
 import { type Result, createBridgeUnavailableError, toUICPError, UICPErrorCode } from './result';
 
@@ -150,7 +150,7 @@ export async function initializeTauriBridge() {
           value: final.output,
         },
       } as const));
-      enqueueBatch(batch).then((outcome) => {
+      enqueueBatch(batch).then((outcome: ApplyOutcome) => {
         if (!outcome.success) {
           console.error('Failed to apply compute bindings', outcome.errors);
           useAppStore.getState().pushToast({ variant: 'error', message: 'Failed to apply compute results' });
@@ -356,7 +356,7 @@ export async function initializeTauriBridge() {
 
     if (canAutoApply) {
       // WHY: Transition to Applying state before executing batch
-      const transition = app.transitionOrchestrator(OrchestratorEvent.StartApplying, {
+      const transition = app.transitionOrchestrator(OrchestratorEvent.AutoApply, {
         batchSize: batch.length,
         source: 'aggregator',
       });
@@ -376,16 +376,18 @@ export async function initializeTauriBridge() {
         }
 
         // WHY: Transition to Idle after successful apply
-        app.transitionOrchestrator(OrchestratorEvent.ApplyComplete, {
+        app.transitionOrchestrator(OrchestratorEvent.ApplySucceeded, {
           applied: outcome.applied,
         });
+        app.startNewOrchestratorRun();
 
         return outcome;
       } catch (error) {
         // WHY: On error, transition to Cancelled state
-        app.transitionOrchestrator(OrchestratorEvent.Cancel, {
+        app.transitionOrchestrator(OrchestratorEvent.ApplyFailed, {
           error: error instanceof Error ? error.message : String(error),
         });
+        app.startNewOrchestratorRun();
         throw error;
       }
     }
@@ -489,7 +491,7 @@ export async function initializeTauriBridge() {
 
   
 
-  const offApplied = addQueueAppliedListener(({ windowId, applied, ms }) => {
+  const offApplied = addQueueAppliedListener(({ windowId, applied, ms }: { windowId: string; applied: number; ms: number }) => {
     const tag = windowId && windowId !== '__global__' ? ` [${windowId}]` : '';
     useAppStore.getState().pushToast({ variant: 'success', message: `Applied ${applied} commands in ${Math.round(ms)} ms${tag}` });
     emitUiDebug('queue_applied', { windowId, applied, ms: Math.round(ms) });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { registerWorkspaceRoot, registerWindowLifecycle, listWorkspaceWindows, closeWorkspaceWindow, replayWorkspace } from '../lib/uicp/adapter';
+import { registerWorkspaceRoot, registerWindowLifecycle, listWorkspaceWindows, closeWorkspaceWindow, replayWorkspace } from '../lib/uicp/adapters/adapter';
 import LogsPanel from './LogsPanel';
 import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
@@ -310,80 +310,88 @@ export const Desktop = () => {
   ]);
 
   return (
-    <div className="relative flex min-h-screen w-full flex-col items-center justify-center">
+    <div className="relative flex min-h-screen w-full flex-col items-stretch">
       <DevtoolsAnalyticsListener />
       <DesktopClock />
       <DesktopMenuBar menus={menus} />
-      <div
-        id="workspace-root"
-        ref={rootRef}
-        className="relative h-full w-full"
-        aria-live="polite"
-      />
-      <div ref={overlayRef} className="pointer-events-none absolute inset-0 z-30">
-        <DesktopIcon
-          id="logs-shortcut"
-          label="Logs"
-          position={logsPosition}
-          containerRef={overlayRef}
-          onOpen={handleOpenLogs}
-          onPositionChange={handleLogsPosition}
-          icon={iconVisual}
-          active={logsOpen}
+      {/* WHY: Provide a full-viewport canvas so agent windows and shortcuts share a single coordinate space.
+          INVARIANT: workspace-root and the overlay must share this positioned ancestor so drag math stays correct. */}
+      <div className="relative flex-1 w-full">
+        <div
+          id="workspace-root"
+          ref={rootRef}
+          className="absolute inset-0 z-40 pointer-events-none"
+          aria-live="polite"
         />
-        <DesktopIcon
-          id="metrics-shortcut"
-          label="Metrics"
-          position={metricsPosition}
-          containerRef={overlayRef}
-          onOpen={openMetrics}
-          onPositionChange={handleMetricsPosition}
-          icon={<GaugeIcon className="h-8 w-8" />}
-          active={metricsOpen}
-        />
-        {(devMode || import.meta.env.DEV) && (
+        <div
+          ref={overlayRef}
+          className="pointer-events-none absolute inset-0 z-20"
+          data-shortcut-layer="true"
+        >
           <DesktopIcon
-            id="agent-trace-shortcut"
-            label="Agent Trace"
-            position={agentTracePosition}
+            id="logs-shortcut"
+            label="Logs"
+            position={logsPosition}
             containerRef={overlayRef}
-            onOpen={openAgentTrace}
-            onPositionChange={handleAgentTracePosition}
-            icon={<GaugeIcon className="h-8 w-8" />}
-            active={agentTraceOpen}
+            onOpen={handleOpenLogs}
+            onPositionChange={handleLogsPosition}
+            icon={iconVisual}
+            active={logsOpen}
           />
-        )}
-        <DesktopIcon
-          id="agent-settings-shortcut"
-          label="Agent Settings"
-          position={agentSettingsPosition}
-          containerRef={overlayRef}
-          onOpen={() => setAgentSettingsOpen(true)}
-          onPositionChange={handleAgentSettingsPosition}
-          icon={<GearIcon className="h-8 w-8" />}
-          active={agentSettingsOpen}
-        />
-        <DesktopIcon
-          id="compute-demo-shortcut"
-          label="Compute Demo"
-          position={computeDemoPosition}
-          containerRef={overlayRef}
-          onOpen={openComputeDemo}
-          onPositionChange={(pos) => setShortcutPosition(COMPUTE_DEMO_SHORTCUT_ID, pos)}
-          icon={<GaugeIcon className="h-8 w-8" />}
-          active={!!computeDemoOpen}
-        />
-        {/* Notepad shortcut surfaces the manual scratchpad utility. */}
-        <DesktopIcon
-          id="notepad-shortcut"
-          label="Notepad"
-          position={notepadPosition}
-          containerRef={overlayRef}
-          onOpen={handleOpenNotepad}
-          onPositionChange={handleNotepadPosition}
-          icon={notepadIconVisual}
-          active={notepadOpen}
-        />
+          <DesktopIcon
+            id="metrics-shortcut"
+            label="Metrics"
+            position={metricsPosition}
+            containerRef={overlayRef}
+            onOpen={openMetrics}
+            onPositionChange={handleMetricsPosition}
+            icon={<GaugeIcon className="h-8 w-8" />}
+            active={metricsOpen}
+          />
+          {(devMode || import.meta.env.DEV) && (
+            <DesktopIcon
+              id="agent-trace-shortcut"
+              label="Agent Trace"
+              position={agentTracePosition}
+              containerRef={overlayRef}
+              onOpen={openAgentTrace}
+              onPositionChange={handleAgentTracePosition}
+              icon={<GaugeIcon className="h-8 w-8" />}
+              active={agentTraceOpen}
+            />
+          )}
+          <DesktopIcon
+            id="agent-settings-shortcut"
+            label="Agent Settings"
+            position={agentSettingsPosition}
+            containerRef={overlayRef}
+            onOpen={() => setAgentSettingsOpen(true)}
+            onPositionChange={handleAgentSettingsPosition}
+            icon={<GearIcon className="h-8 w-8" />}
+            active={agentSettingsOpen}
+          />
+          <DesktopIcon
+            id="compute-demo-shortcut"
+            label="Compute Demo"
+            position={computeDemoPosition}
+            containerRef={overlayRef}
+            onOpen={openComputeDemo}
+            onPositionChange={(pos) => setShortcutPosition(COMPUTE_DEMO_SHORTCUT_ID, pos)}
+            icon={<GaugeIcon className="h-8 w-8" />}
+            active={!!computeDemoOpen}
+          />
+          {/* Notepad shortcut surfaces the manual scratchpad utility. */}
+          <DesktopIcon
+            id="notepad-shortcut"
+            label="Notepad"
+            position={notepadPosition}
+            containerRef={overlayRef}
+            onOpen={handleOpenNotepad}
+            onPositionChange={handleNotepadPosition}
+            icon={notepadIconVisual}
+            active={notepadOpen}
+          />
+        </div>
       </div>
       <NotepadWindow />
       <MetricsPanel />

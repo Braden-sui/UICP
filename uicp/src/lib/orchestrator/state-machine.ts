@@ -1,4 +1,11 @@
-export type OrchestratorState = 'idle' | 'applying';
+export type OrchestratorState =
+  | 'idle'
+  | 'planning'
+  | 'acting'
+  | 'previewing'
+  | 'applying'
+  | 'complete'
+  | 'cancelled';
 
 export type OrchestratorContext = {
   state: OrchestratorState;
@@ -8,8 +15,14 @@ export type OrchestratorContext = {
 };
 
 export const OrchestratorEvent = {
-  StartApplying: 'StartApplying',
-  ApplyComplete: 'ApplyComplete',
+  StartPlanning: 'StartPlanning',
+  PlannerCompleted: 'PlannerCompleted',
+  PlannerFailed: 'PlannerFailed',
+  RequirePreview: 'RequirePreview',
+  AutoApply: 'AutoApply',
+  PreviewAccepted: 'PreviewAccepted',
+  ApplySucceeded: 'ApplySucceeded',
+  ApplyFailed: 'ApplyFailed',
   Cancel: 'Cancel',
 } as const;
 export type OrchestratorEventName = typeof OrchestratorEvent[keyof typeof OrchestratorEvent];
@@ -29,12 +42,29 @@ type ExecuteResult = {
 
 const transitionTable: Record<OrchestratorState, Partial<Record<OrchestratorEventName, OrchestratorState>>> = {
   idle: {
-    [OrchestratorEvent.StartApplying]: 'applying',
+    [OrchestratorEvent.StartPlanning]: 'planning',
+  },
+  planning: {
+    [OrchestratorEvent.PlannerCompleted]: 'acting',
+    [OrchestratorEvent.PlannerFailed]: 'cancelled',
+    [OrchestratorEvent.Cancel]: 'cancelled',
+  },
+  acting: {
+    [OrchestratorEvent.RequirePreview]: 'previewing',
+    [OrchestratorEvent.AutoApply]: 'applying',
+    [OrchestratorEvent.Cancel]: 'cancelled',
+  },
+  previewing: {
+    [OrchestratorEvent.PreviewAccepted]: 'applying',
+    [OrchestratorEvent.Cancel]: 'cancelled',
   },
   applying: {
-    [OrchestratorEvent.ApplyComplete]: 'idle',
-    [OrchestratorEvent.Cancel]: 'idle',
+    [OrchestratorEvent.ApplySucceeded]: 'complete',
+    [OrchestratorEvent.ApplyFailed]: 'cancelled',
+    [OrchestratorEvent.Cancel]: 'cancelled',
   },
+  complete: {},
+  cancelled: {},
 };
 
 export const create_initial_context = (opts: { fullControl: boolean; fullControlLocked: boolean }): OrchestratorContext => ({
@@ -73,4 +103,7 @@ export const execute_transition = (
   return { context: nextContext, transition };
 };
 
-export const can_auto_apply = (ctx: OrchestratorContext): boolean => ctx.fullControl && !ctx.fullControlLocked && ctx.state === 'idle';
+export const can_auto_apply = (ctx: OrchestratorContext): boolean => {
+  if (!ctx.fullControl || ctx.fullControlLocked) return false;
+  return ctx.state === 'acting' || ctx.state === 'previewing';
+};

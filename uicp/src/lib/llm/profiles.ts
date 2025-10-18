@@ -178,7 +178,8 @@ export const setSelectedActorProfileKey = (key: ActorProfileKey): void => {
 export const getSelectedPlannerProfileKey = (): PlannerProfileKey => selectedPlannerProfileKey;
 export const getSelectedActorProfileKey = (): ActorProfileKey => selectedActorProfileKey;
 
-export const listPlannerProfiles = (): PlannerProfile[] => Object.values(plannerProfiles);
+export const listPlannerProfiles = (): PlannerProfile[] =>
+  Object.values(plannerProfiles).filter((profile) => profile.key !== 'wil');
 export const listActorProfiles = (): ActorProfile[] => Object.values(actorProfiles);
 
 export const getPlannerProfile = (key?: PlannerProfileKey): PlannerProfile => {

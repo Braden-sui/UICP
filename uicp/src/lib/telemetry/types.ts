@@ -13,9 +13,10 @@ export type TelemetryEventName =
   | 'permissions_prompt'
   | 'permissions_allow'
   | 'permissions_deny'
-  | 'api_call';
+  | 'api_call'
+  | 'safe_write';
 
-export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api';
+export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs';
 
 export type TraceEventStatus = 'ok' | 'error' | 'timeout' | 'prompt' | 'dropped' | 'skipped';
 

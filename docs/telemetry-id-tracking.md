@@ -46,7 +46,7 @@ export type IntentTelemetry = {
 
 ### 1. batchId
 **Source**: `ApplyOutcome` from `applyBatch()` call  
-**Location**: `src/lib/uicp/adapter.ts`  
+**Location**: `src/lib/uicp/adapter.queue.ts`  
 **Computation**: `computeBatchHash(batch)` using FNV-1a hash  
 **Availability**: Always present after successful or failed batch application
 
@@ -198,7 +198,7 @@ All telemetry tracking is automatically tested via existing test suite:
 
 - **Batch Idempotency**: See memory `43a726f4-2546-4bb4-a6d6-0fac1d52ecb2`
 - **Orchestrator State Machine**: `src/lib/orchestrator/state-machine.ts`
-- **ApplyOutcome Type**: `src/lib/uicp/adapter.ts` (lines 1480-1490)
+- **ApplyOutcome Type**: `src/lib/uicp/adapter.queue.ts` (lines 1480-1490)
 - **Quick Wins Summary**: `docs/quick-wins-2025-01-17.md`
 
 ---

@@ -1,16 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../src/lib/uicp/queue', async () => {
-  const actual = await vi.importActual<typeof import('../../src/lib/uicp/queue')>('../../src/lib/uicp/queue');
+// Mock lifecycle to signal workspace is always ready
+vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
+    '../../src/lib/uicp/adapters/adapter.lifecycle',
+  );
   return {
     ...actual,
-    enqueueBatch: vi.fn(async () => undefined),
+    deferBatchIfNotReady: () => null,
+  };
+});
+
+vi.mock('../../src/lib/uicp/adapters/queue', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/queue')>('../../src/lib/uicp/adapters/queue');
+  return {
+    ...actual,
+    enqueueBatch: vi.fn(async () => ({ success: true, applied: 1, errors: [], skippedDupes: 0 })),
   };
 });
 
 import type { Batch } from '../../src/lib/uicp/schemas';
 import { registerWorkspaceRoot, resetWorkspace } from '../../src/lib/uicp/adapter';
-import { enqueueBatch } from '../../src/lib/uicp/queue';
+import { enqueueBatch } from '../../src/lib/uicp/adapters/queue';
 
 describe('adapter data-command strict parsing', () => {
   beforeEach(() => {

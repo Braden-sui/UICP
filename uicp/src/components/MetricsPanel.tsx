@@ -19,6 +19,7 @@ const formatTimestamp = (value: number) => {
 const STATUS_LABEL: Record<IntentTelemetry['status'], string> = {
   planning: 'Planning',
   acting: 'Acting',
+  previewing: 'Previewing',
   applying: 'Applying',
   applied: 'Applied',
   error: 'Error',

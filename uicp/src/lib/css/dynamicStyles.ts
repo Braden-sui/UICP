@@ -21,9 +21,26 @@ const findStyleOwner = (): StyleOwner | null => {
   return null;
 };
 
+const createStyleOwner = (): StyleOwner | null => {
+  if (!isBrowser) return null;
+  const head = document.head ?? document.querySelector('head');
+  if (!head) return null;
+  // WHY: Guarantee a writable stylesheet so desktop icon positioning survives HTML regressions.
+  const style = document.createElement('style');
+  style.setAttribute(DYNAMIC_STYLES_ATTR, '');
+  head.appendChild(style);
+  return style;
+};
+
+const getOrCreateStyleOwner = (): StyleOwner | null => {
+  const existing = findStyleOwner();
+  if (existing) return existing;
+  return createStyleOwner();
+};
+
 const scheduleSheetResolve = () => {
   if (!isBrowser || resolvingSheet || dynamicSheet) return;
-  const owner = findStyleOwner();
+  const owner = getOrCreateStyleOwner();
   if (!owner) return;
 
   const sheetCandidate = owner.sheet as CSSStyleSheet | null;
@@ -56,6 +73,7 @@ const scheduleSheetResolve = () => {
       },
       { once: true },
     );
+    return;
   }
 };
 
@@ -64,7 +82,7 @@ const resolveSheet = (): CSSStyleSheet | null => {
   if (dynamicSheet) {
     return dynamicSheet;
   }
-  const owner = findStyleOwner();
+  const owner = getOrCreateStyleOwner();
   if (!owner) {
     scheduleSheetResolve();
     return null;
