@@ -3,11 +3,23 @@ import { createFrameCoalescer, createId } from "../../utils";
 import { enqueueBatch, clearAllQueues } from "./queue";
 import { hasTauriBridge, tauriInvoke } from "../../bridge/tauri";
 // Removed: tryRecoverJsonFromAttribute - strict JSON parsing only
-import { getBridgeWindow, getComputeBridge } from "../../bridge/globals";
+import { getBridgeWindow } from "../../bridge/globals";
 import { checkPermission, sanitizeHtmlStrict, escapeHtml } from "./adapter.security";
-import { safeWrite, BaseDirectory, toBaseDirectory } from "./adapter.fs";
-import { MAX_DATA_COMMAND_LEN, MAX_TEMPLATE_TOKENS } from "./adapter.constants";
+import { BaseDirectory } from "./adapter.fs";
 import { emitTelemetryEvent } from "../../telemetry";
+// V2 modular imports
+import {
+  handleCommand as handleCommandV2,
+  registerCommandHandler as registerCommandHandlerV2,
+  registerUIEventCallback as registerUIEventCallbackV2,
+} from "./adapter.events";
+import {
+  persistCommand as persistCommandV2,
+  replayWorkspace as replayWorkspaceV2,
+  recordStateCheckpoint,
+} from "./adapter.persistence";
+import { routeApiCall } from "./adapter.api";
+// NOTE: StructuredClarifierBody and isStructuredClarifierBody remain local since renderStructuredClarifierForm is still here
 import {
   applyDynamicStyleRule,
   removeDynamicStyleRule,
@@ -34,12 +46,10 @@ export const runJobsInFrame = (jobs: Array<() => Promise<void>>): Promise<void> 
     });
   });
 };
-// Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
+
 type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;
 
 const ALLOWED_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH']);
-
-// Safety caps for data-command attributes (sourced from adapter.constants)
 
 type WindowLifecycleEvent =
   | { type: 'created'; id: string; title: string }
@@ -78,29 +88,7 @@ type WindowRecord = {
   styleSelector: string;
 };
 
-// Deterministic stringify (sorted object keys; preserves array order) for stable op-hash.
-const stableStringify = (input: unknown): string => {
-  const seen = new WeakSet<object>();
-  const walk = (value: unknown): unknown => {
-    if (value === null) return null;
-    const t = typeof value;
-    if (t === 'undefined' || t === 'function' || t === 'symbol') return null;
-    if (t !== 'object') return value;
-    const obj = value as Record<string, unknown>;
-    if (seen.has(obj)) return null;
-    seen.add(obj);
-    if (Array.isArray(obj)) {
-      return obj.map((v) => walk(v));
-    }
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(obj).sort()) {
-      out[key] = walk(obj[key]);
-    }
-    return out;
-  };
-  // Strict: fail fast on unstringifiable input instead of silently degrading
-  return JSON.stringify(walk(input));
-};
+// NOTE: stableStringify moved to adapter.persistence.ts
 
 type ComponentRecord = {
   id: string;
@@ -117,31 +105,8 @@ const stateStore = new Map<StateScope, Map<string, unknown>>([
   ["global", new Map()],
 ]);
 
-export const recordStateCheckpoint = async (): Promise<void> => {
-  try {
-    const stable = (obj: unknown): string => {
-      if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
-      if (Array.isArray(obj)) return `[${obj.map(stable).join(",")}]`;
-      const o = obj as Record<string, unknown>;
-      const keys = Object.keys(o).sort();
-      return `{${keys.map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`;
-    };
-    const snapshot = {
-      window: Object.fromEntries(stateStore.get("window")!),
-      workspace: Object.fromEntries(stateStore.get("workspace")!),
-      global: Object.fromEntries(stateStore.get("global")!),
-    };
-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable(snapshot)));
-    const hex = Array.from(new Uint8Array(hash))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    if (hasTauriBridge()) {
-      await tauriInvoke("save_checkpoint", { hash: hex });
-    }
-  } catch (err) {
-    console.error("recordStateCheckpoint failed", err);
-  }
-};
+// Re-export recordStateCheckpoint from persistence module
+export { recordStateCheckpoint };
 
 const bridgeWindow = getBridgeWindow();
 if (bridgeWindow && !bridgeWindow.__UICP_STATE_STORE__) {
@@ -167,36 +132,7 @@ export const addWorkspaceResetHandler = (handler: () => void): (() => void) => {
   return () => resetHandlers.delete(handler);
 };
 
-const REPLAY_PROGRESS_EVENT = 'workspace-replay-progress';
-const REPLAY_COMPLETE_EVENT = 'workspace-replay-complete';
-const REPLAY_BATCH_SIZE = 20;
-
-type ReplayProgressDetail = {
-  total: number;
-  processed: number;
-  applied: number;
-  errors: number;
-  done?: boolean;
-};
-
-const emitReplayProgress = (detail: ReplayProgressDetail) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  window.dispatchEvent(new CustomEvent(REPLAY_PROGRESS_EVENT, { detail }));
-  if (detail.done) {
-    window.dispatchEvent(new CustomEvent(REPLAY_COMPLETE_EVENT, { detail }));
-  }
-};
-
-const yieldReplay = () =>
-  new Promise<void>((resolve) => {
-    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      window.requestIdleCallback(() => resolve(), { timeout: 32 });
-      return;
-    }
-    setTimeout(resolve, 16);
-  });
+// NOTE: Replay helpers moved to adapter.persistence.ts
 
 type CommandResult<T = unknown> =
   | { success: true; value: T }
@@ -211,40 +147,8 @@ export type ApplyContext = {
   runId?: string;
 };
 
-// Persist command to database for replay on restart
-// Skip ephemeral operations that shouldn't be replayed
-export const persistCommand = async (command: Envelope): Promise<void> => {
-  // Skip ephemeral operations
-  const ephemeralOps = ['txn.cancel', 'state.get', 'state.watch', 'state.unwatch'];
-  if (ephemeralOps.includes(command.op)) {
-    return;
-  }
-  if (command.op === 'api.call') {
-    const params = command.params;
-    if (typeof params?.url === 'string' && params.url.startsWith('uicp://intent')) {
-      return;
-    }
-  }
-
-  if (!hasTauriBridge()) {
-    if (import.meta.env.DEV) {
-      console.info('[adapter] skipping persist_command; tauri bridge unavailable');
-    }
-    return;
-  }
-  try {
-    await tauriInvoke('persist_command', {
-      cmd: {
-        id: command.idempotencyKey ?? command.id ?? createId('cmd'),
-        tool: command.op,
-        args: command.params,
-      },
-    });
-  } catch (error) {
-    // Log but don't throw - persistence failures shouldn't break command execution
-    console.error('Failed to persist command', command.op, error);
-  }
-};
+// WHY: Delegate to modular persistence module
+export const persistCommand = persistCommandV2;
 
 type StructuredClarifierOption = {
   label?: string;
@@ -553,13 +457,7 @@ const renderStructuredClarifierForm = (body: StructuredClarifierBody, command: E
 type UIEventCallback = (event: Event, payload: Record<string, unknown>) => void;
 let uiEventCallback: UIEventCallback | null = null;
 
-// Generic opaque command handler registry
-type CommandHandler = (command: string, ctx: Record<string, unknown>) => Promise<void> | void;
-const commandHandlers = new Map<string, CommandHandler>();
-
-export const registerCommandHandler = (prefix: string, handler: CommandHandler): void => {
-  commandHandlers.set(prefix, handler);
-};
+// NOTE: Command handler registry moved to adapter.events.ts
 
 /**
  * Guard to defer batch application until workspace root is registered.
@@ -601,124 +499,14 @@ export const registerWorkspaceRoot = (element: HTMLElement) => {
   }
 };
 
-export const registerUIEventCallback = (callback: UIEventCallback) => {
-  uiEventCallback = callback;
-};
+// WHY: Delegate to modular events module
+export const registerUIEventCallback = registerUIEventCallbackV2;
 
-// Shallow template evaluation for JSON command attributes
-// Replaces string values like "{{value}}" or "{{form.field}}" using the event payload.
-const evalTemplates = (input: unknown, ctx: Record<string, unknown>): unknown => {
-  if (typeof input === 'string') {
-    return input.replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g, (_, path) => {
-      const parts = String(path).split('.');
-      let cur: unknown = ctx;
-      for (const p of parts) {
-        if (cur && typeof cur === 'object' && p in (cur as Record<string, unknown>)) {
-          cur = (cur as Record<string, unknown>)[p];
-        } else {
-          return '';
-        }
-      }
-      return cur == null ? '' : String(cur);
-    });
-  }
-  if (Array.isArray(input)) return input.map((v) => evalTemplates(v, ctx));
-  if (input && typeof input === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(input as Record<string, unknown>)) out[k] = evalTemplates(v, ctx);
-    return out;
-  }
-  return input;
-};
+// WHY: Delegate to modular events module
+export const handleCommand = handleCommandV2;
 
-// Central dispatcher for data-command payloads.
-// Accepts a JSON string representing a Batch or a pre-parsed value.
-export const handleCommand = async (
-  command: string | unknown,
-  ctx: Record<string, unknown>,
-): Promise<void> => {
-  try {
-    emitTelemetryEvent('adapter.ui.command', {
-      traceId: createId('trace'),
-      data: {
-        windowId: (ctx as { windowId?: string }).windowId,
-        commandType: typeof command,
-        size: typeof command === 'string' ? command.length : undefined,
-        preview:
-          typeof command === 'string'
-            ? command.length > 200
-              ? `${command.slice(0, 200)}…`
-              : command
-            : undefined,
-      },
-    });
-  } catch {
-    // Telemetry is best-effort; never block command execution
-  }
-  if (typeof command === 'string') {
-    if (command.length > MAX_DATA_COMMAND_LEN) {
-      throw new Error(`E-UICP-300: data-command exceeds size cap: ${command.length} > ${MAX_DATA_COMMAND_LEN}`);
-    }
-    const trimmed = command.trim();
-    const first = trimmed[0];
-    const looksJson = first === '[' || first === '{';
-    if (looksJson) {
-      const tokenMatches = trimmed.match(/\{\{\s*[^}]+\s*\}\}/g);
-      const tokenCount = tokenMatches ? tokenMatches.length : 0;
-      if (tokenCount > MAX_TEMPLATE_TOKENS) {
-        throw new Error(`E-UICP-300: data-command contains too many template tokens: ${tokenCount} > ${MAX_TEMPLATE_TOKENS}`);
-      }
-      const raw = JSON.parse(trimmed) as unknown;
-      const evaluated = evalTemplates(raw, ctx);
-      const batchCandidate = Array.isArray(evaluated)
-        ? (evaluated as Batch)
-        : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
-      if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
-        throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
-      }
-      void enqueueBatch(batchCandidate);
-      return;
-    }
-
-    // Opaque command path: namespace.action[:payload]
-    const colonIdx = trimmed.indexOf(':');
-    const spaceIdx = trimmed.indexOf(' ');
-    const splitIdx = colonIdx >= 0 ? colonIdx : spaceIdx >= 0 ? spaceIdx : trimmed.length;
-    const prefix = trimmed.slice(0, splitIdx);
-    const handler = commandHandlers.get(prefix);
-    if (handler) {
-      await handler(trimmed, ctx);
-      return;
-    }
-    // Default: emit as intent back to orchestrator
-    const windowId = (ctx as { windowId?: string }).windowId;
-    const defaultBatch: Batch = [
-      {
-        op: 'api.call',
-        params: {
-          method: 'POST',
-          url: 'uicp://intent',
-          body: {
-            text: `ui command: ${trimmed}`,
-            windowId,
-            command: trimmed,
-          },
-        },
-      },
-    ];
-    void enqueueBatch(defaultBatch);
-    return;
-  }
-
-  const evaluated = evalTemplates(command, ctx);
-  const batchCandidate = Array.isArray(evaluated)
-    ? (evaluated as Batch)
-    : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
-  if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
-    throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
-  }
-  void enqueueBatch(batchCandidate);
-};
+// WHY: Delegate to modular events module  
+export const registerCommandHandler = registerCommandHandlerV2;
 
 // Handle delegated events and emit ui_event
 const handleDelegatedEvent = (event: Event) => {
@@ -845,94 +633,10 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }) => {
   }
 };
 
-// Replay persisted commands from database to restore workspace state
+// WHY: Delegate to modular persistence module (wrapper to pass dependencies)
 export const replayWorkspace = async (): Promise<{ applied: number; errors: string[] }> => {
-  // WHY: Allow replay under Vitest where __TAURI__ is absent but mocks are installed.
-  // INVARIANT: Proceed when either Tauri is present or test mocks are registered; otherwise, no-op.
-  const tauriWindow = getBridgeWindow();
-  const hasMocks = typeof (globalThis as { __TAURI_MOCKS__?: unknown }).__TAURI_MOCKS__ !== 'undefined';
-  const hasTauri = typeof tauriWindow?.__TAURI__ !== 'undefined' || hasMocks;
-
-  if (!hasTauri) {
-    return { applied: 0, errors: [] };
-  }
-
-  let commands: Array<{ id: string; tool: string; args: unknown }> = [];
-  let processed = 0;
-  let applied = 0;
-  let errors: string[] = [];
-  try {
-    commands = await tauriInvoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
-    errors = [];
-    applied = 0;
-    processed = 0;
-    const dedup = new Set<string>();
-    // Discard transient in-memory state before replay so replayed ops fully define the state.
-    for (const scope of stateStore.values()) scope.clear();
-
-    const total = commands.length;
-    emitReplayProgress({ total, processed, applied, errors: 0 });
-
-    // Preserve original creation order to avoid inverting
-    // window lifecycle (e.g., a prior close followed by a create
-    // for the same id). Hoisting all creates caused a regression
-    // where a later replayed close would immediately remove a
-    // newly created window. We intentionally replay in-order and
-    // fail loud on any invalid sequence.
-    for (const cmd of commands) {
-      try {
-        // Skip exact duplicate tool+args pairs within this replay session.
-        // This mitigates double-persistence or accidental duplicate rows without risking reordering.
-        const key = `${cmd.tool}:${stableStringify(cmd.args)}`;
-        if (dedup.has(key)) {
-          processed += 1;
-          if (processed % REPLAY_BATCH_SIZE === 0 || processed === total) {
-            emitReplayProgress({ total, processed, applied, errors: errors.length });
-            await yieldReplay();
-          }
-          continue;
-        }
-        dedup.add(key);
-        const envelope = {
-          op: cmd.tool,
-          params: cmd.args,
-          idempotencyKey: cmd.id,
-        } as Envelope;
-        const result = await applyCommand(envelope, { runId: cmd.id });
-        if (result.success) {
-          applied += 1;
-        } else {
-          errors.push(`${cmd.tool}: ${result.error}`);
-        }
-      } catch (error) {
-        errors.push(`${cmd.tool}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      processed += 1;
-      if (processed % REPLAY_BATCH_SIZE === 0 || processed === total) {
-        emitReplayProgress({ total, processed, applied, errors: errors.length });
-        // Yield to the browser so first paint and interactivity aren't blocked.
-        // WHY: Heavy workspaces can contain hundreds of commands; chunking keeps the UI responsive.
-        // INVARIANT: Replay preserves original ordering even when yielding between batches.
-        await yieldReplay();
-      }
-    }
-
-      emitReplayProgress({ total, processed, applied, errors: errors.length, done: true });
-      return { applied, errors };
-  } catch (error) {
-    console.error('Failed to replay workspace', error);
-    const message = error instanceof Error ? error.message : String(error);
-    const total = commands?.length ?? 0;
-    emitReplayProgress({
-      total,
-      processed,
-      applied,
-      errors: errors.length + 1,
-      done: true,
-    });
-    return { applied, errors: [...errors, message] };
-  }
-  };
+  return await replayWorkspaceV2(applyCommand, stateStore);
+};
 
 // Allows shared teardown from commands and UI controls.
 function destroyWindow(id: string) {
@@ -1621,165 +1325,9 @@ export const applyCommand = async (command: Envelope, ctx: ApplyContext = {}): P
       }
     }
     case "api.call": {
-      try {
-        const params = command.params;
-        const url = params.url;
-        // UICP compute plane submission: uicp://compute.call (body = JobSpec)
-        if (url.startsWith('uicp://compute.call')) {
-          try {
-            const computeCall = getComputeBridge();
-            if (!computeCall) throw new Error('compute bridge not initialized');
-            const body = (params.body ?? {}) as Partial<JobSpec>;
-            const jobId = body.jobId;
-            const task = body.task;
-            if (!jobId || !task) {
-              throw new Error('compute.call payload missing jobId or task');
-            }
-            const spec = {
-              ...body,
-              jobId,
-              task,
-              workspaceId: body.workspaceId ?? 'default',
-            } as JobSpec;
-            await computeCall(spec);
-          } catch (error) {
-            console.error('compute.call failed', error);
-            return toFailure(error);
-          }
-          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
-        }
-        // Tauri FS special-case
-        if (url.startsWith('tauri://fs/writeTextFile')) {
-          // Expect body: { path: string, contents: string, directory?: 'AppData' | 'Desktop' | ... }
-          const body = (params.body ?? {}) as Record<string, unknown>;
-          const path = String(body.path ?? 'uicp.txt');
-          const contents = String(body.contents ?? '');
-          const dirToken =
-            typeof body.directory === 'string' && body.directory.trim().length > 0
-              ? body.directory.trim()
-              : undefined;
-          const dir = toBaseDirectory(dirToken);
-          const safeResult = await safeWrite(path, contents, {
-            base: dir,
-            devDesktopWrite: dir === BaseDirectory.Desktop,
-            runId: ctx.runId ?? command.traceId,
-          });
-          if (!safeResult.ok) {
-            const logPayload = { path, directory: dirToken, errorCode: safeResult.errorCode };
-            if (dir === BaseDirectory.Desktop) {
-              console.warn('desktop export blocked', logPayload);
-            } else {
-              console.error('tauri fs write failed', logPayload);
-            }
-            return { success: false, error: safeResult.message };
-          }
-          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
-        }
-        // UICP intent dispatch: hand off to app chat pipeline
-        if (url.startsWith('uicp://intent')) {
-          const rawBody = (params.body ?? {}) as Record<string, unknown>;
-          if (isStructuredClarifierBody(rawBody)) {
-            return renderStructuredClarifierForm(rawBody, command);
-          }
-          try {
-            const text = typeof rawBody.text === 'string' ? rawBody.text : '';
-            const meta = { windowId: (rawBody.windowId as string | undefined) ?? command.windowId };
-            if (text.trim()) {
-              const evt = new CustomEvent('uicp-intent', { detail: { text, ...meta } });
-              window.dispatchEvent(evt);
-            }
-          } catch (err) {
-            console.error('uicp://intent dispatch failed', err);
-          }
-          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
-        }
-        // Basic fetch for http(s)
-        if (url.startsWith('http://') || url.startsWith('https://')) {
-          const method = (params.method ?? 'GET').toUpperCase();
-          const traceId = command.traceId;
-          const urlObj = new URL(url);
-
-          if (!ALLOWED_HTTP_METHODS.has(method)) {
-            if (traceId) {
-              emitTelemetryEvent('api_call', {
-                traceId,
-                span: 'api',
-                status: 'error',
-                data: { reason: 'method_not_allowed', method, origin: urlObj.origin },
-              });
-            }
-            return { success: false, error: `Method ${method} not allowed` };
-          }
-
-          const init: FetchRequestInit = { method, headers: params.headers };
-          if (params.body !== undefined) {
-            try {
-              init.body = typeof params.body === 'string' ? params.body : JSON.stringify(params.body);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              if (traceId) {
-                emitTelemetryEvent('api_call', {
-                  traceId,
-                  span: 'api',
-                  status: 'error',
-                  data: { reason: 'body_serialization_failed', method, origin: urlObj.origin, error: message },
-                });
-              }
-              return { success: false, error: 'Body serialization failed' };
-            }
-            init.headers = { 'content-type': 'application/json', ...(params.headers ?? {}) };
-          }
-
-          const startedAt = performance.now();
-          try {
-            const response = await fetch(url, init);
-            const duration = Math.round(performance.now() - startedAt);
-            if (traceId) {
-              emitTelemetryEvent('api_call', {
-                traceId,
-                span: 'api',
-                durationMs: duration,
-                status: response.ok ? 'ok' : 'error',
-                data: {
-                  method,
-                  origin: urlObj.origin,
-                  pathname: urlObj.pathname,
-                  status: response.status,
-                },
-              });
-            }
-            if (!response.ok) {
-              const statusText = response.statusText?.trim();
-              const label = statusText ? `${response.status} ${statusText}` : `${response.status}`;
-              return { success: false, error: `HTTP ${label}` };
-            }
-          } catch (error) {
-            const duration = Math.round(performance.now() - startedAt);
-            const message = error instanceof Error ? error.message : String(error);
-            if (traceId) {
-              emitTelemetryEvent('api_call', {
-                traceId,
-                span: 'api',
-                durationMs: duration,
-                status: 'error',
-                data: {
-                  method,
-                  origin: urlObj.origin,
-                  pathname: urlObj.pathname,
-                  error: message,
-                },
-              });
-            }
-            console.error('api.call fetch failed', { traceId, url, error: message });
-            return toFailure(error);
-          }
-          return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
-        }
-        // Unknown scheme: treat as no-op success for now
-        return { success: true, value: params.idempotencyKey ?? command.id ?? createId('api') };
-      } catch (error) {
-        return toFailure(error);
-      }
+      // WHY: Delegate to modular API router
+      const params = command.params;
+      return await routeApiCall(params, command, ctx, renderStructuredClarifierForm);
     }
     case "txn.cancel": {
       try {
