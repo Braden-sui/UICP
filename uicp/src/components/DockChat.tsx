@@ -5,11 +5,11 @@ import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
 import { useAppStore, type AgentPhase } from '../state/app';
 import { PaperclipIcon, SendIcon, StopIcon, ClarifierIcon } from '../icons';
-import type { Batch } from '../lib/uicp/schemas';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 import { strings } from '../strings';
 import { LiquidGlass } from '@liquidglass/react';
 import { cancelActiveChat } from '../lib/llm/ollama';
+import type { Batch } from '../lib/schema';
 
 const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'previewing', 'applying'];
 const STATUS_PHASE_LABEL: Record<AgentPhase, string> = {
