@@ -140,7 +140,8 @@ export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise
     return {
       success: true,
       applied: 0,
-      skippedDupes: skipped,
+      skippedDuplicates: skipped,
+      deniedByPolicy: 0,
       errors: [],
       batchId: duplicate.batchId,
       opsHash: duplicate.opsHash,
@@ -181,7 +182,8 @@ export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise
     return {
       success: true,
       applied: 0,
-      skippedDupes: 0,
+      skippedDuplicates: 0,
+      deniedByPolicy: 0,
       errors: [],
       batchId,
       opsHash,
@@ -206,7 +208,8 @@ export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise
   return {
     success,
     applied,
-    skippedDupes: 0,
+    skippedDuplicates: 0,
+    deniedByPolicy: 0,
     errors,
     batchId,
     opsHash,

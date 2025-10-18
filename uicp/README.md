@@ -21,14 +21,13 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 | `npm run lint`      | ESLint (flat config) over `src/`                  |
 | `npm run typecheck` | `tsc --noEmit`                                    |
 | `npm run test`      | Vitest unit suite                                 |
-| `npm run test:e2e`  | Playwright flow (builds + preview with MOCK mode) |
+| `npm run test:e2e`  | Playwright flow (builds + preview) |
 
 ## Environment
 
 | variable                  | default  | description                                                        |
 | ------------------------- | -------- | ------------------------------------------------------------------ |
 | `VITE_DEV_MODE`           | `true`   | Enables dev-only UX touches                                        |
-| `VITE_MOCK_MODE`          | `true`   | Use deterministic planner + mock API for offline & tests           |
 | `E2E_ORCHESTRATOR`        | unset    | When `1`, opt-in E2E spec for orchestrator (requires real backend) |
 | `VITE_PLANNER_TIMEOUT_MS` | `120000` | Planner stream timeout (ms); early-stop parses sooner              |
 | `VITE_ACTOR_TIMEOUT_MS`   | `180000` | Actor stream timeout (ms); early-stop parses sooner                |
@@ -40,8 +39,7 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 - **Notepad utility**: Built-in desktop shortcut that opens a local-first note window with save/export so users can jot ideas without engaging the agent.
 - **State slices**: `useAppStore` and `useChatStore` persist chat-open/full-control flags, desktop shortcut positions, and orchestrate planner → adapter flows.
 - **UICP Core**: Zod-validated schemas, DOM adapter, per-window FIFO queue with idempotency and `txn.cancel`.
-- **Mock planner**: Deterministic batches for "notepad", "todo list", and "dashboard" prompts so MOCK mode works offline.
-- **Workspace DOM**: Sanitized HTML mutations under `#workspace-root`, mock component rendering, and memory stores for state APIs.
+- **Workspace DOM**: Sanitized HTML mutations under `#workspace-root`, component rendering, and memory stores for state APIs.
 - **Event actions**: `data-state-scope`/`data-state-key` auto-bind inputs; `data-command` enqueues JSON batches on click/submit; template tokens like `{{form.title}}` resolve at event time.
 - **Streaming**: Frontend `streamOllamaCompletion` subscribes to Tauri `ollama-completion` events and supports best-effort cancel via `cancel_chat(requestId)` when the iterator is closed.
 - **Aggregator gating**: The Tauri bridge uses a gating callback—auto-apply when Full Control is ON, otherwise preview; suppresses auto-apply during orchestrator runs.
@@ -49,8 +47,8 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 ## Testing
 
 - Unit: `npm run test` (Vitest) covers dock reveal, DockChat, schemas, queue semantics, aggregator parse, orchestrator parse, STOP cancel, and stream cancellation.
-- E2E: `npm run test:e2e` (Playwright) builds with `VITE_MOCK_MODE=true` and runs the mock notepad flow deterministically.
-- Orchestrator E2E (optional): build with `VITE_MOCK_MODE=false`, provide an Ollama Cloud API key in-app, then run with `E2E_ORCHESTRATOR=1 npm run test:e2e`. This spec is skipped by default.
+- E2E: `npm run test:e2e` (Playwright) builds and runs UI flows against the preview server.
+- Orchestrator E2E (optional): provide an Ollama Cloud API key in-app, then run with `E2E_ORCHESTRATOR=1 npm run test:e2e`. This spec is skipped by default.
 
 ## CI
 

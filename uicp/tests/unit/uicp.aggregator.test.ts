@@ -106,7 +106,7 @@ describe('uicp stream aggregator', () => {
   });
 
   it('throws when downstream batch application reports failure', async () => {
-    const onBatch = vi.fn(async () => ({ success: false, applied: 0, errors: ['apply failed'], skippedDupes: 0, skippedDuplicates: 0 }));
+    const onBatch = vi.fn(async () => ({ success: false, applied: 0, errors: ['apply failed'], skippedDuplicates: 0, deniedByPolicy: 0, batchId: '' }));
     const agg = createOllamaAggregator(onBatch);
     const payload = 'create window title "Boom" width 520 height 320';
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

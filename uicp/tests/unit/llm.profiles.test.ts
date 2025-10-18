@@ -8,7 +8,7 @@ describe('planner profile: deepseek', () => {
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe('system');
     expect(typeof messages[0].content).toBe('string');
-    expect(messages[1]).toEqual({ role: 'user', content: 'Plan a dashboard' });
+    expect(messages[1]).toEqual({ role: 'user', content: 'User intent:\nPlan a dashboard' });
   });
 });
 
@@ -29,7 +29,7 @@ describe('kimi profiles', () => {
     expect(profile.defaultModel).toBe('kimi-k2:1t');
     const messages = profile.formatMessages('Sketch a layout');
     expect(messages[0].role).toBe('system');
-    expect(messages[1]).toEqual({ role: 'user', content: 'Sketch a layout' });
+    expect(messages[1]).toEqual({ role: 'user', content: 'User intent:\nSketch a layout' });
   });
 
   it('actor defaults to kimi model and uses actor prompt', () => {

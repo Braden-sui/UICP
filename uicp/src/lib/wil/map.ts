@@ -21,7 +21,10 @@ function coerceFor(op: OperationNameT, slots: unknown): Record<string, unknown> 
   // Light coercions only; the Zod schema remains the final guard.
   switch (op) {
     case "window.create":
-    case "window.update": {
+    case "window.update":
+    case "window.move":
+    case "window.resize":
+    case "window.focus": {
       // Defense-in-depth: if size is a dimension string like "1200x800", split it.
       // This complements postProcess in parse.ts and catches edge cases.
       let result = { ...s };

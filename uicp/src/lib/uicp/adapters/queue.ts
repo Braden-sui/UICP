@@ -36,13 +36,15 @@ const seenIdempotency = new Map<string, number>();
 // Chains per-window execution promises to ensure FIFO.
 const chains = new Map<string, Promise<ApplyOutcome>>();
 
-const getSkippedCount = (outcome: ApplyOutcome): number => outcome.skippedDupes ?? 0;
+const getSkippedCount = (outcome: ApplyOutcome): number => outcome.skippedDuplicates ?? 0;
 
 const createEmptyOutcome = (): ApplyOutcome => ({
   success: true,
   applied: 0,
-  skippedDupes: 0,
+  skippedDuplicates: 0,
+  deniedByPolicy: 0,
   errors: [],
+  batchId: '',
 });
 
 // Clears the queues; does not modify DOM. Callers should enqueue a txn.cancel batch to reset UI if needed.
@@ -105,7 +107,8 @@ const mergeOutcomes = (outcomes: ApplyOutcome[]): ApplyOutcome =>
       return {
         success: acc.success && cur.success,
         applied: acc.applied + cur.applied,
-        skippedDupes: totalSkipped,
+        skippedDuplicates: totalSkipped,
+        deniedByPolicy: acc.deniedByPolicy + cur.deniedByPolicy,
         errors: acc.errors.concat(cur.errors),
         batchId: acc.batchId ?? cur.batchId,
         opsHash: acc.opsHash ?? cur.opsHash,
@@ -193,8 +196,10 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
       .catch((err) => ({
         success: false,
         applied: 0,
-        skippedDupes: 0,
+        skippedDuplicates: 0,
+        deniedByPolicy: 0,
         errors: [String(err)],
+        batchId: '',
       }));
 
     chains.set(windowId, next);

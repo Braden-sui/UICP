@@ -1,9 +1,16 @@
 import type { ToolSpec, StreamEvent, StreamMeta } from './ollama';
 import { streamOllamaCompletion } from './ollama';
-import { getActorProfile, getPlannerProfile, type ActorProfileKey, type PlannerProfileKey } from './profiles';
+import {
+  getActorProfile,
+  getPlannerProfile,
+  type ActorProfileKey,
+  type PlannerProfileKey,
+  type ReasoningEffort,
+} from './profiles';
 import { buildEnvironmentSnapshot } from '../env';
 import { EMIT_PLAN, EMIT_BATCH, planSchema, batchSchema } from './tools';
 import type { TaskSpec } from './schemas';
+import { useAppStore } from '../../state/app';
 
 export type LLMStream = AsyncIterable<StreamEvent>;
 
@@ -18,6 +25,7 @@ export type PlannerStreamOptions = {
   mode?: 'plan' | 'taskSpec';
   taskSpec?: TaskSpec;
   toolSummary?: string;
+  reasoningEffort?: ReasoningEffort;
 };
 
 export type ActorStreamOptions = {
@@ -28,6 +36,7 @@ export type ActorStreamOptions = {
   extraSystem?: string;
   responseFormat?: unknown;
   meta?: StreamMeta;
+  reasoningEffort?: ReasoningEffort;
 };
 
 export type PlannerClient = {
@@ -87,14 +96,24 @@ export function getPlannerClient(): PlannerClient {
         messages.push({ role: 'system', content: options.extraSystem });
       }
       const model = options?.model ?? profile.defaultModel;
+      const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
+      const plannerEffort =
+        options?.reasoningEffort ??
+        (isGptOss ? useAppStore.getState().plannerReasoningEffort : undefined);
+      const reasoningPayload = plannerEffort ? { effort: plannerEffort } : undefined;
       // Force JSON-mode responses so downstream schema validation never sees prose.
       // Provide OpenAI-compatible response_format as a hint for local daemons.
-      return streamOllamaCompletion(messages, model, tools, {
+      const requestOptions: Parameters<typeof streamOllamaCompletion>[3] = {
         format,
         responseFormat,
         toolChoice,
         meta,
-      });
+      };
+      if (isGptOss && reasoningPayload) {
+        requestOptions.reasoning = reasoningPayload;
+        requestOptions.ollamaOptions = { reasoning: reasoningPayload };
+      }
+      return streamOllamaCompletion(messages, model, tools, requestOptions);
     },
   };
 }
@@ -130,13 +149,22 @@ export function getActorClient(): ActorClient {
         messages.push({ role: 'system', content: options.extraSystem });
       }
       const model = options?.model ?? profile.defaultModel;
+      const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
+      const actorEffort =
+        options?.reasoningEffort ?? (isGptOss ? useAppStore.getState().actorReasoningEffort : undefined);
+      const reasoningPayload = actorEffort ? { effort: actorEffort } : undefined;
       // Request JSON-mode responses only when tool calling is enabled, otherwise allow free-form WIL text.
-      return streamOllamaCompletion(messages, model, tools, {
+      const requestOptions: Parameters<typeof streamOllamaCompletion>[3] = {
         format,
         responseFormat,
         toolChoice,
         meta,
-      });
+      };
+      if (isGptOss && reasoningPayload) {
+        requestOptions.reasoning = reasoningPayload;
+        requestOptions.ollamaOptions = { reasoning: reasoningPayload };
+      }
+      return streamOllamaCompletion(messages, model, tools, requestOptions);
     },
   };
 }

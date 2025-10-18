@@ -8,11 +8,16 @@ import {
   getPlannerProfile,
   getActorProfile,
 } from '../lib/llm/profiles';
-import type { PlannerProfileKey, ActorProfileKey } from '../lib/llm/profiles';
+import type { PlannerProfileKey, ActorProfileKey, ReasoningEffort } from '../lib/llm/profiles';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
+const REASONING_OPTIONS: ReadonlyArray<{ value: ReasoningEffort; label: string; helper: string }> = [
+  { value: 'low', label: 'Low', helper: 'Fastest output, minimal chain-of-thought tokens.' },
+  { value: 'medium', label: 'Medium', helper: 'Balanced reasoning depth and latency.' },
+  { value: 'high', label: 'High', helper: 'Deepest reasoning (default).' },
+];
 
 const AgentSettingsWindow = () => {
   const agentSettingsOpen = useAppSelector((state) => state.agentSettingsOpen);
@@ -21,6 +26,10 @@ const AgentSettingsWindow = () => {
   const actorProfileKey = useAppSelector((state) => state.actorProfileKey);
   const setPlannerProfileKey = useAppSelector((state) => state.setPlannerProfileKey);
   const setActorProfileKey = useAppSelector((state) => state.setActorProfileKey);
+  const plannerReasoningEffort = useAppSelector((state) => state.plannerReasoningEffort);
+  const actorReasoningEffort = useAppSelector((state) => state.actorReasoningEffort);
+  const setPlannerReasoningEffort = useAppSelector((state) => state.setPlannerReasoningEffort);
+  const setActorReasoningEffort = useAppSelector((state) => state.setActorReasoningEffort);
   const plannerTwoPhaseEnabled = useAppSelector((state) => state.plannerTwoPhaseEnabled);
   const setPlannerTwoPhaseEnabled = useAppSelector((state) => state.setPlannerTwoPhaseEnabled);
 
@@ -46,6 +55,18 @@ const AgentSettingsWindow = () => {
       setPlannerTwoPhaseEnabled(event.target.checked);
     },
     [setPlannerTwoPhaseEnabled],
+  );
+  const handlePlannerReasoningChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      setPlannerReasoningEffort(event.target.value as ReasoningEffort);
+    },
+    [setPlannerReasoningEffort],
+  );
+  const handleActorReasoningChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      setActorReasoningEffort(event.target.value as ReasoningEffort);
+    },
+    [setActorReasoningEffort],
   );
 
   const handleClose = useCallback(() => setAgentSettingsOpen(false), [setAgentSettingsOpen]);
@@ -163,6 +184,26 @@ const AgentSettingsWindow = () => {
               Channels: {plannerProfile.capabilities?.channels.join(', ') ?? 'commentary'}
             </span>
           </label>
+          {plannerProfile.key === 'gpt-oss' && (
+            <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/30 p-3 text-sm text-slate-600">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planner reasoning effort</span>
+              <select
+                value={plannerReasoningEffort}
+                onChange={handlePlannerReasoningChange}
+                className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+              >
+                {REASONING_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500">
+                {REASONING_OPTIONS.find((option) => option.value === plannerReasoningEffort)?.helper ??
+                  'Choose how much chain-of-thought detail gpt-oss should use.'}
+              </span>
+            </div>
+          )}
           <label className="flex flex-col gap-2 text-sm text-slate-600">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor profile</span>
             <select
@@ -181,6 +222,26 @@ const AgentSettingsWindow = () => {
               Channels: {actorProfile.capabilities?.channels.join(', ') ?? 'commentary'}
             </span>
           </label>
+          {actorProfile.key === 'gpt-oss' && (
+            <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/30 p-3 text-sm text-slate-600">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor reasoning effort</span>
+              <select
+                value={actorReasoningEffort}
+                onChange={handleActorReasoningChange}
+                className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+              >
+                {REASONING_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500">
+                {REASONING_OPTIONS.find((option) => option.value === actorReasoningEffort)?.helper ??
+                  'Higher effort increases reasoning depth for gpt-oss batches.'}
+              </span>
+            </div>
+          )}
           <label className="flex items-center gap-3 rounded border border-slate-200 bg-slate-50/50 p-3 text-sm">
             <input
               type="checkbox"

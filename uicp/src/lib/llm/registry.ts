@@ -32,6 +32,9 @@ export const LLM_TOOLS: ToolDescriptor[] = [
 
 export const OPERATIONS: Record<z.infer<typeof OperationName>, ToolDescriptor> = {
   'window.create':      { name: 'window.create', kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
+  'window.move':        { name: 'window.move',   kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
+  'window.resize':      { name: 'window.resize', kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
+  'window.focus':       { name: 'window.focus',  kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
   'window.update':      { name: 'window.update', kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
   'window.close':       { name: 'window.close',  kind: 'local-operation', capabilities: ['window'],    risk: 'low' },
   'dom.set':            { name: 'dom.set',       kind: 'local-operation', capabilities: ['dom'],       risk: 'low' },

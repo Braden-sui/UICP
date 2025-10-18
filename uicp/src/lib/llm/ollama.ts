@@ -261,6 +261,8 @@ type StreamRequestOptions = {
   responseFormat?: unknown;
   toolChoice?: unknown;
   meta?: StreamMeta;
+  reasoning?: { effort: 'low' | 'medium' | 'high' };
+  ollamaOptions?: Record<string, unknown>;
 };
 
 export function streamOllamaCompletion(
@@ -562,6 +564,12 @@ export function streamOllamaCompletion(
       }
       if (options?.toolChoice !== undefined) {
         requestPayload.tool_choice = options.toolChoice;
+      }
+      if (options?.reasoning !== undefined) {
+        requestPayload.reasoning = options.reasoning;
+      }
+      if (options?.ollamaOptions !== undefined) {
+        requestPayload.options = options.ollamaOptions;
       }
 
       // Mark this requestId as the active in-flight chat stream

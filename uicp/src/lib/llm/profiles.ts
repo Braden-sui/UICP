@@ -3,6 +3,8 @@ import taskSpecPrompt from '../../prompts/planner_task_spec.txt?raw';
 import actorPrompt from '../../prompts/actor.txt?raw';
 import type { ChatMessage, ToolSpec } from './ollama';
 
+export type ReasoningEffort = 'low' | 'medium' | 'high';
+
 export type PlannerProfileKey = 'glm' | 'deepseek' | 'kimi' | 'wil' | 'qwen' | 'gpt-oss';
 export type ActorProfileKey = 'glm' | 'qwen' | 'kimi' | 'gpt-oss' | 'deepseek';
 

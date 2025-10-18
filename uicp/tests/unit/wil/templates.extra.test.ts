@@ -6,11 +6,11 @@ import { validateBatch } from '../../../src/lib/uicp/schemas';
 describe('WIL extra templates', () => {
   it('parses move window to x,y', () => {
     const p = parseUtterance('move window w1 to 120,80');
-    expect(p && p.op).toBe('window.update');
+    expect(p && p.op).toBe('window.move');
     const op = toOp(p!);
     const batch = validateBatch([op]);
     const env = batch[0];
-    expect(env.op).toBe('window.update');
+    expect(env.op).toBe('window.move');
     expect((env.params as any).id).toBe('w1');
     expect((env.params as any).x).toBe(120);
     expect((env.params as any).y).toBe(80);
@@ -18,7 +18,7 @@ describe('WIL extra templates', () => {
 
   it('parses resize window to WxH', () => {
     const p = parseUtterance('resize window w1 to 800x600');
-    expect(p && p.op).toBe('window.update');
+    expect(p && p.op).toBe('window.resize');
     const op = toOp(p!);
     const batch = validateBatch([op]);
     const env = batch[0];

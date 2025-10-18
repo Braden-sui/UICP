@@ -8,6 +8,7 @@ import {
   setSelectedActorProfileKey,
   type PlannerProfileKey,
   type ActorProfileKey,
+  type ReasoningEffort,
 } from '../lib/llm/profiles';
 import { createId } from '../lib/utils';
 import { readBooleanEnv } from '../lib/env/values';
@@ -197,6 +198,8 @@ export type AppState = {
   agentTraceOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
+  plannerReasoningEffort: ReasoningEffort;
+  actorReasoningEffort: ReasoningEffort;
   plannerTwoPhaseEnabled: boolean;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
@@ -230,6 +233,8 @@ export type AppState = {
   setAgentTraceOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
+  setPlannerReasoningEffort: (effort: ReasoningEffort) => void;
+  setActorReasoningEffort: (effort: ReasoningEffort) => void;
   setPlannerTwoPhaseEnabled: (value: boolean) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
@@ -282,6 +287,8 @@ export const useAppStore = create<AppState>()(
       agentTraceOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
+      plannerReasoningEffort: 'high',
+      actorReasoningEffort: 'high',
       plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', !readBooleanEnv('VITE_TEST_MODE', false)),
       desktopShortcuts: {},
       workspaceWindows: {},
@@ -345,6 +352,8 @@ export const useAppStore = create<AppState>()(
         setSelectedActorProfileKey(key);
         set({ actorProfileKey: key });
       },
+      setPlannerReasoningEffort: (effort) => set({ plannerReasoningEffort: effort }),
+      setActorReasoningEffort: (effort) => set({ actorReasoningEffort: effort }),
       setPlannerTwoPhaseEnabled: (value) => set({ plannerTwoPhaseEnabled: value }),
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
@@ -638,6 +647,8 @@ export const useAppStore = create<AppState>()(
         notepadOpen: state.notepadOpen,
         plannerProfileKey: state.plannerProfileKey,
         actorProfileKey: state.actorProfileKey,
+        plannerReasoningEffort: state.plannerReasoningEffort,
+        actorReasoningEffort: state.actorReasoningEffort,
         plannerTwoPhaseEnabled: state.plannerTwoPhaseEnabled,
         agentSettingsOpen: state.agentSettingsOpen,
         computeDemoOpen: state.computeDemoOpen,

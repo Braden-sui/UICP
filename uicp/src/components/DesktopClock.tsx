@@ -20,7 +20,7 @@ const DesktopClock = () => {
 
   return (
     <div className="pointer-events-none absolute right-10 top-10 z-10 sm:right-14 sm:top-14 md:right-16 md:top-16">
-      <div className="rounded-full bg-white/40 p-6 text-right text-slate-800 shadow-inner shadow-white/60 backdrop-blur-md">
+      <div className="rounded-full bg-transparent p-6 text-right text-slate-800">
         <div className="text-4xl font-semibold tracking-tight drop-shadow-sm">
           {display.time}
         </div>

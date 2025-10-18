@@ -206,6 +206,22 @@ function postProcess(op: OperationNameT, raw: Record<string, string>): Record<st
       if (get("id")) slots.id = maybeUnquote(get("id"));
       break;
     }
+    case "window.move": {
+      if (get("id")) slots.id = maybeUnquote(get("id"));
+      if (get("x")) slots.x = asNumber(get("x"));
+      if (get("y")) slots.y = asNumber(get("y"));
+      break;
+    }
+    case "window.resize": {
+      if (get("id")) slots.id = maybeUnquote(get("id"));
+      if (get("width")) slots.width = asNumber(get("width"));
+      if (get("height")) slots.height = asNumber(get("height"));
+      break;
+    }
+    case "window.focus": {
+      if (get("id")) slots.id = maybeUnquote(get("id"));
+      break;
+    }
 
     case "dom.set":
     case "dom.replace":

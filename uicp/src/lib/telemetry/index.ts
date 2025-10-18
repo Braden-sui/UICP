@@ -15,7 +15,7 @@ type EventDefaults = Partial<{
   status: TraceEventStatus;
 }>;
 
-const EVENT_DEFAULTS: Record<TelemetryEventName, EventDefaults> = {
+const EVENT_DEFAULTS: Partial<Record<TelemetryEventName, EventDefaults>> = {
   planner_start: { span: 'planner', kind: 'span_start' },
   planner_finish: { span: 'planner', kind: 'span_finish', status: 'ok' },
   actor_start: { span: 'actor', kind: 'span_start' },
@@ -32,6 +32,20 @@ const EVENT_DEFAULTS: Record<TelemetryEventName, EventDefaults> = {
   permissions_deny: { span: 'permissions', kind: 'instant', status: 'error' },
   safe_write: { span: 'fs', kind: 'instant' },
   api_call: { span: 'api', kind: 'instant' },
+  'adapter.apply.start': { span: 'batch', kind: 'span_start' },
+  'adapter.apply.end': { span: 'batch', kind: 'span_finish' },
+  'adapter.apply.abort': { span: 'batch', kind: 'instant', status: 'error' },
+  'adapter.window.create': { span: 'batch', kind: 'instant' },
+  'adapter.window.update': { span: 'batch', kind: 'instant' },
+  'adapter.window.close': { span: 'batch', kind: 'instant' },
+  'adapter.dom.apply': { span: 'batch', kind: 'instant' },
+  'adapter.component.render': { span: 'batch', kind: 'instant' },
+  'adapter.component.unknown': { span: 'batch', kind: 'instant' },
+  'adapter.permission.check': { span: 'permissions', kind: 'instant' },
+  'adapter.permission.denied': { span: 'permissions', kind: 'instant', status: 'error' },
+  'adapter.validation.error': { span: 'batch', kind: 'instant', status: 'error' },
+  'adapter.dedupe.skip': { span: 'batch', kind: 'instant', status: 'skipped' },
+  'adapter.ui.command': { span: 'batch', kind: 'instant' },
 };
 
 const sanitizeData = (input: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {

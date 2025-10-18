@@ -2,10 +2,10 @@
 
 Update log - 2025-10-05
 - Core DX Client front end added (React 18 + Tailwind + Zustand + Zod) with routes for Home and Workspace.
-- Tauri event transport (Ollama SSE bridged via Tauri events) with optional Mock Mode and latency indicator.
+- Tauri event transport (Ollama SSE bridged via Tauri events) with latency indicator.
 - Inspector panel (Timeline, State, Events, Network) and Command Builder shipped.
 - Desktop canvas with draggable/resizable windows and sanitized DOM roots.
-- Hiding Connection Bar (Dev Mode and Mock Mode toggles).
+- Hiding Connection Bar (Dev Mode toggle).
 - Windows bundle icon configured; `tauri.conf.json` points to `icons/dev_logo_icon_267632.ico`.
 - Rust backend updated for Tauri 2 Emitter API and safe JSON serialization; autosave indicator stabilized.
 - Ollama streaming wired: async iterator `streamOllamaCompletion(messages, model, tools, options?)` added; requestId + `cancel_chat` support; parser + cancel unit tests added.
@@ -171,7 +171,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - [x] STOP cancels within 1s, emits message, locks auto-apply until re-consented.
 - [x] Hotkeys: `/` focus, Ctrl/Cmd+Enter send, Esc collapses when not streaming.
 
-## 6) Mock Mode -- deprecated --- keep stable no enhancements
+<!-- Removed: Mock Mode section (mode eliminated) -->
 ## 7) Observability & Logging
 - [x] Logs panel surfaces planner `risks` as “Planner hints [traceId]: ...” system messages (including any `gui:` lines) for traceable reasoning.
 - [x] Compute log previews: bridge emits `compute_log` UI events and `LogsPanel` renders line-buffered previews for stdout/stderr/logger with truncation badges.
@@ -191,7 +191,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
   - [x] Queue `txn.cancel` short-circuit and apply path.
 - E2E (Playwright):
   - [x] DockChat proximity reveal & collapse timing.
-  - [x] "Make a notepad" in MOCK mode, Full Control ON -> window within 500 ms.
+<!-- Removed: MOCK mode acceptance; replaced by real orchestrator paths -->
   - [ ] Full Control OFF -> preview then Apply updates UI.
   - [ ] Network drop/resume -> reconnection message, no crash.
 - CI (`.github/workflows/ci.yml`): lint, typecheck, unit, e2e, build; fail if Cloud host uses `/v1`.
@@ -263,7 +263,7 @@ Privacy-first, local-first, async-first, user-owned data. Cloud is opt-in purely
 - Cancel/STOP: Frontend stream assigns a `requestId` and calls `cancel_chat(requestId)` when the async iterator is closed; STOP still enqueues `txn.cancel`, clears queues, and locks Full Control.
 - Backend: `chat_completion` now accepts an optional `request_id` and spawns the streaming HTTP in a background task; `cancel_chat` aborts the task.
 - Tests: Added unit tests for orchestrator parse, aggregator batch extraction, queue idempotency/FIFO/txn.cancel, STOP cancel flow, and iterator cancellation.
-- E2E: Playwright builds with `VITE_MOCK_MODE=true` for deterministic mock flow; an optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a real backend and API key.
+- E2E: Playwright builds and runs against the preview server; an optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a real backend and API key.
 
 ## Update 2025-10-06 - Command Persistence & Replay
 

@@ -323,6 +323,8 @@ struct ChatCompletionRequest {
     response_format: Option<serde_json::Value>,
     #[serde(rename = "tool_choice")]
     tool_choice: Option<serde_json::Value>,
+    reasoning: Option<serde_json::Value>,
+    options: Option<serde_json::Value>,
 }
 
 #[tauri::command]
@@ -808,6 +810,8 @@ async fn chat_completion(
         format,
         response_format,
         tool_choice,
+        reasoning,
+        options,
     } = request;
 
     if messages.is_empty() {
@@ -843,6 +847,20 @@ async fn chat_completion(
     }
     if let Some(tool_choice_val) = tool_choice {
         body["tool_choice"] = tool_choice_val;
+    }
+    if let Some(reasoning_val) = reasoning.clone() {
+        body["reasoning"] = reasoning_val.clone();
+        if use_cloud {
+            if let Some(options_val) = options.clone() {
+                body["options"] = options_val;
+            } else {
+                body["options"] = serde_json::json!({ "reasoning": reasoning_val });
+            }
+        }
+    } else if use_cloud {
+        if let Some(options_val) = options {
+            body["options"] = options_val;
+        }
     }
 
     let base = get_ollama_base_url(&state).await?;

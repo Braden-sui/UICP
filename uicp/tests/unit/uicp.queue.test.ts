@@ -124,11 +124,11 @@ describe('uicp queue', () => {
     // First should apply, second should skip
     expect(outcome1.success).toBe(true);
     expect(outcome1.applied).toBe(1);
-    expect(outcome1.skippedDupes).toBe(0);
+    expect(outcome1.skippedDuplicates).toBe(0);
     
     expect(outcome2.success).toBe(true);
     expect(outcome2.applied).toBe(0);
-    expect(outcome2.skippedDupes).toBe(1);
+    expect(outcome2.skippedDuplicates).toBe(1);
     
     // applyCommand should only be called once (duplicate batch skipped)
     expect(applyCommand).toHaveBeenCalledTimes(1);

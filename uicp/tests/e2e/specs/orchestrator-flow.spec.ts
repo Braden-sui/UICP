@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-// This spec exercises the non-mock orchestrator path.
-// It requires a production build with VITE_MOCK_MODE=false and a valid Ollama Cloud API key configured in the app.
+// This spec exercises the orchestrator path with a real backend.
+// It requires a valid Ollama Cloud API key configured in the app.
 // Enable via: E2E_ORCHESTRATOR=1
 const enabled = !!process.env.E2E_ORCHESTRATOR;
 

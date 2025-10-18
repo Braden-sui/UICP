@@ -14,7 +14,21 @@ export type TelemetryEventName =
   | 'permissions_allow'
   | 'permissions_deny'
   | 'api_call'
-  | 'safe_write';
+  | 'safe_write'
+  | 'adapter.apply.start'
+  | 'adapter.apply.end'
+  | 'adapter.apply.abort'
+  | 'adapter.window.create'
+  | 'adapter.window.update'
+  | 'adapter.window.close'
+  | 'adapter.dom.apply'
+  | 'adapter.component.render'
+  | 'adapter.component.unknown'
+  | 'adapter.permission.check'
+  | 'adapter.permission.denied'
+  | 'adapter.validation.error'
+  | 'adapter.dedupe.skip'
+  | 'adapter.ui.command';
 
 export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs';
 

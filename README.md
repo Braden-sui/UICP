@@ -7,9 +7,9 @@
 - Security hardening is incomplete; do not use with sensitive data or in regulated environments.
 - Data may be lost during upgrades; backups and migrations are not guaranteed.
 - Windows-focused MVP; Linux/macOS support is incomplete.
-- Mock mode defaults on; cloud calls and compute features are experimental.
+ 
 
-Local‑first Tauri desktop that exposes a clean workspace canvas and a DockChat surface. DockChat is the only user control; the agent drives the UI via validated UICP Core commands. Streaming uses Tauri events; MOCK mode ships with a deterministic planner so the flow works without any backend.
+Local‑first Tauri desktop that exposes a clean workspace canvas and a DockChat surface. DockChat is the only user control; the agent drives the UI via validated UICP Core commands. Streaming uses Tauri events.
 
 ## Vision
 
@@ -62,7 +62,7 @@ The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.t
 - `npm run format` – Prettier write
 - `npm run typecheck` – strict TS compile
 - `npm run test` – Vitest unit suite (`tests/unit`)
-- `npm run test:e2e` - Playwright smoke (`tests/e2e/specs`), builds with MOCK mode then runs preview
+- `npm run test:e2e` - Playwright smoke (`tests/e2e/specs`), builds then runs preview
 
 ### Compute modules and runtime
 
@@ -87,7 +87,6 @@ The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.t
 | variable | default | notes |
 | --- | --- | --- |
 | `VITE_DEV_MODE` | `true` | enables developer UX touches |
-| `VITE_MOCK_MODE` | `true` | when true the deterministic planner + mock api are used |
 | `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend) |
 | `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window. |
 | `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window. |
@@ -155,7 +154,7 @@ These tools provide visibility into the system's operation and help with debuggi
 - `src/state/app.ts` – global flags (chat open, streaming, full control) plus persisted desktop shortcuts and workspace window metadata.
 - `src/state/chat.ts` – planner pipeline, plan queueing, STOP lock.
 - `src/lib/uicp` - Zod schemas, DOM adapter, per-window FIFO queue with idempotency and txn.cancel, and documentation.
-- `src/lib/mock.ts` – deterministic planner outputs for common prompts.
+ 
 
 ### Compute Plane
 
@@ -172,7 +171,7 @@ These tools provide visibility into the system's operation and help with debuggi
 ## Testing
 
 1. `npm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation.
-2. `npm run test:e2e` drives the notepad flow end-to-end in Playwright. The config builds with `VITE_MOCK_MODE=true` and starts preview automatically. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
+2. `npm run test:e2e` drives flows end-to-end in Playwright. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
 
 Rust (compute host)
 
@@ -181,7 +180,7 @@ Rust (compute host)
 
 CI
 
-- UI: `.github/workflows/ci.yml` runs lint, typecheck, unit, e2e (mock), build, SBOM generation, Trivy, and Gitleaks.
+- UI: `.github/workflows/ci.yml` runs lint, typecheck, unit, e2e, build, SBOM generation, Trivy, and Gitleaks.
 - Compute: `.github/workflows/compute-ci.yml` builds the Rust host, checks/pins Wasmtime, validates WIT packages, runs Rust tests, regenerates TS bindings, and executes a Playwright compute harness.
 - Link checks: Markdown links are validated using Lychee with settings in `.lychee.toml`.
 

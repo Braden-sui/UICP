@@ -58,8 +58,31 @@ export const LEXICON: { [K in OperationNameT]: LexEntry<K> } = {
       "update window {id} width {width} height {height}",
       "update window {id} at {x},{y}",
       "update window {id} zindex {zIndex}",
+    ],
+    skip: ["please", "the"],
+  },
+  "window.move": {
+    verbs: ["move", "reposition"],
+    templates: [
       "move window {id} to {x},{y}",
+      "move window {id} to position {x},{y}",
+    ],
+    skip: ["please", "the"],
+  },
+  "window.resize": {
+    verbs: ["resize"],
+    templates: [
       "resize window {id} to {width}x{height}",
+      "resize window {id} width {width} height {height}",
+    ],
+    skip: ["please", "the"],
+  },
+  "window.focus": {
+    verbs: ["focus", "activate"],
+    templates: [
+      "focus window {id}",
+      "activate window {id}",
+      "bring window {id} to front",
     ],
     skip: ["please", "the"],
   },

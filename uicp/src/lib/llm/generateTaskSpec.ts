@@ -11,8 +11,18 @@ const DEFAULT_TASKSPEC_TIMEOUT_MS = readNumberEnv('VITE_TASK_SPEC_TIMEOUT_MS', 6
 const toError = (input: unknown): Error => (input instanceof Error ? input : new Error(String(input)));
 
 /**
- * Phase 1: Generate structured TaskSpec from raw user intent.
- * Returns a TaskSpec that captures goals, constraints, actions, and acceptance criteria.
+ * Phase 1: Generate comprehensive TaskSpec from raw user intent.
+ *
+ * The TaskSpec Architect performs deep technical analysis including:
+ * - Requirements analysis (goals, constraints, artifacts, acceptance criteria)
+ * - Edge case and error scenario identification
+ * - Data model design (state keys, data structures, data flow)
+ * - UI/UX specification (window, layout, interactions, accessibility)
+ * - Dependency and blocker analysis
+ * - Implementation complexity assessment and phasing
+ * - Assumption and ambiguity identification
+ *
+ * Returns a TaskSpec that serves as the SINGLE SOURCE OF TRUTH for planning.
  * Falls back to a minimal stub on failure.
  */
 export async function generateTaskSpec(
@@ -69,6 +79,13 @@ export async function generateTaskSpec(
             channel: 'json',
             goalCount: parsed.goals?.length ?? 0,
             actionCount: parsed.actions?.length ?? 0,
+            edgeCaseCount: parsed.edge_cases?.length ?? 0,
+            errorScenarioCount: parsed.error_scenarios?.length ?? 0,
+            stateKeyCount: parsed.data_model?.state_keys?.length ?? 0,
+            interactionCount: parsed.ui_specification?.interactions?.length ?? 0,
+            blockerCount: parsed.dependencies?.blockers?.length ?? 0,
+            openQuestionCount: parsed.open_questions?.length ?? 0,
+            hasPhases: (parsed.implementation_phases?.length ?? 0) > 0,
           },
         });
       }

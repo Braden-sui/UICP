@@ -38,7 +38,6 @@ USE_DIRECT_CLOUD=1
 OLLAMA_API_KEY=your_cloud_key_here
 PLANNER_MODEL=deepseek-v3.1:671b
 ACTOR_MODEL=qwen3-coder:480b
-VITE_MOCK_MODE=true
 ```
 
 Notes
@@ -123,6 +122,5 @@ CI notes
 
 ## Quick verification
 
-- With `VITE_MOCK_MODE=true`, open the desktop at `http://127.0.0.1:1420` and use DockChat to trigger a simple notepad or calculator plan.
-- With a valid `OLLAMA_API_KEY`, disable MOCK mode to exercise real planner/actor streaming via Cloud.
+- With a valid `OLLAMA_API_KEY`, open the desktop at `http://127.0.0.1:1420` and use DockChat to trigger a simple notepad or calculator plan.
 - Confirm persistence by closing/reopening: previously created windows should be restored via command replay.

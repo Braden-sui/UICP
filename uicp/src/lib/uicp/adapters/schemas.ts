@@ -44,8 +44,9 @@ export type ApplyOptions = {
 export type ApplyOutcome = {
   success: boolean;
   applied: number;
-  skippedDupes: number;
+  skippedDuplicates: number; // Renamed from skippedDupes for consistency
+  deniedByPolicy: number;
   errors: string[];
-  batchId?: string;
+  batchId: string;
   opsHash?: string;
 };

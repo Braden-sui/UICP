@@ -6,9 +6,9 @@ Last updated: 2025-10-17
 
 ## Summary
 
-- Desktop app (React + Tauri) runs with MOCK mode by default; when opened in a plain browser the UI now degrades gracefully instead of crashing, while the Tauri bridge continues to drive native flows.
+- Desktop app (React + Tauri) runs as a desktop-first experience; when opened in a plain browser the UI degrades gracefully instead of crashing, while the Tauri bridge continues to drive native flows.
 - Compute plane (Wasmtime, feature-gated) is implemented with registry, cache, and policy; compute harness E2E smoke now runs in CI to guard guest/host drift.
-- CI runs lint, typecheck, unit, e2e (mock), build, security scans, and link checking.
+- CI runs lint, typecheck, unit, e2e, build, security scans, and link checking.
 
 ## Now (Current Focus)
 
@@ -61,7 +61,7 @@ Last updated: 2025-10-17
 
 ## Test/CI Health
 
-- UI: lint, typecheck, unit, e2e (mock), build all pass locally when Node 20/npm 10 are used.
+- UI: lint, typecheck, unit, e2e, build all pass locally when Node 20/npm 10 are used.
 - Compute: Rust tests plus compute harness smoke run in CI; local `cargo test --features wasm_compute` currently blocked by Wasmtime API drift (see Open Bugs).
 - Link checks: configured via `.lychee.toml`.
 

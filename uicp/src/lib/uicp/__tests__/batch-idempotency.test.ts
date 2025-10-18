@@ -63,8 +63,7 @@ describe('Batch Idempotency', () => {
 
     expect(outcome.success).toBe(true);
     expect(outcome.applied).toBe(1);
-    expect(outcome.skippedDupes).toBe(0);
-    // only skippedDupes remains; skippedDuplicates removed
+    expect(outcome.skippedDuplicates).toBe(0);
     expect(outcome.batchId).toBeTruthy();
     expect(outcome.errors).toHaveLength(0);
   });
@@ -77,14 +76,14 @@ describe('Batch Idempotency', () => {
     // First application
     const outcome1 = await applyBatch(batch);
     expect(outcome1.applied).toBe(1);
-    expect(outcome1.skippedDupes).toBe(0);
+    expect(outcome1.skippedDuplicates).toBe(0);
 
     // Second application of identical batch (should be skipped)
     const outcome2 = await applyBatch(batch);
     expect(outcome2.success).toBe(true);
     expect(outcome2.applied).toBe(0);
-    expect(outcome2.skippedDupes).toBe(1);
-    // only skippedDupes remains; skippedDuplicates removed
+    expect(outcome2.skippedDuplicates).toBe(1);
+    // only skippedDuplicates remains; skippedDuplicates removed
     expect(outcome2.batchId).toBeTruthy();
     expect(outcome2.batchId).toBe(outcome1.batchId); // Original batch ID preserved for tracking
   });
@@ -103,7 +102,7 @@ describe('Batch Idempotency', () => {
 
     const outcome2 = await applyBatch(batch2);
     expect(outcome2.applied).toBe(1);
-    expect(outcome2.skippedDupes).toBe(0);
+    expect(outcome2.skippedDuplicates).toBe(0);
   });
 
   it('handles multi-operation batch idempotency', async () => {
@@ -115,12 +114,12 @@ describe('Batch Idempotency', () => {
 
     const outcome1 = await applyBatch(batch);
     expect(outcome1.applied).toBe(3);
-    expect(outcome1.skippedDupes).toBe(0);
+    expect(outcome1.skippedDuplicates).toBe(0);
 
     const outcome2 = await applyBatch(batch);
     expect(outcome2.applied).toBe(0);
-    expect(outcome2.skippedDupes).toBe(3);
-    // only skippedDupes remains; skippedDuplicates removed
+    expect(outcome2.skippedDuplicates).toBe(3);
+    // only skippedDuplicates remains; skippedDuplicates removed
   });
 
   it('includes batchId in all outcomes', async () => {
@@ -148,8 +147,8 @@ describe('Batch Idempotency', () => {
 
     // Apply duplicate (should skip)
     const outcome2 = await applyBatch(batch);
-    expect(outcome2.skippedDupes).toBe(1);
-    // only skippedDupes remains; skippedDuplicates removed
+    expect(outcome2.skippedDuplicates).toBe(1);
+    // only skippedDuplicates remains; skippedDuplicates removed
 
     // Reset workspace
     resetWorkspace();
@@ -163,7 +162,7 @@ describe('Batch Idempotency', () => {
     // Apply batch again (should succeed after reset)
     const outcome3 = await applyBatch(batch);
     expect(outcome3.applied).toBe(1);
-    expect(outcome3.skippedDupes).toBe(0);
+    expect(outcome3.skippedDuplicates).toBe(0);
   });
 
   it('handles empty batch gracefully', async () => {
@@ -172,7 +171,7 @@ describe('Batch Idempotency', () => {
     const outcome = await applyBatch(batch);
     expect(outcome.success).toBe(true);
     expect(outcome.applied).toBe(0);
-    expect(outcome.skippedDupes).toBe(0);
+    expect(outcome.skippedDuplicates).toBe(0);
     expect(outcome.batchId).toBeTruthy();
   });
 
@@ -202,8 +201,8 @@ describe('Batch Idempotency', () => {
     expect(outcome1.applied).toBe(1);
 
     const outcome2 = await applyBatch(batch);
-    expect(outcome2.skippedDupes).toBe(1);
-    // only skippedDupes remains; skippedDuplicates removed
+    expect(outcome2.skippedDuplicates).toBe(1);
+    // only skippedDuplicates remains; skippedDuplicates removed
   });
 
   it('skips duplicate batches when batchId is reused even with different payloads', async () => {
@@ -220,7 +219,7 @@ describe('Batch Idempotency', () => {
 
     const skipped = await applyBatch(second, { batchId: 'external-batch', runId: 'test-run-2' });
     expect(skipped.applied).toBe(0);
-    expect(skipped.skippedDupes).toBe(second.length);
+    expect(skipped.skippedDuplicates).toBe(second.length);
     expect(skipped.batchId).toBe('external-batch');
     expect(typeof skipped.opsHash).toBe('string');
   });

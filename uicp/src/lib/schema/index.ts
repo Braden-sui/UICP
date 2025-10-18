@@ -29,6 +29,9 @@ export function asStatePath(value: string): StatePath {
 // Centralised schema map so planner results and streamed events (via Tauri) are validated consistently before touching the DOM.
 export const OperationName = z.enum([
   'window.create',
+  'window.move',
+  'window.resize',
+  'window.focus',
   'window.update',
   'window.close',
   'dom.set',
@@ -64,6 +67,24 @@ const WindowCreateParams = z.object({
   size: z.enum(['xs', 'sm', 'md', 'lg', 'xl']).optional(),
 }).strict();
 
+const WindowMoveParams = z
+  .object({
+    id: z.string(),
+    x: z.number(),
+    y: z.number(),
+  })
+  .strict();
+
+const WindowResizeParams = z
+  .object({
+    id: z.string(),
+    width: z.number().min(120),
+    height: z.number().min(120),
+  })
+  .strict();
+
+const WindowFocusParams = z.object({ id: z.string() }).strict();
+
 const WindowUpdateParams = z.object({
   id: z.string(),
   title: z.string().optional(),
@@ -82,6 +103,7 @@ const DomSetParams = z
     target: z.string().min(1),
     html: z.string().max(MAX_HTML_PER_OP, 'html too large (max 64KB)'),
     sanitize: z.boolean().optional(),
+    mode: z.enum(['set', 'replace', 'append']).optional(),
   })
   .strict();
 
@@ -91,6 +113,7 @@ const DomReplaceParams = z
     target: z.string().min(1),
     html: z.string().max(MAX_HTML_PER_OP, 'html too large (max 64KB)'),
     sanitize: z.boolean().optional(),
+    mode: z.enum(['set', 'replace', 'append']).optional(),
   })
   .strict();
 
@@ -142,6 +165,9 @@ const TxnCancelParams = z.object({ id: z.string().optional() }).strict();
 
 export const operationSchemas = {
   'window.create': WindowCreateParams,
+  'window.move': WindowMoveParams,
+  'window.resize': WindowResizeParams,
+  'window.focus': WindowFocusParams,
   'window.update': WindowUpdateParams,
   'window.close': WindowCloseParams,
   'dom.set': DomSetParams,
@@ -170,6 +196,9 @@ const EnvelopeBase = z.object({
 
 export type OperationParamMap = {
   'window.create': z.infer<typeof WindowCreateParams>;
+  'window.move': z.infer<typeof WindowMoveParams>;
+  'window.resize': z.infer<typeof WindowResizeParams>;
+  'window.focus': z.infer<typeof WindowFocusParams>;
   'window.update': z.infer<typeof WindowUpdateParams>;
   'window.close': z.infer<typeof WindowCloseParams>;
   'dom.set': z.infer<typeof DomSetParams>;

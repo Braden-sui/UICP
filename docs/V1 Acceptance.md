@@ -35,7 +35,7 @@ Persistence
 
 Performance
 - End-to-end (cloud) intent → functional window ≤ 35s under normal conditions.
-- MOCK mode notepad flow renders ≤ 1s.
+ 
 - Early-stop parsing returns immediately when a complete JSON payload is detected.
 
 Observability & UX
@@ -51,7 +51,7 @@ Security & Config
 
 Tests & CI
 - Unit: schemas, sanitizer, orchestrator/aggregator, STOP/cancel, queue semantics.
-- E2E: MOCK notepad flow; preview→Apply path; STOP smoke.
+- E2E: preview→Apply path; STOP smoke.
 - E2E (future): Persistence flow (build app → close → reopen → verify state restored).
 - CI: lint, typecheck, unit, e2e, build all green.
 

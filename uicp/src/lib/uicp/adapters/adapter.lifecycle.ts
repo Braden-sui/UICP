@@ -564,6 +564,14 @@ const renderStructuredClarifierForm = (body: StructuredClarifierBody, command: E
 type UIEventCallback = (event: Event, payload: Record<string, unknown>) => void;
 let uiEventCallback: UIEventCallback | null = null;
 
+// Generic opaque command handler registry
+type CommandHandler = (command: string, ctx: Record<string, unknown>) => Promise<void> | void;
+const commandHandlers = new Map<string, CommandHandler>();
+
+export const registerCommandHandler = (prefix: string, handler: CommandHandler): void => {
+  commandHandlers.set(prefix, handler);
+};
+
 /**
  * Guard to defer batch application until workspace root is registered.
  * Returns a Promise if the batch is queued, otherwise returns null to signal immediate processing.
@@ -604,7 +612,6 @@ export const registerWorkspaceRoot = (element: HTMLElement) => {
   }
 };
 
-// Register callback for UI events
 export const registerUIEventCallback = (callback: UIEventCallback) => {
   uiEventCallback = callback;
 };
@@ -633,6 +640,95 @@ const evalTemplates = (input: unknown, ctx: Record<string, unknown>): unknown =>
     return out;
   }
   return input;
+};
+
+// Central dispatcher for data-command payloads.
+// Accepts a JSON string representing a Batch or a pre-parsed value.
+export const handleCommand = async (
+  command: string | unknown,
+  ctx: Record<string, unknown>,
+): Promise<void> => {
+  try {
+    emitTelemetryEvent('adapter.ui.command', {
+      traceId: createId('trace'),
+      data: {
+        windowId: (ctx as { windowId?: string }).windowId,
+        commandType: typeof command,
+        size: typeof command === 'string' ? command.length : undefined,
+        preview:
+          typeof command === 'string'
+            ? command.length > 200
+              ? `${command.slice(0, 200)}…`
+              : command
+            : undefined,
+      },
+    });
+  } catch {
+    // Telemetry is best-effort; never block command execution
+  }
+  if (typeof command === 'string') {
+    if (command.length > MAX_DATA_COMMAND_LEN) {
+      throw new Error(`E-UICP-300: data-command exceeds size cap: ${command.length} > ${MAX_DATA_COMMAND_LEN}`);
+    }
+    const trimmed = command.trim();
+    const first = trimmed[0];
+    const looksJson = first === '[' || first === '{';
+    if (looksJson) {
+      const tokenMatches = trimmed.match(/\{\{\s*[^}]+\s*\}\}/g);
+      const tokenCount = tokenMatches ? tokenMatches.length : 0;
+      if (tokenCount > MAX_TEMPLATE_TOKENS) {
+        throw new Error(`E-UICP-300: data-command contains too many template tokens: ${tokenCount} > ${MAX_TEMPLATE_TOKENS}`);
+      }
+      const raw = JSON.parse(trimmed) as unknown;
+      const evaluated = evalTemplates(raw, ctx);
+      const batchCandidate = Array.isArray(evaluated)
+        ? (evaluated as Batch)
+        : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
+      if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
+        throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
+      }
+      void enqueueBatch(batchCandidate);
+      return;
+    }
+
+    // Opaque command path: namespace.action[:payload]
+    const colonIdx = trimmed.indexOf(':');
+    const spaceIdx = trimmed.indexOf(' ');
+    const splitIdx = colonIdx >= 0 ? colonIdx : spaceIdx >= 0 ? spaceIdx : trimmed.length;
+    const prefix = trimmed.slice(0, splitIdx);
+    const handler = commandHandlers.get(prefix);
+    if (handler) {
+      await handler(trimmed, ctx);
+      return;
+    }
+    // Default: emit as intent back to orchestrator
+    const windowId = (ctx as { windowId?: string }).windowId;
+    const defaultBatch: Batch = [
+      {
+        op: 'api.call',
+        params: {
+          method: 'POST',
+          url: 'uicp://intent',
+          body: {
+            text: `ui command: ${trimmed}`,
+            windowId,
+            command: trimmed,
+          },
+        },
+      },
+    ];
+    void enqueueBatch(defaultBatch);
+    return;
+  }
+
+  const evaluated = evalTemplates(command, ctx);
+  const batchCandidate = Array.isArray(evaluated)
+    ? (evaluated as Batch)
+    : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
+  if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
+    throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
+  }
+  void enqueueBatch(batchCandidate);
 };
 
 // Handle delegated events and emit ui_event
@@ -710,37 +806,14 @@ const handleDelegatedEvent = (event: Event) => {
       cmdHost = cmdHost.parentElement;
     }
     if (commandJson) {
-      // WHY: Hard fail on malformed or empty data-command payloads so UI inconsistencies never go unnoticed.
-      // INVARIANT: Every data-command must parse into a non-empty Batch; template evaluation cannot silently drop commands.
-      if (commandJson.length > MAX_DATA_COMMAND_LEN) {
-        throw new Error(`E-UICP-300: data-command exceeds size cap: ${commandJson.length} > ${MAX_DATA_COMMAND_LEN}`);
-      }
-      try {
-        const tokenMatches = commandJson.match(/\{\{\s*[^}]+\s*\}\}/g);
-        const tokenCount = tokenMatches ? tokenMatches.length : 0;
-        if (tokenCount > MAX_TEMPLATE_TOKENS) {
-          throw new Error(`E-UICP-300: data-command contains too many template tokens: ${tokenCount} > ${MAX_TEMPLATE_TOKENS}`);
-        }
-        const raw = JSON.parse(commandJson) as unknown;
-        const evaluated = evalTemplates(raw, {
-          ...payload,
-          value: (target as HTMLInputElement | HTMLTextAreaElement).value,
-          form: (payload.formData as Record<string, unknown> | undefined) ?? {},
-        });
-        const batchCandidate = Array.isArray(evaluated)
-          ? (evaluated as Batch)
-          : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
-        if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
-          throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
-        }
-        void enqueueBatch(batchCandidate);
-      } catch (err) {
+      void handleCommand(commandJson, {
+        ...payload,
+        value: (target as HTMLInputElement | HTMLTextAreaElement).value,
+        form: (payload.formData as Record<string, unknown> | undefined) ?? {},
+      }).catch((err) => {
         const original = err instanceof Error ? err : new Error(String(err));
         console.error('E-UICP-301: failed to process data-command JSON', original);
-        throw new Error(`E-UICP-301: data-command parsing failed — ${original.message}`, {
-          cause: original,
-        });
-      }
+      });
     }
   }
 
