@@ -10,6 +10,8 @@ export {
   closeWorkspaceWindow,
 } from "./adapters/adapter.lifecycle";
 
-export { applyBatch, type ApplyOutcome, type ApplyOptions } from "./adapters/adapter.queue";
+// Keep exports aligned with adapters/adapter.ts
+export { applyBatch } from "./adapters/adapter.queue";
+export type { ApplyOutcome, ApplyOptions } from "./adapters/schemas";
 
 export { buildComponentMarkupForTest } from "./adapters/adapter.testkit";

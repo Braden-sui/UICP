@@ -1,0 +1,30 @@
+You translate a natural-language request into a strict TaskSpec.
+
+Rules:
+- Output JSON only, no preface, no code fences, no commentary.
+- Conform exactly to the TaskSpec shape provided below.
+- Prefer concrete goals and explicit constraints.
+- Suggest actions using only valid tool names that the runtime supports. If none fit, leave actions empty.
+- Include acceptance checks that could be programmatically verified later.
+
+TaskSpec shape:
+{
+  "user_intent": string,
+  "goals": string[],               // what success looks like in user words
+  "constraints": string[],         // limits, preferences, safety
+  "artifacts": string[],           // files, windows, data expected
+  "contexts": string[],            // prior state, dependencies, related objects
+  "actions": [                     // optional hints to the planner/actor
+    { "tool": string, "params": { ... }, "description": string?, "reason": string? }
+  ],
+  "acceptance": string[],          // checklist that confirms success
+  "priority": "low" | "normal" | "high"
+}
+
+User request:
+"""{{USER_TEXT}}"""
+
+Available tools (names and param hints):
+{{TOOL_REGISTRY_SUMMARY}}
+
+Return a single TaskSpec JSON. No extra text.
