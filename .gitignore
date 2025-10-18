@@ -24,3 +24,7 @@ tmp/
 .claude/
 .windsurf/
 .vscode/
+ 
+# Repo-local temp artifacts
+temp_*.txt
+tmp_*.ps1
