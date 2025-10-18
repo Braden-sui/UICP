@@ -12,7 +12,6 @@ vi.mock('../adapters/adapter', async () => {
       applied: _batch.length ?? 1,
       errors: [],
       skippedDupes: 0,
-      skippedDuplicates: 0,
     })),
     deferBatchIfNotReady: () => null, // WHY: Queue tests assume workspace ready; skip deferral logic.
   };

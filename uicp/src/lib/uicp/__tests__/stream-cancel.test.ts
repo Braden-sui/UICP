@@ -40,7 +40,7 @@ describe('stream cancellation', () => {
   });
 
   it('normal flush returns cancelled false', async () => {
-    const onBatchMock = vi.fn().mockResolvedValue({ success: true, applied: 1, errors: [], skippedDupes: 0, skippedDuplicates: 0 } as ApplyOutcome);
+    const onBatchMock = vi.fn().mockResolvedValue({ success: true, applied: 1, errors: [], skippedDupes: 0 } as ApplyOutcome);
     const agg = createOllamaAggregator(onBatchMock);
 
     // Valid WIL batch
@@ -84,7 +84,7 @@ describe('stream cancellation', () => {
 
     const onBatchMock = vi.fn(async (batch: Batch) => {
       appliedBatches.push(batch);
-      return { success: true, applied: batch.length, errors: [], skippedDupes: 0, skippedDuplicates: 0 } as ApplyOutcome;
+      return { success: true, applied: batch.length, errors: [], skippedDupes: 0 } as ApplyOutcome;
     });
 
     for (let i = 0; i < ITERATIONS; i++) {
@@ -129,7 +129,7 @@ describe('stream cancellation', () => {
     
     const onBatchMock = vi.fn(async (batch: Batch) => {
       appliedBatches.push(batch.length);
-      return { success: true, applied: batch.length, errors: [], skippedDupes: 0, skippedDuplicates: 0 } as ApplyOutcome;
+      return { success: true, applied: batch.length, errors: [], skippedDupes: 0 } as ApplyOutcome;
     });
 
     const streamPromises = Array.from({ length: STREAMS }, async (_, streamIdx) => {

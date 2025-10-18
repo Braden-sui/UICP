@@ -160,7 +160,7 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
 
     try {
       const outcome = onBatch ? await onBatch(batch) : await enqueueBatch(batch);
-      const applied = outcome ?? { success: true, applied: batch.length, errors: [], skippedDupes: 0, skippedDuplicates: 0 };
+      const applied = outcome ?? { success: true, applied: batch.length, errors: [], skippedDupes: 0 };
       if (!applied.success) {
         const details = applied.errors.join('; ');
         throw new Error(details || 'enqueueBatch reported failure');

@@ -47,3 +47,21 @@ export const OPERATIONS: Record<z.infer<typeof OperationName>, ToolDescriptor> =
   'api.call':           { name: 'api.call',      kind: 'local-operation', capabilities: ['api'],       risk: 'medium' },
   'txn.cancel':         { name: 'txn.cancel',    kind: 'local-operation', capabilities: ['txn'],       risk: 'low' },
 } as const;
+
+export const getToolRegistrySummary = (): string => {
+  const toolLines = LLM_TOOLS.map((tool) =>
+    `- ${tool.name} (kind=${tool.kind}, capabilities=${tool.capabilities.join(', ')}, risk=${tool.risk})`,
+  );
+
+  const operationLines = Object.values(OPERATIONS).map((descriptor) =>
+    `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk})`,
+  );
+
+  return [
+    'LLM tools:',
+    ...toolLines,
+    '',
+    'Operations:',
+    ...operationLines,
+  ].join('\n');
+};

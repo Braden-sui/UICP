@@ -36,14 +36,12 @@ const seenIdempotency = new Map<string, number>();
 // Chains per-window execution promises to ensure FIFO.
 const chains = new Map<string, Promise<ApplyOutcome>>();
 
-const getSkippedCount = (outcome: ApplyOutcome): number =>
-  outcome.skippedDupes ?? outcome.skippedDuplicates ?? 0;
+const getSkippedCount = (outcome: ApplyOutcome): number => outcome.skippedDupes ?? 0;
 
 const createEmptyOutcome = (): ApplyOutcome => ({
   success: true,
   applied: 0,
   skippedDupes: 0,
-  skippedDuplicates: 0,
   errors: [],
 });
 
@@ -108,7 +106,6 @@ const mergeOutcomes = (outcomes: ApplyOutcome[]): ApplyOutcome =>
         success: acc.success && cur.success,
         applied: acc.applied + cur.applied,
         skippedDupes: totalSkipped,
-        skippedDuplicates: totalSkipped,
         errors: acc.errors.concat(cur.errors),
         batchId: acc.batchId ?? cur.batchId,
         opsHash: acc.opsHash ?? cur.opsHash,
@@ -181,7 +178,6 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
             windowId,
             applied: outcome.applied,
             skippedDupes: getSkippedCount(outcome),
-            skippedDuplicates: getSkippedCount(outcome),
             batchId: outcome.batchId,
             errors: outcome.success ? undefined : outcome.errors.slice(0, 3),
             traceCommands: count,
@@ -198,7 +194,6 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
         success: false,
         applied: 0,
         skippedDupes: 0,
-        skippedDuplicates: 0,
         errors: [String(err)],
       }));
 

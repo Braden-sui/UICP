@@ -10,7 +10,8 @@
       "@tauri-apps/api",
       "@tauri-apps/plugin-fs",
       "react",
-      "react-dom"
+      "react-dom",
+      "vitest"
     ],
     "skipLibCheck": true,
 

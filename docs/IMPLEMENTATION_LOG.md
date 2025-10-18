@@ -163,20 +163,20 @@ Fixed `size` parameter handling in WIL parser for window operations.
 - Cleared on `resetWorkspace()`
 
 **ApplyOutcome Extended**:
-- `skippedDupes (back-compat skippedDuplicates): number` - count of skipped operations
+- `skippedDupes: number` - count of skipped operations
 - `batchId?: string` - stable batch identifier
 - Duplicate detection returns original batchId for continuity
 
 **Transaction Boundary** in `applyBatch()`:
 - Computes opsHash at entry
 - Checks dedupe store before applying
-- Returns early with `{ applied: 0, skippedDupes (back-compat skippedDuplicates): batch.length }` if duplicate
+- Returns early with `{ applied: 0, skippedDupes: batch.length }` if duplicate
 - Records successful batches with timestamp
 - Emits `batch_duplicate_skipped` telemetry event
 
 **Queue Integration** (`queue.ts`):
-- `mergeOutcomes()` aggregates skippedDupes (back-compat skippedDuplicates)
-- Telemetry includes batchId and skippedDupes (back-compat skippedDuplicates)
+- `mergeOutcomes()` aggregates skippedDupes
+- Telemetry includes batchId and skippedDupes
 
 ### Telemetry Events
 - New: `batch_duplicate_skipped` (span: batch, status: skipped)

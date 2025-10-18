@@ -3,6 +3,7 @@ import { streamOllamaCompletion } from './ollama';
 import { getActorProfile, getPlannerProfile, type ActorProfileKey, type PlannerProfileKey } from './profiles';
 import { buildEnvironmentSnapshot } from '../env';
 import { EMIT_PLAN, EMIT_BATCH, planSchema, batchSchema } from './tools';
+import type { TaskSpec } from './schemas';
 
 export type LLMStream = AsyncIterable<StreamEvent>;
 
@@ -14,6 +15,9 @@ export type PlannerStreamOptions = {
   extraSystem?: string;
   responseFormat?: unknown;
   meta?: StreamMeta;
+  mode?: 'plan' | 'taskSpec';
+  taskSpec?: TaskSpec;
+  toolSummary?: string;
 };
 
 export type ActorStreamOptions = {
@@ -41,7 +45,9 @@ export function getPlannerClient(): PlannerClient {
       // Profile formatting keeps planner prompts aligned with the selected model contract.
       // Include DOM snapshot by default to maximize context-awareness.
       const env = buildEnvironmentSnapshot({ includeDom: true });
-      const supportsTools = profile.capabilities?.supportsTools !== false;
+      const mode = options?.mode ?? 'plan';
+      const baseSupportsTools = profile.capabilities?.supportsTools !== false;
+      const supportsTools = mode !== 'taskSpec' && baseSupportsTools;
       const tools = supportsTools ? options?.tools ?? [EMIT_PLAN] : undefined;
       const toolChoice = supportsTools
         ? options?.toolChoice ?? { type: 'function', function: { name: 'emit_plan' } }
@@ -56,13 +62,27 @@ export function getPlannerClient(): PlannerClient {
       const meta: StreamMeta = {
         role: 'planner',
         profileKey: profile.key,
+        mode,
         ...options?.meta,
       };
-      const messages = [
-        // Prepend a compact environment snapshot to improve context-awareness.
-        { role: 'system', content: env },
-        ...profile.formatMessages(intent, { tools }),
-      ];
+      const messages = (() => {
+        if (mode === 'taskSpec' && typeof profile.formatTaskSpecMessages === 'function') {
+          return [
+            { role: 'system', content: env },
+            ...profile.formatTaskSpecMessages(intent, {
+              toolSummary: options?.toolSummary ?? '',
+            }),
+          ];
+        }
+        return [
+          { role: 'system', content: env },
+          ...profile.formatMessages(intent, {
+            tools,
+            taskSpec: options?.taskSpec,
+            toolSummary: options?.toolSummary,
+          }),
+        ];
+      })();
       if (options?.extraSystem) {
         messages.push({ role: 'system', content: options.extraSystem });
       }

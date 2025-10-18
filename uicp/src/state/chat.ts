@@ -160,6 +160,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           {
             plannerProfileKey: app.plannerProfileKey,
             actorProfileKey: app.actorProfileKey,
+            plannerTwoPhaseEnabled: app.plannerTwoPhaseEnabled,
           },
         );
         notice = result.notice;

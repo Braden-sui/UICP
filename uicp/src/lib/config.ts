@@ -1,5 +1,7 @@
 import { readBooleanEnv, readNumberEnv } from './env/values';
 
+const isTestMode = typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test';
+
 export const cfg = {
   // Planner/Actor caps
   followupMaxDefault: readNumberEnv('FOLLOWUP_MAX_DEFAULT', 3, { min: 1 }),
@@ -12,4 +14,5 @@ export const cfg = {
   wilOnly: readBooleanEnv('VITE_WIL_ONLY', false),
   wilDebug: readBooleanEnv('VITE_WIL_DEBUG', false),
   wilMaxBufferKb: readNumberEnv('VITE_WIL_MAX_BUFFER_KB', 256, { min: 1 }),
+  plannerTwoPhase: readBooleanEnv('VITE_PLANNER_TWO_PHASE', !isTestMode),
 };

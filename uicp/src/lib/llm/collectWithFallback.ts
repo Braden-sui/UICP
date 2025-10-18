@@ -11,13 +11,13 @@ export type CollectionResult = {
 export type CollectionContext = {
   traceId?: string;
   span?: TraceSpan;
-  phase?: 'planner' | 'actor';
+  phase?: 'planner' | 'actor' | 'taskSpec';
 };
 
 const resolveSpan = (context?: CollectionContext): TraceSpan | undefined => {
   if (!context) return undefined;
   if (context.span) return context.span;
-  if (context.phase === 'planner') return 'planner';
+  if (context.phase === 'planner' || context.phase === 'taskSpec') return 'planner';
   if (context.phase === 'actor') return 'actor';
   return undefined;
 };

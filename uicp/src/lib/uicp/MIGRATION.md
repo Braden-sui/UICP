@@ -21,7 +21,7 @@ The façade (`adapter.ts`) re-exports only the documented surface (register/rese
 
 - `applyBatch(batch, opts?)` accepts optional `runId`, `batchId`, `opsHash`, `allowPartial`.
 - Idempotency: duplicates are skipped if either `batchId` matches or `opsHash` reappears within 10 minutes (bounded LRU).
-- `ApplyOutcome` now exposes `skippedDupes` (with `skippedDuplicates` retained for compatibility), plus `batchId`,
+- `ApplyOutcome` now exposes `skippedDupes` (single canonical field), plus `batchId`,
   `opsHash`, and `errors`.
 - Workspace resets notify the queue layer via `addWorkspaceResetHandler`.
 

@@ -48,5 +48,4 @@ export type ApplyOutcome = {
   errors: string[];
   batchId?: string;
   opsHash?: string;
-  skippedDuplicates?: number;
 };

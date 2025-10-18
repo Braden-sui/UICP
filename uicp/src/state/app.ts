@@ -197,6 +197,7 @@ export type AppState = {
   agentTraceOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
+  plannerTwoPhaseEnabled: boolean;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
@@ -229,6 +230,7 @@ export type AppState = {
   setAgentTraceOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
+  setPlannerTwoPhaseEnabled: (value: boolean) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
   upsertWorkspaceWindow: (meta: WorkspaceWindowMeta) => void;
@@ -280,6 +282,7 @@ export const useAppStore = create<AppState>()(
       agentTraceOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
+      plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', !readBooleanEnv('VITE_TEST_MODE', false)),
       desktopShortcuts: {},
       workspaceWindows: {},
       telemetryBuffer: createTelemetryBuffer(),
@@ -342,6 +345,7 @@ export const useAppStore = create<AppState>()(
         setSelectedActorProfileKey(key);
         set({ actorProfileKey: key });
       },
+      setPlannerTwoPhaseEnabled: (value) => set({ plannerTwoPhaseEnabled: value }),
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
           if (state.desktopShortcuts[id]) {
@@ -634,6 +638,7 @@ export const useAppStore = create<AppState>()(
         notepadOpen: state.notepadOpen,
         plannerProfileKey: state.plannerProfileKey,
         actorProfileKey: state.actorProfileKey,
+        plannerTwoPhaseEnabled: state.plannerTwoPhaseEnabled,
         agentSettingsOpen: state.agentSettingsOpen,
         computeDemoOpen: state.computeDemoOpen,
         moduleRegistryOpen: state.moduleRegistryOpen,

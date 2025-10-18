@@ -17,6 +17,7 @@ export type StreamMeta = {
   traceId?: string;
   intent?: string;
   planSummary?: string;
+  mode?: 'plan' | 'taskSpec';
 };
 
 const getLogWindow = (): Window | undefined => {

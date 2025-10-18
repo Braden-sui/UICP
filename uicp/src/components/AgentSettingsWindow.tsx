@@ -21,6 +21,8 @@ const AgentSettingsWindow = () => {
   const actorProfileKey = useAppSelector((state) => state.actorProfileKey);
   const setPlannerProfileKey = useAppSelector((state) => state.setPlannerProfileKey);
   const setActorProfileKey = useAppSelector((state) => state.setActorProfileKey);
+  const plannerTwoPhaseEnabled = useAppSelector((state) => state.plannerTwoPhaseEnabled);
+  const setPlannerTwoPhaseEnabled = useAppSelector((state) => state.setPlannerTwoPhaseEnabled);
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
@@ -37,6 +39,13 @@ const AgentSettingsWindow = () => {
       setActorProfileKey(event.target.value as ActorProfileKey);
     },
     [setActorProfileKey],
+  );
+
+  const handleTwoPhaseToggle = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setPlannerTwoPhaseEnabled(event.target.checked);
+    },
+    [setPlannerTwoPhaseEnabled],
   );
 
   const handleClose = useCallback(() => setAgentSettingsOpen(false), [setAgentSettingsOpen]);
@@ -171,6 +180,20 @@ const AgentSettingsWindow = () => {
             <span className="text-[11px] uppercase tracking-wide text-slate-400">
               Channels: {actorProfile.capabilities?.channels.join(', ') ?? 'commentary'}
             </span>
+          </label>
+          <label className="flex items-center gap-3 rounded border border-slate-200 bg-slate-50/50 p-3 text-sm">
+            <input
+              type="checkbox"
+              checked={plannerTwoPhaseEnabled}
+              onChange={handleTwoPhaseToggle}
+              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-slate-700">Two-Phase Planner (Experimental)</span>
+              <span className="text-xs text-slate-500">
+                When enabled, the planner first generates a structured TaskSpec, then produces the final plan. This can improve plan quality for complex requests.
+              </span>
+            </div>
           </label>
         </div>
         <div className="rounded border border-slate-200 p-3">

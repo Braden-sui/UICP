@@ -64,7 +64,7 @@ describe('Batch Idempotency', () => {
     expect(outcome.success).toBe(true);
     expect(outcome.applied).toBe(1);
     expect(outcome.skippedDupes).toBe(0);
-    expect(outcome.skippedDuplicates).toBe(outcome.skippedDupes);
+    // only skippedDupes remains; skippedDuplicates removed
     expect(outcome.batchId).toBeTruthy();
     expect(outcome.errors).toHaveLength(0);
   });
@@ -84,7 +84,7 @@ describe('Batch Idempotency', () => {
     expect(outcome2.success).toBe(true);
     expect(outcome2.applied).toBe(0);
     expect(outcome2.skippedDupes).toBe(1);
-    expect(outcome2.skippedDuplicates).toBe(outcome2.skippedDupes);
+    // only skippedDupes remains; skippedDuplicates removed
     expect(outcome2.batchId).toBeTruthy();
     expect(outcome2.batchId).toBe(outcome1.batchId); // Original batch ID preserved for tracking
   });
@@ -120,7 +120,7 @@ describe('Batch Idempotency', () => {
     const outcome2 = await applyBatch(batch);
     expect(outcome2.applied).toBe(0);
     expect(outcome2.skippedDupes).toBe(3);
-    expect(outcome2.skippedDuplicates).toBe(outcome2.skippedDupes);
+    // only skippedDupes remains; skippedDuplicates removed
   });
 
   it('includes batchId in all outcomes', async () => {
@@ -149,7 +149,7 @@ describe('Batch Idempotency', () => {
     // Apply duplicate (should skip)
     const outcome2 = await applyBatch(batch);
     expect(outcome2.skippedDupes).toBe(1);
-    expect(outcome2.skippedDuplicates).toBe(outcome2.skippedDupes);
+    // only skippedDupes remains; skippedDuplicates removed
 
     // Reset workspace
     resetWorkspace();
@@ -203,7 +203,7 @@ describe('Batch Idempotency', () => {
 
     const outcome2 = await applyBatch(batch);
     expect(outcome2.skippedDupes).toBe(1);
-    expect(outcome2.skippedDuplicates).toBe(outcome2.skippedDupes);
+    // only skippedDupes remains; skippedDuplicates removed
   });
 
   it('skips duplicate batches when batchId is reused even with different payloads', async () => {

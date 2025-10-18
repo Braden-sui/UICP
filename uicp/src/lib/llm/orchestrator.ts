@@ -10,6 +10,9 @@ import { enforcePlannerCap } from '../orchestrator/plannerCap';
 import { readNumberEnv } from '../env/values';
 import { collectWithFallback } from './collectWithFallback';
 import { emitTelemetryEvent } from '../telemetry';
+import { getToolRegistrySummary } from './registry';
+import { type TaskSpec } from './schemas';
+import { generateTaskSpec } from './generateTaskSpec';
 
 const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', 180_000, { min: 1_000 });
 const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', 180_000, { min: 1_000 });
@@ -37,9 +40,10 @@ export type RunIntentResult = {
   notice?: 'planner_fallback' | 'actor_fallback';
   traceId: string;
   timings: { planMs: number; actMs: number };
-  channels?: { planner?: string; actor?: string };
+  channels?: { planner?: string; actor?: string; taskSpec?: string };
   autoApply?: boolean;
-  failures?: { planner?: string; actor?: string };
+  failures?: { planner?: string; actor?: string; taskSpec?: string };
+  taskSpec?: TaskSpec;
 };
 
 const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error: unknown, useTools: boolean): string => {
@@ -59,7 +63,13 @@ const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error
 
 export async function planWithProfile(
   intent: string,
-  options?: { timeoutMs?: number; profileKey?: PlannerProfileKey; traceId?: string },
+  options?: {
+    timeoutMs?: number;
+    profileKey?: PlannerProfileKey;
+    traceId?: string;
+    taskSpec?: TaskSpec;
+    toolSummary?: string;
+  },
 ): Promise<{ plan: Plan; channelUsed?: string }> {
   const client = getPlannerClient();
   const profile = getPlannerProfile(options?.profileKey);
@@ -99,6 +109,8 @@ export async function planWithProfile(
         profileKey: profile.key,
         extraSystem,
         meta: { traceId: options?.traceId, intent },
+        taskSpec: options?.taskSpec,
+        toolSummary: options?.toolSummary,
       });
 
       // JSON-first path: collect both tool calls AND text in single pass
@@ -458,7 +470,7 @@ export async function runIntent(
   text: string,
   applyNow: boolean,
   hooks?: RunIntentHooks,
-  options?: { plannerProfileKey?: PlannerProfileKey; actorProfileKey?: ActorProfileKey },
+  options?: { plannerProfileKey?: PlannerProfileKey; actorProfileKey?: ActorProfileKey; plannerTwoPhaseEnabled?: boolean },
 ): Promise<RunIntentResult> {
   // applyNow will be handled by the UI layer; reference here to satisfy strict noUnusedParameters
   void applyNow;
@@ -467,6 +479,55 @@ export async function runIntent(
   const traceId = createId('trace');
   const txnId = createId('txn');
   const failures: RunIntentResult['failures'] = {};
+  let taskSpec: TaskSpec | undefined;
+  let taskSpecChannelUsed: string | undefined;
+
+  // Phase 0 (Optional): Generate TaskSpec if two-phase planner enabled
+  const twoPhaseEnabled = options?.plannerTwoPhaseEnabled ?? false;
+  if (twoPhaseEnabled) {
+    emitTelemetryEvent('planner_start', {
+      traceId,
+      span: 'planner',
+      data: {
+        intentLength: text.length,
+        plannerProfile: options?.plannerProfileKey ?? 'default',
+        phase: 'taskSpec',
+        twoPhase: true,
+      },
+    });
+
+    const taskSpecStarted = now();
+    try {
+      const taskSpecResult = await generateTaskSpec(text, {
+        profileKey: options?.plannerProfileKey,
+        traceId,
+      });
+      taskSpec = taskSpecResult.taskSpec;
+      taskSpecChannelUsed = taskSpecResult.channelUsed;
+      if (taskSpecResult.error) {
+        failures.taskSpec = taskSpecResult.error;
+      }
+    } catch (err) {
+      const failure = toError(err);
+      failures.taskSpec = failure.message;
+      console.warn('[runIntent] taskSpec generation failed, continuing with stub', { traceId, error: failure });
+    }
+
+    const taskSpecMs = Math.max(0, Math.round(now() - taskSpecStarted));
+    emitTelemetryEvent('planner_finish', {
+      traceId,
+      span: 'planner',
+      durationMs: taskSpecMs,
+      status: failures.taskSpec ? 'error' : undefined,
+      data: {
+        phase: 'taskSpec',
+        channel: taskSpecChannelUsed,
+        goalCount: taskSpec?.goals?.length ?? 0,
+        actionCount: taskSpec?.actions?.length ?? 0,
+        error: failures.taskSpec,
+      },
+    });
+  }
 
   emitTelemetryEvent('planner_start', {
     traceId,
@@ -474,6 +535,9 @@ export async function runIntent(
     data: {
       intentLength: text.length,
       plannerProfile: options?.plannerProfileKey ?? 'default',
+      phase: 'plan',
+      twoPhase: twoPhaseEnabled,
+      hasTaskSpec: Boolean(taskSpec),
     },
   });
 
@@ -481,11 +545,17 @@ export async function runIntent(
 
   const planningStarted = now();
 
-  // Step 1: Plan
+  // Step 1: Plan (Phase 1 in two-phase, or Phase 0 in single-phase)
   let plan: Plan;
   let plannerChannelUsed: string | undefined;
+  const toolSummary = taskSpec ? getToolRegistrySummary() : undefined;
   try {
-    const out = await planWithProfile(text, { profileKey: options?.plannerProfileKey, traceId });
+    const out = await planWithProfile(text, {
+      profileKey: options?.plannerProfileKey,
+      traceId,
+      taskSpec,
+      toolSummary,
+    });
     plan = out.plan;
     plannerChannelUsed = out.channelUsed;
   } catch (err) {
@@ -514,9 +584,11 @@ export async function runIntent(
     durationMs: planMs,
     status: failures.planner ? 'error' : undefined,
     data: {
+      phase: 'plan',
       channel: plannerChannelUsed,
       fallback: notice === 'planner_fallback',
       summary: plan.summary,
+      twoPhase: twoPhaseEnabled,
       error: failures.planner,
     },
   });
@@ -632,8 +704,9 @@ export async function runIntent(
     notice,
     traceId,
     timings: { planMs, actMs },
-    channels: { planner: plannerChannelUsed, actor: actorChannelUsed },
+    channels: { planner: plannerChannelUsed, actor: actorChannelUsed, taskSpec: taskSpecChannelUsed },
     failures: Object.keys(failures).length > 0 ? failures : undefined,
+    taskSpec,
   };
 }
 

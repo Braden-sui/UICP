@@ -1346,7 +1346,10 @@ export const buildComponentMarkup = (params: OperationParamMap["component.render
       ? String((params.props as Record<string, unknown>).title)
       : "Modal";
     // WHY: Escape title to prevent XSS via modal title injection.
-    return `<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">${escapeHtml(title)}</h2><p class="text-sm text-slate-600">Placeholder modal content.</p></div>`;
+    // Use a neutral, textless body to avoid placeholder wording.
+    return '<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">' +
+      escapeHtml(title) +
+      '</h2><div class="text-sm text-slate-600" aria-hidden="true"></div></div>';
   }
   if (type.includes("button")) {
     const label = typeof params.props === "object" && params.props && "label" in params.props
@@ -1372,7 +1375,8 @@ export const buildComponentMarkup = (params: OperationParamMap["component.render
       '</div>';
   }
   // Default prototype shell when component type is unknown; avoid placeholder language in visible text.
-  return '<div class="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">Prototype component</div>';
+  // Provide a neutral frame only, with no visible text content.
+  return '<div class="rounded border border-dashed border-slate-300 p-4" aria-hidden="true"></div>';
 };
 
 const updateComponent = (params: OperationParamMap["component.update"]) => {

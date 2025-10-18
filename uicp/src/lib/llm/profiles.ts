@@ -1,4 +1,5 @@
 import plannerPrompt from '../../prompts/planner.txt?raw';
+import taskSpecPrompt from '../../prompts/planner_task_spec.txt?raw';
 import actorPrompt from '../../prompts/actor.txt?raw';
 import type { ChatMessage, ToolSpec } from './ollama';
 
@@ -11,7 +12,11 @@ export interface PlannerProfile {
   description: string;
   defaultModel?: string;
   capabilities?: { channels: string[]; supportsTools: boolean };
-  formatMessages: (intent: string, opts?: { tools?: ToolSpec[] }) => ChatMessage[];
+  formatMessages: (
+    intent: string,
+    opts?: { tools?: ToolSpec[]; taskSpec?: unknown; toolSummary?: string },
+  ) => ChatMessage[];
+  formatTaskSpecMessages?: (intent: string, opts: { toolSummary: string }) => ChatMessage[];
 }
 
 export interface ActorProfile {
@@ -40,9 +45,27 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     description: 'Advanced agentic, reasoning and coding capabilities with 198K context window.',
     defaultModel: 'glm-4.6:cloud',
     capabilities: { channels: ['json'], supportsTools: true },
-    formatMessages: (intent: string) => [
+    formatMessages: (intent: string, opts) => [
       { role: 'system', content: plannerPrompt.trim() },
-      { role: 'user', content: intent },
+      {
+        role: 'user',
+        content: [
+          `User intent:\n${intent}`,
+          opts?.taskSpec ? `TaskSpec JSON:\n${JSON.stringify(opts.taskSpec, null, 2)}` : undefined,
+          opts?.toolSummary ? `Available tools:\n${opts.toolSummary}` : undefined,
+        ]
+          .filter((segment): segment is string => Boolean(segment))
+          .join('\n\n'),
+      },
+    ],
+    formatTaskSpecMessages: (intent, { toolSummary }) => [
+      {
+        role: 'system',
+        content: taskSpecPrompt
+          .replace('{{USER_TEXT}}', intent)
+          .replace('{{TOOL_REGISTRY_SUMMARY}}', toolSummary)
+          .trim(),
+      },
     ],
   },
   'gpt-oss': {
@@ -51,9 +74,27 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     description: 'Open-source GPT model with 120B parameters.',
     defaultModel: 'gpt-oss:120b',
     capabilities: { channels: ['json'], supportsTools: true },
-    formatMessages: (intent: string) => [
+    formatMessages: (intent: string, opts) => [
       { role: 'system', content: plannerPrompt.trim() },
-      { role: 'user', content: intent },
+      {
+        role: 'user',
+        content: [
+          `User intent:\n${intent}`,
+          opts?.taskSpec ? `TaskSpec JSON:\n${JSON.stringify(opts.taskSpec, null, 2)}` : undefined,
+          opts?.toolSummary ? `Available tools:\n${opts.toolSummary}` : undefined,
+        ]
+          .filter((segment): segment is string => Boolean(segment))
+          .join('\n\n'),
+      },
+    ],
+    formatTaskSpecMessages: (intent, { toolSummary }) => [
+      {
+        role: 'system',
+        content: taskSpecPrompt
+          .replace('{{USER_TEXT}}', intent)
+          .replace('{{TOOL_REGISTRY_SUMMARY}}', toolSummary)
+          .trim(),
+      },
     ],
   },
   deepseek: {
@@ -62,9 +103,27 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     description: 'Planner profile tuned for DeepSeek V3.1 (optional alt).',
     defaultModel: 'deepseek-v3.1:671b',
     capabilities: { channels: ['json'], supportsTools: true },
-    formatMessages: (intent) => [
+    formatMessages: (intent, opts) => [
       { role: 'system', content: plannerPrompt.trim() },
-      { role: 'user', content: intent },
+      {
+        role: 'user',
+        content: [
+          `User intent:\n${intent}`,
+          opts?.taskSpec ? `TaskSpec JSON:\n${JSON.stringify(opts.taskSpec, null, 2)}` : undefined,
+          opts?.toolSummary ? `Available tools:\n${opts.toolSummary}` : undefined,
+        ]
+          .filter((segment): segment is string => Boolean(segment))
+          .join('\n\n'),
+      },
+    ],
+    formatTaskSpecMessages: (intent, { toolSummary }) => [
+      {
+        role: 'system',
+        content: taskSpecPrompt
+          .replace('{{USER_TEXT}}', intent)
+          .replace('{{TOOL_REGISTRY_SUMMARY}}', toolSummary)
+          .trim(),
+      },
     ],
   },
   kimi: {
@@ -73,9 +132,27 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     description: 'Planner profile for Kimi-k2:1t (optional alt).',
     defaultModel: 'kimi-k2:1t',
     capabilities: { channels: ['json'], supportsTools: true },
-    formatMessages: (intent) => [
+    formatMessages: (intent, opts) => [
       { role: 'system', content: plannerPrompt.trim() },
-      { role: 'user', content: intent },
+      {
+        role: 'user',
+        content: [
+          `User intent:\n${intent}`,
+          opts?.taskSpec ? `TaskSpec JSON:\n${JSON.stringify(opts.taskSpec, null, 2)}` : undefined,
+          opts?.toolSummary ? `Available tools:\n${opts.toolSummary}` : undefined,
+        ]
+          .filter((segment): segment is string => Boolean(segment))
+          .join('\n\n'),
+      },
+    ],
+    formatTaskSpecMessages: (intent, { toolSummary }) => [
+      {
+        role: 'system',
+        content: taskSpecPrompt
+          .replace('{{USER_TEXT}}', intent)
+          .replace('{{TOOL_REGISTRY_SUMMARY}}', toolSummary)
+          .trim(),
+      },
     ],
   },
   qwen: {
@@ -84,9 +161,27 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     description: 'Planner prompt for Qwen3-Coder).',
     defaultModel: 'qwen3-coder:480b',
     capabilities: { channels: ['json'], supportsTools: true },
-    formatMessages: (intent) => [
+    formatMessages: (intent, opts) => [
       { role: 'system', content: plannerPrompt.trim() },
-      { role: 'user', content: intent },
+      {
+        role: 'user',
+        content: [
+          `User intent:\n${intent}`,
+          opts?.taskSpec ? `TaskSpec JSON:\n${JSON.stringify(opts.taskSpec, null, 2)}` : undefined,
+          opts?.toolSummary ? `Available tools:\n${opts.toolSummary}` : undefined,
+        ]
+          .filter((segment): segment is string => Boolean(segment))
+          .join('\n\n'),
+      },
+    ],
+    formatTaskSpecMessages: (intent, { toolSummary }) => [
+      {
+        role: 'system',
+        content: taskSpecPrompt
+          .replace('{{USER_TEXT}}', intent)
+          .replace('{{TOOL_REGISTRY_SUMMARY}}', toolSummary)
+          .trim(),
+      },
     ],
   },
 };
