@@ -37,7 +37,10 @@ describe('adapter v1/v2 parity', () => {
   });
 
   it(`uses ${ADAPTER_V2_ENABLED ? 'v2' : 'v1'} adapter based on flag`, () => {
-    expect(ADAPTER_V2_ENABLED).toBe(process.env.UICP_ADAPTER_V2 === '1');
+    // After Phase 3: v2 enabled by default in dev, unless explicitly disabled
+    const expectedV2 = process.env.UICP_ADAPTER_V2 === '1' || 
+                       (process.env.UICP_ADAPTER_V2 !== '0' && import.meta.env.DEV);
+    expect(ADAPTER_V2_ENABLED).toBe(expectedV2);
   });
 
   it('window.create produces identical results', async () => {

@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Disable v2 for these tests since they test workspace registration guards, not adapter internals
+vi.mock('../../src/lib/uicp/adapters/adapter.featureFlags', () => ({
+  ADAPTER_V2_ENABLED: false,
+  getAdapterVersion: () => 1,
+}));
+
 import { registerWorkspaceRoot, deferBatchIfNotReady } from '../../src/lib/uicp/adapter';
 import { enqueueBatch } from '../../src/lib/uicp/queue';
 

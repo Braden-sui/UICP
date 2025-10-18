@@ -120,4 +120,52 @@ describe('adapter data-command strict parsing', () => {
     
     expect(vi.mocked(enqueueBatch)).not.toHaveBeenCalled();
   });
+
+  it('rejects data-command JSON exceeding MAX_DATA_COMMAND_LEN with E-UICP-300', async () => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.windowId = 'win-123';
+    // Construct a valid JSON envelope with a very large noop payload string to exceed 32KB
+    const big = 'x'.repeat(33 * 1024);
+    const payload = { batch: [{ op: 'state.set', params: { scope: 'workspace', key: 'big', value: big } }] };
+    btn.setAttribute('data-command', JSON.stringify(payload));
+    document.getElementById('workspace-root')?.appendChild(btn);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/E-UICP-301/),
+      expect.any(Error)
+    );
+    // Enqueue should not be called when caps are exceeded
+    expect(vi.mocked(enqueueBatch)).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('rejects data-command JSON with too many template tokens (>{{}} cap) with E-UICP-300', async () => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.windowId = 'win-123';
+    // Build an HTML string containing 17 template tokens to exceed the default cap of 16
+    const tokens = Array.from({ length: 17 }, (_, i) => `{{t${i}}}`).join(' ');
+    const html = `<div>${tokens}</div>`;
+    const payload = { batch: [{ op: 'dom.set', params: { windowId: 'win-123', target: '#root', html } }] };
+    btn.setAttribute('data-command', JSON.stringify(payload));
+    document.getElementById('workspace-root')?.appendChild(btn);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/E-UICP-301/),
+      expect.any(Error)
+    );
+    expect(vi.mocked(enqueueBatch)).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
 });

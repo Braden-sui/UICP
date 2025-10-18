@@ -5,6 +5,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const executionLog: Array<{ op: string; windowId?: string; timestamp: number }> = [];
 
 // Mock only the low-level command execution, not the queue logic
+// Also mock feature flags to disable v2 since we're mocking applyCommand
+vi.mock('../../src/lib/uicp/adapters/adapter.featureFlags', () => ({
+  ADAPTER_V2_ENABLED: false,
+  getAdapterVersion: () => 1,
+}));
+
 vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
     '../../src/lib/uicp/adapters/adapter.lifecycle',
@@ -109,6 +115,41 @@ describe('uicp queue', () => {
     const call = vi.mocked(applyCommand).mock.calls[0][0];
     expect(call.op).toBe('txn.cancel');
     expect(executionLog[0].op).toBe('txn.cancel');
+  });
+  
+  it('continues processing after an applyCommand failure for a window', async () => {
+    // Make the first call for w1 throw, subsequent calls succeed
+    let thrown = false;
+    vi.mocked(applyCommand).mockImplementationOnce(async (command: any) => {
+      if (!thrown && command.windowId === 'w1') {
+        thrown = true;
+        throw new Error('boom');
+      }
+      // fallback to the default mocked behavior from the suite
+      executionLog.push({ op: command.op, windowId: command.windowId, timestamp: Date.now() });
+      const delay = command.windowId === 'w1' ? 10 : 5;
+      await new Promise((r) => setTimeout(r, delay));
+      return { success: true, value: 'ok' } as any;
+    });
+
+    const p1 = enqueueBatch([
+      { op: 'state.set', idempotencyKey: `f1-${Date.now()}`, windowId: 'w1', params: { scope: 'global', key: 'k', value: 1 } },
+    ] as any);
+    const p2 = enqueueBatch([
+      { op: 'state.set', idempotencyKey: `f2-${Date.now()}`, windowId: 'w1', params: { scope: 'global', key: 'k', value: 2 } },
+    ] as any);
+    const p3 = enqueueBatch([
+      { op: 'state.set', idempotencyKey: `f3-${Date.now()}`, windowId: 'w2', params: { scope: 'global', key: 'k', value: 3 } },
+    ] as any);
+
+    await Promise.allSettled([p1, p2, p3]);
+
+    // At least one successful execution for w1 after the failure
+    const w1Successes = executionLog.filter((e) => e.windowId === 'w1');
+    expect(w1Successes.length).toBeGreaterThanOrEqual(1);
+    // Other windows should proceed unaffected
+    const w2Successes = executionLog.filter((e) => e.windowId === 'w2');
+    expect(w2Successes.length).toBeGreaterThanOrEqual(1);
   });
   
   it('skips duplicate batches by batchId + opsHash', async () => {

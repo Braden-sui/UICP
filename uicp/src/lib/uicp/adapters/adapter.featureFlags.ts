@@ -4,13 +4,16 @@ import { readBooleanEnv } from '../../env/values';
  * Feature flags for adapter refactor.
  * 
  * UICP_ADAPTER_V2: Enable the new modular adapter implementation.
- * Default: false (legacy path)
+ * Default: true in dev (after Phase 3 parity validation)
  * 
  * When enabled, the adapter uses a thin lifecycle orchestrator that delegates
  * to single-purpose modules (windowManager, domApplier, componentRenderer, etc.)
  * instead of the monolithic adapter.lifecycle.ts implementation.
+ * 
+ * RELEASE: Keep false until dogfooding complete (1 week after dev flip)
  */
-export const ADAPTER_V2_ENABLED = readBooleanEnv('UICP_ADAPTER_V2', false);
+// Re-enabled for debugging specific test failures
+export const ADAPTER_V2_ENABLED = readBooleanEnv('UICP_ADAPTER_V2', import.meta.env.DEV);
 
 /**
  * Returns the current adapter version for telemetry.

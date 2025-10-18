@@ -130,6 +130,12 @@ export const replayWorkspace = async (
   let errors: string[] = [];
   try {
     commands = await tauriInvoke<Array<{ id: string; tool: string; args: unknown }>>('get_workspace_commands');
+    
+    // SAFETY: tauriInvoke may return undefined if the command fails
+    if (!commands || !Array.isArray(commands)) {
+      commands = [];
+    }
+    
     errors = [];
     applied = 0;
     processed = 0;

@@ -10,6 +10,18 @@ const fireUiDebug = async (detail: Record<string, unknown>) => {
 };
 
 describe('DevtoolsComputePanel logs', () => {
+  it('renders with defaultOpen and closes on Escape', async () => {
+    await act(async () => {
+      render(<DevtoolsComputePanel defaultOpen />);
+    });
+    const dialog = screen.getByRole('dialog', { name: /compute jobs/i });
+    expect(dialog).toBeInTheDocument();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(screen.queryByRole('dialog', { name: /compute jobs/i })).toBeNull();
+  });
   beforeEach(() => {
     // jsdom starts with empty DOM; no cleanup needed between tests for this component
     useComputeStore.getState().reset();

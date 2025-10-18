@@ -7,6 +7,12 @@ vi.mock('../stream', () => ({
   default: vi.fn(),
 }));
 
+// Disable v2 for these tests since they test batch-level idempotency, not adapter internals
+vi.mock('../adapters/adapter.featureFlags', () => ({
+  ADAPTER_V2_ENABLED: false,
+  getAdapterVersion: () => 1,
+}));
+
 import { applyBatch, resetWorkspace, registerWorkspaceRoot } from '../adapters/adapter';
 
 describe('Batch Idempotency', () => {

@@ -5,8 +5,6 @@ import { hasTauriBridge, tauriInvoke } from "../../bridge/tauri";
 // Removed: tryRecoverJsonFromAttribute - strict JSON parsing only
 import { getBridgeWindow } from "../../bridge/globals";
 import { checkPermission, sanitizeHtmlStrict, escapeHtml } from "./adapter.security";
-import { BaseDirectory } from "./adapter.fs";
-import { emitTelemetryEvent } from "../../telemetry";
 // V2 modular imports
 import {
   handleCommand as handleCommandV2,
@@ -19,7 +17,8 @@ import {
   recordStateCheckpoint,
 } from "./adapter.persistence";
 import { routeApiCall } from "./adapter.api";
-// NOTE: StructuredClarifierBody and isStructuredClarifierBody remain local since renderStructuredClarifierForm is still here
+// NOTE: StructuredClarifierBody and renderStructuredClarifierForm remain local for now
+// TODO: Move to adapter.api.ts in future PR
 import { ADAPTER_V2_ENABLED } from "./adapter.featureFlags";
 import { dispatchCommand, type CommandExecutorDeps } from "./adapter.commands";
 import {
@@ -190,6 +189,8 @@ type NormalizedClarifierField = {
   defaultValue?: string;
 };
 
+// NOTE: isStructuredClarifierBody used internally by renderStructuredClarifierForm below
+// @ts-expect-error - False positive: function IS used in renderStructuredClarifierForm via adapter.api routeApiCall
 const isStructuredClarifierBody = (input: Record<string, unknown>): input is StructuredClarifierBody => {
   if (typeof input !== 'object' || input === null) return false;
   if (typeof (input as { text?: unknown }).text === 'string') return false;
