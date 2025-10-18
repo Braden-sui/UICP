@@ -145,6 +145,7 @@ export type DevtoolsAnalyticsContext = {
   metricsOpen: boolean;
   notepadOpen: boolean;
   agentSettingsOpen: boolean;
+  preferencesOpen: boolean;
   computeDemoOpen: boolean;
   moduleRegistryOpen: boolean;
   workspaceWindows: number;
@@ -193,6 +194,7 @@ export type AppState = {
   // Keep a dedicated flag for the built-in Notepad utility window so local UI can toggle it.
   notepadOpen: boolean;
   agentSettingsOpen: boolean;
+  preferencesOpen: boolean;
   computeDemoOpen: boolean;
   moduleRegistryOpen: boolean;
   agentTraceOpen: boolean;
@@ -228,6 +230,7 @@ export type AppState = {
   setMetricsOpen: (value: boolean) => void;
   setNotepadOpen: (value: boolean) => void;
   setAgentSettingsOpen: (value: boolean) => void;
+  setPreferencesOpen: (value: boolean) => void;
   setComputeDemoOpen: (value: boolean) => void;
   setModuleRegistryOpen: (value: boolean) => void;
   setAgentTraceOpen: (value: boolean) => void;
@@ -282,6 +285,7 @@ export const useAppStore = create<AppState>()(
       metricsOpen: false,
       notepadOpen: false,
       agentSettingsOpen: false,
+      preferencesOpen: false,
       computeDemoOpen: false,
       moduleRegistryOpen: false,
       agentTraceOpen: false,
@@ -341,6 +345,7 @@ export const useAppStore = create<AppState>()(
       setMetricsOpen: (value) => set({ metricsOpen: value }),
       setNotepadOpen: (value) => set({ notepadOpen: value }),
       setAgentSettingsOpen: (value) => set({ agentSettingsOpen: value }),
+      setPreferencesOpen: (value) => set({ preferencesOpen: value }),
       setComputeDemoOpen: (value) => set({ computeDemoOpen: value }),
       setModuleRegistryOpen: (value) => set({ moduleRegistryOpen: value }),
       setAgentTraceOpen: (value) => set({ agentTraceOpen: value }),

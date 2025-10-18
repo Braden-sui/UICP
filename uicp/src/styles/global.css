@@ -39,41 +39,6 @@
   --orb-tertiary: rgba(139, 92, 246, 0.04);
 }
 
-/* ============================================
-   THEME SYSTEM - Dark Mode
-   ============================================ */
-:root.dark {
-  color-scheme: dark;
-
-  /* Background colors */
-  --color-background: #0f1117;
-  --color-foreground: #f1f5f9;
-
-  /* Surface colors (cards, panels, windows) */
-  --color-surface: rgba(30, 41, 59, 0.85);
-  --color-surface-hover: rgba(30, 41, 59, 0.95);
-
-  /* Border colors */
-  --color-border: rgba(51, 65, 85, 0.8);
-  --color-border-subtle: rgba(30, 41, 59, 0.5);
-
-  /* Gradient background (dark theme) */
-  --gradient-start: #0f1117;
-  --gradient-mid-1: #1a1d29;
-  --gradient-mid-2: #15181f;
-  --gradient-end: #0f1117;
-
-  /* Glassmorphism effects */
-  --glass-bg-start: rgba(30, 41, 59, 0.85);
-  --glass-bg-end: rgba(30, 41, 59, 0.75);
-  --glass-border: rgba(71, 85, 105, 0.18);
-  --glass-shadow: rgba(0, 0, 0, 0.3);
-
-  /* Orb overlay colors */
-  --orb-primary: rgba(99, 102, 241, 0.12);
-  --orb-secondary: rgba(236, 72, 153, 0.08);
-  --orb-tertiary: rgba(139, 92, 246, 0.06);
-}
 
 /* ============================================
    ANIMATION SPEED CONTROLS
@@ -227,12 +192,16 @@ body::after {
   isolation: isolate;
 }
 
+/* Focus states - accessible in both light and dark modes */
 a:focus,
 button:focus,
-textarea:focus {
-  outline: 2px solid rgba(59, 130, 246, 0.6);
+textarea:focus,
+input:focus,
+select:focus {
+  outline: 2px solid rgba(99, 102, 241, 0.6);
   outline-offset: 2px;
 }
+
 
 .visually-hidden {
   position: absolute;

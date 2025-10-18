@@ -110,3 +110,20 @@ export const GearIcon = (props: SVGProps<SVGSVGElement>) => (
     </g>
   </svg>
 );
+
+// SlidersIcon: Premium preferences/customization icon with horizontal sliders
+export const SlidersIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+    <g strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      {/* Top slider */}
+      <path d="M4 7h16" opacity="0.9" />
+      <circle cx="9" cy="7" r="2" fill="currentColor" opacity="0.85" />
+      {/* Middle slider */}
+      <path d="M4 12h16" opacity="0.9" />
+      <circle cx="15" cy="12" r="2" fill="currentColor" opacity="0.85" />
+      {/* Bottom slider */}
+      <path d="M4 17h16" opacity="0.9" />
+      <circle cx="11" cy="17" r="2" fill="currentColor" opacity="0.85" />
+    </g>
+  </svg>
+);

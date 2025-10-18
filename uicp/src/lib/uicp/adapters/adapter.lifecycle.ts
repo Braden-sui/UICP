@@ -16,10 +16,10 @@ import {
   replayWorkspace as replayWorkspaceV2,
   recordStateCheckpoint,
 } from "./adapter.persistence";
-import { routeApiCall } from "./adapter.api";
+ 
 // NOTE: StructuredClarifierBody and renderStructuredClarifierForm remain local for now
 // TODO: Move to adapter.api.ts in future PR
-import { ADAPTER_V2_ENABLED } from "./adapter.featureFlags";
+ 
 import { dispatchCommand, type CommandExecutorDeps } from "./adapter.commands";
 import {
   applyDynamicStyleRule,
@@ -189,21 +189,7 @@ type NormalizedClarifierField = {
   defaultValue?: string;
 };
 
-// NOTE: isStructuredClarifierBody used internally by renderStructuredClarifierForm below
-// @ts-expect-error - False positive: function IS used in renderStructuredClarifierForm via adapter.api routeApiCall
-const isStructuredClarifierBody = (input: Record<string, unknown>): input is StructuredClarifierBody => {
-  if (typeof input !== 'object' || input === null) return false;
-  if (typeof (input as { text?: unknown }).text === 'string') return false;
-  if (typeof (input as { textPrompt?: unknown }).textPrompt === 'string' && (input as { textPrompt: string }).textPrompt.trim()) {
-    return true;
-  }
-  if (Array.isArray((input as { fields?: unknown }).fields) && (input as { fields: unknown[] }).fields.length > 0) {
-    return true;
-  }
-  if (typeof (input as { placeholder?: unknown }).placeholder === 'string') return true;
-  if (typeof (input as { label?: unknown }).label === 'string') return true;
-  return false;
-};
+// NOTE: Clarifier type guard lives in adapter.api route; lifecycle does not expose it.
 
 const normalizeClarifierFields = (body: StructuredClarifierBody): NormalizedClarifierField[] => {
   const candidates = Array.isArray(body.fields) ? body.fields : undefined;
@@ -1182,197 +1168,35 @@ export const applyCommand = async (command: Envelope, ctx: ApplyContext = {}): P
   } catch (err) {
     return toFailure(err);
   }
-  
-  // V2 PATH: Use modular command dispatcher when flag is enabled
-  if (ADAPTER_V2_ENABLED) {
-    const deps: CommandExecutorDeps = {
-      executeWindowCreate,
-      executeWindowUpdate: async (params, ensureExists) => {
-        if (ensureExists && !windows.has(params.id)) {
-          const ensured = await ensureWindowExists(params.id, params);
-          if (!ensured.success) return ensured;
-        }
-        const record = windows.get(params.id);
-        if (!record) return { success: false, error: `Window ${params.id} not found` };
-        if (params.title) {
-          record.titleText.textContent = params.title;
-          emitWindowEvent({ type: 'updated', id: params.id, title: params.title });
-        }
-        applyWindowGeometry(record, params);
-        return { success: true, value: params.id };
-      },
-      destroyWindow,
-      ensureWindowExists,
-      executeDomSet,
-      executeComponentRender,
-      updateComponent,
-      destroyComponent,
-      setStateValue,
-      getStateValue,
-      renderStructuredClarifierForm,
-      windows,
-      components,
-    };
-    return await dispatchCommand(command, ctx, deps);
-  }
-  
-  // V1 PATH: Legacy monolithic switch statement
-  switch (command.op) {
-    case "window.create": {
-      const params = command.params;
-      return executeWindowCreate(params);
-    }
-    case "dom.set": {
-      const params = command.params;
-      if (!windows.has(params.windowId)) {
-        const ensured = await ensureWindowExists(params.windowId);
-        if (!ensured.success) return ensured;
-      }
-      return executeDomSet(params);
-    }
-    case "window.update": {
-      try {
-        const params = command.params;
-        let record = windows.get(params.id);
-        if (!record) {
-          const ensured = await ensureWindowExists(params.id, {
-            title: params.title ?? titleizeWindowId(params.id),
-            x: params.x,
-            y: params.y,
-            width: params.width,
-            height: params.height,
-            zIndex: params.zIndex,
-          });
-          if (!ensured.success) return ensured;
-          record = windows.get(params.id)!;
-        }
-        if (params.title) {
-          record.titleText.textContent = params.title;
-          emitWindowEvent({ type: 'updated', id: params.id, title: params.title });
-        }
-        applyWindowGeometry(record, {
-          x: params.x,
-          y: params.y,
-          width: params.width,
-          height: params.height,
-          zIndex: params.zIndex,
-        });
-        return { success: true, value: params.id };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "window.close": {
-      try {
-        const params = command.params;
-        destroyWindow(params.id);
-        return { success: true, value: params.id };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "dom.replace": {
-      const params = command.params;
-      if (!windows.has(params.windowId)) {
-        const ensured = await ensureWindowExists(params.windowId);
-        if (!ensured.success) return ensured;
-      }
-      return executeDomSet({
-        windowId: params.windowId,
-        target: params.target,
-        html: params.html,
-        sanitize: params.sanitize,
-      });
-    }
-    case "dom.append": {
-      try {
-        const params = command.params;
-        let record = windows.get(params.windowId);
-        if (!record) {
-          const ensured = await ensureWindowExists(params.windowId);
-          if (!ensured.success) return ensured;
-          record = windows.get(params.windowId)!;
-        }
-        const target = record.content.querySelector(params.target);
-        if (!target) {
-          return { success: false, error: `Target ${params.target} missing in window ${params.windowId}` };
-        }
-        const safeHtml = sanitizeHtmlStrict(String(params.html));
-        // WHY: Append path also routes through sanitizer to stop partial bypass via later queue mutations.
-        target.insertAdjacentHTML("beforeend", safeHtml as unknown as string);
-        return { success: true, value: params.windowId };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "component.render": {
-      const params = command.params;
-      if (!windows.has(params.windowId)) {
-        const ensured = await ensureWindowExists(params.windowId);
-        if (!ensured.success) return ensured;
-      }
-      return executeComponentRender(params);
-    }
-    case "component.update": {
-      try {
-        const params = command.params;
-        updateComponent(params);
-        return { success: true, value: params.id };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "component.destroy": {
-      try {
-        const params = command.params;
-        destroyComponent(params);
-        return { success: true, value: params.id };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "state.set": {
-      try {
-        const params = command.params;
-        setStateValue(params);
-        return { success: true, value: params.key };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "state.get": {
-      try {
-        const params = command.params;
-        return { success: true, value: getStateValue(params) };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "state.watch":
-    case "state.unwatch": {
-      try {
-        const params = command.params;
-        return { success: true, value: params.key };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    case "api.call": {
-      // WHY: Delegate to modular API router
-      const params = command.params;
-      return await routeApiCall(params, command, ctx, renderStructuredClarifierForm);
-    }
-    case "txn.cancel": {
-      try {
-        const params = command.params;
-        components.clear();
-        return { success: true, value: params.id ?? "txn" };
-      } catch (error) {
-        return toFailure(error);
-      }
-    }
-    default:
-      return { success: false, error: `Unsupported op ${(command as Envelope).op}` };
-  }
-};
 
+  // Always dispatch via v2 command table
+  const deps: CommandExecutorDeps = {
+    executeWindowCreate,
+    executeWindowUpdate: async (params, ensureExists) => {
+      if (ensureExists && !windows.has(params.id)) {
+        const ensured = await ensureWindowExists(params.id, params);
+        if (!ensured.success) return ensured;
+      }
+      const record = windows.get(params.id);
+      if (!record) return { success: false, error: `Window ${params.id} not found` };
+      if (params.title) {
+        record.titleText.textContent = params.title;
+        emitWindowEvent({ type: 'updated', id: params.id, title: params.title });
+      }
+      applyWindowGeometry(record, params);
+      return { success: true, value: params.id };
+    },
+    destroyWindow,
+    ensureWindowExists,
+    executeDomSet,
+    executeComponentRender,
+    updateComponent,
+    destroyComponent,
+    setStateValue,
+    getStateValue,
+    renderStructuredClarifierForm,
+    windows,
+    components,
+  };
+  return await dispatchCommand(command, ctx, deps);
+}

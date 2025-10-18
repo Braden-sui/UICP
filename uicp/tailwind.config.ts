@@ -1,8 +1,6 @@
 import type { Config } from 'tailwindcss'
 
 export default {
-  // Enable dark mode with class strategy
-  darkMode: 'class',
   content: [
     './index.html',
     './src/**/*.{ts,tsx}',

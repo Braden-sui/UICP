@@ -1,17 +1,28 @@
 ﻿import { useEffect, useRef } from "react";
 import { useAppStore } from "../state/app";
+import { usePreferencesStore } from "../state/preferences";
 import { isTouchDevice } from "../lib/utils";
 
 // Hook listens for proximity, keyboard, and touch gestures to control DockChat visibility.
+// Respects user preferences for dock behavior (proximity, auto-hide, always-visible).
 export const useDockReveal = (hideDelayMs = 2500) => {
   const chatOpen = useAppStore((state) => state.chatOpen);
   const setChatOpen = useAppStore((state) => state.setChatOpen);
   const streaming = useAppStore((state) => state.streaming);
+  const dockBehavior = usePreferencesStore((state) => state.dockBehavior);
   const hideTimer = useRef<number | null>(null);
   const hasFocus = useRef(false);
   const pointerNear = useRef(false);
 
+  // Proximity-based reveal (only active when dockBehavior is 'proximity')
   useEffect(() => {
+    if (dockBehavior !== 'proximity') {
+      // Always visible mode should open dock immediately
+      if (dockBehavior === 'always-visible') {
+        setChatOpen(true);
+      }
+      return;
+    }
     const handlePointerMove = (event: PointerEvent) => {
       const threshold = window.innerHeight - 72;
       const near = event.clientY >= threshold;
@@ -20,7 +31,7 @@ export const useDockReveal = (hideDelayMs = 2500) => {
     };
     window.addEventListener("pointermove", handlePointerMove, { passive: true });
     return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [setChatOpen]);
+  }, [setChatOpen, dockBehavior]);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -77,6 +88,7 @@ export const useDockReveal = (hideDelayMs = 2500) => {
     };
   }, [setChatOpen]);
 
+  // Auto-hide logic (respects dockBehavior preferences)
   useEffect(() => {
     if (hideTimer.current) {
       window.clearTimeout(hideTimer.current);
@@ -84,11 +96,35 @@ export const useDockReveal = (hideDelayMs = 2500) => {
     }
     if (!chatOpen) return;
     if (streaming) return;
+    // Always-visible mode never auto-hides
+    if (dockBehavior === 'always-visible') return;
+    // Auto-hide mode hides regardless of pointer/focus (after delay)
+    if (dockBehavior === 'auto-hide') {
+      hideTimer.current = window.setTimeout(() => {
+        if (useAppStore.getState().streaming) {
+          return;
+        }
+        if (usePreferencesStore.getState().dockBehavior === 'always-visible') {
+          return;
+        }
+        setChatOpen(false);
+      }, hideDelayMs);
+      return () => {
+        if (hideTimer.current) {
+          window.clearTimeout(hideTimer.current);
+          hideTimer.current = null;
+        }
+      };
+    }
+    // Proximity mode only hides when not focused and pointer not near
     if (hasFocus.current) return;
     if (pointerNear.current) return;
 
     hideTimer.current = window.setTimeout(() => {
       if (useAppStore.getState().streaming) {
+        return;
+      }
+      if (usePreferencesStore.getState().dockBehavior === 'always-visible') {
         return;
       }
       setChatOpen(false);
@@ -100,7 +136,7 @@ export const useDockReveal = (hideDelayMs = 2500) => {
         hideTimer.current = null;
       }
     };
-  }, [chatOpen, streaming, hideDelayMs, setChatOpen]);
+  }, [chatOpen, streaming, hideDelayMs, setChatOpen, dockBehavior]);
 
   const onFocus = () => {
     hasFocus.current = true;
@@ -115,9 +151,29 @@ export const useDockReveal = (hideDelayMs = 2500) => {
     if (hideTimer.current) {
       window.clearTimeout(hideTimer.current);
     }
+    const currentDockBehavior = usePreferencesStore.getState().dockBehavior;
+    // Always-visible mode never hides on blur
+    if (currentDockBehavior === 'always-visible') return;
+    // Auto-hide mode always sets timer on blur
+    if (currentDockBehavior === 'auto-hide') {
+      hideTimer.current = window.setTimeout(() => {
+        if (useAppStore.getState().streaming) {
+          return;
+        }
+        if (usePreferencesStore.getState().dockBehavior === 'always-visible') {
+          return;
+        }
+        setChatOpen(false);
+      }, hideDelayMs);
+      return;
+    }
+    // Proximity mode only hides if pointer not near
     if (!streaming && !pointerNear.current) {
       hideTimer.current = window.setTimeout(() => {
         if (useAppStore.getState().streaming) {
+          return;
+        }
+        if (usePreferencesStore.getState().dockBehavior === 'always-visible') {
           return;
         }
         setChatOpen(false);

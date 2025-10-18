@@ -5,12 +5,13 @@ import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
 import NotepadWindow from './NotepadWindow';
 import MetricsPanel from './MetricsPanel';
-import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon } from '../icons';
+import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon, SlidersIcon } from '../icons';
 import ComputeDemoWindow from './ComputeDemoWindow';
 import ModuleRegistryWindow from './ModuleRegistryWindow';
 import AgentTraceWindow from './AgentTraceWindow';
 import { useAppSelector, type DesktopShortcutPosition } from '../state/app';
 import AgentSettingsWindow from './AgentSettingsWindow';
+import PreferencesWindow from './PreferencesWindow';
 import DevtoolsAnalyticsListener from './DevtoolsAnalyticsListener';
 import { installWorkspaceArtifactCleanup } from '../lib/uicp/cleanup';
 import DesktopClock from './DesktopClock';
@@ -23,10 +24,12 @@ const METRICS_SHORTCUT_ID = 'metrics';
 const METRICS_SHORTCUT_DEFAULT = { x: 32, y: 224 } as const;
 const AGENT_SETTINGS_SHORTCUT_ID = 'agent-settings';
 const AGENT_SETTINGS_SHORTCUT_DEFAULT = { x: 32, y: 320 } as const;
+const PREFERENCES_SHORTCUT_ID = 'preferences';
+const PREFERENCES_SHORTCUT_DEFAULT = { x: 32, y: 416 } as const;
 const COMPUTE_DEMO_SHORTCUT_ID = 'compute-demo';
-const COMPUTE_DEMO_SHORTCUT_DEFAULT = { x: 32, y: 416 } as const;
+const COMPUTE_DEMO_SHORTCUT_DEFAULT = { x: 32, y: 512 } as const;
 const AGENT_TRACE_SHORTCUT_ID = 'agent-trace';
-const AGENT_TRACE_SHORTCUT_DEFAULT = { x: 32, y: 512 } as const;
+const AGENT_TRACE_SHORTCUT_DEFAULT = { x: 32, y: 608 } as const;
 
 // Desktop hosts the empty canvas the agent mutates via the adapter and surfaces shortcuts for manual control.
 export const Desktop = () => {
@@ -41,6 +44,8 @@ export const Desktop = () => {
   const setNotepadOpen = useAppSelector((s) => s.setNotepadOpen);
   const agentSettingsOpen = useAppSelector((s) => s.agentSettingsOpen);
   const setAgentSettingsOpen = useAppSelector((s) => s.setAgentSettingsOpen);
+  const preferencesOpen = useAppSelector((s) => s.preferencesOpen);
+  const setPreferencesOpen = useAppSelector((s) => s.setPreferencesOpen);
   const computeDemoOpen = useAppSelector((s) => s.computeDemoOpen);
   const setComputeDemoOpen = useAppSelector((s) => s.setComputeDemoOpen);
   const agentTraceOpen = useAppSelector((s) => s.agentTraceOpen);
@@ -52,6 +57,8 @@ export const Desktop = () => {
   const hideMetrics = useCallback(() => setMetricsOpen(false), [setMetricsOpen]);
   const openNotepad = useCallback(() => setNotepadOpen(true), [setNotepadOpen]);
   const hideNotepad = useCallback(() => setNotepadOpen(false), [setNotepadOpen]);
+  const openPreferences = useCallback(() => setPreferencesOpen(true), [setPreferencesOpen]);
+  const hidePreferences = useCallback(() => setPreferencesOpen(false), [setPreferencesOpen]);
   const openComputeDemo = useCallback(() => setComputeDemoOpen(true), [setComputeDemoOpen]);
   const hideComputeDemo = useCallback(() => setComputeDemoOpen(false), [setComputeDemoOpen]);
   const openAgentTrace = useCallback(() => setAgentTraceOpen(true), [setAgentTraceOpen]);
@@ -92,6 +99,7 @@ export const Desktop = () => {
     ensureShortcut(NOTEPAD_SHORTCUT_ID, { ...NOTEPAD_SHORTCUT_DEFAULT });
     ensureShortcut(METRICS_SHORTCUT_ID, { ...METRICS_SHORTCUT_DEFAULT });
     ensureShortcut(AGENT_SETTINGS_SHORTCUT_ID, { ...AGENT_SETTINGS_SHORTCUT_DEFAULT });
+    ensureShortcut(PREFERENCES_SHORTCUT_ID, { ...PREFERENCES_SHORTCUT_DEFAULT });
     ensureShortcut(COMPUTE_DEMO_SHORTCUT_ID, { ...COMPUTE_DEMO_SHORTCUT_DEFAULT });
     if (devMode || import.meta.env.DEV) {
       ensureShortcut(AGENT_TRACE_SHORTCUT_ID, { ...AGENT_TRACE_SHORTCUT_DEFAULT });
@@ -100,6 +108,7 @@ export const Desktop = () => {
     upsertWorkspaceWindow({ id: 'notepad', title: 'Notepad', kind: 'local' });
     upsertWorkspaceWindow({ id: 'metrics', title: 'Metrics', kind: 'local' });
     upsertWorkspaceWindow({ id: 'agent-settings', title: 'Agent Settings', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'preferences', title: 'Preferences', kind: 'local' });
     upsertWorkspaceWindow({ id: 'compute-demo', title: 'Compute Demo', kind: 'local' });
     if (devMode || import.meta.env.DEV) {
       upsertWorkspaceWindow({ id: 'agent-trace', title: 'Agent Trace', kind: 'local' });
@@ -109,6 +118,7 @@ export const Desktop = () => {
       removeWorkspaceWindow('notepad');
       removeWorkspaceWindow('metrics');
       removeWorkspaceWindow('agent-settings');
+      removeWorkspaceWindow('preferences');
       removeWorkspaceWindow('compute-demo');
       if (devMode || import.meta.env.DEV) {
         removeWorkspaceWindow('agent-trace');
@@ -141,6 +151,7 @@ export const Desktop = () => {
   const notepadPosition = shortcutPositions[NOTEPAD_SHORTCUT_ID] ?? NOTEPAD_SHORTCUT_DEFAULT;
   const metricsPosition = shortcutPositions[METRICS_SHORTCUT_ID] ?? METRICS_SHORTCUT_DEFAULT;
   const agentSettingsPosition = shortcutPositions[AGENT_SETTINGS_SHORTCUT_ID] ?? AGENT_SETTINGS_SHORTCUT_DEFAULT;
+  const preferencesPosition = shortcutPositions[PREFERENCES_SHORTCUT_ID] ?? PREFERENCES_SHORTCUT_DEFAULT;
   const computeDemoPosition = shortcutPositions[COMPUTE_DEMO_SHORTCUT_ID] ?? COMPUTE_DEMO_SHORTCUT_DEFAULT;
   const agentTracePosition = shortcutPositions[AGENT_TRACE_SHORTCUT_ID] ?? AGENT_TRACE_SHORTCUT_DEFAULT;
 
@@ -180,9 +191,18 @@ export const Desktop = () => {
     [setShortcutPosition],
   );
 
+  
+
   const handleAgentTracePosition = useCallback(
     (position: DesktopShortcutPosition) => {
       setShortcutPosition(AGENT_TRACE_SHORTCUT_ID, position);
+    },
+    [setShortcutPosition],
+  );
+
+  const handlePreferencesPosition = useCallback(
+    (position: DesktopShortcutPosition) => {
+      setShortcutPosition(PREFERENCES_SHORTCUT_ID, position);
     },
     [setShortcutPosition],
   );
@@ -259,6 +279,16 @@ export const Desktop = () => {
             ],
           } satisfies DesktopMenu;
         }
+        if (meta.id === PREFERENCES_SHORTCUT_ID) {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Preferences', onSelect: openPreferences, disabled: preferencesOpen },
+              { id: 'hide', label: 'Hide Preferences', onSelect: hidePreferences, disabled: !preferencesOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
         if (meta.id === AGENT_TRACE_SHORTCUT_ID) {
           return {
             id: meta.id,
@@ -297,6 +327,7 @@ export const Desktop = () => {
     hideLogs,
     hideMetrics,
     hideNotepad,
+    hidePreferences,
     logsOpen,
     metricsOpen,
     notepadOpen,
@@ -305,6 +336,8 @@ export const Desktop = () => {
     openLogs,
     openMetrics,
     openNotepad,
+    openPreferences,
+    preferencesOpen,
     setAgentSettingsOpen,
     workspaceWindows,
   ]);
@@ -371,6 +404,16 @@ export const Desktop = () => {
             active={agentSettingsOpen}
           />
           <DesktopIcon
+            id="preferences-shortcut"
+            label="Preferences"
+            position={preferencesPosition}
+            containerRef={overlayRef}
+            onOpen={openPreferences}
+            onPositionChange={handlePreferencesPosition}
+            icon={<SlidersIcon className="h-8 w-8" />}
+            active={preferencesOpen}
+          />
+          <DesktopIcon
             id="compute-demo-shortcut"
             label="Compute Demo"
             position={computeDemoPosition}
@@ -397,6 +440,7 @@ export const Desktop = () => {
       <MetricsPanel />
       <LogsPanel />
       <AgentSettingsWindow />
+      <PreferencesWindow />
       <ComputeDemoWindow />
       <ModuleRegistryWindow />
       <AgentTraceWindow />

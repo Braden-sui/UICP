@@ -39,10 +39,16 @@ export const DockChat = () => {
 
   const systemMessages = useMemo(() => messages.filter((msg) => msg.role === 'system'), [messages]);
 
+  const fullControlEnabled = useAppStore((state) => state.fullControl && !state.fullControlLocked);
+  const statusSequence = useMemo<AgentPhase[]>(
+    () => (fullControlEnabled ? (['planning', 'acting', 'applying'] as AgentPhase[]) : STATUS_PHASE_SEQUENCE),
+    [fullControlEnabled],
+  );
+
   const currentPhaseIndex = useMemo(() => {
     if (agentStatus.phase === 'idle') return -1;
-    return STATUS_PHASE_SEQUENCE.indexOf(agentStatus.phase);
-  }, [agentStatus.phase]);
+    return statusSequence.indexOf(agentStatus.phase);
+  }, [agentStatus.phase, statusSequence]);
 
   const statusTooltip = useMemo(() => {
     const parts: string[] = [];
@@ -143,7 +149,7 @@ export const DockChat = () => {
           <span>Status</span>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 text-[10px]">
-              {STATUS_PHASE_SEQUENCE.map((phaseKey, index) => {
+              {statusSequence.map((phaseKey, index) => {
                 const phaseClass =
                   currentPhaseIndex === -1
                     ? 'text-slate-400'

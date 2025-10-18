@@ -4,12 +4,12 @@ import { emitTelemetryEvent } from "../../telemetry";
 import { useAppStore } from "../../../state/app";
 import {
   addWorkspaceResetHandler,
-  applyCommand,
   persistCommand,
   recordStateCheckpoint,
   runJobsInFrame,
   type ApplyContext,
 } from "./adapter.lifecycle";
+import { applyBatch as applyBatchV2 } from "./lifecycle";
 
 const DEDUPE_TTL_MS = 10 * 60 * 1000; // 10 minute window for duplicate detection
 const DEDUPE_MAX_ENTRIES = 500;
@@ -160,16 +160,17 @@ export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise
         const context = deriveCommandContext(command, {
           runId: opts.runId ? `${opts.runId}:${index}` : opts.runId,
         });
-        const result = await applyCommand(command, context);
+        const result = await applyBatchV2([command], { runId: context.runId });
         const ms = Math.max(0, performance.now() - t0);
-        if (result.success) {
-          applied += 1;
+        if (result.success && result.applied > 0) {
+          applied += result.applied;
           emitAudit(command, "applied", ms);
           void persistCommand(command);
           return;
         }
-        emitAudit(command, "error", ms, result.error);
-        errors.push(`${command.op}: ${result.error}`);
+        const firstError = result.errors?.[0] ?? "Unknown error";
+        emitAudit(command, "error", ms, firstError);
+        errors.push(`${command.op}: ${firstError}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         emitAudit(command, "error", 0, message);
