@@ -16,6 +16,27 @@ export type SafeWriteResult =
 const DEFAULT_BASE = BaseDirectory.AppData;
 type SafeWriteErrorCode = Extract<SafeWriteResult, { ok: false }>["errorCode"];
 
+// Single source for mapping a string token to BaseDirectory.
+// Accepts a case-sensitive token like 'AppData', 'Desktop', etc. Falls back to AppData.
+export const toBaseDirectory = (token?: string | null): BaseDirectory => {
+  switch (token) {
+    case "AppConfig":
+      return BaseDirectory.AppConfig;
+    case "AppData":
+      return BaseDirectory.AppData;
+    case "AppLocalData":
+      return BaseDirectory.AppLocalData;
+    case "Document":
+      return BaseDirectory.Document;
+    case "Desktop":
+      return BaseDirectory.Desktop;
+    case "Download":
+      return BaseDirectory.Download;
+    default:
+      return DEFAULT_BASE;
+  }
+};
+
 const sanitizePathForPrompt = (path: string): string => {
   const trimmed = path.trim();
   if (!trimmed) {

@@ -5,7 +5,8 @@ import { hasTauriBridge, tauriInvoke } from "../../bridge/tauri";
 // Removed: tryRecoverJsonFromAttribute - strict JSON parsing only
 import { getBridgeWindow, getComputeBridge } from "../../bridge/globals";
 import { checkPermission, sanitizeHtmlStrict, escapeHtml } from "./adapter.security";
-import { safeWrite, BaseDirectory } from "./adapter.fs";
+import { safeWrite, BaseDirectory, toBaseDirectory } from "./adapter.fs";
+import { MAX_DATA_COMMAND_LEN, MAX_TEMPLATE_TOKENS } from "./adapter.constants";
 import { emitTelemetryEvent } from "../../telemetry";
 import {
   applyDynamicStyleRule,
@@ -36,21 +37,9 @@ export const runJobsInFrame = (jobs: Array<() => Promise<void>>): Promise<void> 
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
 type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;
 
-const ALLOWED_BASE_DIRECTORIES: Record<string, BaseDirectory> = {
-  AppConfig: BaseDirectory.AppConfig,
-  AppData: BaseDirectory.AppData,
-  AppLocalData: BaseDirectory.AppLocalData,
-  Document: BaseDirectory.Document,
-  Desktop: BaseDirectory.Desktop,
-  Download: BaseDirectory.Download,
-};
-
-const DEFAULT_EXPORT_DIRECTORY = BaseDirectory.AppData;
 const ALLOWED_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH']);
 
-// Safety caps for data-command attributes
-const MAX_DATA_COMMAND_LEN = 32768; // 32KB serialized JSON
-const MAX_TEMPLATE_TOKENS = 16; // maximum {{token}} substitutions per element
+// Safety caps for data-command attributes (sourced from adapter.constants)
 
 type WindowLifecycleEvent =
   | { type: 'created'; id: string; title: string }
@@ -1064,8 +1053,8 @@ const executeWindowCreate = (
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.setAttribute("aria-label", "Close window");
-    // Use a proper multiplication sign for close (avoid mojibake)
-    closeButton.textContent = "×";
+    // ASCII-only: use 'x' for the close glyph to avoid mojibake
+    closeButton.textContent = "x";
     closeButton.className = "flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-base text-slate-500 shadow-sm backdrop-blur-sm transition-all duration-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 hover:scale-110 active:scale-95";
     const stopPointerPropagation = (event: Event) => {
       event.stopPropagation();
@@ -1669,7 +1658,7 @@ export const applyCommand = async (command: Envelope, ctx: ApplyContext = {}): P
             typeof body.directory === 'string' && body.directory.trim().length > 0
               ? body.directory.trim()
               : undefined;
-          const dir = (dirToken ? ALLOWED_BASE_DIRECTORIES[dirToken] : undefined) ?? DEFAULT_EXPORT_DIRECTORY;
+          const dir = toBaseDirectory(dirToken);
           const safeResult = await safeWrite(path, contents, {
             base: dir,
             devDesktopWrite: dir === BaseDirectory.Desktop,

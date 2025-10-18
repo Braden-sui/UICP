@@ -179,7 +179,8 @@ export const createWindowManager = (
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.setAttribute('aria-label', 'Close window');
-    closeButton.textContent = '×';
+    // ASCII-only: use 'x' for the close glyph to avoid mojibake
+    closeButton.textContent = 'x';
     closeButton.className =
       'flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-base text-slate-500 shadow-sm backdrop-blur-sm transition-all duration-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 hover:scale-110 active:scale-95';
 
