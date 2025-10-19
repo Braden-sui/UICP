@@ -1,14 +1,20 @@
 // Re-export from adapters folder for backward compatibility
 export {
+  // V2 lifecycle helpers
   registerWindowLifecycle,
+  listWorkspaceWindows,
+  closeWorkspaceWindow,
+  clearWorkspaceRoot,
+} from "./adapters/lifecycle";
+
+export {
+  // V1 workspace registration and utilities (bridged to V2)
   registerWorkspaceRoot,
-  registerUIEventCallback,
   deferBatchIfNotReady,
   resetWorkspace,
   replayWorkspace,
-  listWorkspaceWindows,
-  closeWorkspaceWindow,
-} from "./adapters/adapter.lifecycle";
+  addWorkspaceResetHandler,
+} from "./adapters/lifecycle";
 
 // Keep exports aligned with adapters/adapter.ts
 export { applyBatch } from "./adapters/adapter.queue";

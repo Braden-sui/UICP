@@ -8,22 +8,29 @@
 // WHY: Import flag for conditional logic (not directly used in exports, but consumers can check it)
 export { ADAPTER_V2_ENABLED, getAdapterVersion } from "./adapter.featureFlags";
 
-// WHY: Always use v1 for utility functions (not yet migrated to v2)
-// These are safe because they don't affect core batch application behavior
+// V2 lifecycle helpers (window management)
 export {
   registerWindowLifecycle,
+  listWorkspaceWindows,
+  closeWorkspaceWindow,
+  clearWorkspaceRoot,
+} from "./lifecycle";
+
+// Event delegation and command routing
+export {
   registerUIEventCallback,
+  handleCommand,
+  registerCommandHandler,
+} from "./adapter.events";
+
+// V2 workspace management (includes event delegation, reset handlers, replay)
+export {
+  registerWorkspaceRoot,
   deferBatchIfNotReady,
   resetWorkspace,
   replayWorkspace,
-  listWorkspaceWindows,
-  closeWorkspaceWindow,
-  handleCommand,
-  registerCommandHandler,
-} from "./adapter.lifecycle";
-
-// Export workspace root from lifecycle that applyCommand uses
-export { registerWorkspaceRoot } from "./adapter.lifecycle";
+  addWorkspaceResetHandler,
+} from "./lifecycle";
 
 // Keep queue wrapper for apply semantics (idempotency, batching)
 export { applyBatch } from "./adapter.queue";
@@ -31,5 +38,5 @@ export { applyBatch } from "./adapter.queue";
 // WHY: Re-export types (same for both implementations)
 export type { ApplyOutcome, ApplyOptions } from "./schemas";
 
-// WHY: Test utilities (v1 only, not performance-critical)
-export { buildComponentMarkupForTest } from "./adapter.testkit";
+// WHY: Re-export persistence functions (used by adapter.queue)
+export { persistCommand, recordStateCheckpoint } from "./adapter.persistence";

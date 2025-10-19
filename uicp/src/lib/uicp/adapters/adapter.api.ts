@@ -12,6 +12,8 @@ import { safeWrite, BaseDirectory } from "./adapter.fs";
 import { emitTelemetryEvent } from "../../telemetry";
 import type { OperationParamMap, Envelope } from "./schemas";
 import type { JobSpec } from "../../../compute/types";
+import type { StructuredClarifierBody } from "./adapter.clarifier";
+import { isStructuredClarifierBody } from "./adapter.clarifier";
 
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
 type FetchRequestInit = NonNullable<Parameters<typeof fetch>[1]>;
@@ -36,52 +38,6 @@ const toFailure = (error: unknown): { success: false; error: string } => ({
   success: false,
   error: error instanceof Error ? error.message : String(error),
 });
-
-type StructuredClarifierOption = {
-  label?: string;
-  value: string;
-};
-
-type StructuredClarifierFieldSpec = {
-  name?: string;
-  label?: string;
-  placeholder?: string;
-  description?: string;
-  type?: string;
-  options?: StructuredClarifierOption[];
-  multiline?: boolean;
-  required?: boolean;
-  defaultValue?: string;
-};
-
-type StructuredClarifierBody = {
-  title?: string;
-  textPrompt?: string;
-  description?: string;
-  submit?: string;
-  cancel?: string | false;
-  windowId?: string;
-  width?: number;
-  height?: number;
-  fields?: StructuredClarifierFieldSpec[];
-  label?: string;
-  placeholder?: string;
-  multiline?: boolean;
-};
-
-const isStructuredClarifierBody = (input: Record<string, unknown>): input is StructuredClarifierBody => {
-  if (typeof input !== 'object' || input === null) return false;
-  if (typeof (input as { text?: unknown }).text === 'string') return false;
-  if (typeof (input as { textPrompt?: unknown }).textPrompt === 'string' && (input as { textPrompt: string }).textPrompt.trim()) {
-    return true;
-  }
-  if (Array.isArray((input as { fields?: unknown }).fields) && (input as { fields: unknown[] }).fields.length > 0) {
-    return true;
-  }
-  if (typeof (input as { placeholder?: unknown }).placeholder === 'string') return true;
-  if (typeof (input as { label?: unknown }).label === 'string') return true;
-  return false;
-};
 
 type ApplyContext = {
   runId?: string;
@@ -324,9 +280,5 @@ export const routeApiCall = async (
 };
 
 // Re-export types for external use
-export type {
-  StructuredClarifierBody,
-  StructuredClarifierFieldSpec,
-  StructuredClarifierOption,
-};
-export { isStructuredClarifierBody };
+// Clarifier helpers re-exported for compatibility
+export type { StructuredClarifierBody } from "./adapter.clarifier";

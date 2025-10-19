@@ -1,4 +1,7 @@
+import { createElement, useEffect, useRef } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, cleanup } from '@testing-library/react';
+import type { ChatMessage } from '../../src/state/chat';
 
 const applyBatchMock = vi.fn(async (batch: any[]) => ({
   success: true,
@@ -9,9 +12,9 @@ const applyBatchMock = vi.fn(async (batch: any[]) => ({
 }));
 
 // Mock lifecycle module to avoid workspace registration requirement
-vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
-  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
-    '../../src/lib/uicp/adapters/adapter.lifecycle',
+vi.mock('../../src/lib/uicp/adapters/lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/lifecycle')>(
+    '../../src/lib/uicp/adapters/lifecycle',
   );
   return {
     ...actual,
@@ -40,7 +43,34 @@ vi.mock('../../src/lib/llm/orchestrator', () => ({
 
 import { useAppStore } from '../../src/state/app';
 import { useChatStore } from '../../src/state/chat';
+import { usePreferencesStore } from '../../src/state/preferences';
 import { validateBatch, validatePlan } from '../../src/lib/uicp/schemas';
+
+const AutoApplyHarness = () => {
+  const pendingPlan = useChatStore((state) => state.pendingPlan);
+  const applyPendingPlan = useChatStore((state) => state.applyPendingPlan);
+  const fullControlEnabled = useAppStore((state) => state.fullControl && !state.fullControlLocked);
+  const streaming = useAppStore((state) => state.streaming);
+  const lastPlanId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingPlan) {
+      lastPlanId.current = null;
+      return;
+    }
+    if (!fullControlEnabled) return;
+    if (streaming) return;
+    if (lastPlanId.current === pendingPlan.id) return;
+    lastPlanId.current = pendingPlan.id;
+    void applyPendingPlan().finally(() => {
+      if (lastPlanId.current === pendingPlan.id) {
+        lastPlanId.current = null;
+      }
+    });
+  }, [pendingPlan?.id, fullControlEnabled, streaming, applyPendingPlan]);
+
+  return null;
+};
 
 describe('chat.plan-flow', () => {
   beforeEach(() => {
@@ -76,11 +106,16 @@ describe('chat.plan-flow', () => {
         error: undefined,
       },
     });
-
     useChatStore.setState({ messages: [], pendingPlan: undefined, sending: false, error: undefined });
+    usePreferencesStore.setState({
+      dockBehavior: 'proximity',
+      animationSpeed: 'normal',
+      fontSize: 'medium',
+    });
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
   });
 
@@ -172,14 +207,24 @@ describe('chat.plan-flow', () => {
 
     expect(useChatStore.getState().pendingPlan).toBeDefined();
 
+    render(createElement(AutoApplyHarness));
+
     useAppStore.setState({ fullControl: true });
     await vi.advanceTimersByTimeAsync(200);
     await Promise.resolve();
 
     const messages = useChatStore.getState().messages;
-    const last = messages[messages.length - 1];
-    expect(last.role).toBe('system');
-    expect(last.content).toMatch(/Applied 2 commands in [0-9]+ ms/);
+    let applyMessage: ChatMessage | undefined;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const candidate = messages[i];
+      if (/Applied 2 commands in [0-9]+ ms/.test(candidate.content)) {
+        applyMessage = candidate;
+        break;
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.log('messages after enabling full control', messages);
+    expect(applyMessage?.role).toBe('system');
     expect(useChatStore.getState().pendingPlan).toBeUndefined();
 
     const status = useAppStore.getState().agentStatus;

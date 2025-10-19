@@ -1,23 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock lifecycle to signal workspace is always ready
-vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
-  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
-    '../../src/lib/uicp/adapters/adapter.lifecycle',
+vi.mock('../../src/lib/uicp/adapters/lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/lifecycle')>(
+    '../../src/lib/uicp/adapters/lifecycle',
   );
   return {
     ...actual,
-    deferBatchIfNotReady: () => null,
+    deferBatchIfNotReady: () => null, // workspace is always ready in tests
   };
 });
 
-vi.mock('../../src/lib/uicp/adapters/queue', async () => {
-  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/queue')>('../../src/lib/uicp/adapters/queue');
-  return {
-    ...actual,
-    enqueueBatch: vi.fn(async () => ({ success: true, applied: 1, errors: [], skippedDupes: 0 })),
-  };
-});
+vi.mock('../../src/lib/uicp/adapters/queue', () => ({
+  enqueueBatch: vi.fn(async () => ({ success: true, applied: 1, errors: [], skippedDupes: 0 })),
+  clearAllQueues: vi.fn(),
+  createPartitionQueue: vi.fn(),
+}));
 
 import type { Batch } from '../../src/lib/uicp/schemas';
 import { registerWorkspaceRoot, resetWorkspace } from '../../src/lib/uicp/adapter';

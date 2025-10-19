@@ -10,9 +10,9 @@ const applyBatchMock = vi.fn(async (batch: any[]) => ({
 }));
 
 // Mock lifecycle to avoid workspace registration requirement
-vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
-  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
-    '../../src/lib/uicp/adapters/adapter.lifecycle',
+vi.mock('../../src/lib/uicp/adapters/lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/lifecycle')>(
+    '../../src/lib/uicp/adapters/lifecycle',
   );
   return {
     ...actual,

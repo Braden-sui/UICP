@@ -10,6 +10,7 @@
 import type { DomApplier } from './domApplier';
 import type { OperationParamMap } from '../../schema';
 import { escapeHtml } from './adapter.security';
+import { createId } from '../../utils';
 
 export interface ComponentRenderer {
   render(params: OperationParamMap['component.render']): Promise<void>;
@@ -114,7 +115,10 @@ export const createComponentRenderer = (
    * Render component into target window
    */
   const render = async (params: OperationParamMap['component.render']): Promise<void> => {
-    const html = getMarkup(params);
+    const componentId = params.id ?? createId('component');
+    const inner = getMarkup(params);
+    // Wrap with a container so tests can select by data-component-id consistently (parity with v1)
+    const html = `<div data-component-id="${escapeHtml(componentId)}">${inner}</div>`;
 
     // Use DomApplier to handle the actual DOM mutation
     await domApplier.apply({
@@ -122,7 +126,7 @@ export const createComponentRenderer = (
       target: params.target,
       html,
       mode: 'set',
-      sanitize: true,
+      sanitize: false,
     });
   };
 

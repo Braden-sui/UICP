@@ -1,15 +1,8 @@
-import { type Batch, type Envelope, computeBatchHash, type ApplyOptions, type ApplyOutcome } from "./schemas";
+import { type Batch, computeBatchHash, type ApplyOptions, type ApplyOutcome } from "./schemas";
 import { createId } from "../../utils";
 import { emitTelemetryEvent } from "../../telemetry";
-import { useAppStore } from "../../../state/app";
-import {
-  addWorkspaceResetHandler,
-  persistCommand,
-  recordStateCheckpoint,
-  runJobsInFrame,
-  type ApplyContext,
-} from "./adapter.lifecycle";
-import { applyBatch as applyBatchV2 } from "./lifecycle";
+import { persistCommand, recordStateCheckpoint } from "./adapter.persistence";
+import { addWorkspaceResetHandler, applyBatch as applyBatchV2 } from "./lifecycle";
 
 const DEDUPE_TTL_MS = 10 * 60 * 1000; // 10 minute window for duplicate detection
 const DEDUPE_MAX_ENTRIES = 500;
@@ -104,28 +97,6 @@ const emitDuplicateTelemetry = (batch: Batch, record: BatchRecord, opsHash: stri
   }
 };
 
-const createAuditEmitter = () => {
-  return (env: Envelope, outcome: "applied" | "error", ms: number, error?: string) => {
-    try {
-      const traceId = env.traceId ?? "batch";
-      useAppStore.getState().upsertTelemetry(traceId, {
-        summary: `${env.op} ${outcome}`,
-        status: outcome === "applied" ? "applying" : "error",
-        applyMs: ms,
-        ...(error ? { error } : {}),
-        updatedAt: Date.now(),
-      });
-    } catch {
-      // best effort only
-    }
-  };
-};
-
-const deriveCommandContext = (env: Envelope, opts: ApplyOptions): ApplyContext => {
-  const runId = opts.runId ?? env.traceId ?? env.id ?? createId("cmd");
-  return { runId: typeof runId === "string" ? runId : String(runId) };
-};
-
 export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise<ApplyOutcome> => {
   const now = Date.now();
   cleanupExpired(now);
@@ -133,7 +104,8 @@ export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise
   const opsHash = opts.opsHash ?? computeBatchHash(batch);
   const batchId = opts.batchId ?? createId("batch");
 
-  const duplicate = findDuplicate(opts.batchId, opsHash, now);
+  // Check for duplicate using the computed batchId (not opts.batchId which may be undefined)
+  const duplicate = findDuplicate(batchId, opsHash, now);
   if (duplicate) {
     emitDuplicateTelemetry(batch, duplicate, opsHash, now);
     const skipped = batch.length;
@@ -148,38 +120,7 @@ export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise
     };
   }
 
-  const plannedJobs: Array<() => Promise<void>> = [];
-  const errors: string[] = [];
-  let applied = 0;
-  const emitAudit = createAuditEmitter();
-
-  batch.forEach((command, index) => {
-    plannedJobs.push(async () => {
-      try {
-        const t0 = performance.now();
-        const context = deriveCommandContext(command, {
-          runId: opts.runId ? `${opts.runId}:${index}` : opts.runId,
-        });
-        const result = await applyBatchV2([command], { runId: context.runId });
-        const ms = Math.max(0, performance.now() - t0);
-        if (result.success && result.applied > 0) {
-          applied += result.applied;
-          emitAudit(command, "applied", ms);
-          void persistCommand(command);
-          return;
-        }
-        const firstError = result.errors?.[0] ?? "Unknown error";
-        emitAudit(command, "error", ms, firstError);
-        errors.push(`${command.op}: ${firstError}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        emitAudit(command, "error", 0, message);
-        errors.push(`${command.op}: ${message}`);
-      }
-    });
-  });
-
-  if (plannedJobs.length === 0) {
+  if (batch.length === 0) {
     return {
       success: true,
       applied: 0,
@@ -191,28 +132,27 @@ export const applyBatch = async (batch: Batch, opts: ApplyOptions = {}): Promise
     };
   }
 
-  try {
-    await runJobsInFrame(plannedJobs);
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
-  }
+  // Route the entire batch to V2 orchestrator
+  const contextRunId = opts.runId ?? batch[0]?.traceId ?? createId("run");
+  const result = await applyBatchV2(batch, { ...opts, batchId, opsHash, runId: contextRunId });
 
-  if (errors.length === 0 && applied > 0) {
-    recordHistory({ batchId, opsHash, timestamp: now, applied });
-  }
-
-  if (errors.length === 0) {
+  // Persist each command on success
+  if (result.success && result.applied > 0) {
+    for (const command of batch) {
+      void persistCommand(command);
+    }
+    // Use our computed batchId/opsHash for history (V2 might not return them)
+    recordHistory({ batchId, opsHash, timestamp: now, applied: result.applied });
     await recordStateCheckpoint();
   }
 
-  const success = errors.length === 0 || (opts.allowPartial === true && applied > 0);
   return {
-    success,
-    applied,
-    skippedDuplicates: 0,
-    deniedByPolicy: 0,
-    errors,
-    batchId,
-    opsHash,
+    success: result.success,
+    applied: result.applied,
+    skippedDuplicates: result.skippedDuplicates ?? 0,
+    deniedByPolicy: result.deniedByPolicy ?? 0,
+    errors: result.errors ?? [],
+    batchId: result.batchId ?? batchId,
+    opsHash: result.opsHash ?? opsHash,
   };
 };

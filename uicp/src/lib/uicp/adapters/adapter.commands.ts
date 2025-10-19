@@ -8,7 +8,7 @@
 
 import type { Envelope, OperationParamMap } from "./schemas";
 import { routeApiCall } from "./adapter.api";
-import type { StructuredClarifierBody } from "./adapter.api";
+import type { StructuredClarifierBody } from "./adapter.clarifier";
 
 export type CommandResult<T = unknown> =
   | { success: true; value: T }

@@ -12,9 +12,9 @@ import type { Batch } from '../../src/lib/uicp/schemas';
  */
 
 // Mock lifecycle to signal workspace is always ready
-vi.mock('../../src/lib/uicp/adapters/adapter.lifecycle', async () => {
-  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/adapter.lifecycle')>(
-    '../../src/lib/uicp/adapters/adapter.lifecycle',
+vi.mock('../../src/lib/uicp/adapters/lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/uicp/adapters/lifecycle')>(
+    '../../src/lib/uicp/adapters/lifecycle',
   );
   return {
     ...actual,

@@ -83,8 +83,9 @@ export const createDomApplier = (
     const shouldSanitize = params.sanitize !== false;
     const html = shouldSanitize ? sanitizeHtmlStrict(params.html) : params.html;
 
-    // Check deduplication
-    if (dedupeEnabled) {
+    // Check deduplication (only for set/replace, not append)
+    const mode = params.mode ?? 'set';
+    if (dedupeEnabled && mode !== 'append') {
       const dedupeKey = `${windowId}:${params.target}`;
       const contentHash = hashString(html);
       const existing = contentHashes.get(dedupeKey);
@@ -99,7 +100,6 @@ export const createDomApplier = (
     }
 
     // Apply DOM mutation based on mode
-    const mode = params.mode ?? 'set';
     try {
       switch (mode) {
         case 'set':

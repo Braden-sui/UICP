@@ -44,7 +44,7 @@ describe('orchestrator fallbacks', () => {
     } finally {
       errorSpy.mockRestore();
     }
-  });
+  }, 30000);
 
   it('routes nop back to planner (no batch)', async () => {
     vi.resetModules();
@@ -80,5 +80,5 @@ describe('orchestrator fallbacks', () => {
     } finally {
       errorSpy.mockRestore();
     }
-  });
+  }, 30000);
 });

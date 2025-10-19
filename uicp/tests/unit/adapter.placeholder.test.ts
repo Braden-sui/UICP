@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildComponentMarkup } from '../../src/lib/uicp/adapters/adapter.lifecycle';
+import { buildComponentMarkupForTest as buildComponentMarkup } from '../../src/lib/uicp/adapters/adapter.testkit';
 
 describe('adapter component markup', () => {
   it('uses a neutral frame with no visible placeholder text for unknown components', () => {

@@ -36,6 +36,7 @@ export const DockChat = () => {
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const autoApplyPlanRef = useRef<string | null>(null);
 
   const systemMessages = useMemo(() => messages.filter((msg) => msg.role === 'system'), [messages]);
 
@@ -74,6 +75,22 @@ export const DockChat = () => {
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages, pendingPlan]);
+
+  useEffect(() => {
+    if (!pendingPlan) {
+      autoApplyPlanRef.current = null;
+      return;
+    }
+    if (!fullControlEnabled) return;
+    if (streaming) return;
+    if (autoApplyPlanRef.current === pendingPlan.id) return;
+    autoApplyPlanRef.current = pendingPlan.id;
+    void applyPendingPlan().finally(() => {
+      if (autoApplyPlanRef.current === pendingPlan.id) {
+        autoApplyPlanRef.current = null;
+      }
+    });
+  }, [pendingPlan, fullControlEnabled, streaming, applyPendingPlan]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();

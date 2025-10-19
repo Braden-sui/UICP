@@ -8,6 +8,7 @@
  */
 
 import { createId } from '../../utils';
+import { hasTauriBridge, tauriInvoke } from '../../bridge/tauri';
 import { escapeForSelector, applyDynamicStyleRule, removeDynamicStyleRule, type DynamicStyleDeclarations } from '../../css/dynamicStyles';
 import type { WindowId, WindowRecord, WindowLifecycleEvent, WindowLifecycleListener } from './adapter.types';
 import type { OperationParamMap } from '../../schema';
@@ -209,6 +210,65 @@ export const createWindowManager = (
     wrapper.appendChild(chrome);
     wrapper.appendChild(content);
 
+    // Resize handles (east and south) for manual resizing in tests and UI
+    const makeHandle = (dir: 'east' | 'south') => {
+      const handle = document.createElement('div');
+      handle.setAttribute('data-resize-handle', dir);
+      // Minimal invisible area; tests query by attribute, not style
+      handle.style.position = 'absolute';
+      handle.style.userSelect = 'none';
+      handle.style.touchAction = 'none';
+      if (dir === 'east') {
+        handle.style.right = '0';
+        handle.style.top = '0';
+        handle.style.width = '8px';
+        handle.style.height = '100%';
+        handle.style.cursor = 'ew-resize';
+      } else {
+        handle.style.left = '0';
+        handle.style.bottom = '0';
+        handle.style.height = '8px';
+        handle.style.width = '100%';
+        handle.style.cursor = 'ns-resize';
+      }
+
+      let startX = 0;
+      let startY = 0;
+      let startWidth = 0;
+      let startHeight = 0;
+
+      const onPointerMove = (e: PointerEvent) => {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const next: Partial<{ width: number; height: number }> = {};
+        if (dir === 'east') next.width = Math.max(120, Math.round(startWidth + dx));
+        if (dir === 'south') next.height = Math.max(120, Math.round(startHeight + dy));
+        applyWindowGeometry(record, next);
+      };
+      const onPointerUp = (_e: PointerEvent) => {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+      };
+      handle.addEventListener('pointerdown', (e: PointerEvent) => {
+        try {
+          const rect = wrapper.getBoundingClientRect();
+          startX = e.clientX;
+          startY = e.clientY;
+          startWidth = rect.width;
+          startHeight = rect.height;
+          window.addEventListener('pointermove', onPointerMove);
+          window.addEventListener('pointerup', onPointerUp);
+        } catch (error) {
+          console.error('resize handle pointerdown failed', error);
+        }
+      });
+      return handle;
+    };
+
+    wrapper.style.position = 'relative';
+    wrapper.appendChild(makeHandle('east'));
+    wrapper.appendChild(makeHandle('south'));
+
     // Set min dimensions
     const initialWidth = typeof params.width === 'number' ? params.width : 640;
     const initialHeight = typeof params.height === 'number' ? params.height : 480;
@@ -309,6 +369,14 @@ export const createWindowManager = (
    */
   const close = async (params: OperationParamMap['window.close']): Promise<{ applied: boolean }> => {
     destroyWindow(params.id);
+    // Persist delete command so Tauri clears stored window when closed via API
+    if (hasTauriBridge()) {
+      try {
+        await tauriInvoke('delete_window_commands', { windowId: params.id });
+      } catch (error) {
+        console.error('Failed to schedule delete_window_commands', params.id, error);
+      }
+    }
     return { applied: true };
   };
 

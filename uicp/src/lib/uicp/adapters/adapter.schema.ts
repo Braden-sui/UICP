@@ -14,7 +14,7 @@ import { AdapterError } from './adapter.errors';
  * Validates structure before operation-specific validation
  */
 export const EnvelopeSchema = z.object({
-  id: z.string().min(1, 'Envelope ID required'),
+  id: z.string().min(1, 'Envelope ID required').optional(),
   op: z.string().min(1, 'Operation name required'),
   params: z.unknown(),
   timestamp: z.number().optional(),

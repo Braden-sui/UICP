@@ -14,21 +14,282 @@
  * - All events tracked (via AdapterTelemetry)
  */
 
-import type { Envelope, Batch } from '../../schema';
-import type { ApplyOutcome, ApplyOptions, PermissionScope } from './adapter.types';
+import type { Envelope, Batch, OperationParamMap } from '../../schema';
+import type { ApplyOutcome, ApplyOptions, PermissionScope, WindowLifecycleEvent, WindowLifecycleListener } from './adapter.types';
 import { validateEnvelope } from './adapter.schema';
 import { AdapterError } from './adapter.errors';
 import { createWindowManager } from './windowManager';
+import type { WindowManager } from './windowManager';
 import { createDomApplier } from './domApplier';
+import type { DomApplier } from './domApplier';
 import { createComponentRenderer } from './componentRenderer';
+import type { ComponentRenderer } from './componentRenderer';
 import { createPermissionGate } from './permissionGate';
 import { createAdapterTelemetry, AdapterEvents } from './adapter.telemetry';
 import { createId } from '../../utils';
+import { routeApiCall } from './adapter.api';
+import type { StructuredClarifierBody, StructuredClarifierFieldSpec, StructuredClarifierOption } from './adapter.clarifier';
+import { persistCommand } from './adapter.persistence';
+import { createDelegatedEventHandler } from './adapter.events';
 
 /**
  * Workspace root element (must be registered before applying operations)
  */
 let workspaceRoot: HTMLElement | null = null;
+let windowManagerInstance: WindowManager | null = null;
+let domApplierInstance: DomApplier | null = null;
+let componentRendererInstance: ComponentRenderer | null = null;
+const windowLifecycleListeners = new Set<WindowLifecycleListener>();
+
+// V2 state store (scoped: window, workspace, global)
+type StateScope = 'window' | 'workspace' | 'global';
+const stateStore = new Map<StateScope, Map<string, unknown>>([
+  ['window', new Map()],
+  ['workspace', new Map()],
+  ['global', new Map()],
+]);
+
+// Workspace ready flag and pending batch queue (handles race condition where batches
+// arrive before Desktop.tsx registers the workspace root)
+let workspaceReady = false;
+type PendingBatchEntry = {
+  batch: Batch;
+  resolve: (outcome: ApplyOutcome) => void;
+  reject: (error: unknown) => void;
+};
+const pendingBatches: PendingBatchEntry[] = [];
+
+// Reset handlers allow extensions to hook into workspace reset
+const resetHandlers = new Set<() => void>();
+
+type ClarifierField = {
+  name: string;
+  label: string;
+  placeholder?: string;
+  description?: string;
+  required: boolean;
+  defaultValue?: string;
+  type: 'text' | 'textarea' | 'select';
+  options?: Array<{ label: string; value: string }>;
+};
+
+type CommandResult<T = unknown> =
+  | { success: true; value: T }
+  | { success: false; error: string };
+
+const renderStructuredClarifier = async (
+  body: StructuredClarifierBody,
+  command: Envelope,
+  windowManager: WindowManager,
+): Promise<void> => {
+  const fallbackField: StructuredClarifierFieldSpec = {
+    name: 'answer',
+    label: typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Answer',
+    placeholder: typeof body.placeholder === 'string' ? body.placeholder : undefined,
+    multiline: Boolean(body.multiline),
+  };
+  const candidateFields = Array.isArray(body.fields)
+    ? body.fields.filter((field): field is StructuredClarifierFieldSpec => Boolean(field))
+    : [];
+  const fieldSpecs: StructuredClarifierFieldSpec[] =
+    candidateFields.length > 0 ? candidateFields : [fallbackField];
+
+  const fields: ClarifierField[] = fieldSpecs.map((spec, index) => {
+    const name = typeof spec?.name === 'string' && spec.name.trim() ? spec.name.trim() : `field_${index + 1}`;
+    const label = typeof spec?.label === 'string' && spec.label.trim() ? spec.label.trim() : name;
+    const placeholder = typeof spec?.placeholder === 'string' ? spec.placeholder : undefined;
+    const description = typeof spec?.description === 'string' ? spec.description : undefined;
+    const required = spec?.required === undefined ? true : Boolean(spec.required);
+    const defaultValue = typeof spec?.defaultValue === 'string' ? spec.defaultValue : undefined;
+    const inferredType = typeof spec?.type === 'string' ? spec.type.toLowerCase() : undefined;
+    const multiline = inferredType === 'textarea' || Boolean(spec?.multiline);
+    const options: Array<{ label: string; value: string }> | undefined = Array.isArray(spec?.options)
+      ? spec.options
+          .map((option: StructuredClarifierOption | null | undefined) => {
+            if (!option || typeof option.value !== 'string') {
+              return null;
+            }
+            const optionLabel =
+              typeof option.label === 'string' && option.label.trim() ? option.label : option.value;
+            return { label: optionLabel, value: option.value };
+          })
+          .filter(
+            (
+              option: { label: string; value: string } | null,
+            ): option is { label: string; value: string } => option !== null,
+          )
+      : undefined;
+
+    let type: 'text' | 'textarea' | 'select' = 'text';
+    if (multiline) {
+      type = 'textarea';
+    } else if (inferredType === 'select' && options && options.length > 0) {
+      type = 'select';
+    }
+
+    return { name, label, placeholder, description, required, defaultValue, type, options };
+  });
+
+  const prompt = typeof body.textPrompt === 'string' && body.textPrompt.trim() ? body.textPrompt.trim() : 'Please provide additional detail.';
+  const submitText = typeof body.submit === 'string' && body.submit.trim() ? body.submit.trim() : 'Continue';
+  const cancelText = body.cancel === false ? null : typeof body.cancel === 'string' && body.cancel.trim() ? body.cancel.trim() : 'Cancel';
+  const providedWindowId = typeof body.windowId === 'string' && body.windowId.trim() ? body.windowId.trim() : undefined;
+  const commandWindowId = typeof command.windowId === 'string' && command.windowId.trim() ? command.windowId.trim() : undefined;
+  const windowId = providedWindowId ?? commandWindowId ?? createId('clarifier');
+  const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : windowId;
+  const width = typeof body.width === 'number' && Number.isFinite(body.width) ? body.width : undefined;
+  const height = typeof body.height === 'number' && Number.isFinite(body.height) ? body.height : undefined;
+
+  if (!windowManager.exists(windowId)) {
+    await windowManager.create({ id: windowId, title, width, height });
+  }
+
+  const statusId = `${windowId}-clarifier-status`;
+  const commandPayload = {
+    question: prompt,
+    windowId,
+    text: fields.map((field) => `${field.label}: {{form.${field.name}}}`).join('\n').trim() || `{{form.${fields[0]?.name}}}`,
+    fields: fields.map((field) => ({ name: field.name, label: field.label, value: `{{form.${field.name}}}` })),
+  };
+
+  const submitCommands: Batch = [
+    { op: 'api.call', params: { method: 'POST', url: 'uicp://intent', body: commandPayload } },
+    {
+      op: 'dom.set',
+      params: {
+        windowId,
+        target: `#${statusId}`,
+        html: '<span class="text-xs text-slate-500">Processing...</span>',
+      },
+    },
+    { op: 'window.close', params: { id: windowId } },
+  ];
+
+  const cancelCommands: Batch | null = cancelText
+    ? [{ op: 'window.close', params: { id: windowId } }]
+    : null;
+
+  const record = windowManager.getRecord(windowId);
+  if (!record) return;
+  const root = record.content.querySelector('#root');
+  if (!root) return;
+
+  const doc = root.ownerDocument ?? document;
+  const container = doc.createElement('div');
+  container.className = 'structured-clarifier flex flex-col gap-3 p-4';
+
+  const promptEl = doc.createElement('p');
+  promptEl.className = 'text-sm text-slate-700';
+  promptEl.textContent = prompt;
+  container.appendChild(promptEl);
+
+  if (typeof body.description === 'string' && body.description.trim()) {
+    const descriptionEl = doc.createElement('p');
+    descriptionEl.className = 'text-xs text-slate-500';
+    descriptionEl.textContent = body.description.trim();
+    container.appendChild(descriptionEl);
+  }
+
+  const form = doc.createElement('form');
+  form.className = 'flex flex-col gap-3';
+  form.setAttribute('data-structured-clarifier', 'true');
+
+  fields.forEach((field, index) => {
+    const wrapper = doc.createElement('label');
+    wrapper.className = 'flex flex-col gap-1 text-sm text-slate-600';
+
+    const labelEl = doc.createElement('span');
+    labelEl.className = 'font-semibold text-slate-700';
+    labelEl.textContent = field.label;
+    wrapper.appendChild(labelEl);
+
+    let control: HTMLElement;
+    if (field.type === 'textarea') {
+      const textarea = doc.createElement('textarea');
+      textarea.name = field.name;
+      textarea.rows = 4;
+      textarea.className = 'rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400';
+      if (field.placeholder) textarea.placeholder = field.placeholder;
+      if (field.required) textarea.required = true;
+      if (field.defaultValue) textarea.value = field.defaultValue;
+      control = textarea;
+    } else if (field.type === 'select') {
+      const select = doc.createElement('select');
+      select.name = field.name;
+      select.className = 'rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400';
+      if (field.required) select.required = true;
+      for (const option of field.options ?? []) {
+        const optionEl = doc.createElement('option');
+        optionEl.value = option.value;
+        optionEl.textContent = option.label;
+        if (field.defaultValue && field.defaultValue === option.value) {
+          optionEl.selected = true;
+        }
+        select.appendChild(optionEl);
+      }
+      control = select;
+    } else {
+      const input = doc.createElement('input');
+      input.type = 'text';
+      input.name = field.name;
+      input.className = 'rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400';
+      if (field.placeholder) input.placeholder = field.placeholder;
+      if (field.required) input.required = true;
+      if (field.defaultValue) input.value = field.defaultValue;
+      control = input;
+    }
+
+    control.setAttribute('aria-label', field.label);
+    wrapper.appendChild(control);
+
+    if (field.description) {
+      const helper = doc.createElement('span');
+      helper.className = 'text-xs text-slate-500';
+      helper.textContent = field.description;
+      wrapper.appendChild(helper);
+    }
+
+    form.appendChild(wrapper);
+
+    if (index === 0) {
+      queueMicrotask(() => {
+        (control as HTMLElement).focus();
+      });
+    }
+  });
+
+  const controls = doc.createElement('div');
+  controls.className = 'mt-1 flex items-center gap-2';
+
+  const submitButton = doc.createElement('button');
+  submitButton.type = 'submit';
+  submitButton.className = 'rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700';
+  submitButton.textContent = submitText;
+  submitButton.setAttribute('data-command', JSON.stringify(submitCommands));
+  controls.appendChild(submitButton);
+
+  if (cancelCommands) {
+    const cancelButton = doc.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'rounded border border-slate-300 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100';
+    cancelButton.textContent = cancelText ?? '';
+    cancelButton.setAttribute('data-command', JSON.stringify(cancelCommands));
+    controls.appendChild(cancelButton);
+  }
+
+  form.appendChild(controls);
+
+  const status = doc.createElement('div');
+  status.id = statusId;
+  status.className = 'text-xs text-slate-500';
+  status.setAttribute('aria-live', 'polite');
+  form.appendChild(status);
+
+  container.appendChild(form);
+
+  root.innerHTML = '';
+  root.appendChild(container);
+};
 
 /**
  * Register workspace root element.
@@ -36,6 +297,78 @@ let workspaceRoot: HTMLElement | null = null;
  */
 export const registerWorkspaceRoot = (element: HTMLElement): void => {
   workspaceRoot = element;
+  workspaceReady = true;
+  
+  // Initialize singletons bound to the new root
+  windowManagerInstance = createWindowManager(element, {
+    onLifecycleEvent: (event: WindowLifecycleEvent) => {
+      for (const listener of windowLifecycleListeners) {
+        try {
+          listener(event);
+        } catch (err) {
+          // lifecycle listeners must not throw
+          console.error('window lifecycle listener error', err);
+        }
+      }
+    },
+  });
+  domApplierInstance = createDomApplier(windowManagerInstance, { enableDeduplication: true });
+  componentRendererInstance = createComponentRenderer(domApplierInstance, {
+    onUnknownComponent: (_type) => {
+      // Telemetry will be created during applyBatch; we only need the hook here
+      // to avoid missing the option shape. Actual events are emitted in applyBatch.
+    },
+  });
+  
+  // Set up event delegation
+  const setStateValue = (params: { scope: StateScope; key: string; value: unknown; windowId?: string }) => {
+    const scopeStore = stateStore.get(params.scope);
+    if (scopeStore) {
+      const key = params.scope === 'window' && params.windowId ? `${params.windowId}:${params.key}` : params.key;
+      scopeStore.set(key, params.value);
+    }
+  };
+  
+  const handleDelegatedEvent = createDelegatedEventHandler(element, setStateValue);
+  element.addEventListener('click', handleDelegatedEvent, true);
+  element.addEventListener('input', handleDelegatedEvent, true);
+  element.addEventListener('submit', handleDelegatedEvent, true);
+  element.addEventListener('change', handleDelegatedEvent, true);
+  
+  // Process any batches that arrived before workspace was ready
+  if (pendingBatches.length > 0) {
+    console.debug(`[adapter.v2] flushing ${pendingBatches.length} pending batch(es)`);
+    const toProcess = pendingBatches.splice(0);
+    for (const entry of toProcess) {
+      applyBatch(entry.batch)
+        .then(entry.resolve)
+        .catch(entry.reject);
+    }
+  }
+};
+
+const ensureInitialized = () => {
+  if (!workspaceRoot) return false;
+  if (!windowManagerInstance) {
+    windowManagerInstance = createWindowManager(workspaceRoot, {
+      onLifecycleEvent: (event: WindowLifecycleEvent) => {
+        for (const listener of windowLifecycleListeners) {
+          try {
+            listener(event);
+          } catch (err) {
+            console.error('window lifecycle listener error', err);
+          }
+        }
+      },
+    });
+  }
+  if (!domApplierInstance) {
+    domApplierInstance = createDomApplier(windowManagerInstance, { enableDeduplication: true });
+  }
+  if (!componentRendererInstance) {
+    componentRendererInstance = createComponentRenderer(domApplierInstance);
+  }
+  return true;
 };
 
 /**
@@ -76,14 +409,22 @@ export const applyBatch = async (
     runId: options?.runId,
   });
 
-  // Initialize modules
-  const windowManager = createWindowManager(workspaceRoot);
-  const domApplier = createDomApplier(windowManager, { enableDeduplication: true });
-  const componentRenderer = createComponentRenderer(domApplier, {
-    onUnknownComponent: (type) => {
-      telemetry.event(AdapterEvents.COMPONENT_UNKNOWN, { type });
-    },
-  });
+  // Initialize or reuse modules
+  if (!ensureInitialized()) {
+    const error = new AdapterError('Adapter.Internal', 'Workspace modules not initialized');
+    telemetry.error(AdapterEvents.APPLY_ABORT, error, { reason: 'no_modules' });
+    return {
+      success: false,
+      applied: 0,
+      skippedDuplicates: 0,
+      deniedByPolicy: 0,
+      errors: [error.message],
+      batchId,
+    };
+  }
+  const windowManager = windowManagerInstance!;
+  const domApplier = domApplierInstance!;
+  const componentRenderer = componentRendererInstance!;
   const permissionGate = createPermissionGate();
 
   // Aggregate outcome
@@ -142,8 +483,8 @@ export const applyBatch = async (
         telemetry.error(AdapterEvents.VALIDATION_ERROR, error, { opIndex: i, op: envelope.op });
       }
 
-      // Stop on first error unless allowPartial
-      if (!options?.allowPartial) {
+      // Default to continue after errors unless explicitly disabled
+      if (options?.allowPartial === false) {
         break;
       }
     }
@@ -181,9 +522,49 @@ const routeOperation = async (
   switch (envelope.op) {
     case 'window.create': {
       const params = envelope.params as Parameters<typeof windowManager.create>[0];
-      const { windowId, applied } = await windowManager.create(params);
+      const { windowId } = await windowManager.create(params);
       telemetry.event(AdapterEvents.WINDOW_CREATE, { windowId });
-      if (applied) outcome.applied += 1;
+      // Count create as applied even if it was an idempotent no-op; batch dedupe occurs at queue level.
+      outcome.applied += 1;
+      break;
+    }
+
+    case 'window.update': {
+      const params = envelope.params as {
+        id: string;
+        title?: string;
+        x?: number;
+        y?: number;
+        width?: number;
+        height?: number;
+        zIndex?: number;
+      };
+      // Ensure window exists (auto-create)
+      if (!windowManager.exists(params.id)) {
+        const title = typeof params.title === 'string' && params.title.trim() ? params.title : params.id;
+        await windowManager.create({ id: params.id, title });
+        telemetry.event(AdapterEvents.WINDOW_CREATE, { windowId: params.id, synthetic: true });
+        // Persist synthetic window.create
+        void persistCommand({ op: 'window.create', params: { id: params.id, title } });
+      }
+      const record = windowManager.getRecord(params.id);
+      if (!record) {
+        throw new AdapterError('Adapter.WindowNotFound', `Window not found: ${params.id}`);
+      }
+      if (typeof params.title === 'string') {
+        record.titleText.textContent = params.title;
+      }
+      // Delegate geometry changes to existing APIs where possible
+      if (typeof params.x === 'number' || typeof params.y === 'number') {
+        const x = typeof params.x === 'number' ? params.x : 0;
+        const y = typeof params.y === 'number' ? params.y : 0;
+        await windowManager.move({ id: params.id, x, y });
+      }
+      if (typeof params.width === 'number' && typeof params.height === 'number') {
+        await windowManager.resize({ id: params.id, width: params.width, height: params.height });
+      }
+      telemetry.event(AdapterEvents.WINDOW_UPDATE, { windowId: params.id });
+      outcome.applied += 1;
       break;
     }
 
@@ -219,7 +600,18 @@ const routeOperation = async (
     case 'dom.set':
     case 'dom.replace':
     case 'dom.append': {
-      const params = envelope.params as Parameters<typeof domApplier.apply>[0];
+      const base = envelope.params as Parameters<typeof domApplier.apply>[0];
+      // Map op -> mode explicitly so DomApplier does not default to 'set'
+      const mode: 'set' | 'replace' | 'append' =
+        envelope.op === 'dom.set' ? 'set' : envelope.op === 'dom.replace' ? 'replace' : 'append';
+      const params = { ...base, mode } as Parameters<typeof domApplier.apply>[0];
+      // Auto-create window if it doesn't exist
+      if (!windowManager.exists(params.windowId)) {
+        await windowManager.create({ id: params.windowId, title: params.windowId });
+        telemetry.event(AdapterEvents.WINDOW_CREATE, { windowId: params.windowId, synthetic: true });
+        // Persist synthetic window.create
+        void persistCommand({ op: 'window.create', params: { id: params.windowId, title: params.windowId } });
+      }
       const result = await domApplier.apply(params);
       telemetry.event(AdapterEvents.DOM_APPLY, {
         windowId: params.windowId,
@@ -235,12 +627,95 @@ const routeOperation = async (
 
     case 'component.render': {
       const params = envelope.params as Parameters<typeof componentRenderer.render>[0];
+      // Auto-create window if it doesn't exist
+      if (!windowManager.exists(params.windowId)) {
+        await windowManager.create({ id: params.windowId, title: params.windowId });
+        telemetry.event(AdapterEvents.WINDOW_CREATE, { windowId: params.windowId, synthetic: true });
+        // Persist synthetic window.create
+        void persistCommand({ op: 'window.create', params: { id: params.windowId, title: params.windowId } });
+        outcome.applied += 1;
+      }
       await componentRenderer.render(params);
       telemetry.event(AdapterEvents.COMPONENT_RENDER, {
         windowId: params.windowId,
         type: params.type,
       });
       outcome.applied++;
+      break;
+    }
+
+    case 'state.set': {
+      const params = envelope.params as { scope: StateScope; key: string; value: unknown; windowId?: string };
+      const scopeStore = stateStore.get(params.scope);
+      if (scopeStore) {
+        const key = params.scope === 'window' && params.windowId ? `${params.windowId}:${params.key}` : params.key;
+        scopeStore.set(key, params.value);
+        outcome.applied += 1;
+      }
+      break;
+    }
+
+    case 'state.get': {
+      // state.get is read-only, doesn't increment applied count
+      const params = envelope.params as { scope: StateScope; key: string; windowId?: string };
+      const scopeStore = stateStore.get(params.scope);
+      if (scopeStore) {
+        const key = params.scope === 'window' && params.windowId ? `${params.windowId}:${params.key}` : params.key;
+        scopeStore.get(key);
+        // Value is returned via command result in v1, but v2 batch doesn't return per-op results
+        // This is OK for now; state.get is rarely used in batch context
+      }
+      break;
+    }
+
+    case 'txn.cancel': {
+      // Reset all state stores
+      for (const store of stateStore.values()) {
+        store.clear();
+      }
+      // Close all windows if any exist
+      const allWindows = windowManager.list();
+      if (allWindows.length > 0) {
+        for (const win of allWindows) {
+          await windowManager.close({ id: win.id });
+        }
+      }
+      // txn.cancel successfully applied even if workspace was empty
+      outcome.applied += 1;
+      break;
+    }
+
+    case 'api.call': {
+      const params = envelope.params as OperationParamMap['api.call'];
+      if (!params) {
+        outcome.errors.push('api.call missing params');
+        break;
+      }
+      
+      // Route to api handler (v1 compatibility shim)
+      try {
+        const renderForm = (clarifierBody: StructuredClarifierBody, command: Envelope): CommandResult<string> => {
+          void (async () => {
+            try {
+              await renderStructuredClarifier(clarifierBody, command, windowManager);
+            } catch (error) {
+              console.error('structured clarifier render failed', error);
+            }
+          })();
+          return { success: true, value: 'clarifier-rendered' };
+        };
+        
+        // Execute via shared API dispatcher
+        const result = await routeApiCall(params, envelope, {}, renderForm);
+        if (result.success) {
+          outcome.applied += 1;
+        } else {
+          outcome.errors.push(`api.call failed: ${result.error}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        outcome.errors.push(`api.call error: ${message}`);
+      }
       break;
     }
 
@@ -257,10 +732,132 @@ export const getWorkspaceRoot = (): HTMLElement | null => {
 };
 
 /**
+ * Utilities for external callers
+ */
+export const listWorkspaceWindows = (): Array<{ id: string; title: string }> => {
+  return windowManagerInstance ? windowManagerInstance.list() : [];
+};
+
+export const closeWorkspaceWindow = async (id: string): Promise<void> => {
+  if (!windowManagerInstance) return;
+  await windowManagerInstance.close({ id });
+};
+
+/**
+ * Apply a single envelope (test-friendly wrapper).
+ * Routes to applyBatch with a single-item batch.
+ * Used by tests that need to mock per-envelope execution.
+ */
+export const applyEnvelope = async (
+  envelope: Envelope,
+  options?: ApplyOptions
+): Promise<{ success: boolean; error?: string }> => {
+  const result = await applyBatch([envelope], options);
+  if (result.success && result.applied === 1) {
+    return { success: true };
+  }
+  const error = result.errors[0] ?? 'Unknown error';
+  return { success: false, error };
+};
+
+export const registerWindowLifecycle = (listener: WindowLifecycleListener): (() => void) => {
+  windowLifecycleListeners.add(listener);
+  return () => {
+    windowLifecycleListeners.delete(listener);
+  };
+};
+
+/**
  * Clear workspace root (for testing cleanup)
  */
 export const clearWorkspaceRoot = (): void => {
   workspaceRoot = null;
+  workspaceReady = false;
+  windowManagerInstance = null;
+  domApplierInstance = null;
+  componentRendererInstance = null;
+};
+
+/**
+ * Defer batch application until workspace root is registered.
+ * Returns a Promise if batch is queued, null if workspace is ready.
+ * 
+ * WHY: Prevents "Workspace root not registered" errors when batches arrive
+ * before Desktop.tsx mounts and calls registerWorkspaceRoot().
+ */
+export const deferBatchIfNotReady = (batch: Batch): Promise<ApplyOutcome> | null => {
+  if (workspaceReady) return null;
+  
+  console.debug(`[adapter.v2] workspace not ready, queuing batch with ${batch.length} op(s)`);
+  return new Promise((resolve, reject) => {
+    pendingBatches.push({ batch, resolve, reject });
+  });
+};
+
+/**
+ * Reset workspace: clear all windows, components, and state.
+ * Optionally delete files (not implemented in v2 yet for safety).
+ * 
+ * WHY: Reset handlers execute synchronously for backward compatibility with code
+ * that doesn't await resetWorkspace(). Window cleanup happens async in background.
+ */
+export const resetWorkspace = (options?: { deleteFiles?: boolean }): void => {
+  // Clear all state stores
+  for (const store of stateStore.values()) {
+    store.clear();
+  }
+  
+  // Clear workspace root DOM if exists
+  if (workspaceRoot) {
+    workspaceRoot.innerHTML = '';
+  }
+  
+  // Invoke reset handlers synchronously (includes batch dedupe store reset)
+  // INVARIANT: Handlers must complete before window cleanup
+  for (const handler of resetHandlers) {
+    try {
+      handler();
+    } catch (error) {
+      console.error('workspace reset handler failed', error);
+    }
+  }
+  
+  // Close all windows asynchronously (don't block on this)
+  if (windowManagerInstance) {
+    const allWindows = windowManagerInstance.list();
+    void Promise.all(allWindows.map(win => windowManagerInstance!.close({ id: win.id })));
+  }
+  
+  if (options?.deleteFiles) {
+    console.warn('deleteFiles=true requested, but file deletion is not implemented in v2 for safety.');
+  }
+};
+
+/**
+ * Replay workspace from persisted commands.
+ * Delegates to persistence module which handles Tauri IPC.
+ */
+export const replayWorkspace = async (): Promise<{ applied: number; errors: string[] }> => {
+  const { replayWorkspace: replayWorkspaceImpl } = await import('./adapter.persistence');
+  
+  // Create applyCommand wrapper that routes to applyEnvelope
+  const applyCommand = async (
+    command: Envelope,
+    _ctx: { runId?: string }
+  ): Promise<{ success: boolean; error?: string }> => {
+    return await applyEnvelope(command);
+  };
+  
+  return await replayWorkspaceImpl(applyCommand, stateStore);
+};
+
+/**
+ * Register a handler to be called when workspace is reset.
+ * Returns an unlisten function.
+ */
+export const addWorkspaceResetHandler = (handler: () => void): (() => void) => {
+  resetHandlers.add(handler);
+  return () => resetHandlers.delete(handler);
 };
 
 // Map op -> permission scope (keep in this file for now, move to schema if it grows)
@@ -271,6 +868,7 @@ function scopeFromOp(op: Envelope['op']): PermissionScope {
     case 'window.resize':
     case 'window.focus':
     case 'window.close':
+    case 'window.update':
       return 'window';
     case 'dom.set':
     case 'dom.replace':
@@ -278,6 +876,11 @@ function scopeFromOp(op: Envelope['op']): PermissionScope {
       return 'dom';
     case 'component.render':
       return 'components';
+    case 'state.set':
+    case 'state.get':
+    case 'txn.cancel':
+    case 'api.call':
+      return 'dom'; // Map new ops to dom scope (permissions always grant anyway)
     default:
       // Unknown ops never reach permission, they throw earlier
       return 'dom';

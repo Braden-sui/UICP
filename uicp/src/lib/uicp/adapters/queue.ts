@@ -158,27 +158,33 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
   const results: Promise<ApplyOutcome>[] = [];
 
   for (const [windowId, group] of partitions.entries()) {
+    // INVARIANT: Capture ALL loop variables to prevent closure sharing bugs
+    // JavaScript for-of creates new bindings per iteration, but we're explicit here
+    const capturedWindowId = windowId;
+    const capturedGroup = group;
+    
     const traceCounts = new Map<string, number>();
-    for (const env of group) {
+    for (const env of capturedGroup) {
       if (!env.traceId) continue;
       traceCounts.set(env.traceId, (traceCounts.get(env.traceId) ?? 0) + 1);
     }
-
+    const capturedTraceCounts = traceCounts;
+    
     const run = async (): Promise<ApplyOutcome> => {
       const t0 = performance.now();
-      const outcome = await applyBatch(group);
+      const outcome = await applyBatch(capturedGroup);
       const ms = Math.max(0, performance.now() - t0);
       if (outcome.success) {
-        for (const fn of appliedListeners) fn({ windowId, applied: outcome.applied, ms });
+        for (const fn of appliedListeners) fn({ windowId: capturedWindowId, applied: outcome.applied, ms });
       }
-      for (const [traceId, count] of traceCounts.entries()) {
+      for (const [traceId, count] of capturedTraceCounts.entries()) {
         emitTelemetryEvent('enqueue_applied', {
           traceId,
           span: 'queue',
           durationMs: ms,
           status: outcome.success ? 'ok' : 'error',
           data: {
-            windowId,
+            windowId: capturedWindowId,
             applied: outcome.applied,
             skippedDupes: getSkippedCount(outcome),
             batchId: outcome.batchId,
@@ -190,9 +196,8 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
       return outcome;
     };
 
-    const prev = chains.get(windowId) ?? Promise.resolve(createEmptyOutcome());
-    const next = prev
-      .then(run)
+    const prev = chains.get(capturedWindowId) ?? Promise.resolve(createEmptyOutcome());
+    const next = prev.then(run)
       .catch((err) => ({
         success: false,
         applied: 0,
@@ -202,7 +207,7 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
         batchId: '',
       }));
 
-    chains.set(windowId, next);
+    chains.set(capturedWindowId, next);
     results.push(next);
   }
 
