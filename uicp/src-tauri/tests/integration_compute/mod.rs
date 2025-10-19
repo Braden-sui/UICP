@@ -8,5 +8,5 @@ mod determinism;
 mod kill_replay_shakedown;
 mod module_smoke;
 mod negative_execution;
-mod smoke_test;
 mod script_world;
+mod smoke_test;

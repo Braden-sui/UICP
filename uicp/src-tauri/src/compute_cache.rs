@@ -88,7 +88,6 @@ pub fn compute_key(task: &str, input: &Value, env_hash: &str) -> String {
     hex::encode(digest)
 }
 
-
 /// Golden artifact lookup result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GoldenRecord {
@@ -404,10 +403,10 @@ pub fn compute_output_hash(output: &Value) -> String {
 }
 
 /// Store golden artifact hash for deterministic replay validation.
-/// 
+///
 /// WHY: Track C code generation must be deterministic. Store the hash of the first
 /// successful output, then verify subsequent runs produce identical results.
-/// 
+///
 /// INVARIANT: golden_key uniquely identifies the artifact within a workspace.
 pub async fn store_golden<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -418,25 +417,27 @@ pub async fn store_golden<R: Runtime>(
     value: &Value,
 ) -> anyhow::Result<()> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("golden_cache_store", workspace = %workspace_id, key = %golden_key).entered();
-    
+    let _span =
+        tracing::info_span!("golden_cache_store", workspace = %workspace_id, key = %golden_key)
+            .entered();
+
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
         return Ok(());
     }
-    
+
     let key = golden_key.to_string();
     let ws = workspace_id.to_string();
     let hash = output_hash.to_string();
     let task_str = task.to_string();
     let json = serde_json::to_string(value).context("serialize golden value")?;
     let path = state.db_path.clone();
-    
+
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let conn = Connection::open(path).context("open sqlite for golden store")?;
         crate::configure_sqlite(&conn).context("configure sqlite for golden store")?;
         let now = Utc::now().timestamp();
-        
+
         // Upsert golden hash (preserve created_at on conflict)
         conn.execute(
             "INSERT INTO golden_cache (workspace_id, key, output_hash, task, value_json, created_at)
@@ -449,12 +450,12 @@ pub async fn store_golden<R: Runtime>(
     })
     .await
     .context("golden cache store")??;
-    
+
     Ok(())
 }
 
 /// Lookup golden artifact hash for replay validation.
-/// 
+///
 /// Returns None if no golden exists for this key (first run).
 /// Returns Some(hash) if a golden artifact was previously stored.
 pub async fn lookup_golden<R: Runtime>(
@@ -463,21 +464,23 @@ pub async fn lookup_golden<R: Runtime>(
     golden_key: &str,
 ) -> anyhow::Result<Option<GoldenRecord>> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("golden_cache_lookup", workspace = %workspace_id, key = %golden_key).entered();
-    
+    let _span =
+        tracing::info_span!("golden_cache_lookup", workspace = %workspace_id, key = %golden_key)
+            .entered();
+
     let key = golden_key.to_string();
     let ws = workspace_id.to_string();
     let state: State<'_, AppState> = app.state();
     let path = state.db_path.clone();
-    
+
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<GoldenRecord>> {
         let conn = Connection::open(path).context("open sqlite for golden lookup")?;
         crate::configure_sqlite(&conn).context("configure sqlite for golden lookup")?;
-        
+
         let mut stmt = conn
             .prepare("SELECT output_hash, value_json FROM golden_cache WHERE workspace_id = ?1 AND key = ?2")
             .context("prepare golden select")?;
-        
+
         let mut rows = stmt.query(params![ws, key]).context("exec golden select")?;
         if let Some(row) = rows.next()? {
             let hash: String = row.get(0)?;
@@ -494,6 +497,6 @@ pub async fn lookup_golden<R: Runtime>(
     })
     .await
     .context("golden lookup")??;
-    
+
     Ok(res)
 }

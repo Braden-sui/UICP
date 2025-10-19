@@ -4,6 +4,7 @@ import type { Envelope, OperationParamMap } from '../../src/lib/uicp/adapters/sc
 import type { StructuredClarifierBody } from '../../src/lib/uicp/adapters/adapter.clarifier';
 import type { CommandResult } from '../../src/lib/uicp/adapters/adapter.commands';
 import * as BridgeGlobals from '../../src/lib/bridge/globals';
+import type { JobSpec } from '../../src/compute/types';
 
 const makeEnvelope = (overrides?: Partial<Envelope>): Envelope =>
   ({
@@ -27,7 +28,7 @@ describe('routeApiCall internal schemes', () => {
 
   it('routes compute.call to the compute bridge and preserves payload fields', async () => {
     const renderClarifier = vi.fn<(body: StructuredClarifierBody, command: Envelope) => CommandResult<string>>(clarifierMock);
-    const computeInvoke = vi.fn(async () => {});
+    const computeInvoke = vi.fn(async (_spec: JobSpec) => {});
     computeBridgeSpy.mockReturnValue(computeInvoke);
 
     const params: OperationParamMap['api.call'] = {

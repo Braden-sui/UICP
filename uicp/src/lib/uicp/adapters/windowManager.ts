@@ -32,6 +32,9 @@ export const createWindowManager = (
   root: HTMLElement,
   options?: {
     onLifecycleEvent?: (event: WindowLifecycleEvent) => void;
+    // SAFETY: When a window is closed, decide whether to purge persisted commands.
+    // Returning false preserves commands (e.g., for pinned shortcuts) so replay can re-open later.
+    shouldDeletePersistedOnClose?: (id: WindowId) => boolean;
   }
 ): WindowManager => {
   const windows = new Map<WindowId, WindowRecord>();
@@ -372,7 +375,12 @@ export const createWindowManager = (
     // Persist delete command so Tauri clears stored window when closed via API
     if (hasTauriBridge()) {
       try {
-        await tauriInvoke('delete_window_commands', { windowId: params.id });
+        const allowDelete = options?.shouldDeletePersistedOnClose
+          ? options.shouldDeletePersistedOnClose(params.id)
+          : true;
+        if (allowDelete) {
+          await tauriInvoke('delete_window_commands', { windowId: params.id });
+        }
       } catch (error) {
         console.error('Failed to schedule delete_window_commands', params.id, error);
       }

@@ -30,17 +30,40 @@ const ALLOWED_BASE_DIRECTORIES: Record<string, BaseDirectory> = {
 const DEFAULT_EXPORT_DIRECTORY = BaseDirectory.AppData;
 const ALLOWED_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH']);
 
-type CommandResult<T = unknown> =
-  | { success: true; value: T }
+type CommandResult<T = unknown, D = unknown> =
+  | { success: true; value: T; data?: D }
   | { success: false; error: string };
 
-const toFailure = (error: unknown): { success: false; error: string } => ({
+const toFailure = (error: unknown): CommandResult<never> => ({
   success: false,
   error: error instanceof Error ? error.message : String(error),
 });
 
 type ApplyContext = {
   runId?: string;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined => {
+  return isRecord(value) ? value : undefined;
+};
+
+const getFunction = (record: Record<string, unknown>, key: string): ((...args: unknown[]) => unknown) | undefined => {
+  const candidate = record[key];
+  return typeof candidate === 'function' ? (candidate as (...args: unknown[]) => unknown) : undefined;
+};
+
+const callIfFn = async <R>(fn: ((...args: unknown[]) => R) | undefined, ...args: unknown[]): Promise<R | undefined> => {
+  if (!fn) return undefined;
+  try {
+    const result = fn(...args);
+    return result instanceof Promise ? await result : result;
+  } catch (err) {
+    throw err instanceof Error ? err : new Error(String(err));
+  }
 };
 
 /**
@@ -53,30 +76,29 @@ const handleComputeCall = async (
   params: OperationParamMap["api.call"],
 ): Promise<CommandResult<string>> => {
   try {
-    const body = (params.body ?? {}) as Record<string, unknown>;
+    const body = asRecord(params.body) ?? {};
 
     // DIRECT applet mode: when input has { mode, source|module }
-    const input = body && typeof body === 'object' ? (body as Record<string, unknown>)['input'] : undefined;
-    const maybeApplet = input && typeof input === 'object' ? (input as Record<string, unknown>) : undefined;
+    const input = body.input;
+    const maybeApplet = asRecord(input);
     const hasAppletMarkers = !!(maybeApplet && typeof maybeApplet['mode'] === 'string' && (maybeApplet['source'] || maybeApplet['module']));
     if (hasAppletMarkers) {
-      const mode = String(maybeApplet!.mode);
-      const appletModule: unknown = maybeApplet!.module ?? undefined;
-      const appletSource: unknown = maybeApplet!.source ?? undefined;
-      const stateArg: unknown = (maybeApplet as Record<string, unknown>).state;
-      const actionArg: unknown = (maybeApplet as Record<string, unknown>).action;
-      const payloadArg: unknown = (maybeApplet as Record<string, unknown>).payload;
+      const mode = String(maybeApplet.mode);
+      const appletModule: unknown = maybeApplet.module ?? undefined;
+      const appletSource: unknown = maybeApplet.source ?? undefined;
+      const stateArg: unknown = maybeApplet.state;
+      const actionArg: unknown = maybeApplet.action;
+      const payloadArg: unknown = maybeApplet.payload;
 
       // Resolve module from either provided object or evaluated source string
       const resolveApplet = (): Record<string, unknown> => {
-        if (appletModule && typeof appletModule === 'object') return appletModule as Record<string, unknown>;
+        if (isRecord(appletModule)) return appletModule;
         if (typeof appletSource === 'string') {
           // Best-effort sandbox: no arguments, no window injected
           // INVARIANT: Caller is responsible for safe HTML; downstream DOM insertion sanitizes.
-          // eslint-disable-next-line no-new-func
           const factory = new Function('"use strict"; let module = {}; let exports = module; ' + String(appletSource) + '; return module || exports || {};');
           const mod = factory();
-          if (mod && typeof mod === 'object') return mod as Record<string, unknown>;
+          if (isRecord(mod)) return mod;
         }
         return {};
       };
@@ -84,31 +106,29 @@ const handleComputeCall = async (
       const mod = resolveApplet();
       const rid = params.idempotencyKey ?? createId('api');
 
-      const callIfFn = async (fn: unknown, ...args: unknown[]) => {
-        if (typeof fn === 'function') {
-          try {
-            return await (fn as (...xs: unknown[]) => unknown)(...args);
-          } catch (err) {
-            throw err instanceof Error ? err : new Error(String(err));
-          }
-        }
-        return undefined;
-      };
-
       if (mode === 'init') {
-        const next = await callIfFn(mod['init']);
-        return { success: true, value: rid, ...(next !== undefined ? { data: { next_state: next } } : {}) } as unknown as CommandResult<string>;
+        const next = await callIfFn(getFunction(mod, 'init'));
+        const result: CommandResult<string> = { success: true, value: rid };
+        if (next !== undefined) {
+          return { ...result, data: { next_state: next } };
+        }
+        return result;
       }
 
       if (mode === 'render') {
-        const rendered = await callIfFn(mod['render'], { state: stateArg });
-        const html = rendered && typeof rendered === 'object' && typeof (rendered as any).html === 'string' ? (rendered as any).html : '';
-        return { success: true, value: rid, data: html } as unknown as CommandResult<string>;
+        const rendered = await callIfFn(getFunction(mod, 'render'), { state: stateArg });
+        const html = isRecord(rendered) && typeof rendered.html === 'string' ? rendered.html : '';
+        return { success: true, value: rid, data: html };
       }
 
       if (mode === 'on-event' || mode === 'on_event' || mode === 'event') {
-        const result = await callIfFn(mod['onEvent'] ?? (mod as any)['on_event'], { action: actionArg, payload: payloadArg, state: stateArg });
-        return { success: true, value: rid, ...(result !== undefined ? { data: result } : {}) } as unknown as CommandResult<string>;
+        const handler = getFunction(mod, 'onEvent') ?? getFunction(mod, 'on_event');
+        const result = await callIfFn(handler, { action: actionArg, payload: payloadArg, state: stateArg });
+        const response: CommandResult<string> = { success: true, value: rid };
+        if (result !== undefined) {
+          return { ...response, data: result };
+        }
+        return response;
       }
 
       // Unknown mode: treat as no-op
@@ -187,7 +207,7 @@ const handleIntent = async (
   command: Envelope,
   renderStructuredClarifierForm: (body: StructuredClarifierBody, command: Envelope) => CommandResult<string>,
 ): Promise<CommandResult<string>> => {
-  const rawBody = (params.body ?? {}) as Record<string, unknown>;
+  const rawBody = asRecord(params.body) ?? {};
   if (isStructuredClarifierBody(rawBody)) {
     return renderStructuredClarifierForm(rawBody, command);
   }
@@ -285,11 +305,12 @@ const handleHttpFetch = async (
         // For non-text, non-json responses, leave data as null (not supported)
         data = null;
       }
-    } catch (e) {
+    } catch {
       // Swallow body parse errors; deliver OK without data
       data = null;
     }
-    return { success: true, value: params.idempotencyKey ?? createId('api'), ...(data !== undefined ? { data } : {}) } as unknown as CommandResult<string>;
+    const baseResult: CommandResult<string> = { success: true, value: params.idempotencyKey ?? createId('api') };
+    return data !== undefined ? { ...baseResult, data } : baseResult;
   } catch (error) {
     const duration = Math.round(performance.now() - startedAt);
     const message = error instanceof Error ? error.message : String(error);
@@ -310,7 +331,6 @@ const handleHttpFetch = async (
     console.error('api.call fetch failed', { traceId, url, error: message });
     return toFailure(error);
   }
-  return { success: true, value: params.idempotencyKey ?? createId('api') };
 };
 
 /**

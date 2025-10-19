@@ -20,20 +20,7 @@ const ERR_CODE_UNSAFE: &str = "E-UICP-1301";
 const ERR_PROVIDER: &str = "E-UICP-1302";
 const ERR_API_KEY: &str = "E-UICP-1303";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderKind {
-    OpenAi,
-    Anthropic,
-}
-
-impl ProviderKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            ProviderKind::OpenAi => "openai",
-            ProviderKind::Anthropic => "anthropic",
-        }
-    }
-}
+const PROVIDER_NAME: &str = "openai";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodeLanguage {
@@ -69,7 +56,6 @@ struct CodegenPlan {
     language: CodeLanguage,
     constraints: Value,
     validator_version: String,
-    provider: ProviderKind,
     model_id: String,
     temperature: f32,
     max_output_tokens: u32,
@@ -97,7 +83,6 @@ struct CodegenJobInput {
 }
 
 struct ProviderSettings {
-    kind: ProviderKind,
     model_id: String,
     api_key: String,
 }
@@ -116,7 +101,7 @@ struct CodegenRunOk {
 enum CodegenFailure {
     Invalid { message: String },
     Provider { message: String },
-    MissingApiKey { provider: ProviderKind },
+    MissingApiKey,
     Unsafe { message: String },
 }
 
@@ -133,8 +118,8 @@ impl CodegenFailure {
         CodegenFailure::Provider { message }
     }
 
-    fn missing_key(provider: ProviderKind) -> Self {
-        CodegenFailure::MissingApiKey { provider }
+    fn missing_key() -> Self {
+        CodegenFailure::MissingApiKey
     }
 
     fn compute_code(&self) -> &'static str {
@@ -143,7 +128,7 @@ impl CodegenFailure {
                 "Compute.Input.Invalid"
             }
             CodegenFailure::Provider { .. } => "Runtime.Fault",
-            CodegenFailure::MissingApiKey { .. } => "Compute.CapabilityDenied",
+            CodegenFailure::MissingApiKey => "Compute.CapabilityDenied",
         }
     }
 
@@ -152,13 +137,8 @@ impl CodegenFailure {
             CodegenFailure::Invalid { message }
             | CodegenFailure::Provider { message }
             | CodegenFailure::Unsafe { message } => message.clone(),
-            CodegenFailure::MissingApiKey { provider } => format!(
-                "{ERR_API_KEY}: missing API key for provider '{}'. Set {} in environment.",
-                provider.as_str(),
-                match provider {
-                    ProviderKind::OpenAi => "OPENAI_API_KEY",
-                    ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
-                }
+            CodegenFailure::MissingApiKey => format!(
+                "{ERR_API_KEY}: missing API key. Set OPENAI_API_KEY in the environment or provide a mockResponse constraint."
             ),
         }
     }
@@ -241,10 +221,12 @@ async fn run_codegen<R: Runtime>(
     spec.golden_key = Some(plan.golden_key.clone());
     spec.expect_golden = true;
 
-    if let Some(record) =
-        compute_cache::lookup_golden(app, &spec.workspace_id, &plan.golden_key)
-            .await
-            .map_err(|err| CodegenFailure::provider(format!("{ERR_PROVIDER}: golden lookup failed: {err}")))? {
+    if let Some(record) = compute_cache::lookup_golden(app, &spec.workspace_id, &plan.golden_key)
+        .await
+        .map_err(|err| {
+            CodegenFailure::provider(format!("{ERR_PROVIDER}: golden lookup failed: {err}"))
+        })?
+    {
         return Ok(CodegenRunOk {
             output: record.value,
             output_hash: record.output_hash.clone(),
@@ -270,16 +252,22 @@ async fn run_codegen<R: Runtime>(
     let raw_output = if let Some(mock) = plan.mock_response.clone() {
         mock
     } else {
-        execute_provider_call(&client, &plan, provider_settings.as_ref())
+        let settings = provider_settings
+            .as_ref()
+            .expect("provider settings required when no mock response");
+        call_openai(&client, &plan, settings)
             .await
-            .map_err(|err| CodegenFailure::provider(err))?
+            .map_err(CodegenFailure::provider)?
     };
 
     let normalized = normalize_response(&plan, raw_output)
         .map_err(|err| CodegenFailure::invalid(err.to_string()))?;
 
-    validate_code(plan.language, normalized["code"].as_str().unwrap_or_default())
-        .map_err(CodegenFailure::unsafe_code)?;
+    validate_code(
+        plan.language,
+        normalized["code"].as_str().unwrap_or_default(),
+    )
+    .map_err(CodegenFailure::unsafe_code)?;
 
     let output_hash = compute_cache::compute_output_hash(&normalized);
     compute_cache::store_golden(
@@ -291,7 +279,9 @@ async fn run_codegen<R: Runtime>(
         &normalized,
     )
     .await
-    .map_err(|err| CodegenFailure::provider(format!("{ERR_PROVIDER}: golden store failed: {err}")))?;
+    .map_err(|err| {
+        CodegenFailure::provider(format!("{ERR_PROVIDER}: golden store failed: {err}"))
+    })?;
 
     Ok(CodegenRunOk {
         output: normalized,
@@ -303,11 +293,7 @@ async fn run_codegen<R: Runtime>(
     })
 }
 
-async fn emit_final_ok<R: Runtime>(
-    app: &AppHandle<R>,
-    spec: &ComputeJobSpec,
-    ok: CodegenRunOk,
-) {
+async fn emit_final_ok<R: Runtime>(app: &AppHandle<R>, spec: &ComputeJobSpec, ok: CodegenRunOk) {
     let mut metrics = json!({
         "durationMs": ok.duration_ms,
         "queueMs": ok.queue_wait_ms,
@@ -392,13 +378,16 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
 
     let constraints = input.constraints.unwrap_or(Value::Null);
     let constraints_for_key = sanitize_constraints(&constraints);
-    let provider = infer_provider(&input, &constraints);
     let validator_version = input
         .validator_version
-        .or_else(|| constraints.get("validatorVersion").and_then(|v| v.as_str()).map(String::from))
+        .or_else(|| {
+            constraints
+                .get("validatorVersion")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
         .unwrap_or_else(|| VALIDATOR_VERSION.to_string());
-    let model_id =
-        resolve_model_id(&input, &constraints, provider).unwrap_or_else(|| default_model(provider));
+    let model_id = resolve_model_id(&input, &constraints).unwrap_or_else(default_model);
     let temperature = constraints
         .get("temperature")
         .and_then(|v| v.as_f64())
@@ -423,6 +412,7 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
         "constraints": constraints_for_key,
         "validatorVersion": validator_version,
         "modelId": model_id,
+        "provider": PROVIDER_NAME,
     });
     let canonical = compute_cache::canonicalize_input(&key_payload);
     let mut hasher = sha2::Sha256::new();
@@ -436,7 +426,6 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
         language,
         constraints,
         validator_version,
-        provider,
         model_id,
         temperature,
         max_output_tokens,
@@ -494,11 +483,7 @@ fn infer_provider(input: &CodegenJobInput, constraints: &Value) -> ProviderKind 
     ProviderKind::OpenAi
 }
 
-fn resolve_model_id(
-    input: &CodegenJobInput,
-    constraints: &Value,
-    provider: ProviderKind,
-) -> Option<String> {
+fn resolve_model_id(input: &CodegenJobInput, constraints: &Value) -> Option<String> {
     input
         .model_id
         .clone()
@@ -518,59 +503,26 @@ fn resolve_model_id(
                 .and_then(|v| v.as_str())
                 .map(String::from)
         })
-        .or_else(|| {
-            if provider == ProviderKind::OpenAi {
-                std::env::var("UICP_CODEGEN_OPENAI_MODEL").ok()
-            } else {
-                std::env::var("UICP_CODEGEN_ANTHROPIC_MODEL").ok()
-            }
-        })
+        .or_else(|| std::env::var("UICP_CODEGEN_OPENAI_MODEL").ok())
 }
 
-fn default_model(provider: ProviderKind) -> String {
-    match provider {
-        ProviderKind::OpenAi => std::env::var("UICP_CODEGEN_OPENAI_MODEL")
-            .unwrap_or_else(|_| "o4-mini".to_string()),
-        ProviderKind::Anthropic => std::env::var("UICP_CODEGEN_ANTHROPIC_MODEL")
-            .unwrap_or_else(|_| "claude-3.5-sonnet-latest".to_string()),
-    }
+fn default_model() -> String {
+    std::env::var("UICP_CODEGEN_OPENAI_MODEL").unwrap_or_else(|_| "o4-mini".to_string())
 }
 
 fn resolve_provider_settings(plan: &CodegenPlan) -> Result<ProviderSettings, CodegenFailure> {
-    let env_key = match plan.provider {
-        ProviderKind::OpenAi => "OPENAI_API_KEY",
-        ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
-    };
-    let api_key = std::env::var(env_key).map_err(|_| CodegenFailure::missing_key(plan.provider))?;
+    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| CodegenFailure::missing_key())?;
     Ok(ProviderSettings {
-        kind: plan.provider,
         model_id: plan.model_id.clone(),
         api_key,
     })
 }
 
-async fn execute_provider_call(
-    client: &reqwest::Client,
-    plan: &CodegenPlan,
-    provider: Option<&ProviderSettings>,
-) -> Result<Value, String> {
-    match provider.map(|p| p.kind).unwrap_or(plan.provider) {
-        ProviderKind::OpenAi => call_openai(client, plan, provider)
-            .await
-            .map_err(|err| format!("{ERR_PROVIDER}: openai call failed: {err}")),
-        ProviderKind::Anthropic => call_anthropic(client, plan, provider)
-            .await
-            .map_err(|err| format!("{ERR_PROVIDER}: anthropic call failed: {err}")),
-    }
-}
-
 async fn call_openai(
     client: &reqwest::Client,
     plan: &CodegenPlan,
-    provider: Option<&ProviderSettings>,
+    settings: &ProviderSettings,
 ) -> anyhow::Result<Value> {
-    let settings = provider
-        .ok_or_else(|| anyhow!("missing provider settings for OpenAI call"))?;
     let endpoint = std::env::var("UICP_CODEGEN_OPENAI_ENDPOINT")
         .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
 
@@ -614,7 +566,10 @@ Language must be {lang}. Include meta.modelId and meta.provider. Do not wrap out
         anyhow::bail!("non-success status {}: {}", status, text);
     }
 
-    let payload: Value = response.json().await.context("parse openai response JSON")?;
+    let payload: Value = response
+        .json()
+        .await
+        .context("parse openai response JSON")?;
     let content = payload
         .pointer("/choices/0/message/content")
         .ok_or_else(|| anyhow!("missing choices[0].message.content"))?;
@@ -631,62 +586,6 @@ Language must be {lang}. Include meta.modelId and meta.provider. Do not wrap out
     anyhow::bail!("unexpected OpenAI content format");
 }
 
-async fn call_anthropic(
-    client: &reqwest::Client,
-    plan: &CodegenPlan,
-    provider: Option<&ProviderSettings>,
-) -> anyhow::Result<Value> {
-    let settings = provider
-        .ok_or_else(|| anyhow!("missing provider settings for Anthropic call"))?;
-    let endpoint = std::env::var("UICP_CODEGEN_ANTHROPIC_ENDPOINT")
-        .unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".to_string());
-
-    let system_prompt = format!(
-        "You are a deterministic code generator. Respond with JSON object {{\"code\":string,\"language\":string,\"meta\":object}}. \
-Language must be {lang}. meta MUST include modelId and provider. No markdown or commentary.",
-        lang = plan.language.as_str()
-    );
-    let body = json!({
-        "model": settings.model_id,
-        "system": system_prompt,
-        "temperature": plan.temperature,
-        "max_output_tokens": plan.max_output_tokens,
-        "messages": [{
-            "role": "user",
-            "content": [{
-                "type": "text",
-                "text": plan.spec_text,
-            }]
-        }],
-    });
-
-    let response = client
-        .post(endpoint)
-        .header("x-api-key", &settings.api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .context("send anthropic request")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("non-success status {}: {}", status, text);
-    }
-
-    let payload: Value = response.json().await.context("parse anthropic response JSON")?;
-    let content = payload
-        .pointer("/content/0/text")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("missing content[0].text"))?;
-    let trimmed = content.trim_matches('`').trim();
-    let parsed: Value = serde_json::from_str(trimmed)
-        .map_err(|err| anyhow!("parse JSON content: {err}. content={trimmed}"))?;
-    Ok(parsed)
-}
-
 fn normalize_response(plan: &CodegenPlan, value: Value) -> anyhow::Result<Value> {
     if !value.is_object() {
         anyhow::bail!("{ERR_INPUT_INVALID}: provider response must be JSON object");
@@ -700,15 +599,14 @@ fn normalize_response(plan: &CodegenPlan, value: Value) -> anyhow::Result<Value>
         .and_then(|v| v.as_str().map(String::from))
         .ok_or_else(|| anyhow!("{ERR_INPUT_INVALID}: response missing code string"))?;
     let language = plan.language.as_str();
-    let meta_value = map.remove("meta").unwrap_or_else(|| Value::Object(Map::new()));
-    let mut meta = meta_value
-        .as_object()
-        .cloned()
-        .unwrap_or_else(Map::new);
+    let meta_value = map
+        .remove("meta")
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let mut meta = meta_value.as_object().cloned().unwrap_or_else(Map::new);
     meta.entry("modelId".into())
         .or_insert_with(|| Value::String(plan.model_id.clone()));
     meta.entry("provider".into())
-        .or_insert_with(|| Value::String(plan.provider.as_str().into()));
+        .or_insert_with(|| Value::String(PROVIDER_NAME.into()));
     meta.insert(
         "validatorVersion".into(),
         Value::String(plan.validator_version.clone()),
@@ -731,7 +629,9 @@ fn validate_code(language: CodeLanguage, code: &str) -> Result<(), String> {
         return Err(format!("{ERR_CODE_UNSAFE}: usage of eval is forbidden"));
     }
     if lowered.contains("new function(") {
-        return Err(format!("{ERR_CODE_UNSAFE}: usage of new Function is forbidden"));
+        return Err(format!(
+            "{ERR_CODE_UNSAFE}: usage of new Function is forbidden"
+        ));
     }
     if lowered.contains("xmlhttprequest")
         || lowered.contains("fetch(")
@@ -745,7 +645,9 @@ fn validate_code(language: CodeLanguage, code: &str) -> Result<(), String> {
         return Err(format!("{ERR_CODE_UNSAFE}: document.write is forbidden"));
     }
     if lowered.contains("__proto__") || lowered.contains("prototype") {
-        return Err(format!("{ERR_CODE_UNSAFE}: prototype mutation is forbidden"));
+        return Err(format!(
+            "{ERR_CODE_UNSAFE}: prototype mutation is forbidden"
+        ));
     }
     if lowered.contains("constructor.constructor") {
         return Err(format!(
@@ -806,12 +708,10 @@ fn validate_code(language: CodeLanguage, code: &str) -> Result<(), String> {
 }
 
 static INNER_HTML_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)innerhtml\s*=\s*(['\"]).*?\1")
-        .expect("inner html literal regex")
+    Regex::new(r#"(?i)innerhtml\s*=\s*(['"]).*?\1"#).expect("inner html literal regex")
 });
-static SET_TIMEOUT_STRING_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"setTimeout\s*\(\s*(['\"])").expect("setTimeout string regex")
-});
+static SET_TIMEOUT_STRING_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"setTimeout\s*\(\s*(['"])"#).expect("setTimeout string regex"));
 static TS_RENDER_EXPORT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?m)^\s*export\s+(?:async\s+)?(?:function|const)\s+render\b")
         .expect("ts render export regex")
@@ -834,4 +734,70 @@ static PY_ON_EVENT_DEF_RE: Lazy<Regex> =
 /// Whether the task should be handled by this module.
 pub fn is_codegen_task(task: &str) -> bool {
     task.starts_with(TASK_PREFIX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn typescript_validator_accepts_minimal_exports() {
+        let code = r#"
+            export function render() {
+                return { html: "<div>ok</div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        assert!(validate_code(CodeLanguage::Typescript, code).is_ok());
+    }
+
+    #[test]
+    fn typescript_validator_rejects_eval_and_missing_exports() {
+        let code = r#"
+            export function render() {
+                return eval("console.log('nope')");
+            }
+        "#;
+        let err = validate_code(CodeLanguage::Typescript, code).unwrap_err();
+        assert!(
+            err.contains("E-UICP-1301"),
+            "expected unsafe eval rejection, got {err}"
+        );
+    }
+
+    #[test]
+    fn normalize_response_sets_provider_and_model() {
+        let plan = CodegenPlan {
+            spec_text: "spec".into(),
+            language: CodeLanguage::Python,
+            constraints: Value::Null,
+            validator_version: "v0".into(),
+            model_id: "o4-mini".into(),
+            temperature: 0.1,
+            max_output_tokens: 128,
+            mock_response: None,
+            mock_error: None,
+            golden_key: "abc".into(),
+        };
+        let raw = json!({
+            "code": "def render():\n    return {}\n\ndef on_event():\n    return {}",
+            "language": "python",
+            "meta": {}
+        });
+        let normalized = normalize_response(&plan, raw).expect("normalize");
+        let provider = normalized
+            .pointer("/meta/provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert_eq!(provider, PROVIDER_NAME);
+        let model = normalized
+            .pointer("/meta/modelId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert_eq!(model, "o4-mini");
+    }
 }

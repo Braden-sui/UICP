@@ -1,15 +1,13 @@
 #![cfg(test)]
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::RwLock;
 
 use crate::{
-    circuit::{circuit_is_open, circuit_record_failure, circuit_record_success, get_circuit_debug_info},
+    circuit::{
+        circuit_is_open, circuit_record_failure, circuit_record_success, get_circuit_debug_info,
+    },
     core::{CircuitBreakerConfig, CircuitState},
 };
 
@@ -19,7 +17,10 @@ fn new_circuits() -> Arc<RwLock<HashMap<String, CircuitState>>> {
 }
 
 /// Test fixture: telemetry event collector
-fn create_telemetry_sink() -> (Arc<RwLock<Vec<(String, serde_json::Value)>>>, impl Fn(&str, serde_json::Value) + Clone) {
+fn create_telemetry_sink() -> (
+    Arc<RwLock<Vec<(String, serde_json::Value)>>>,
+    impl Fn(&str, serde_json::Value) + Clone,
+) {
     let events = Arc::new(RwLock::new(Vec::new()));
     let events_clone = events.clone();
     let emitter = move |event: &str, data: serde_json::Value| {
@@ -45,12 +46,18 @@ async fn test_circuit_opens_after_max_failures() {
     // First 2 failures should not open circuit
     for _ in 0..2 {
         let result = circuit_record_failure(&circuits, host, &config, emit.clone()).await;
-        assert!(result.is_none(), "circuit should not open before max_failures");
+        assert!(
+            result.is_none(),
+            "circuit should not open before max_failures"
+        );
     }
 
     // 3rd failure should open circuit
     let opened_until = circuit_record_failure(&circuits, host, &config, emit.clone()).await;
-    assert!(opened_until.is_some(), "circuit should open after max_failures");
+    assert!(
+        opened_until.is_some(),
+        "circuit should open after max_failures"
+    );
 
     // Verify circuit is open
     let is_open = circuit_is_open(&circuits, host).await;
@@ -63,7 +70,11 @@ async fn test_circuit_opens_after_max_failures() {
         .iter()
         .filter(|(event, _)| event == "circuit-open")
         .collect();
-    assert_eq!(circuit_open_events.len(), 1, "should emit circuit-open event");
+    assert_eq!(
+        circuit_open_events.len(),
+        1,
+        "should emit circuit-open event"
+    );
 }
 
 #[tokio::test]
@@ -90,12 +101,18 @@ async fn test_circuit_transitions_to_half_open_after_timeout() {
 
     // Check circuit again - should be half-open (cleared)
     let is_open_after = circuit_is_open(&circuits, host).await;
-    assert!(is_open_after.is_none(), "circuit should transition to half-open after timeout");
+    assert!(
+        is_open_after.is_none(),
+        "circuit should transition to half-open after timeout"
+    );
 
     // Verify consecutive failures reset
     let guard = circuits.read().await;
     let state = guard.get(host).expect("circuit state should exist");
-    assert_eq!(state.consecutive_failures, 0, "consecutive failures should be reset after timeout");
+    assert_eq!(
+        state.consecutive_failures, 0,
+        "consecutive failures should be reset after timeout"
+    );
 }
 
 #[tokio::test]
@@ -126,7 +143,10 @@ async fn test_success_closes_circuit() {
     // Verify consecutive failures reset
     let guard = circuits.read().await;
     let state = guard.get(host).expect("circuit state should exist");
-    assert_eq!(state.consecutive_failures, 0, "consecutive failures should be 0 after success");
+    assert_eq!(
+        state.consecutive_failures, 0,
+        "consecutive failures should be 0 after success"
+    );
 
     // Verify telemetry event emitted
     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -135,7 +155,11 @@ async fn test_success_closes_circuit() {
         .iter()
         .filter(|(event, _)| event == "circuit-close")
         .collect();
-    assert_eq!(circuit_close_events.len(), 1, "should emit circuit-close event");
+    assert_eq!(
+        circuit_close_events.len(),
+        1,
+        "should emit circuit-close event"
+    );
 }
 
 #[tokio::test]
@@ -150,7 +174,7 @@ async fn test_failure_during_degraded_state_reopens() {
 
     // Cause 1 failure (degraded state)
     circuit_record_failure(&circuits, host, &config, emit.clone()).await;
-    
+
     // Verify circuit not open yet
     assert!(circuit_is_open(&circuits, host).await.is_none());
 
@@ -186,16 +210,28 @@ async fn test_debug_info_accuracy() {
 
     assert_eq!(debug_info.len(), 2, "should have 2 hosts");
 
-    let host1_info = debug_info.iter().find(|i| i.host == host1).expect("host1 should be present");
+    let host1_info = debug_info
+        .iter()
+        .find(|i| i.host == host1)
+        .expect("host1 should be present");
     assert_eq!(host1_info.state, "open", "host1 should be open");
     assert_eq!(host1_info.consecutive_failures, 3);
-    assert!(host1_info.opened_until_ms.is_some(), "opened_until_ms should be set");
+    assert!(
+        host1_info.opened_until_ms.is_some(),
+        "opened_until_ms should be set"
+    );
     assert_eq!(host1_info.total_failures, 3);
 
-    let host2_info = debug_info.iter().find(|i| i.host == host2).expect("host2 should be present");
+    let host2_info = debug_info
+        .iter()
+        .find(|i| i.host == host2)
+        .expect("host2 should be present");
     assert_eq!(host2_info.state, "degraded", "host2 should be degraded");
     assert_eq!(host2_info.consecutive_failures, 1);
-    assert!(host2_info.opened_until_ms.is_none(), "should not have opened_until_ms");
+    assert!(
+        host2_info.opened_until_ms.is_none(),
+        "should not have opened_until_ms"
+    );
     assert_eq!(host2_info.total_failures, 1);
 }
 
@@ -223,9 +259,18 @@ async fn test_telemetry_events_include_metadata() {
 
     let data = &open_event.1;
     assert_eq!(data["host"], host, "event should include host");
-    assert_eq!(data["consecutiveFailures"], 2, "event should include failure count");
-    assert_eq!(data["openDurationMs"], 5_000, "event should include open duration");
-    assert!(data["totalFailures"].is_number(), "event should include total failures");
+    assert_eq!(
+        data["consecutiveFailures"], 2,
+        "event should include failure count"
+    );
+    assert_eq!(
+        data["openDurationMs"], 5_000,
+        "event should include open duration"
+    );
+    assert!(
+        data["totalFailures"].is_number(),
+        "event should include total failures"
+    );
 }
 
 #[tokio::test]
@@ -249,7 +294,10 @@ async fn test_success_resets_degraded_state() {
     // Verify state reset
     let guard = circuits.read().await;
     let state = guard.get(host).expect("state should exist");
-    assert_eq!(state.consecutive_failures, 0, "consecutive failures should be 0");
+    assert_eq!(
+        state.consecutive_failures, 0,
+        "consecutive failures should be 0"
+    );
     assert_eq!(state.total_successes, 1, "total successes should be 1");
 
     // Verify telemetry emitted (degraded → healthy transition)
@@ -259,7 +307,11 @@ async fn test_success_resets_degraded_state() {
         .iter()
         .filter(|(event, _)| event == "circuit-close")
         .collect();
-    assert_eq!(close_events.len(), 1, "should emit circuit-close for degraded→healthy transition");
+    assert_eq!(
+        close_events.len(),
+        1,
+        "should emit circuit-close for degraded→healthy transition"
+    );
 }
 
 #[tokio::test]
@@ -293,7 +345,10 @@ async fn test_concurrent_access_no_race_conditions() {
     let guard = circuits.read().await;
     let state = guard.get(host).expect("state should exist");
     assert_eq!(state.total_failures, 20, "all failures should be recorded");
-    assert!(state.consecutive_failures <= 20, "consecutive failures should not exceed total");
+    assert!(
+        state.consecutive_failures <= 20,
+        "consecutive failures should not exceed total"
+    );
 }
 
 #[tokio::test]
@@ -313,12 +368,21 @@ async fn test_multiple_hosts_independent() {
     }
 
     // host2 should still be healthy
-    assert!(circuit_is_open(&circuits, host1).await.is_some(), "host1 should be open");
-    assert!(circuit_is_open(&circuits, host2).await.is_none(), "host2 should be closed");
+    assert!(
+        circuit_is_open(&circuits, host1).await.is_some(),
+        "host1 should be open"
+    );
+    assert!(
+        circuit_is_open(&circuits, host2).await.is_none(),
+        "host2 should be closed"
+    );
 
     // Record success for host2
     circuit_record_success(&circuits, host2, emit.clone()).await;
 
     // host1 should still be open
-    assert!(circuit_is_open(&circuits, host1).await.is_some(), "host1 should remain open");
+    assert!(
+        circuit_is_open(&circuits, host1).await.is_some(),
+        "host1 should remain open"
+    );
 }

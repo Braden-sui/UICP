@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
 import { registerWorkspaceRoot, registerWindowLifecycle, listWorkspaceWindows, closeWorkspaceWindow, replayWorkspace } from '../lib/uicp/adapters/adapter';
+import { applyEnvelope, setPinnedWindowPredicate } from '../lib/uicp/adapters/lifecycle';
 import LogsPanel from './LogsPanel';
 import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
@@ -14,6 +16,8 @@ import AgentSettingsWindow from './AgentSettingsWindow';
 import PreferencesWindow from './PreferencesWindow';
 import DevtoolsAnalyticsListener from './DevtoolsAnalyticsListener';
 import { installWorkspaceArtifactCleanup } from '../lib/uicp/cleanup';
+import { inv } from '../lib/bridge/tauri';
+
 import DesktopClock from './DesktopClock';
 
 const LOGS_SHORTCUT_ID = 'logs';
@@ -69,6 +73,10 @@ export const Desktop = () => {
   const workspaceWindows = useAppSelector((s) => s.workspaceWindows);
   const upsertWorkspaceWindow = useAppSelector((s) => s.upsertWorkspaceWindow);
   const removeWorkspaceWindow = useAppSelector((s) => s.removeWorkspaceWindow);
+  const pinnedWindows = useAppSelector((s) => s.pinnedWindows);
+  const pinWindow = useAppSelector((s) => s.pinWindow);
+  const unpinWindow = useAppSelector((s) => s.unpinWindow);
+  const removeDesktopShortcut = useAppSelector((s) => s.removeDesktopShortcut);
   
   useEffect(() => {
     if (!rootRef.current) return;
@@ -225,6 +233,49 @@ export const Desktop = () => {
     removeWorkspaceWindow(id);
   }, [removeWorkspaceWindow]);
 
+  // Open a pinned window: ensure present via replay, then focus it
+  const openPinned = useCallback(async (windowId: string) => {
+    try {
+      const isOpen = Boolean(workspaceWindows[windowId]);
+      if (!isOpen) {
+        await replayWorkspace();
+      }
+      await applyEnvelope({ op: 'window.focus', params: { id: windowId } });
+    } catch (err) {
+      console.error('failed to open pinned window', windowId, err);
+    }
+  }, [workspaceWindows]);
+
+  const confirmDeletePinnedApp = useCallback(async (windowId: string) => {
+    try {
+      const title = pinnedWindows[windowId]?.title || windowId;
+      const ok = window.confirm(`Delete pinned app "${title}"? This will permanently remove the app and ALL stored data, including its build.`);
+      if (!ok) return;
+      unpinWindow(windowId);
+      removeDesktopShortcut(`pinned:${windowId}`);
+      try {
+        await closeWorkspaceWindow(windowId);
+      } catch (closeError) {
+        console.warn('closeWorkspaceWindow failed during pinned app cleanup', { windowId, error: closeError });
+      }
+      removeWorkspaceWindow(windowId);
+      const result = await inv<void>('delete_window_commands', { windowId });
+      if (!result.ok) {
+        console.error('delete_window_commands failed', result.error);
+      }
+    } catch (err) {
+      console.error('Failed to delete pinned app', windowId, err);
+    }
+  }, [pinnedWindows, removeDesktopShortcut, removeWorkspaceWindow, unpinWindow]);
+
+  // Keep adapter aware of pinned windows so close() preserves their persisted commands
+  useEffect(() => {
+    setPinnedWindowPredicate((id) => Boolean(pinnedWindows[id]));
+    return () => {
+      setPinnedWindowPredicate(null);
+    };
+  }, [pinnedWindows]);
+
   const menus = useMemo<DesktopMenu[]>(() => {
     const entries = Object.values(workspaceWindows)
       // Hide ephemeral or system windows from the menu bar
@@ -309,13 +360,23 @@ export const Desktop = () => {
             ],
           } satisfies DesktopMenu;
         }
-        return {
-          id: meta.id,
-          label: meta.title,
-          actions: [
-            { id: 'close', label: 'Close', onSelect: () => closeWindow(meta.id) },
-          ],
-        } satisfies DesktopMenu;
+        const isPinned = Boolean(pinnedWindows[meta.id]);
+        const actions: DesktopMenu['actions'] = [
+          { id: 'focus', label: 'Focus', onSelect: () => void applyEnvelope({ op: 'window.focus', params: { id: meta.id } }) },
+          isPinned
+            ? { id: 'unpin', label: 'Unpin from Desktop', onSelect: () => unpinWindow(meta.id) }
+            : { id: 'pin', label: 'Pin to Desktop', onSelect: () => {
+                pinWindow(meta.id, meta.title);
+                const shortcutId = `pinned:${meta.id}`;
+                if (!shortcutPositions[shortcutId]) {
+                  const count = Object.keys(pinnedWindows).length;
+                  const fallback = { x: 128, y: 96 * count + 64 } as DesktopShortcutPosition;
+                  ensureShortcut(shortcutId, fallback);
+                }
+              } },
+          { id: 'close', label: 'Close', onSelect: () => closeWindow(meta.id) },
+        ];
+        return { id: meta.id, label: meta.title, actions } satisfies DesktopMenu;
       });
   }, [
     agentSettingsOpen,
@@ -340,6 +401,11 @@ export const Desktop = () => {
     preferencesOpen,
     setAgentSettingsOpen,
     workspaceWindows,
+    pinnedWindows,
+    pinWindow,
+    unpinWindow,
+    shortcutPositions,
+    ensureShortcut,
   ]);
 
   return (
@@ -423,6 +489,26 @@ export const Desktop = () => {
             icon={<GaugeIcon className="h-8 w-8" />}
             active={!!computeDemoOpen}
           />
+          {/* Dynamically pinned workspace window shortcuts */}
+          {Object.entries(pinnedWindows).map(([winId, meta]) => {
+            const shortcutId = `pinned:${winId}`;
+            const pos = shortcutPositions[shortcutId] ?? { x: 128, y: 64 };
+            const isActive = Boolean(workspaceWindows[winId]);
+            return (
+              <DesktopIcon
+                key={shortcutId}
+                id={shortcutId}
+                label={meta.title}
+                position={pos}
+                containerRef={overlayRef}
+                onOpen={() => void openPinned(winId)}
+                onPositionChange={(p) => setShortcutPosition(shortcutId, p)}
+                icon={<GaugeIcon className="h-8 w-8" />}
+                active={isActive}
+                onContextMenu={() => void confirmDeletePinnedApp(winId)}
+              />
+            );
+          })}
           {/* Notepad shortcut surfaces the manual scratchpad utility. */}
           <DesktopIcon
             id="notepad-shortcut"

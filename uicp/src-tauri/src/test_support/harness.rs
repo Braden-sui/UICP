@@ -265,7 +265,9 @@ impl ComputeTestHarness {
             .ok_or_else(|| anyhow::anyhow!("E-UICP-0411: source path not valid UTF-8"))?;
         crate::commands::copy_into_files(self.app.handle().clone(), src_str.into())
             .await
-            .map_err(|err| anyhow::anyhow!("E-UICP-0412: copy_into_files via harness failed: {err}"))
+            .map_err(|err| {
+                anyhow::anyhow!("E-UICP-0412: copy_into_files via harness failed: {err}")
+            })
     }
 
     /// WHY: Load workspace state through the command shim to ensure parity with the production entry point.

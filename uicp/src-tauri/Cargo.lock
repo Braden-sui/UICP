@@ -6011,6 +6011,7 @@ dependencies = [
  "parking_lot",
  "pollster",
  "rand 0.8.5",
+ "regex",
  "reqwest",
  "rusqlite",
  "semver",

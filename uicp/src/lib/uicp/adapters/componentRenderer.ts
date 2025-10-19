@@ -45,20 +45,60 @@ function ensureAliases(primary: string, aliases: string[]): void {
 }
 
 // Typed component implementations (module-scope so catalog summary is always available)
+type UnknownRecord = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is UnknownRecord => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const asRecord = (value: unknown): UnknownRecord => (isRecord(value) ? value : {});
+
+const recordArray = (value: unknown): UnknownRecord[] => {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+};
+
+const readString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
+
+const tryStringify = (value: unknown): string | null => {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+};
+
 register(
     'data.table',
     (params) => {
-      const p = (params.props ?? {}) as Record<string, unknown>;
-      const columns = Array.isArray((p as any).columns) ? ((p as any).columns as Array<string | { key: string; label: string }>) : [];
-      const rows = Array.isArray((p as any).rows) ? ((p as any).rows as Array<Record<string, unknown>>) : [];
-      const dense = Boolean((p as any).dense);
+      const props = asRecord(params.props);
+      const normalizeColumn = (value: unknown): { key: string; label: string } | null => {
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (!trimmed) return null;
+          return { key: trimmed, label: trimmed };
+        }
+        if (isRecord(value)) {
+          const keyCandidate = typeof value.key === 'string' ? value.key : typeof value.label === 'string' ? value.label : '';
+          const key = keyCandidate.trim();
+          if (!key) return null;
+          const label = typeof value.label === 'string' && value.label.trim() ? value.label : key;
+          return { key, label };
+        }
+        return null;
+      };
+      const columns = Array.isArray(props.columns)
+        ? props.columns
+            .map(normalizeColumn)
+            .filter((column): column is { key: string; label: string } => column !== null)
+        : [];
+      const rows = recordArray(props.rows);
+      const dense = Boolean(props.dense);
       const header =
         '<thead>' +
         '<tr>' +
         columns
-          .map((c) => {
-            const label = typeof c === 'string' ? c : c && typeof (c as any).label === 'string' ? (c as any).label : (typeof c === 'object' && (c as any).key) ? (c as any).key : '';
-            return `<th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-600">${escapeHtml(String(label))}</th>`;
+          .map((column) => {
+            return `<th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-600">${escapeHtml(column.label)}</th>`;
           })
           .join('') +
         '</tr>' +
@@ -67,9 +107,8 @@ register(
         '<tbody class="divide-y divide-slate-200">' +
         rows
           .map((row) => {
-            const cells = columns.map((c) => {
-              const key = typeof c === 'string' ? c : (c as any)?.key ?? (c as any)?.label ?? '';
-              const value = (row as any)[key];
+            const cells = columns.map((column) => {
+              const value = row[column.key];
               return `<td class="px-3 ${dense ? 'py-1' : 'py-2'}">${escapeHtml(String(value ?? ''))}</td>`;
             });
             return `<tr>${cells.join('')}</tr>`;
@@ -85,8 +124,8 @@ register(
 register(
     'script.panel',
     (params) => {
-      const p = (params.props ?? {}) as Record<string, unknown>;
-      const panelId = typeof (p as any).id === 'string' && (p as any).id.trim() ? String((p as any).id) : createId('panel');
+      const props = asRecord(params.props);
+      const panelId = typeof props.id === 'string' && props.id.trim() ? props.id : createId('panel');
       const attrs = `class="uicp-script-panel" data-script-panel-id="${escapeHtml(panelId)}"`;
       // Content managed by lifecycle via state watcher; keep wrapper empty initially
       return `<div ${attrs}></div>`;
@@ -98,24 +137,24 @@ register(
 register(
     'form.v1',
     (params) => {
-      const p = (params.props ?? {}) as Record<string, unknown>;
-      const fields = Array.isArray((p as any).fields) ? ((p as any).fields as Array<Record<string, unknown>>) : [];
-      const submitLabel = typeof (p as any).submitLabel === 'string' ? String((p as any).submitLabel) : 'Submit';
-      const schema = (p as any).submitSchema ? JSON.stringify((p as any).submitSchema) : undefined;
+      const props = asRecord(params.props);
+      const fields = recordArray(props.fields);
+      const submitLabel = readString(props.submitLabel, 'Submit');
+      const schemaJson = props.submitSchema !== undefined ? tryStringify(props.submitSchema) : null;
       const inputs = fields
         .map((f) => {
-          const name = typeof (f as any).name === 'string' ? (f as any).name : '';
-          const label = typeof (f as any).label === 'string' ? (f as any).label : name;
-          const type = typeof (f as any).type === 'string' ? (f as any).type : 'text';
-          const placeholder = typeof (f as any).placeholder === 'string' ? (f as any).placeholder : '';
-          const required = Boolean((f as any).required);
+          const name = readString(f.name);
+          const label = readString(f.label, name);
+          const type = readString(f.type, 'text');
+          const placeholder = readString(f.placeholder);
+          const required = Boolean(f.required);
           if (type === 'textarea') {
             return `<label class="flex flex-col gap-1 text-sm text-slate-600"><span class="font-semibold text-slate-700">${escapeHtml(label)}</span><textarea name="${escapeHtml(name)}" class="rounded border border-slate-300 px-3 py-2"></textarea></label>`;
           }
           return `<label class="flex flex-col gap-1 text-sm text-slate-600"><span class="font-semibold text-slate-700">${escapeHtml(label)}</span><input type="${escapeHtml(type)}" name="${escapeHtml(name)}" placeholder="${escapeHtml(placeholder)}" ${required ? 'required' : ''} class="rounded border border-slate-300 px-3 py-2"/></label>`;
         })
         .join('');
-      const schemaAttr = schema ? ` data-submit-schema='${escapeHtml(schema)}'` : '';
+      const schemaAttr = schemaJson ? ` data-submit-schema='${escapeHtml(schemaJson)}'` : '';
       return `<form class="flex flex-col gap-3"${schemaAttr}>${inputs}<button type="submit" class="self-start rounded bg-slate-900 px-3 py-2 text-white">${escapeHtml(submitLabel)}</button></form>`;
     },
     'fields: Array<{name,label,type?,placeholder?,required?}>, submitLabel?: string, submitSchema?: object',
@@ -125,10 +164,8 @@ register(
 register(
     'modal.v1',
     (params) => {
-      const title =
-        typeof params.props === 'object' && params.props && 'title' in params.props
-          ? String((params.props as Record<string, unknown>).title)
-          : 'Modal';
+      const props = asRecord(params.props);
+      const title = readString(props.title, 'Modal');
       return (
         '<div class="rounded-lg border border-slate-200 bg-white/95 p-4 shadow-lg"><h2 class="text-lg font-semibold">' +
         escapeHtml(title) +
@@ -142,12 +179,12 @@ register(
 register(
     'list.v1',
     (params) => {
-      const p = (params.props ?? {}) as Record<string, unknown>;
-      const items = Array.isArray((p as any).items) ? ((p as any).items as Array<Record<string, unknown>>) : [];
-      const ordered = Boolean((p as any).ordered);
+      const props = asRecord(params.props);
+      const items = recordArray(props.items);
+      const ordered = Boolean(props.ordered);
       const tag = ordered ? 'ol' : 'ul';
       const inner = items
-        .map((it) => `<li class="px-3 py-1">${escapeHtml(String((it as any).text ?? ''))}</li>`)
+        .map((item) => `<li class="px-3 py-1">${escapeHtml(readString(item.text))}</li>`)
         .join('');
       return `<${tag} class="rounded border border-slate-200 bg-white/90 shadow-sm">${inner}</${tag}>`;
     },
@@ -158,15 +195,10 @@ register(
 register(
     'button.v1',
     (params) => {
-      const label =
-        typeof params.props === 'object' && params.props && 'label' in params.props
-          ? String((params.props as Record<string, unknown>).label)
-          : 'Button';
-      const cmd =
-        typeof params.props === 'object' && params.props && 'command' in params.props
-          ? String((params.props as Record<string, unknown>).command)
-          : undefined;
-      const dataAttr = cmd ? ` data-command="${escapeHtml(cmd)}"` : '';
+      const props = asRecord(params.props);
+      const label = readString(props.label, 'Button');
+      const command = typeof props.command === 'string' ? props.command : undefined;
+      const dataAttr = command ? ` data-command="${escapeHtml(command)}"` : '';
       return `<button class="button-primary rounded px-3 py-2"${dataAttr}>${escapeHtml(label)}</button>`;
     },
     'label: string, command?: string',
@@ -176,10 +208,12 @@ register(
 register(
     'data.view',
     (params) => {
-      const p = (params.props ?? {}) as Record<string, unknown>;
-      const scope = (typeof (p as any).scope === 'string' ? (p as any).scope : 'window') as 'window' | 'workspace' | 'global';
-      const key = typeof (p as any).path === 'string' ? (p as any).path : '';
-      const transform = typeof (p as any).transform === 'string' ? (p as any).transform : 'json';
+      const props = asRecord(params.props);
+      const rawScope = readString(props.scope, 'window');
+      const scope = rawScope === 'workspace' || rawScope === 'global' ? rawScope : 'window';
+      const key = readString(props.path);
+      const rawTransform = readString(props.transform, 'json');
+      const transform = rawTransform === 'count' || rawTransform === 'keys' || rawTransform === 'string' ? rawTransform : 'json';
       let value: unknown;
       try {
         value = readStateRef ? readStateRef(scope, key, params.windowId) : undefined;
@@ -187,12 +221,12 @@ register(
         value = undefined;
       }
       const display = (() => {
-        if (transform === 'count' && value && typeof value === 'object') {
+        if (transform === 'count') {
           if (Array.isArray(value)) return String(value.length);
-          return String(Object.keys(value as Record<string, unknown>).length);
+          if (isRecord(value)) return String(Object.keys(value).length);
         }
-        if (transform === 'keys' && value && typeof value === 'object' && !Array.isArray(value)) {
-          return escapeHtml(Object.keys(value as Record<string, unknown>).join(', '));
+        if (transform === 'keys' && isRecord(value)) {
+          return escapeHtml(Object.keys(value).join(', '));
         }
         if (transform === 'string') {
           return escapeHtml(String(value ?? ''));

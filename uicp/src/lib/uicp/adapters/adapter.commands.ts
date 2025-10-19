@@ -106,7 +106,21 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     
     // Build compute job spec for code generation
     const jobId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    const task = `script.codegen@0.1.0`; // Track C code generation task
+    const task = `codegen.run@0.1.0`; // Track D code generation task
+
+    const netCaps =
+      params.caps &&
+      typeof params.caps === 'object' &&
+      Array.isArray((params.caps as Record<string, unknown>).net)
+        ? (params.caps as { net: unknown }).net
+        : undefined;
+    let netAllowlist: string[];
+    if (Array.isArray(netCaps)) {
+      const filtered = netCaps.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      netAllowlist = filtered.length > 0 ? filtered : ['https://api.openai.com'];
+    } else {
+      netAllowlist = ['https://api.openai.com'];
+    }
     
     const jobSpec = {
       jobId,
@@ -120,11 +134,13 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
       timeoutMs: 60_000, // 1 minute for code generation
       bind: [],
       cache: params.cachePolicy || 'readwrite',
-      capabilities: {},
+      capabilities: {
+        net: netAllowlist,
+      },
       replayable: true,
       workspaceId: 'default',
       provenance: {
-        envHash: 'track-c-v1', // Track C version marker
+        envHash: 'track-d-v0', // Track D version marker
         agentTraceId: ctx.runId || command.traceId,
       },
       // Track C golden cache fields

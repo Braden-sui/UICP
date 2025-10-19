@@ -10,6 +10,7 @@ pub use policy::{
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
+pub mod codegen;
 pub mod compute;
 pub mod compute_cache;
 pub mod compute_input;

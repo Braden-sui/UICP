@@ -179,6 +179,7 @@ const SANITIZE_WHITELIST_ATTRS = [
   'data-id',
   'data-name',
   'data-role',
+  'data-command',
   'dir',
   'download',
   'draggable',

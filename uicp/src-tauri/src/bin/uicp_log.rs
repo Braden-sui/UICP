@@ -62,7 +62,9 @@ fn verify_cmd(args: &[String]) -> Result<()> {
     let db_path = db_path.unwrap_or_else(|| DATA_DIR.join("data.db"));
     let pubkey_source = pubkey_raw.or_else(|| env::var("UICP_ACTION_LOG_PUBKEY").ok());
     let verifying_key = match pubkey_source {
-        Some(raw) => Some(parse_pubkey(&raw).context("E-UICP-0645: failed to parse verifying key")?),
+        Some(raw) => {
+            Some(parse_pubkey(&raw).context("E-UICP-0645: failed to parse verifying key")?)
+        }
         None => None,
     };
     let sig_checked = verifying_key.is_some();

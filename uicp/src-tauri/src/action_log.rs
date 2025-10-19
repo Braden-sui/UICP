@@ -237,17 +237,13 @@ impl ActionLogHandle {
                         self.metrics
                             .enqueue_failures
                             .fetch_add(1, Ordering::Relaxed);
-                        self.metrics
-                            .dropped_appends
-                            .fetch_add(1, Ordering::Relaxed);
+                        self.metrics.dropped_appends.fetch_add(1, Ordering::Relaxed);
                         anyhow::bail!(
                             "E-UICP-0601: action log channel closed while flushing backlog: {err}"
                         );
                     }
                     Err(_) => {
-                        self.metrics
-                            .dropped_appends
-                            .fetch_add(1, Ordering::Relaxed);
+                        self.metrics.dropped_appends.fetch_add(1, Ordering::Relaxed);
                         anyhow::bail!(
                             "E-UICP-0604: action log channel saturated after {ACTION_LOG_SEND_TIMEOUT_MS}ms backpressure window"
                         );
@@ -258,9 +254,7 @@ impl ActionLogHandle {
                 self.metrics
                     .enqueue_failures
                     .fetch_add(1, Ordering::Relaxed);
-                self.metrics
-                    .dropped_appends
-                    .fetch_add(1, Ordering::Relaxed);
+                self.metrics.dropped_appends.fetch_add(1, Ordering::Relaxed);
                 anyhow::bail!("E-UICP-0602: action log worker not available");
             }
         }

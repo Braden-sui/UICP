@@ -5,7 +5,7 @@ use tauri::{Emitter, Manager, Runtime, State};
 // use anyhow::Context;
 
 use crate::{
-    compute, compute_cache, compute_input::canonicalize_task_input, emit_or_log,
+    codegen, compute, compute_cache, compute_input::canonicalize_task_input, emit_or_log,
     enforce_compute_policy, registry, AppState, ComputeFinalErr, ComputeJobSpec,
 };
 use std::time::Instant;
@@ -104,7 +104,11 @@ pub async fn compute_call<R: Runtime>(
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
     spec_norm.input = normalized_input;
-    let join = compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms);
+    let join = if codegen::is_codegen_task(&spec_norm.task) {
+        codegen::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+    } else {
+        compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+    };
     state
         .compute_ongoing
         .write()

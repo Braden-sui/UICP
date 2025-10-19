@@ -95,4 +95,3 @@ async fn script_render_smoke_when_module_present() {
         .to_string();
     assert!(data.contains("<div>hello</div>"));
 }
-

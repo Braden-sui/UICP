@@ -108,6 +108,28 @@ fn default_workspace_id() -> String {
     "default".into()
 }
 
+const CODEGEN_TASK_PREFIX: &str = "codegen.run@";
+fn allowed_codegen_hosts() -> Vec<String> {
+    let mut hosts = vec!["https://api.openai.com".to_string()];
+    if let Ok(endpoint) = std::env::var("UICP_CODEGEN_OPENAI_ENDPOINT") {
+        let trimmed = endpoint.trim();
+        if !trimmed.is_empty() {
+            hosts.push(trimmed.to_string());
+        }
+    }
+    hosts
+}
+
+fn is_codegen_task(task: &str) -> bool {
+    task.starts_with(CODEGEN_TASK_PREFIX)
+}
+
+fn codegen_host_allowed(url: &str) -> bool {
+    allowed_codegen_hosts()
+        .iter()
+        .any(|allowed| url.starts_with(allowed))
+}
+
 /// Enforce policy gates before dispatching a compute job.
 pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> {
     let timeout = spec.timeout_ms.unwrap_or(30_000);
@@ -132,6 +154,8 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
         });
     }
 
+    let is_codegen = is_codegen_task(&spec.task);
+
     if let Some(mem) = spec.mem_limit_mb {
         if !(64..=1024).contains(&mem) {
             return Some(ComputeFinalErr {
@@ -155,7 +179,39 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
         }
     }
 
-    if !spec.capabilities.net.is_empty() {
+    if is_codegen {
+        if spec.capabilities.net.is_empty() {
+            return Some(ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: "Compute.CapabilityDenied".into(),
+                message:
+                    "codegen.run tasks require capabilities.net pointing at the configured codegen endpoint"
+                        .into(),
+                metrics: None,
+            });
+        }
+        let all_allowed = spec
+            .capabilities
+            .net
+            .iter()
+            .all(|host| codegen_host_allowed(host));
+        if !all_allowed {
+            let allowed = allowed_codegen_hosts().join(", ");
+            return Some(ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: "Compute.CapabilityDenied".into(),
+                message: format!(
+                    "codegen.run tasks may only access allowlisted hosts: {}",
+                    allowed
+                ),
+                metrics: None,
+            });
+        }
+    } else if !spec.capabilities.net.is_empty() {
         return Some(ComputeFinalErr {
             ok: false,
             job_id: spec.job_id.clone(),
@@ -172,6 +228,20 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
         .iter()
         .chain(spec.capabilities.fs_write.iter())
         .all(|p| p.starts_with("ws:/"));
+
+    if is_codegen
+        && (!spec.capabilities.fs_read.is_empty() || !spec.capabilities.fs_write.is_empty())
+    {
+        return Some(ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "Compute.CapabilityDenied".into(),
+            message: "codegen.run tasks may not access the filesystem".into(),
+            metrics: None,
+        });
+    }
+
     if !fs_ok {
         return Some(ComputeFinalErr {
             ok: false,
@@ -251,6 +321,46 @@ mod tests {
     fn network_capabilities_are_denied_in_v1() {
         let mut spec = base_spec();
         spec.capabilities.net = vec!["https://example.com".into()];
+        let deny = enforce_compute_policy(&spec).expect("expected rejection");
+        assert_eq!(deny.code, "Compute.CapabilityDenied");
+    }
+
+    #[test]
+    fn codegen_requires_allowlisted_network() {
+        std::env::remove_var("UICP_CODEGEN_OPENAI_ENDPOINT");
+        let mut spec = base_spec();
+        spec.task = "codegen.run@0.1.0".into();
+        spec.capabilities.net = vec!["https://api.openai.com".into()];
+        assert!(enforce_compute_policy(&spec).is_none());
+
+        let mut spec_bad = spec.clone();
+        spec_bad.capabilities.net = vec!["https://evil.example.com".into()];
+        let deny = enforce_compute_policy(&spec_bad).expect("expected rejection");
+        assert_eq!(deny.code, "Compute.CapabilityDenied");
+
+        let mut spec_missing = spec.clone();
+        spec_missing.capabilities.net.clear();
+        let deny_missing =
+            enforce_compute_policy(&spec_missing).expect("expected rejection for missing net");
+        assert_eq!(deny_missing.code, "Compute.CapabilityDenied");
+
+        std::env::set_var("UICP_CODEGEN_OPENAI_ENDPOINT", "http://localhost:11434");
+        let mut spec_local = base_spec();
+        spec_local.task = "codegen.run@0.1.0".into();
+        spec_local.capabilities.net = vec!["http://localhost:11434".into()];
+        assert!(
+            enforce_compute_policy(&spec_local).is_none(),
+            "custom endpoint from env should be allowed"
+        );
+        std::env::remove_var("UICP_CODEGEN_OPENAI_ENDPOINT");
+    }
+
+    #[test]
+    fn codegen_denies_filesystem_access() {
+        let mut spec = base_spec();
+        spec.task = "codegen.run@0.1.0".into();
+        spec.capabilities.net = vec!["https://api.openai.com".into()];
+        spec.capabilities.fs_read = vec!["ws:/tmp/**".into()];
         let deny = enforce_compute_policy(&spec).expect("expected rejection");
         assert_eq!(deny.code, "Compute.CapabilityDenied");
     }

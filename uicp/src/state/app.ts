@@ -205,6 +205,8 @@ export type AppState = {
   plannerTwoPhaseEnabled: boolean;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
+  // Pinned workspace windows exposed as desktop shortcuts by windowId -> meta
+  pinnedWindows: Record<string, { title: string }>;
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
   workspaceWindows: Record<string, WorkspaceWindowMeta>;
   telemetryBuffer: TelemetryBuffer;
@@ -241,6 +243,9 @@ export type AppState = {
   setPlannerTwoPhaseEnabled: (value: boolean) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
+  removeDesktopShortcut: (id: string) => void;
+  pinWindow: (windowId: string, title: string) => void;
+  unpinWindow: (windowId: string) => void;
   upsertWorkspaceWindow: (meta: WorkspaceWindowMeta) => void;
   removeWorkspaceWindow: (id: string) => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
@@ -295,6 +300,7 @@ export const useAppStore = create<AppState>()(
       actorReasoningEffort: 'high',
       plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', !readBooleanEnv('VITE_TEST_MODE', false)),
       desktopShortcuts: {},
+      pinnedWindows: {},
       workspaceWindows: {},
       telemetryBuffer: createTelemetryBuffer(),
       telemetry: [],
@@ -384,6 +390,30 @@ export const useAppStore = create<AppState>()(
               [id]: position,
             },
           };
+        }),
+      removeDesktopShortcut: (id) =>
+        set((state) => {
+          if (!(id in state.desktopShortcuts)) return {};
+          const next = { ...state.desktopShortcuts };
+          delete next[id];
+          return { desktopShortcuts: next };
+        }),
+      pinWindow: (windowId, title) =>
+        set((state) => {
+          if (state.pinnedWindows[windowId]?.title === title) return {};
+          return {
+            pinnedWindows: {
+              ...state.pinnedWindows,
+              [windowId]: { title },
+            },
+          };
+        }),
+      unpinWindow: (windowId) =>
+        set((state) => {
+          if (!state.pinnedWindows[windowId]) return {};
+          const next = { ...state.pinnedWindows };
+          delete next[windowId];
+          return { pinnedWindows: next };
         }),
       upsertWorkspaceWindow: (meta) =>
         set((state) => ({
@@ -648,6 +678,7 @@ export const useAppStore = create<AppState>()(
         fullControl: state.fullControl,
         chatOpen: state.chatOpen,
         desktopShortcuts: state.desktopShortcuts,
+        pinnedWindows: state.pinnedWindows,
         workspaceWindows: state.workspaceWindows,
         notepadOpen: state.notepadOpen,
         plannerProfileKey: state.plannerProfileKey,

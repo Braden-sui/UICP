@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type MouseEvent as ReactMouseEvent } from 'react';
 import clsx from 'clsx';
 import type { DesktopShortcutPosition } from '../state/app';
 import { useDynamicStyleRule } from '../hooks/useDynamicStyleRule';
@@ -16,6 +16,7 @@ export type DesktopIconProps = {
   onPositionChange: (position: DesktopShortcutPosition) => void;
   active?: boolean;
   icon: ReactNode;
+  onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void;
 };
 
 // DesktopIcon keeps pointer math local so shortcuts feel like a native desktop and remain keyboard accessible.
@@ -28,6 +29,7 @@ const DesktopIcon = ({
   onPositionChange,
   icon,
   active = false,
+  onContextMenu,
 }: DesktopIconProps) => {
   const [dragging, setDragging] = useState(false);
   const pointerState = useRef<{
@@ -145,6 +147,10 @@ const DesktopIcon = ({
       onPointerMove={handlePointerMove}
       onPointerUp={endPointerTracking}
       onPointerCancel={endPointerTracking}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (typeof onContextMenu === 'function') onContextMenu(e);
+      }}
     >
       <div
         className={clsx(

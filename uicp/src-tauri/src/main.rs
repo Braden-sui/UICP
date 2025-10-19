@@ -1,4 +1,4 @@
-﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use std::{
     collections::HashMap,
@@ -2304,7 +2304,9 @@ async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, St
 }
 
 #[tauri::command]
-async fn get_action_log_stats(state: State<'_, AppState>) -> Result<crate::action_log::ActionLogStatsSnapshot, String> {
+async fn get_action_log_stats(
+    state: State<'_, AppState>,
+) -> Result<crate::action_log::ActionLogStatsSnapshot, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("get_action_log_stats").entered();
     Ok(state.action_log.stats_snapshot())
