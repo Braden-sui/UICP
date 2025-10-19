@@ -25,6 +25,7 @@ const VISUAL_OPS = new Set([
   'dom.append',
   'component.render',
   'component.update',
+  'needs.code',
 ]);
 
 const INTERACTIVE_PATTERNS = [

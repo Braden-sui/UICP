@@ -41,6 +41,7 @@ Allowed operations and parameter requirements:
 • component.render   — Required: { windowId, target, type }. Optional: { id, props }. Type ∈ {"button","form","table","modal","grid","cell"}; unknown types render a fallback prototype.
 • component.update   — Required: { id, props }.
 • component.destroy  — Required: { id }.
+• needs.code         — Required: { spec }. Optional: { language="ts", artifactId, goldenKey, progressWindowId, progressSelector, cachePolicy="readwrite", constraints, caps }. Language ∈ {"ts","rust","python"}. Triggers code generation workflow with deterministic golden caching. MUST be paired with progress UI in same batch.
 • state.set          — Required: { scope, key, value }. Optional: { windowId, ttlMs }. Scope ∈ {"window","workspace","global"}.
 • state.get          — Required: { scope, key }. Optional: { windowId }.
 • state.watch        — Required: { scope, key, selector }. Optional: { windowId, mode="replace" }.

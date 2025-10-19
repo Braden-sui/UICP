@@ -45,6 +45,7 @@ export const OperationName = z.enum([
   'state.watch',
   'state.unwatch',
   'api.call',
+  'needs.code',
   'txn.cancel',
 ]);
 
@@ -134,6 +135,20 @@ const ComponentUpdateParams = z.object({
 
 const ComponentDestroyParams = z.object({ id: z.string() }).strict();
 
+const NeedsCodeParams = z
+  .object({
+    spec: z.string().min(1),
+    language: z.enum(['ts', 'rust', 'python']).default('ts'),
+    constraints: z.record(z.unknown()).optional(),
+    caps: z.record(z.unknown()).optional(),
+    artifactId: z.string().min(1).optional(),
+    goldenKey: z.string().min(1).optional(),
+    progressWindowId: z.string().min(1).optional(),
+    progressSelector: z.string().min(1).optional(),
+    cachePolicy: z.enum(['readwrite', 'readOnly', 'bypass']).default('readwrite').optional(),
+  })
+  .strict();
+
 const scopeEnum = z.enum(['window', 'workspace', 'global']);
 
 const StateSetParams = z.object({
@@ -208,6 +223,7 @@ export const operationSchemas = {
   'state.watch': StateWatchParams,
   'state.unwatch': StateUnwatchParams,
   'api.call': ApiCallParams,
+  'needs.code': NeedsCodeParams,
   'txn.cancel': TxnCancelParams,
 } satisfies Record<OperationNameT, z.ZodTypeAny>;
 
@@ -239,6 +255,7 @@ export type OperationParamMap = {
   'state.watch': z.infer<typeof StateWatchParams>;
   'state.unwatch': z.infer<typeof StateUnwatchParams>;
   'api.call': z.infer<typeof ApiCallParams>;
+  'needs.code': z.infer<typeof NeedsCodeParams>;
   'txn.cancel': z.infer<typeof TxnCancelParams>;
 };
 

@@ -15,6 +15,7 @@ use crate::ComputeJobSpec;
 
 const DETAIL_CSV_INPUT: &str = "E-UICP-0401";
 const DETAIL_TABLE_INPUT: &str = "E-UICP-0402";
+const DETAIL_SCRIPT_INPUT: &str = "E-UICP-0406";
 const DETAIL_WS_PATH: &str = "E-UICP-0403";
 const DETAIL_FS_CAP: &str = "E-UICP-0404";
 const DETAIL_IO: &str = "E-UICP-0405";
@@ -170,6 +171,99 @@ pub fn extract_table_query_input(
     };
 
     Ok((rows, select, where_opt))
+}
+
+/// Input parser for the `script` applet world.
+/// INVARIANT: Returns a normalized mode and required fields for that mode.
+/// - render: requires `state` string
+/// - on-event: requires `action` string, `payload` string, and `state` string
+/// - init: no fields required, `state` is returned as empty string
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptMode {
+    Render,
+    OnEvent,
+    Init,
+}
+
+pub fn extract_script_input(
+    input: &serde_json::Value,
+) -> Result<(ScriptMode, String, Option<(String, String)>), TaskInputError> {
+    let obj = input.as_object().ok_or_else(|| {
+        TaskInputError::new(
+            error_codes::INPUT_INVALID,
+            DETAIL_SCRIPT_INPUT,
+            "script input must be an object",
+        )
+    })?;
+    let mode_raw = obj
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_SCRIPT_INPUT,
+                "script input.mode must be one of 'render' | 'on-event' | 'init'",
+            )
+        })?
+        .to_ascii_lowercase();
+    match mode_raw.as_str() {
+        "render" => {
+            let state = obj
+                .get("state")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_SCRIPT_INPUT,
+                        "script render requires state (string)",
+                    )
+                })?
+                .to_string();
+            Ok((ScriptMode::Render, state, None))
+        }
+        "on-event" => {
+            let action = obj
+                .get("action")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_SCRIPT_INPUT,
+                        "script on-event requires action (string)",
+                    )
+                })?
+                .to_string();
+            let payload = obj
+                .get("payload")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_SCRIPT_INPUT,
+                        "script on-event requires payload (string)",
+                    )
+                })?
+                .to_string();
+            let state = obj
+                .get("state")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_SCRIPT_INPUT,
+                        "script on-event requires state (string)",
+                    )
+                })?
+                .to_string();
+            Ok((ScriptMode::OnEvent, state, Some((action, payload))))
+        }
+        "init" => Ok((ScriptMode::Init, String::new(), None)),
+        _ => Err(TaskInputError::new(
+            error_codes::INPUT_INVALID,
+            DETAIL_SCRIPT_INPUT,
+            format!("unsupported script mode: {mode_raw}"),
+        )),
+    }
 }
 
 /// WHY: Workspace paths must remain inside `files_dir_path`; reject traversal or malformed segments.

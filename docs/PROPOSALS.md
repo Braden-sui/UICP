@@ -148,3 +148,6 @@ Developer Experience
   - Problem: Hard to trigger DB maintenance in dev.
   - Proposal: expose a guarded command or env to force a maintenance run.
   - Acceptance: command runs in dev; integration test asserts no‑op in prod mode.
+- Javy AOT and AST normalization
+
+

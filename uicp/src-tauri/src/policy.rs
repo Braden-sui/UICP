@@ -52,6 +52,13 @@ pub struct ComputeJobSpec {
     #[serde(default = "default_workspace_id")]
     pub workspace_id: String,
     pub provenance: ComputeProvenanceSpec,
+    // Track C: Golden cache for code generation determinism
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub golden_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    #[serde(default)]
+    pub expect_golden: bool,
 }
 
 /// Terminal error envelope emitted back to the UI.

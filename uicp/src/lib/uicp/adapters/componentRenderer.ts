@@ -83,6 +83,19 @@ register(
   );
 
 register(
+    'script.panel',
+    (params) => {
+      const p = (params.props ?? {}) as Record<string, unknown>;
+      const panelId = typeof (p as any).id === 'string' && (p as any).id.trim() ? String((p as any).id) : createId('panel');
+      const attrs = `class="uicp-script-panel" data-script-panel-id="${escapeHtml(panelId)}"`;
+      // Content managed by lifecycle via state watcher; keep wrapper empty initially
+      return `<div ${attrs}></div>`;
+    },
+    'id: string, source?: string, module?: object',
+    '{ op: "component.render", params: { windowId: "win-app", target: "#root", type: "script.panel", props: { id: "panel-1" } } }'
+  );
+
+register(
     'form.v1',
     (params) => {
       const p = (params.props ?? {}) as Record<string, unknown>;

@@ -47,6 +47,7 @@ Safety and Determinism
    - component.render | component.update | component.destroy  (types: button, form, table, modal, grid, cell)
    - state.set | state.get | state.watch (with selector, optional mode) | state.unwatch
    - api.call (https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile) — may include into:{ scope, key, windowId?, correlationId? } to write responses into state
+   - needs.code (spec, language?, artifactId?, goldenKey?, progressWindowId?, progressSelector?, cachePolicy?) — triggers code generation workflow with deterministic caching
    - txn.cancel
 5) Event model: Interactivity is declarative via data-command JSON on elements or via component props (example: button.props.command). No inline JS.
 6) Sanitization: The Actor sanitizes HTML. Do not request <script>, inline handlers, iframes, javascript: or data: URLs.
@@ -80,6 +81,7 @@ Component-First Policy (CRITICAL)
 - dom.set is for layout scaffolding (containers, headers, sections)
 - dom.append is ONLY for progressive updates when component.update cannot apply
 - Batches that only append plain text without components or interactive elements will be REJECTED
+- Exception: needs.code operations MUST be paired with progress UI (component.render or dom.set with status indicators) to satisfy linter visibility requirements
 
 HTML and data-command rules
 - Escape quotes correctly inside HTML attributes. When embedding a data-command JSON array inside HTML, escape double quotes as \" and backslashes as \\.

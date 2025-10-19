@@ -86,6 +86,71 @@ export interface CommandExecutorDeps {
 }
 
 /**
+ * Creates command executor for needs.code operations.
+ * 
+ * WHY: Routes code generation requests to compute bridge with progress tracking.
+ * INVARIANT: Must be paired with progress UI elements in same batch (linter enforces).
+ */
+const createNeedsCodeExecutor = (): CommandExecutor => ({
+  async execute(command: Envelope, ctx: ApplyContext, _deps: CommandExecutorDeps): Promise<CommandResult> {
+    const params = command.params as OperationParamMap["needs.code"];
+    
+    if (!params.spec) {
+      return { success: false, error: 'needs.code requires spec parameter' };
+    }
+    
+    // Check if compute bridge is available
+    if (typeof window === 'undefined' || !window.uicpComputeCall) {
+      return { success: false, error: 'Compute bridge unavailable' };
+    }
+    
+    // Build compute job spec for code generation
+    const jobId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const task = `script.codegen@0.1.0`; // Track C code generation task
+    
+    const jobSpec = {
+      jobId,
+      task,
+      input: {
+        spec: params.spec,
+        language: params.language || 'ts',
+        constraints: params.constraints || {},
+        caps: params.caps || {},
+      },
+      timeoutMs: 60_000, // 1 minute for code generation
+      bind: [],
+      cache: params.cachePolicy || 'readwrite',
+      capabilities: {},
+      replayable: true,
+      workspaceId: 'default',
+      provenance: {
+        envHash: 'track-c-v1', // Track C version marker
+        agentTraceId: ctx.runId || command.traceId,
+      },
+      // Track C golden cache fields
+      artifactId: params.artifactId,
+      goldenKey: params.goldenKey,
+      expectGolden: !!params.goldenKey,
+    };
+    
+    try {
+      // Invoke compute bridge (async, result comes via event listener)
+      await window.uicpComputeCall(jobSpec);
+      
+      return { 
+        success: true, 
+        value: `Code generation job ${jobId} submitted`,
+      };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
+});
+
+/**
  * Creates command executor for api.call operations.
  */
 const createApiCallExecutor = (): CommandExecutor => ({
@@ -332,6 +397,7 @@ export const createCommandTable = () => {
   
   return {
     "api.call": createApiCallExecutor(),
+    "needs.code": createNeedsCodeExecutor(),
     "window.create": createWindowCreateExecutor(),
     "window.update": createWindowUpdateExecutor(),
     "window.close": createWindowCloseExecutor(),

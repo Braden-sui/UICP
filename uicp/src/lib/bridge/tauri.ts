@@ -134,6 +134,8 @@ export async function initializeTauriBridge() {
           logThrottleWaits: m?.logThrottleWaits,
           loggerThrottleWaits: m?.loggerThrottleWaits,
           partialThrottleWaits: m?.partialThrottleWaits,
+          goldenHash: m?.goldenHash,
+          goldenMatched: m?.goldenMatched,
         },
         final.message,
         final.code,
@@ -172,6 +174,8 @@ export async function initializeTauriBridge() {
       logThrottleWaits: meta?.logThrottleWaits,
       loggerThrottleWaits: meta?.loggerThrottleWaits,
       partialThrottleWaits: meta?.partialThrottleWaits,
+      goldenHash: meta?.goldenHash,
+      goldenMatched: meta?.goldenMatched,
     });
     pendingBinds.delete(final.jobId);
   }

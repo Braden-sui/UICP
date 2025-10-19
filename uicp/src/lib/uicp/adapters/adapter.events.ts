@@ -86,6 +86,18 @@ export const handleCommand = async (
       }
       const raw = JSON.parse(trimmed) as unknown;
       const evaluated = evalTemplates(raw, ctx);
+
+      // Special-case opaque command objects like { type: "script.emit", action, payload }
+      if (evaluated && typeof evaluated === 'object' && !Array.isArray(evaluated)) {
+        const obj = evaluated as Record<string, unknown>;
+        const t = typeof obj.type === 'string' ? obj.type : undefined;
+        if (t && commandHandlers.has(t)) {
+          const handler = commandHandlers.get(t)!;
+          await handler(t, { ...ctx, action: obj.action, payload: obj.payload });
+          return;
+        }
+      }
+
       const batchCandidate = Array.isArray(evaluated)
         ? (evaluated as Batch)
         : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
@@ -217,6 +229,19 @@ export const createDelegatedEventHandler = (
     if (event.type === 'click' || event.type === 'submit') {
       let cmdHost: HTMLElement | null = target;
       let commandJson: string | null = null;
+      // Discover nearest script.panel container for context
+      let scriptPanelId: string | null = null;
+      {
+        let p: HTMLElement | null = target;
+        while (p && p !== workspaceRoot) {
+          if (p.classList && p.classList.contains('uicp-script-panel')) {
+            const pid = p.getAttribute('data-script-panel-id');
+            if (pid) { scriptPanelId = pid; }
+            break;
+          }
+          p = p.parentElement;
+        }
+      }
       while (cmdHost && cmdHost !== workspaceRoot) {
         commandJson = cmdHost.getAttribute('data-command');
         if (commandJson) break;
@@ -227,6 +252,7 @@ export const createDelegatedEventHandler = (
           ...payload,
           value: (target as HTMLInputElement | HTMLTextAreaElement).value,
           form: (payload.formData as Record<string, unknown> | undefined) ?? {},
+          panelId: scriptPanelId ?? undefined,
         }).catch((err) => {
           const original = err instanceof Error ? err : new Error(String(err));
           console.error('E-UICP-0301: failed to process data-command JSON', original);

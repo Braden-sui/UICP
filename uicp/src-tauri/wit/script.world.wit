@@ -1,0 +1,22 @@
+package uicp:applet-script@0.1.0;
+
+/// Minimal script applet interface.
+/// INVARIANT: All functions return `result<string, string>` where `ok` is
+/// the payload (HTML or JSON) and `err` is a human-readable error string.
+interface script {
+  /// Render the UI for the provided state (HTML string output).
+  render: func(state: string) -> result<string, string>;
+
+  /// Handle a UI event and return next state and/or a batch description as JSON string.
+  /// Expected JSON shape on success: { "next_state"?: string, "batch"?: any }
+  on-event: func(action: string, payload: string, state: string) -> result<string, string>;
+
+  /// Initialize and return the initial state as a string (caller-defined encoding).
+  init: func() -> result<string, string>;
+}
+
+/// Component world exporting the script interface.
+world task {
+  export script;
+}
+

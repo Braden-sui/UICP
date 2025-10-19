@@ -1,0 +1,12 @@
+package uicp:applet-script@0.1.0;
+
+interface script {
+  render: func(state: string) -> result<string, string>;
+  on-event: func(action: string, payload: string, state: string) -> result<string, string>;
+  init: func() -> result<string, string>;
+}
+
+world task {
+  export script;
+}
+

@@ -198,6 +198,13 @@ export const LEXICON: { [K in OperationNameT]: LexEntry<K> } = {
     skip: ["please", "the"],
   },
 
+  // Code generation ---------------------------------------------------------
+  "needs.code": {
+    verbs: ["request", "need"],
+    templates: ["request code {spec}", "need code {spec}"],
+    skip: ["please", "the"],
+  },
+
   // HTTP/API ----------------------------------------------------------------
   "api.call": {
     verbs: ["open", "visit", "go"],

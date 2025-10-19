@@ -26,3 +26,15 @@ pub mod table_query {
         },
     });
 }
+
+/// Typed bindings for the `uicp:applet-script@0.1.0` world used by script applets.
+/// INVARIANT: The WIT path is the host-side source of truth for this world.
+pub mod script {
+    wasmtime::component::bindgen!({
+        path: "wit/script.world.wit",
+        world: "task",
+        exports: {
+            default: async,
+        },
+    });
+}

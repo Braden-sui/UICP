@@ -1,0 +1,19 @@
+[package]
+name = "script-hello"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.44.0"
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
+
+[package.metadata.component]
+package = "uicp:applet-script"
+[package.metadata.component.target]
+path = "wit"
+world = "task"
+

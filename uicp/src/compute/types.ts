@@ -30,7 +30,7 @@ export const capabilitiesSchema = z.object({
 
 export const jobSpecSchema = z.object({
   jobId: z.string().uuid(),
-  task: z.string().min(1), // e.g. "csv.parse@1.2.0"
+  task: z.string().min(1), // e.g. "csv.parse@1.2.0" or "script.codegen@0.1.0"
   input: z.unknown(),
   timeoutMs: z.number().int().positive().default(30_000),
   fuel: z.number().int().positive().optional(),
@@ -45,6 +45,10 @@ export const jobSpecSchema = z.object({
     envHash: z.string().min(1),
     agentTraceId: z.string().optional(),
   }),
+  // Track C: Golden cache for code artifacts
+  artifactId: z.string().min(1).optional(),
+  goldenKey: z.string().min(1).optional(),
+  expectGolden: z.boolean().optional(),
 });
 
 export type JobSpec = z.infer<typeof jobSpecSchema>;
@@ -83,6 +87,8 @@ export const finalOkSchema = z.object({
       partialThrottleWaits: z.number().int().nonnegative().optional(),
       rngCounter: z.number().int().nonnegative().optional(),
       outputHash: z.string().optional(),
+      goldenHash: z.string().optional(),
+      goldenMatched: z.boolean().optional(),
     })
     .optional(),
 });
@@ -108,6 +114,8 @@ export const finalErrSchema = z.object({
       logThrottleWaits: z.number().int().nonnegative().optional(),
       loggerThrottleWaits: z.number().int().nonnegative().optional(),
       partialThrottleWaits: z.number().int().nonnegative().optional(),
+      goldenHash: z.string().optional(),
+      goldenMatched: z.boolean().optional(),
     })
     .optional(),
 });

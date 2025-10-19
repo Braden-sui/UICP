@@ -79,6 +79,23 @@ const ComponentDestroyParams = {
   additionalProperties: false,
 } as const;
 
+const NeedsCodeParams = {
+  type: 'object',
+  properties: {
+    spec: { type: 'string', minLength: 1 },
+    language: { type: 'string', enum: ['ts', 'rust', 'python'], default: 'ts' },
+    constraints: { type: 'object', additionalProperties: true },
+    caps: { type: 'object', additionalProperties: true },
+    artifactId: { type: 'string', minLength: 1 },
+    goldenKey: { type: 'string', minLength: 1 },
+    progressWindowId: { type: 'string', minLength: 1 },
+    progressSelector: { type: 'string', minLength: 1 },
+    cachePolicy: { type: 'string', enum: ['readwrite', 'readOnly', 'bypass'], default: 'readwrite' },
+  },
+  required: ['spec'],
+  additionalProperties: false,
+} as const;
+
 const StateSetParams = {
   type: 'object',
   properties: {
@@ -177,6 +194,7 @@ const envelopeOneOf = [
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'component.render' }, params: { $ref: '#/definitions/ComponentRenderParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'component.update' }, params: { $ref: '#/definitions/ComponentUpdateParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'component.destroy' }, params: { $ref: '#/definitions/ComponentDestroyParams' } }, required: ['op', 'params'], additionalProperties: false },
+  { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'needs.code' }, params: { $ref: '#/definitions/NeedsCodeParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.set' }, params: { $ref: '#/definitions/StateSetParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.get' }, params: { $ref: '#/definitions/StateGetParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.watch' }, params: { $ref: '#/definitions/StateWatchParams' } }, required: ['op', 'params'], additionalProperties: false },
@@ -213,6 +231,7 @@ export const planSchema = {
     ComponentRenderParams,
     ComponentUpdateParams,
     ComponentDestroyParams,
+    NeedsCodeParams,
     StateSetParams,
     StateGetParams,
     StateWatchParams,
@@ -243,6 +262,7 @@ export const batchSchema = {
     ComponentRenderParams,
     ComponentUpdateParams,
     ComponentDestroyParams,
+    NeedsCodeParams,
     StateSetParams,
     StateGetParams,
     ApiCallParams,

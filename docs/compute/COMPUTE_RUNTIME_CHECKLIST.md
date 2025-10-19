@@ -8,10 +8,11 @@ Legend
 - [ ] pending
 - [~] partial/in progress
 
-Last updated: 2025-10-13
+Last updated: 2025-10-19
 
-- JS/TS: npm run test → 114/114 passing; npm run lint → clean
+- JS/TS: npm run test → 314/315 passing (1 pre-existing); npm run lint → clean
 - Rust: integration suites present; see sections below and testing.md
+- Track C (golden cache): Foundation complete; integration pending
 
 -------------------------------------------------------------------------------
 
@@ -108,6 +109,46 @@ Last updated: 2025-10-13
 
 -------------------------------------------------------------------------------
 
+## 1.5) Track C: Code Generation with Golden Cache (Rust/TypeScript)
+
+- [x] Schema extensions
+  - Files: `uicp/src/compute/types.ts`, `uicp/src/lib/schema/index.ts`, `uicp/src/lib/llm/tools.ts`
+  - Added `artifactId`, `goldenKey`, `expectGolden` to `JobSpec`; `goldenHash`, `goldenMatched` to metrics
+
+- [x] Frontend executor
+  - File: `uicp/src/lib/uicp/adapters/adapter.commands.ts`
+  - `createNeedsCodeExecutor` routes `needs.code` operations to compute bridge with Track C metadata
+
+- [x] Prompt guidance
+  - Files: `uicp/src/prompts/planner.txt`, `uicp/src/prompts/actor.txt`
+  - Documented `needs.code` operation; added linter exception for compute workflows paired with progress UI
+
+- [x] Linter integration
+  - File: `uicp/src/lib/uicp/adapters/batchLinter.ts`
+  - Added `needs.code` to `VISUAL_OPS` set; batches must pair with progress UI
+
+- [x] Golden cache storage
+  - File: `uicp/src-tauri/src/compute_cache.rs`
+  - Implemented `compute_output_hash()`, `store_golden()`, `lookup_golden()` functions
+  - Database schema: `golden_cache` table with `(workspace_id, key) → (output_hash, task, created_at)`
+
+- [x] Database schema
+  - File: `uicp/src-tauri/src/core.rs`
+  - Created `golden_cache` table on first launch; workspace-scoped
+
+- [~] Integration into compute execution
+  - Pending: Wire `store_golden()` and `lookup_golden()` into `finalize_ok_with_metrics()` in `compute.rs`
+  - On golden mismatch: trigger safe mode and emit `replay-issue` event
+  - Metrics: populate `goldenHash` and `goldenMatched` fields in final envelope
+
+- [ ] Integration tests
+  - Pending: Test golden cache hit/miss/drift scenarios in `integration_compute/` harness
+
+- [ ] UI observability
+  - Pending: Surface `goldenMatched` status in Devtools compute panel; add nondeterminism alerts
+
+-------------------------------------------------------------------------------
+
 ## 2) App Shell and Orchestration (Rust/Tauri)
 
 - [x] AppState and concurrency
@@ -155,6 +196,14 @@ Last updated: 2025-10-13
 - [x] UI affordances for compute
   - Compute store tracks duration, cache hits, partial counters (`uicp/src/state/compute.ts`), and bridge toasts now map codes via `formatComputeErrorToast` (`uicp/src/lib/bridge/tauri.ts`).
   - Metrics panel, Devtools compute panel, and the demo window surface partial frames + cache telemetry with indicator chips and per-job badges.
+
+- [x] Applet panels (script.panel)
+  - Component wrapper registered; lifecycle orchestrated in adapter v2 (`component.render` path).
+  - State keys: `panels.{id}.model` (workspace), `panels.{id}.view` (window), `panels.{id}.config` (workspace).
+  - `uicp://compute.call` supports:
+    - DIRECT mode: `{ input: { mode: "init"|"render"|"on-event", source?|module? } }` returns data immediately (used for init/event handling).
+    - INTO mode: writes sink `{ status, html|error }` to `{scope,key}`; watcher sanitizes/injects HTML.
+  - Event bridge: `data-command='{"type":"script.emit","action":"...","payload":{}}'` resolves nearest `.uicp-script-panel`, applies next_state/batch, then re-renders via INTO.
 
 -------------------------------------------------------------------------------
 

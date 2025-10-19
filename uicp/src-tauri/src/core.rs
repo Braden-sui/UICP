@@ -190,6 +190,15 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             created_at INTEGER NOT NULL,
             PRIMARY KEY (workspace_id, key)
         );
+        CREATE TABLE IF NOT EXISTS golden_cache (
+            workspace_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            output_hash TEXT NOT NULL,
+            task TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, key)
+        );
         "#,
     )
     .context("apply migrations")?;
@@ -215,6 +224,30 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
         then run 'PRAGMA integrity_check' manually. If corrupt, restore from backup or \
         delete compute_cache table to rebuild cache from scratch.",
     )?;
+
+    {
+        let mut has_value_column = false;
+        let mut stmt = conn
+            .prepare("PRAGMA table_info('golden_cache')")
+            .context("inspect golden_cache schema")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == "value_json" {
+                has_value_column = true;
+                break;
+            }
+        }
+        if !has_value_column {
+            conn.execute("ALTER TABLE golden_cache ADD COLUMN value_json TEXT", [])
+                .context("add value_json column to golden_cache")?;
+            conn.execute(
+                "UPDATE golden_cache SET value_json = 'null' WHERE value_json IS NULL",
+                [],
+            )
+            .context("backfill null golden_cache value_json")?;
+        }
+    }
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_compute_cache_task_env ON compute_cache (workspace_id, task, env_hash)",

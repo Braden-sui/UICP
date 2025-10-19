@@ -1,4 +1,4 @@
-﻿//! UICP Wasm compute host (WASI Preview 2, Component Model).
+//! UICP Wasm compute host (WASI Preview 2, Component Model).
 //!
 //! This module selects implementation based on the `wasm_compute` feature:
 //! - when enabled, it embeds Wasmtime with typed hostcalls and module registry.
@@ -1922,15 +1922,90 @@ mod with_runtime {
         use sha2::Digest;
         hasher.update(canonical.as_bytes());
         let out_hash = hex::encode(hasher.finalize());
+        
+        // Track C: Golden cache verification and storage
+        let mut golden_hash_opt = None;
+        let mut golden_matched = None;
+        if let (Some(golden_key), true) = (&spec.golden_key, spec.expect_golden) {
+            match crate::compute_cache::lookup_golden(app, &spec.workspace_id, golden_key).await {
+                Ok(Some(record)) => {
+                    let matches = record.output_hash == out_hash;
+                    golden_hash_opt = Some(record.output_hash.clone());
+                    golden_matched = Some(matches);
+                    if !matches {
+                        #[cfg(feature = "otel_spans")]
+                        tracing::warn!(
+                            target = "uicp",
+                            job_id = %spec.job_id,
+                            golden_key = %golden_key,
+                            expected = %record.output_hash,
+                            actual = %out_hash,
+                            "Golden mismatch: nondeterministic code generation"
+                        );
+                        let state: tauri::State<'_, crate::AppState> = app.state();
+                        *state.safe_mode.write().await = true;
+                        crate::emit_or_log(app, "replay-issue", serde_json::json!({
+                            "reason": format!("Nondeterministic code generation ({})", golden_key),
+                            "action": "safe_mode_enabled"
+                        }));
+                    }
+                }
+                Ok(None) => {
+                    if let Err(e) = crate::compute_cache::store_golden(
+                        app,
+                        &spec.workspace_id,
+                        golden_key,
+                        &out_hash,
+                        &spec.task,
+                        &output,
+                    )
+                    .await
+                    {
+                        #[cfg(feature = "otel_spans")]
+                        tracing::warn!(target = "uicp", error = %e, "Failed to store golden hash");
+                    } else {
+                        golden_hash_opt = Some(out_hash.clone());
+                        golden_matched = Some(true);
+                        #[cfg(feature = "otel_spans")]
+                        tracing::info!(
+                            target = "uicp",
+                            job_id = %spec.job_id,
+                            golden_key = %golden_key,
+                            "Stored golden hash for code artifact"
+                        );
+                    }
+                }
+                Err(e) => {
+                    #[cfg(feature = "otel_spans")]
+                    tracing::warn!(target = "uicp", error = %e, "Failed to lookup golden hash");
+                }
+            }
+        }
+        
         if let Some(map) = metrics.as_object_mut() {
             map.insert("outputHash".into(), serde_json::json!(out_hash));
             map.entry("queueMs".to_string())
                 .or_insert_with(|| serde_json::json!(queue_wait_ms));
+            if let Some(gh) = golden_hash_opt {
+                map.insert("goldenHash".into(), serde_json::json!(gh));
+            }
+            if let Some(gm) = golden_matched {
+                map.insert("goldenMatched".into(), serde_json::json!(gm));
+            }
         } else {
-            metrics = serde_json::json!({
+            let mut m = serde_json::json!({
                 "outputHash": out_hash,
                 "queueMs": queue_wait_ms
             });
+            if let Some(obj) = m.as_object_mut() {
+                if let Some(gh) = golden_hash_opt {
+                    obj.insert("goldenHash".into(), serde_json::json!(gh));
+                }
+                if let Some(gm) = golden_matched {
+                    obj.insert("goldenMatched".into(), serde_json::json!(gm));
+                }
+            }
+            metrics = m;
         }
         let payload = crate::ComputeFinalOk {
             ok: true,

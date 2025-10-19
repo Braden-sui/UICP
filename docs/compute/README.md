@@ -27,12 +27,24 @@
 - Workspace-scoped cache implemented in `uicp/src-tauri/src/compute_cache.rs`.
 - Clear Compute Cache UI is available in `uicp/src/components/AgentSettingsWindow.tsx` (invokes `clear_compute_cache`).
 
+## Track C: Code Generation with Golden Cache (V2)
+
+- **Purpose**: Support deterministic code generation workflows with bit-exact output verification.
+- **Schema**: Extended `JobSpec` with `artifactId`, `goldenKey`, `expectGolden` fields.
+- **Frontend**: `needs.code` operation added to envelope schema; executor in `adapter.commands.ts` routes to compute bridge.
+- **Backend**: Golden cache functions in `compute_cache.rs` (`store_golden`, `lookup_golden`, `compute_output_hash`).
+- **Database**: `golden_cache` table stores SHA-256 hashes per `(workspace_id, key)`.
+- **Verification**: On code generation completion, compare output hash against stored golden; mismatch triggers safe mode.
+- **Metrics**: `goldenHash` and `goldenMatched` fields propagate through final event to UI for observability.
+- **Status**: Foundation complete; integration into `finalize_ok_with_metrics()` pending.
+
 ## Guest ABI contract (csv.parse & table.query)
 
 | Task | WIT package | Export | Imports | Notes |
 | ---- | ----------- | ------ | ------- | ----- |
 | `csv.parse@1.2.0` | `uicp:task-csv-parse@1.2.0` (`components/csv.parse/csv-parse/wit/world.wit`) | `func run(job-id: string, input: string, has-header: bool) -> result<list<list<string>>, string>` | _None_ | Pure parser. Input is a `data:` URI (CSV text). Returns rows or a string error. |
 | `table.query@0.1.0` | `uicp:task-table-query@0.1.0` (`components/table.query/wit/world.wit`) | `func run(job-id: string, rows: list<list<string>>, select: list<u32>, where?: record { col: u32, needle: string }) -> result<list<list<string>>, string>` | `uicp:host/control`, `wasi:io/streams`, `wasi:clocks/monotonic-clock` | Relies on host control for partial logging/cancel checks. No filesystem or network imports are linked. |
+| `script.*@x.y.z` | `uicp:applet-script@0.1.0` (`src-tauri/wit/script.world.wit`) | `render(state) -> result<string,string>`, `on-event(action,payload,state) -> result<string,string>`, `init() -> result<string,string>` | _None_ | Minimal applet runtime for HTML rendering and JSON event handling. No ambient FS/network. |
 
 Host shims:
 
@@ -112,6 +124,45 @@ await (window as any).uicpComputeCall({
 - The bridge listens for `compute-result-partial` and `compute-result-final`.
 - On final ok, it writes the `output` to each `bind[].toStatePath` via workspace `state.set`.
 
+### Applet panels (script.panel) — DIRECT vs INTO
+
+UI applets can be integrated in two complementary ways from the frontend:
+
+- DIRECT mode (returns data immediately to the caller):
+  - Triggered when `api.call url: "uicp://compute.call"` carries `body.input` with `{ mode, source? | module? }`.
+  - Intended for panel applets implementing `init`, `render`, and `onEvent` in JS during development.
+  - Returns a result on the `api.call` response path (no bridge event required).
+    - `init` → `{ data: { next_state } }`
+    - `render` → `{ data: "<html>..." }`
+    - `onEvent` → `{ data: { next_state?, batch? } }`
+
+- INTO mode (writes a sink to state and lets a watcher render):
+  - Use `params.into = { scope, key, windowId }`.
+  - For `uicp://compute.call`, the adapter writes sink shape:
+    ```json
+    { "status": "loading|ready|error", "html": "<sanitized>", "error": "string" }
+    ```
+  - A `state.watch` on the same `{scope,key}` updates the DOM via the sanitizer.
+
+Lifecycle for `script.panel`:
+
+- Keys: `panels.{id}.model` (workspace), `panels.{id}.view` (window), `panels.{id}.config` (workspace)
+- First render:
+  1) Render wrapper `<div class="uicp-script-panel" data-script-panel-id="{id}"></div>`
+  2) Install `state.watch` for `viewKey` targeting the wrapper
+  3) Call DIRECT `init` → commit `model`
+  4) Call INTO `render` with `{ state: model }` → writes `{ status, html|error }` → watcher injects HTML
+- Event flow:
+  - Buttons inside panel emit `data-command='{"type":"script.emit","action":"...","payload":{}}'`.
+  - Delegator resolves `panelId` from nearest `.uicp-script-panel`, calls DIRECT `on-event` with `{action,payload,state}`.
+  - If `next_state` present → update `model`, then INTO `render` to refresh `view`.
+
+Safety and guardrails:
+
+- All HTML passes through the sanitizer (`DomApplier`) before touching the DOM.
+- Applet DIRECT path is JS-hosted for development only; no ambient FS or network is available through this path.
+- WASI applets continue to run via the bridge path (JobSpec) unchanged.
+
 ## Trap mapping (planned)
 
 - Epoch preemption (deadline reached) → `Compute.Timeout`.
@@ -135,9 +186,9 @@ await (window as any).uicpComputeCall({
 
 ## Composition and validation tools
 
-- Composition: prefer `wac` (WebAssembly Compositions) for composing components. It supersedes `wasm-tools compose`.
+- Composition: prefer `wac` (WebAssembly Compositions) for composing/validating components and adapters.
   - Install: `cargo install wac-cli`
-  - Quick plug: `wac plug input.wasm --plug adapter.wasm -o output.wasm`
+  - Validate world conformance: `wac targets module.wasm path/to/world.wit`
 - Validation: CI uses `wac targets <component.wasm> <world.wit>` to assert each shipped module implements its declared world.
 
 ## UI demo

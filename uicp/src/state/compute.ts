@@ -20,6 +20,8 @@ export type ComputeJob = {
   logThrottleWaits?: number;
   loggerThrottleWaits?: number;
   partialThrottleWaits?: number;
+  goldenHash?: string;
+  goldenMatched?: boolean;
   lastError?: string;
   updatedAt: number;
 };

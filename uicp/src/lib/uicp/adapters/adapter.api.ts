@@ -53,19 +53,82 @@ const handleComputeCall = async (
   params: OperationParamMap["api.call"],
 ): Promise<CommandResult<string>> => {
   try {
+    const body = (params.body ?? {}) as Record<string, unknown>;
+
+    // DIRECT applet mode: when input has { mode, source|module }
+    const input = body && typeof body === 'object' ? (body as Record<string, unknown>)['input'] : undefined;
+    const maybeApplet = input && typeof input === 'object' ? (input as Record<string, unknown>) : undefined;
+    const hasAppletMarkers = !!(maybeApplet && typeof maybeApplet['mode'] === 'string' && (maybeApplet['source'] || maybeApplet['module']));
+    if (hasAppletMarkers) {
+      const mode = String(maybeApplet!.mode);
+      const appletModule: unknown = maybeApplet!.module ?? undefined;
+      const appletSource: unknown = maybeApplet!.source ?? undefined;
+      const stateArg: unknown = (maybeApplet as Record<string, unknown>).state;
+      const actionArg: unknown = (maybeApplet as Record<string, unknown>).action;
+      const payloadArg: unknown = (maybeApplet as Record<string, unknown>).payload;
+
+      // Resolve module from either provided object or evaluated source string
+      const resolveApplet = (): Record<string, unknown> => {
+        if (appletModule && typeof appletModule === 'object') return appletModule as Record<string, unknown>;
+        if (typeof appletSource === 'string') {
+          // Best-effort sandbox: no arguments, no window injected
+          // INVARIANT: Caller is responsible for safe HTML; downstream DOM insertion sanitizes.
+          // eslint-disable-next-line no-new-func
+          const factory = new Function('"use strict"; let module = {}; let exports = module; ' + String(appletSource) + '; return module || exports || {};');
+          const mod = factory();
+          if (mod && typeof mod === 'object') return mod as Record<string, unknown>;
+        }
+        return {};
+      };
+
+      const mod = resolveApplet();
+      const rid = params.idempotencyKey ?? createId('api');
+
+      const callIfFn = async (fn: unknown, ...args: unknown[]) => {
+        if (typeof fn === 'function') {
+          try {
+            return await (fn as (...xs: unknown[]) => unknown)(...args);
+          } catch (err) {
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+        }
+        return undefined;
+      };
+
+      if (mode === 'init') {
+        const next = await callIfFn(mod['init']);
+        return { success: true, value: rid, ...(next !== undefined ? { data: { next_state: next } } : {}) } as unknown as CommandResult<string>;
+      }
+
+      if (mode === 'render') {
+        const rendered = await callIfFn(mod['render'], { state: stateArg });
+        const html = rendered && typeof rendered === 'object' && typeof (rendered as any).html === 'string' ? (rendered as any).html : '';
+        return { success: true, value: rid, data: html } as unknown as CommandResult<string>;
+      }
+
+      if (mode === 'on-event' || mode === 'on_event' || mode === 'event') {
+        const result = await callIfFn(mod['onEvent'] ?? (mod as any)['on_event'], { action: actionArg, payload: payloadArg, state: stateArg });
+        return { success: true, value: rid, ...(result !== undefined ? { data: result } : {}) } as unknown as CommandResult<string>;
+      }
+
+      // Unknown mode: treat as no-op
+      return { success: true, value: rid };
+    }
+
+    // Default async compute bridge path (WASI tasks)
     const computeCall = getComputeBridge();
     if (!computeCall) throw new Error('compute bridge not initialized');
-    const body = (params.body ?? {}) as Partial<JobSpec>;
-    const jobId = body.jobId;
-    const task = body.task;
+    const job = body as Partial<JobSpec>;
+    const jobId = job.jobId;
+    const task = job.task;
     if (!jobId || !task) {
       throw new Error('compute.call payload missing jobId or task');
     }
     const spec = {
-      ...body,
+      ...job,
       jobId,
       task,
-      workspaceId: body.workspaceId ?? 'default',
+      workspaceId: job.workspaceId ?? 'default',
     } as JobSpec;
     await computeCall(spec);
     return { success: true, value: params.idempotencyKey ?? createId('api') };

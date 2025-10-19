@@ -30,7 +30,7 @@ import { createId } from '../../utils';
 import { routeApiCall } from './adapter.api';
 import type { StructuredClarifierBody, StructuredClarifierFieldSpec, StructuredClarifierOption } from './adapter.clarifier';
 import { persistCommand } from './adapter.persistence';
-import { createDelegatedEventHandler } from './adapter.events';
+import { createDelegatedEventHandler, registerCommandHandler } from './adapter.events';
 import { escapeHtml } from './adapter.security';
 
 /**
@@ -417,6 +417,54 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
   element.addEventListener('submit', handleDelegatedEvent, true);
   element.addEventListener('change', handleDelegatedEvent, true);
   
+  // Register script.emit bridge
+  registerCommandHandler('script.emit', async (_cmd, ctx) => {
+    try {
+      const panelId = typeof (ctx as Record<string, unknown>).panelId === 'string' ? (ctx as Record<string, unknown>).panelId : '';
+      const windowId = typeof (ctx as Record<string, unknown>).windowId === 'string' ? (ctx as Record<string, unknown>).windowId : undefined;
+      const action = (ctx as Record<string, unknown>).action as unknown;
+      const payload = (ctx as Record<string, unknown>).payload as unknown;
+      if (!panelId || !windowId) return;
+      const modelKey = `panels.${panelId}.model`;
+      const viewKey = `panels.${panelId}.view`;
+      const configKey = `panels.${panelId}.config`;
+      const model = readStateValue('workspace', modelKey, undefined);
+      const config = (readStateValue('workspace', configKey, undefined) as Record<string, unknown> | undefined) ?? {};
+      const source = (config as any)?.source;
+      const mod = (config as any)?.module;
+
+      // DIRECT on-event
+      const directParams: OperationParamMap['api.call'] = {
+        method: 'POST',
+        url: 'uicp://compute.call',
+        body: { input: { mode: 'on-event', action, payload, state: model, source, module: mod } },
+      } as unknown as OperationParamMap['api.call'];
+      const renderFormNoop = (_b: StructuredClarifierBody, _c: Envelope): { success: true; value: string } => ({ success: true, value: 'noop' });
+      const result = await routeApiCall(directParams, { op: 'api.call', params: directParams } as Envelope, {}, renderFormNoop);
+      const data = (result as unknown as { data?: unknown }).data as Record<string, unknown> | undefined;
+      let nextModel = model;
+      if (data && Object.prototype.hasOwnProperty.call(data, 'next_state')) {
+        nextModel = (data as any).next_state;
+        commitStateValue({ scope: 'workspace', key: modelKey, value: nextModel });
+      }
+      if (data && Array.isArray((data as any).batch)) {
+        const { enqueueBatch } = await import('./queue');
+        void enqueueBatch((data as any).batch);
+      }
+
+      // INTO render
+      const intoParams: OperationParamMap['api.call'] = {
+        method: 'POST',
+        url: 'uicp://compute.call',
+        body: { input: { mode: 'render', state: nextModel, source, module: mod } },
+        into: { scope: 'window', key: viewKey, windowId },
+      } as unknown as OperationParamMap['api.call'];
+      await routeApiCall(intoParams, { op: 'api.call', params: intoParams, windowId } as Envelope, {}, renderFormNoop);
+    } catch (err) {
+      console.error('script.emit handler failed', err);
+    }
+  });
+  
   // Process any batches that arrived before workspace was ready
   if (pendingBatches.length > 0) {
     console.debug(`[adapter.v2] flushing ${pendingBatches.length} pending batch(es)`);
@@ -683,10 +731,11 @@ const routeOperation = async (
             el.style.display = visible ? '' : 'none';
           };
 
-          type SinkShape = { status?: string; data?: unknown; error?: unknown };
+          type SinkShape = { status?: string; data?: unknown; error?: unknown; html?: unknown };
           const shape = (value && typeof value === 'object' ? (value as SinkShape) : undefined);
           const status = (shape && typeof shape.status === 'string') ? shape.status : 'ready';
           const payload = shape && 'data' in shape ? (shape.data as unknown) : value;
+          const htmlFromSink = shape && typeof shape.html === 'string' ? (shape.html as string) : null;
           const errorText = shape && shape.error != null ? String((shape.error as any)?.message ?? shape.error) : null;
 
           const isEmpty = (d: unknown): boolean => {
@@ -720,7 +769,12 @@ const routeOperation = async (
 
             // Ready with data
             if (slotReady) {
-              slotReady.innerHTML = toHtml(payload);
+              if (htmlFromSink) {
+                // Use DomApplier to sanitize applet-provided HTML into the ready slot
+                void domApplier.apply({ windowId: winId ?? (record?.id ?? ''), target: `${selector} [data-slot="ready"]`, html: htmlFromSink, mode: 'set', sanitize: true });
+              } else {
+                slotReady.innerHTML = toHtml(payload);
+              }
             }
             show(slotReady, true);
             show(slotLoading, false); show(slotEmpty, false); show(slotError, false);
@@ -728,7 +782,7 @@ const routeOperation = async (
           }
 
           // Fallback: replace target content with computed HTML
-          const html = toHtml(payload);
+          const html = htmlFromSink ?? toHtml(payload);
           void domApplier.apply({ windowId: winId ?? (record?.id ?? ''), target: selector, html, mode: mode === 'append' ? 'append' : 'set', sanitize: true });
         } catch (err) {
           console.error('state.watch render failed', { selector, err });
@@ -806,12 +860,22 @@ const routeOperation = async (
         if (result.success) {
           outcome.applied += 1;
           if (into) {
-            commitStateValue({
-              scope: into.scope,
-              key: into.key,
-              windowId: into.windowId,
-              value: { status: 'ready', correlationId, data: (result as any).data ?? null, error: null },
-            });
+            const isCompute = typeof params.url === 'string' && params.url.startsWith('uicp://compute.call');
+            if (isCompute) {
+              commitStateValue({
+                scope: into.scope,
+                key: into.key,
+                windowId: into.windowId,
+                value: { status: 'ready', correlationId, html: (result as any).data ?? '' },
+              });
+            } else {
+              commitStateValue({
+                scope: into.scope,
+                key: into.key,
+                windowId: into.windowId,
+                value: { status: 'ready', correlationId, data: (result as any).data ?? null, error: null },
+              });
+            }
           }
         } else {
           outcome.errors.push(`api.call failed: ${result.error}`);
@@ -820,7 +884,7 @@ const routeOperation = async (
               scope: into.scope,
               key: into.key,
               windowId: into.windowId,
-              value: { status: 'error', correlationId, data: null, error: String(result.error) },
+              value: { status: 'error', correlationId, error: String(result.error) },
             });
           }
         }
@@ -955,6 +1019,52 @@ const routeOperation = async (
       await componentRenderer.render(params);
       telemetry.event(AdapterEvents.COMPONENT_RENDER, { windowId: params.windowId, type: params.type });
       outcome.applied++;
+
+      // Special handling for script.panel lifecycle
+      if (params.type.toLowerCase() === 'script.panel') {
+        try {
+          const p = (params.props ?? {}) as Record<string, unknown>;
+          const panelId = typeof (p as any).id === 'string' && (p as any).id.trim() ? String((p as any).id) : createId('panel');
+          const modelKey = `panels.${panelId}.model`;
+          const viewKey = `panels.${panelId}.view`;
+          const source = typeof (p as any).source === 'string' ? (p as any).source : undefined;
+          const mod = (p as any).module && typeof (p as any).module === 'object' ? (p as any).module : undefined;
+          // Persist config for event bridge
+          commitStateValue({ scope: 'workspace', key: `panels.${panelId}.config`, value: { source, module: mod } });
+
+          // Install watcher on viewKey targeting this panel wrapper
+          const selector = `${params.target} .uicp-script-panel[data-script-panel-id="${panelId}"]`;
+          await routeOperation(
+            { op: 'state.watch', params: { scope: 'window', key: viewKey, selector, windowId: params.windowId, mode: 'replace' } } as unknown as Envelope,
+            { windowManager, domApplier, componentRenderer, telemetry, outcome }
+          );
+
+          // Initialize model via DIRECT init
+          const initParams: OperationParamMap['api.call'] = {
+            method: 'POST',
+            url: 'uicp://compute.call',
+            body: { input: { mode: 'init', source, module: mod } },
+          } as unknown as OperationParamMap['api.call'];
+          const renderFormNoop = (_b: StructuredClarifierBody, _c: Envelope): { success: true; value: string } => ({ success: true, value: 'noop' });
+          const initRes = await routeApiCall(initParams, { op: 'api.call', params: initParams, windowId: params.windowId } as Envelope, {}, renderFormNoop);
+          const initData = (initRes as any)?.data as { next_state?: unknown } | undefined;
+          if (initData && Object.prototype.hasOwnProperty.call(initData, 'next_state')) {
+            commitStateValue({ scope: 'workspace', key: modelKey, value: initData.next_state });
+          }
+
+          const currentModel = readStateValue('workspace', modelKey, undefined);
+          // Trigger initial render via INTO
+          const intoParams: OperationParamMap['api.call'] = {
+            method: 'POST',
+            url: 'uicp://compute.call',
+            body: { input: { mode: 'render', state: currentModel, source, module: mod } },
+            into: { scope: 'window', key: viewKey, windowId: params.windowId },
+          } as unknown as OperationParamMap['api.call'];
+          await routeApiCall(intoParams, { op: 'api.call', params: intoParams, windowId: params.windowId } as Envelope, {}, renderFormNoop);
+        } catch (err) {
+          console.error('script.panel lifecycle failed', err);
+        }
+      }
       break;
     }
 
