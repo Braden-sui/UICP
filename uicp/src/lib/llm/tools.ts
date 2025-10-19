@@ -103,14 +103,58 @@ const StateGetParams = {
   additionalProperties: false,
 } as const;
 
+const StateWatchParams = {
+  type: 'object',
+  properties: {
+    scope: { type: 'string', enum: ['window', 'workspace', 'global'] },
+    key: { type: 'string' },
+    selector: { type: 'string', minLength: 1 },
+    mode: { type: 'string', enum: ['replace', 'append'], default: 'replace' },
+    windowId: { type: 'string', minLength: 1 },
+  },
+  required: ['scope', 'key', 'selector'],
+  additionalProperties: false,
+} as const;
+
+const StateUnwatchParams = {
+  type: 'object',
+  properties: {
+    scope: { type: 'string', enum: ['window', 'workspace', 'global'] },
+    key: { type: 'string' },
+    selector: { type: 'string', minLength: 1 },
+    windowId: { type: 'string', minLength: 1 },
+  },
+  required: ['scope', 'key', 'selector'],
+  additionalProperties: false,
+} as const;
+
 const ApiCallParams = {
   type: 'object',
   properties: {
     method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], default: 'GET' },
-    url: { type: 'string', pattern: '^https?://' },
+    url: {
+      anyOf: [
+        { type: 'string', pattern: '^https?://' },
+        { type: 'string', pattern: '^mailto:' },
+        { type: 'string', pattern: '^uicp://intent(?:(?:/|\\?).*)?$' },
+        { type: 'string', pattern: '^uicp://compute\\.call(?:(?:/|\\?).*)?$' },
+        { type: 'string', pattern: '^tauri://fs/writeTextFile(?:(?:/|\\?).*)?$' },
+      ],
+    },
     headers: { type: 'object', additionalProperties: { type: 'string' } },
     body: {},
     idempotencyKey: { type: 'string' },
+    into: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', enum: ['window', 'workspace', 'global'] },
+        key: { type: 'string' },
+        windowId: { type: 'string' },
+        correlationId: { type: 'string' },
+      },
+      required: ['scope', 'key'],
+      additionalProperties: false,
+    },
   },
   required: ['method', 'url'],
   additionalProperties: false,
@@ -135,8 +179,8 @@ const envelopeOneOf = [
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'component.destroy' }, params: { $ref: '#/definitions/ComponentDestroyParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.set' }, params: { $ref: '#/definitions/StateSetParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.get' }, params: { $ref: '#/definitions/StateGetParams' } }, required: ['op', 'params'], additionalProperties: false },
-  { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.watch' }, params: { $ref: '#/definitions/StateGetParams' } }, required: ['op', 'params'], additionalProperties: false },
-  { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.unwatch' }, params: { $ref: '#/definitions/StateGetParams' } }, required: ['op', 'params'], additionalProperties: false },
+  { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.watch' }, params: { $ref: '#/definitions/StateWatchParams' } }, required: ['op', 'params'], additionalProperties: false },
+  { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.unwatch' }, params: { $ref: '#/definitions/StateUnwatchParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'api.call' }, params: { $ref: '#/definitions/ApiCallParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'txn.cancel' }, params: { $ref: '#/definitions/TxnCancelParams' } }, required: ['op', 'params'], additionalProperties: false },
 ] as const;
@@ -171,6 +215,8 @@ export const planSchema = {
     ComponentDestroyParams,
     StateSetParams,
     StateGetParams,
+    StateWatchParams,
+    StateUnwatchParams,
     ApiCallParams,
     TxnCancelParams,
     

@@ -18,10 +18,21 @@ vi.mock("../../src/lib/uicp/adapters/domApplier", () => ({
   })),
 }));
 
+const renderMock = vi.fn(async () => {});
+const updateMock = vi.fn(async () => {});
+const destroyMock = vi.fn(async () => {});
+const isKnownTypeMock = vi.fn(() => true);
+
 vi.mock("../../src/lib/uicp/adapters/componentRenderer", () => ({
   createComponentRenderer: vi.fn(() => ({
-    render: vi.fn(async () => {}),
+    render: renderMock,
+    update: updateMock,
+    destroy: destroyMock,
+    getMarkup: vi.fn(),
+    getCatalogSummary: vi.fn(() => "Components:"),
+    isKnownType: isKnownTypeMock,
   })),
+  getComponentCatalogSummary: vi.fn(() => "Components:"),
 }));
 
 const telemetryEvents: any[] = [];
@@ -62,6 +73,11 @@ describe("adapter.lifecycle v2", () => {
     telemetryEvents.length = 0;
     validateEnvelopeMock = vi.fn((e: any) => e); // Reset to default
     permissionGateMock = { require: vi.fn(async () => "granted"), isGated: vi.fn(() => false) }; // Reset to default
+    renderMock.mockClear();
+    updateMock.mockClear();
+    destroyMock.mockClear();
+    isKnownTypeMock.mockReset();
+    isKnownTypeMock.mockReturnValue(true);
     clearWorkspaceRoot();
     const root = document.createElement("div");
     root.id = "workspace";
@@ -94,6 +110,7 @@ describe("adapter.lifecycle v2", () => {
     expect(res.success).toBe(true);
     expect(telemetryEvents.some(e => e.name === 'adapter.apply.start')).toBe(true);
     expect(telemetryEvents.some(e => e.name === 'adapter.apply.end')).toBe(true);
+    expect(renderMock).toHaveBeenCalled();
   });
 
   it("records permission denials and continues when allowPartial", async () => {
@@ -158,6 +175,49 @@ describe("adapter.lifecycle v2", () => {
     
     expect(telemetryEvents.some(e => e.name === 'adapter.window.create')).toBe(true);
     expect(telemetryEvents.some(e => e.name === 'adapter.window.close')).toBe(true);
+  });
+
+  it("routes component.update through renderer and emits telemetry", async () => {
+    const batch = [
+      { id: "opC1", op: "component.update", params: { id: "cmp-1", props: { label: "hi" } } },
+    ];
+
+    const res = await applyBatch(batch as any, { runId: "component-update" } as any);
+
+    expect(res.applied).toBe(1);
+    expect(updateMock).toHaveBeenCalledWith({ id: "cmp-1", props: { label: "hi" } });
+    expect(permissionGateMock.require).toHaveBeenCalledWith('components', expect.objectContaining({ operation: 'component.update' }));
+    const event = telemetryEvents.find(e => e.name === 'adapter.component.render' && e.fields?.action === 'update');
+    expect(event).toBeDefined();
+  });
+
+  it("routes component.destroy through renderer and emits telemetry", async () => {
+    const batch = [
+      { id: "opC2", op: "component.destroy", params: { id: "cmp-2" } },
+    ];
+
+    const res = await applyBatch(batch as any, { runId: "component-destroy" } as any);
+
+    expect(res.applied).toBe(1);
+    expect(destroyMock).toHaveBeenCalledWith({ id: "cmp-2" });
+    expect(permissionGateMock.require).toHaveBeenCalledWith('components', expect.objectContaining({ operation: 'component.destroy' }));
+    const event = telemetryEvents.find(e => e.name === 'adapter.component.render' && e.fields?.action === 'destroy');
+    expect(event).toBeDefined();
+  });
+
+  it("emits unknown component telemetry when renderer lacks type", async () => {
+    isKnownTypeMock.mockImplementationOnce(() => false);
+
+    const batch = [
+      { id: "opC3", op: "component.render", params: { windowId: "w-unknown", target: "#root", type: "Unknown.Component", props: {} } },
+    ];
+
+    await applyBatch(batch as any, { runId: "component-unknown" } as any);
+
+    expect(renderMock).toHaveBeenCalledWith(expect.objectContaining({ type: "Unknown.Component" }));
+    const event = telemetryEvents.find(e => e.name === 'adapter.component.unknown');
+    expect(event?.fields?.type).toBe('Unknown.Component');
+    expect(isKnownTypeMock).toHaveBeenCalledWith('Unknown.Component');
   });
 
   it("emits correct telemetry events for DOM operations", async () => {

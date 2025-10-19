@@ -45,6 +45,8 @@ jobs:
         run: |
           cargo install cargo-component --locked || true
           cargo install wit-component --locked || true
+          # Install WebAssembly Compositions (wac) CLI to validate component targets
+          cargo install wac-cli --locked || true
 
       - name: Rust check (compute host)
         working-directory: uicp/src-tauri
@@ -121,6 +123,12 @@ jobs:
           wit-component wit --check docs/wit
           wit-component wit --check uicp/components/csv.parse/csv-parse/wit
           wit-component wit --check uicp/components/table.query/wit
+
+      - name: Validate modules implement expected worlds (wac targets)
+        run: |
+          # Ensure shipped components conform to their declared worlds
+          wac targets uicp/src-tauri/modules/csv.parse@1.2.0.wasm uicp/components/csv.parse/csv-parse/wit/world.wit
+          wac targets uicp/src-tauri/modules/table.query@0.1.0.wasm uicp/components/table.query/wit/world.wit
 
       - name: cargo-component metadata (csv.parse)
         working-directory: uicp/components/csv.parse/csv-parse

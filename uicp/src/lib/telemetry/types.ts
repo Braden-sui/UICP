@@ -10,6 +10,7 @@ export type TelemetryEventName =
   | 'enqueue_applied'
   | 'queue_dropped_idempotent'
   | 'batch_duplicate_skipped'
+  | 'batch_lint_rejected'
   | 'permissions_prompt'
   | 'permissions_allow'
   | 'permissions_deny'

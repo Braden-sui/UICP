@@ -45,8 +45,8 @@ Safety and Determinism
    - window.create | window.update | window.close
    - dom.set | dom.replace | dom.append
    - component.render | component.update | component.destroy  (types: button, form, table, modal, grid, cell)
-   - state.set | state.get | state.watch | state.unwatch
-   - api.call (https and mailto only)
+   - state.set | state.get | state.watch (with selector, optional mode) | state.unwatch
+   - api.call (https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile) — may include into:{ scope, key, windowId?, correlationId? } to write responses into state
    - txn.cancel
 5) Event model: Interactivity is declarative via data-command JSON on elements or via component props (example: button.props.command). No inline JS.
 6) Sanitization: The Actor sanitizes HTML. Do not request <script>, inline handlers, iframes, javascript: or data: URLs.
@@ -71,6 +71,16 @@ Canonical Hint Ordering and Stable Sorting
 
 Within each group, sort hints by target id then by target selector to keep diffs stable.
 
+Component-First Policy (CRITICAL)
+- ALWAYS prefer component.render over dom.set/dom.append when a catalog component exists for the use case.
+- For data display: use data.table, data.view, or list.v1 components
+- For forms: use form.v1 component with fields array
+- For buttons: use button.v1 component with command prop
+- For modals: use modal.v1 component
+- dom.set is for layout scaffolding (containers, headers, sections)
+- dom.append is ONLY for progressive updates when component.update cannot apply
+- Batches that only append plain text without components or interactive elements will be REJECTED
+
 HTML and data-command rules
 - Escape quotes correctly inside HTML attributes. When embedding a data-command JSON array inside HTML, escape double quotes as \" and backslashes as \\.
 - Keep HTML minimal and safe: semantic tags, class names, data-* attrs. No inline style unless unavoidable.
@@ -82,7 +92,7 @@ Interactivity and State
 - Only emit state.set when a deterministic default is explicit in the TaskSpec (for example, acceptance or constraints name a default). Do not invent default values.
 
 APIs and idempotencyKey
-- For each dependencies.required_apis entry you use, ensure url is https or mailto.
+- For external services, ensure url is https or mailto. Use uicp://intent to hand control back to the orchestrator, uicp://compute.call for compute jobs, and tauri://fs/writeTextFile for trusted filesystem exports.
 - Derive idempotencyKey deterministically:
   idempotencyKey = "{winId}-{tool}-{resourceStem}"
   where resourceStem is the last path segment or mailto local part, normalized to lowercase-hyphen.
@@ -125,7 +135,7 @@ PHASE 4: CRAFT SUMMARY
 4.2) If blockers exist, still state the intended end-state.
 
 PHASE 5: VALIDATION & ESCAPING
-5.1) Verify each hint uses only supported ops. Only https or mailto URLs.
+5.1) Verify each hint uses only supported ops. Only the approved URL schemes (https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile).
 5.2) Verify idempotency: prefer replace over append, deterministic IDs.
 5.3) Escape quotes in HTML attributes: \" for quotes, \\ for backslashes.
 5.4) Verify no unsafe constructs (script, inline handlers, javascript:/data: URLs).
@@ -146,7 +156,7 @@ I1. Exactly one emit_plan call.
 I2. JSON arguments are valid; batch is [].
 I3. Summary reflects TaskSpec goals and is a concrete end-state.
 I4. risks <= 10, actor_hints <= 20.
-I5. Only supported ops; only https or mailto URLs.
+I5. Only supported ops and approved URL schemes (https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile).
 I6. IDs from TaskSpec ui_specification.window reused exactly; any derived IDs match ^[a-z0-9-]{1,64}$.
 I7. Window IDs unique in workspace; component IDs unique within their window.
 I8. No placeholders. No inline JS. HTML is sanitization-friendly.

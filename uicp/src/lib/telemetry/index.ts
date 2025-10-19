@@ -27,6 +27,7 @@ const EVENT_DEFAULTS: Partial<Record<TelemetryEventName, EventDefaults>> = {
   enqueue_applied: { span: 'queue', kind: 'instant', status: 'ok' },
   queue_dropped_idempotent: { span: 'queue', kind: 'instant', status: 'dropped' },
   batch_duplicate_skipped: { span: 'batch', kind: 'instant', status: 'skipped' },
+  batch_lint_rejected: { span: 'queue', kind: 'instant', status: 'error' },
   permissions_prompt: { span: 'permissions', kind: 'instant', status: 'prompt' },
   permissions_allow: { span: 'permissions', kind: 'instant', status: 'ok' },
   permissions_deny: { span: 'permissions', kind: 'instant', status: 'error' },

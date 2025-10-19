@@ -60,13 +60,13 @@ describe('uicp queue resilience', () => {
   it('continues processing batches for the same window after a failure', async () => {
     const timestamp = Date.now();
     const first = enqueueBatch([
-      { op: 'state.set', windowId: 'w1', idempotencyKey: `f1-${timestamp}`, params: { scope: 'global', key: 'k', value: 1 } },
+      { op: 'dom.set', windowId: 'w1', idempotencyKey: `f1-${timestamp}`, params: { windowId: 'w1', target: '#root', html: '<div>1</div>' } },
     ] as unknown);
     const second = enqueueBatch([
-      { op: 'state.set', windowId: 'w1', idempotencyKey: `f2-${timestamp}`, params: { scope: 'global', key: 'k', value: 2 } },
+      { op: 'dom.set', windowId: 'w1', idempotencyKey: `f2-${timestamp}`, params: { windowId: 'w1', target: '#root', html: '<div>2</div>' } },
     ] as unknown);
     const third = enqueueBatch([
-      { op: 'state.set', windowId: 'w2', idempotencyKey: `g1-${timestamp}`, params: { scope: 'global', key: 'k', value: 3 } },
+      { op: 'dom.set', windowId: 'w2', idempotencyKey: `g1-${timestamp}`, params: { windowId: 'w2', target: '#root', html: '<div>3</div>' } },
     ] as unknown);
 
     const results = await Promise.allSettled([first, second, third]);

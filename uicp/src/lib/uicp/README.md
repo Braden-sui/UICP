@@ -71,6 +71,35 @@ The system enforces these hard limits:
 
 Exceeding these limits will cause validation errors.
 
+## Component-First Policy & Batch Linter
+
+To keep model output high-quality and interactive, the queue applies a pre-apply batch linter that enforces a component-first policy before any DOM mutations occur.
+
+- Where: `uicp/src/lib/uicp/adapters/queue.ts` calls `lintBatch()` from `uicp/src/lib/uicp/adapters/batchLinter.ts` after idempotency filtering and before partitioning.
+- Behavior: batches that violate a rule are rejected with an actionable error. The orchestrator retries once with the rejection reason injected into `extraSystem` so models can correct within the same turn.
+
+Rules and error codes:
+- E-UICP-0401 No visible effect
+  - Rejects batches that only perform non-visual ops (e.g., `state.set`, `api.call`) without any UI operation (`window.*`, `dom.*`, or `component.*`).
+- E-UICP-0402 Dangling selectors
+  - Rejects `dom.*` operations missing a `windowId`, or when no window exists and the batch does not create one.
+- E-UICP-0403 Inert text only
+  - Rejects batches where all DOM ops are `dom.append` of plain text without interactive structure. The linter treats the following as interactive: `data-command` attributes, `<button>`, `<input>`, `<textarea>`, `<select>`, `<form>`, and links with `href="http(s)://"`.
+
+Special cases that always pass:
+- Empty batches
+- `txn.cancel`
+
+Prompt alignment and catalog:
+- The planner and actor prompts include a component catalog and explicitly instruct to prefer `component.render` when a catalog component applies.
+- Helper: `buildCatalogSummary()` (in the orchestrator) is injected into both planner and actor contexts to steer away from raw `dom.append` when a component is available.
+
+Telemetry:
+- Emits `batch_lint_rejected` with `{ code, reason, batchSize }` when a batch is rejected (trace/span metadata added by the telemetry layer).
+
+Performance:
+- Linear scan over the batch (typically < 16 envelopes) after idempotency filtering; ~0.1ms per batch in local measurements.
+
 ## `api.call` special schemes
 
 `api.call` is side-effectful and runs best-effort on the frontend:

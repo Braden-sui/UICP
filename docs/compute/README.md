@@ -133,6 +133,13 @@ await (window as any).uicpComputeCall({
 - GitHub Actions run a non-strict verify on pushes/PRs touching modules.
 - To enforce strict verification in CI, set `STRICT_MODULES_VERIFY=1` in the workflow or environment.
 
+## Composition and validation tools
+
+- Composition: prefer `wac` (WebAssembly Compositions) for composing components. It supersedes `wasm-tools compose`.
+  - Install: `cargo install wac-cli`
+  - Quick plug: `wac plug input.wasm --plug adapter.wasm -o output.wasm`
+- Validation: CI uses `wac targets <component.wasm> <world.wit>` to assert each shipped module implements its declared world.
+
 ## UI demo
 
 - Open the Desktop and click "Compute Demo" to submit sample jobs:

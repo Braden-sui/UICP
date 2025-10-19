@@ -121,6 +121,46 @@ describe('orchestrator JSON-first mode', () => {
       expect(result.plan.summary).toBe('JSON Plan');
       expect(result.channelUsed).toBe('json');
     });
+
+    it('injects component catalog summary into planner tool summary', async () => {
+      const mockProfile = {
+        key: 'glm',
+        label: 'GLM Test',
+        description: 'Test',
+        defaultModel: 'glm-test',
+        capabilities: { channels: ['json'], supportsTools: true },
+        formatMessages: () => [{ role: 'user', content: 'test' }],
+      };
+      vi.spyOn(profiles, 'getPlannerProfile').mockReturnValue(mockProfile as any);
+
+      const mockClient = {
+        streamIntent: vi.fn(() =>
+          mockToolStream([
+            {
+              type: 'tool_call',
+              index: 0,
+              id: 'call_321',
+              name: 'emit_plan',
+              arguments: '{"summary":"Plan","batch":[]}',
+              isDelta: true,
+            },
+            { type: 'done' },
+          ]),
+        ),
+        streamPlan: vi.fn(() => mockToolStream([{ type: 'done' }])),
+      };
+      vi.spyOn(provider, 'getPlannerClient').mockReturnValue(mockClient as any);
+
+      const cfg = await import('../../src/lib/config');
+      vi.spyOn(cfg, 'cfg', 'get').mockReturnValue({ ...cfg.cfg, wilOnly: false });
+
+      await planWithProfile('catalog intent');
+
+      expect(mockClient.streamIntent).toHaveBeenCalled();
+      const plannerOptions = (mockClient.streamIntent.mock.calls[0] as any[])[1];
+      expect(String(plannerOptions?.toolSummary ?? '')).toContain('Components:');
+      expect(String(plannerOptions?.toolSummary ?? '')).toContain('Rules:');
+    });
   });
 
   describe('actWithProfile with tool calling', () => {
@@ -202,7 +242,7 @@ describe('orchestrator JSON-first mode', () => {
       expect(result.channelUsed).toBe('json');
     });
 
-    it.skip('falls back to WIL when tool result and JSON parse both fail', async () => {
+    it('seeds actor extraSystem with component catalog summary', async () => {
       const mockProfile = {
         key: 'glm',
         label: 'GLM Test',

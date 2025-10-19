@@ -19,6 +19,14 @@ Safety & Determinism (Normative)
    • The specific algorithm is NOT mandated; choose any consistent, deterministic scheme.
 6) Batch size: The batch SHOULD contain ≤ 16 envelopes unless the plan demands more.
 7) Streaming: You MUST NOT stream free text; all effects occur via envelopes.
+8) Component‑first: You MUST use component.render when a catalog component exists for the use case. Batches that only append plain text without components or interactive elements will be REJECTED.
+
+Component vs DOM Operations (Critical Guidance)
+• component.render — Use for structured, interactive UI: tables, forms, buttons, lists, modals
+• dom.set — Use ONLY for layout scaffolding (containers, headers, sections) where no component applies
+• dom.replace — Use for updating specific containers with new markup
+• dom.append — Use ONLY for progressive updates when component.update cannot apply
+• DO NOT use dom.append for static text without interactive elements
 
 Envelope Schema (Definition)
 An Envelope is: { "op": string, "params": object }
@@ -35,9 +43,9 @@ Allowed operations and parameter requirements:
 • component.destroy  — Required: { id }.
 • state.set          — Required: { scope, key, value }. Optional: { windowId, ttlMs }. Scope ∈ {"window","workspace","global"}.
 • state.get          — Required: { scope, key }. Optional: { windowId }.
-• state.watch        — Required: { scope, key }. Optional: { windowId }.
-• state.unwatch      — Required: { scope, key }. Optional: { windowId }.
-• api.call           — Required: { url }. Optional: { method="GET", headers, body, idempotencyKey }. URL scheme MUST be https or mailto.
+• state.watch        — Required: { scope, key, selector }. Optional: { windowId, mode="replace" }.
+• state.unwatch      — Required: { scope, key, selector }. Optional: { windowId }.
+• api.call           — Required: { url }. Optional: { method="GET", headers, body, idempotencyKey, into:{ scope, key, windowId?, correlationId? } }. URL scheme MUST be one of https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile.
 • txn.cancel         — Optional: { id }.
 
 Event System (Definition)
@@ -54,6 +62,7 @@ Sanitization (Definition)
 
 State (Definition)
 • state.set writes do not imply re-render. UI changes require subsequent dom.* or component.* envelopes.
+• state.watch binds a selector to a state path and re-renders on updates. Slot-aware targets may include data-slot="loading|empty|error|ready".
 • Inputs MAY bind to state via data-state-scope and data-state-key.
 
 Viability (Minimal Visible UI)
@@ -72,7 +81,7 @@ Ambiguity (Actionable)
 If viable but ambiguous (e.g., unspecified size/targets/minor copy), you MAY choose safe defaults consistent with this contract, and you MUST explain choices inside the window using structured, safe HTML (not external prose).
 
 API Calls (Constraints)
-• url MUST be https or mailto.
+• url MUST be https, mailto, uicp://intent, uicp://compute.call, or tauri://fs/writeTextFile.
 • method defaults to "GET" if absent.
 • For repeated fetches of the same resource from the same window, you SHOULD provide a stable idempotencyKey.
 • You SHOULD provide visible user feedback before/after long calls (e.g., updating a status region).
@@ -87,7 +96,7 @@ I2. The argument is valid JSON and matches the Envelope/Batch definitions above.
 I3. If Non‑Viable, the batch is empty. If Viable, the batch causes at least one visible effect in a window.
 I4. No unsafe HTML or inline JS is present; all interactivity uses data-command.
 I5. Provided IDs (if any) are reused; generated IDs are deterministic and collision-free within the batch.
-I6. If api.call is used, URL scheme is https or mailto, and the UI surfaces user feedback for the action.
+I6. If api.call is used, URL scheme is approved (https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile), and the UI surfaces user feedback for the action.
 I7. Batch length ≤ 16 unless the plan explicitly demands more.
 I8. No placeholder text ("todo", "xxx", "lorem", etc.) is rendered; provide concrete UI or emit an empty batch.
 

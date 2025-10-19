@@ -31,6 +31,7 @@ import { routeApiCall } from './adapter.api';
 import type { StructuredClarifierBody, StructuredClarifierFieldSpec, StructuredClarifierOption } from './adapter.clarifier';
 import { persistCommand } from './adapter.persistence';
 import { createDelegatedEventHandler } from './adapter.events';
+import { escapeHtml } from './adapter.security';
 
 /**
  * Workspace root element (must be registered before applying operations)
@@ -48,6 +49,73 @@ const stateStore = new Map<StateScope, Map<string, unknown>>([
   ['workspace', new Map()],
   ['global', new Map()],
 ]);
+
+type StateWatcherEntry = {
+  scope: StateScope;
+  key: string;
+  windowId?: string;
+  selector: string;
+  render: (value: unknown) => void;
+  teardown: () => void;
+};
+
+type StateWatcherBucket = Map<string, Set<StateWatcherEntry>>;
+
+const watcherRegistry: Map<StateScope, StateWatcherBucket> = new Map([
+  ['window', new Map()],
+  ['workspace', new Map()],
+  ['global', new Map()],
+]);
+
+// Index by windowId if we later support mass-teardown per window
+// (currently we purge from the bucket on window.close)
+
+const stateStoreKey = (scope: StateScope, key: string, windowId?: string): string => {
+  if (scope === 'window') {
+    if (!windowId) {
+      throw new AdapterError('Adapter.ValidationFailed', `window scope requires windowId for state key ${key}`);
+    }
+    return `${windowId}:${key}`;
+  }
+  return key;
+};
+
+const readStateValue = (scope: StateScope, key: string, windowId?: string): unknown => {
+  const store = stateStore.get(scope);
+  if (!store) return undefined;
+  try {
+    const storeKey = stateStoreKey(scope, key, windowId);
+    return store.get(storeKey);
+  } catch (error) {
+    console.error('state read failed', { scope, key, windowId, error });
+    throw error;
+  }
+};
+
+type CommitStateParams = {
+  scope: StateScope;
+  key: string;
+  value: unknown;
+  windowId?: string;
+};
+
+const notifyStateWatchers = (scope: StateScope, key: string, windowId: string | undefined, value: unknown): void => {
+  const bucket = watcherRegistry.get(scope);
+  if (!bucket) return;
+  const listeners = bucket.get(stateStoreKey(scope, key, windowId));
+  if (!listeners) return;
+  for (const watcher of listeners) {
+    watcher.render(value);
+  }
+};
+
+const commitStateValue = ({ scope, key, value, windowId }: CommitStateParams): void => {
+  const store = stateStore.get(scope);
+  if (!store) return;
+  const storeKey = stateStoreKey(scope, key, windowId);
+  store.set(storeKey, value);
+  notifyStateWatchers(scope, key, windowId, value);
+};
 
 // Workspace ready flag and pending batch queue (handles race condition where batches
 // arrive before Desktop.tsx registers the workspace root)
@@ -296,6 +364,14 @@ const renderStructuredClarifier = async (
  * Must be called before applyBatch.
  */
 export const registerWorkspaceRoot = (element: HTMLElement): void => {
+  // Ensure the workspace root is attached to the document so global queries work in tests/preview
+  try {
+    if (!element.isConnected && typeof document !== 'undefined' && document.body) {
+      document.body.appendChild(element);
+    }
+  } catch {
+    // best-effort; if document is unavailable (SSR), continue without attaching
+  }
   workspaceRoot = element;
   workspaceReady = true;
   
@@ -313,11 +389,17 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
     },
   });
   domApplierInstance = createDomApplier(windowManagerInstance, { enableDeduplication: true });
+  const readState = (scope: StateScope, key: string, windowId?: string): unknown => {
+    const store = stateStore.get(scope);
+    if (!store) return undefined;
+    const k = scope === 'window' && windowId ? `${windowId}:${key}` : key;
+    return store.get(k);
+  };
   componentRendererInstance = createComponentRenderer(domApplierInstance, {
     onUnknownComponent: (_type) => {
-      // Telemetry will be created during applyBatch; we only need the hook here
-      // to avoid missing the option shape. Actual events are emitted in applyBatch.
+      // telemetry emitted in applyBatch
     },
+    readState,
   });
   
   // Set up event delegation
@@ -529,6 +611,226 @@ const routeOperation = async (
       break;
     }
 
+    case 'state.set': {
+      const params = envelope.params as { scope: StateScope; key: string; value: unknown; windowId?: string };
+      commitStateValue({ scope: params.scope, key: params.key, value: params.value, windowId: params.windowId });
+      outcome.applied += 1;
+      break;
+    }
+
+    case 'state.get': {
+      // Ephemeral read; does not contribute to applied count
+      // Intentionally no-op in v2 lifecycle.
+      break;
+    }
+
+    case 'state.watch': {
+      const params = envelope.params as { scope: StateScope; key: string; selector: string; mode?: 'replace' | 'append'; windowId?: string };
+      const scope = params.scope;
+      const key = params.key;
+      const selector = params.selector;
+      const mode = params.mode ?? 'replace';
+      const winId = params.windowId;
+
+      // Enforce windowId for window scope
+      if (scope === 'window' && !winId) {
+        throw new AdapterError('Adapter.ValidationFailed', 'state.watch window scope requires windowId');
+      }
+
+      const bucket = watcherRegistry.get(scope)!;
+      const storeKey = stateStoreKey(scope, key, winId);
+      let set = bucket.get(storeKey);
+      if (!set) {
+        set = new Set();
+        bucket.set(storeKey, set);
+      }
+
+      const render = (value: unknown) => {
+        try {
+          const record = winId ? windowManager.getRecord(winId) : null;
+          const searchRoot: ParentNode = record ? record.content : (workspaceRoot ?? document);
+          const target = searchRoot.querySelector(selector) as HTMLElement | null;
+          if (!target) return; // Target may not exist yet; render will retry on future updates
+
+          // Helper: convert arbitrary data to safe HTML
+          const toHtml = (v: unknown): string => {
+            if (Array.isArray(v)) {
+              if (v.length === 0) return '';
+              if (typeof v[0] === 'object' && v[0] !== null) {
+                const cols = Array.from(new Set(v.flatMap((row) => Object.keys(row as Record<string, unknown>))));
+                const header = '<thead><tr>' + cols.map((c) => `<th class="px-2 py-1 text-left text-xs text-slate-500">${c}</th>`).join('') + '</tr></thead>';
+                const body = '<tbody>' + v.map((row) => '<tr>' + cols.map((c) => `<td class="px-2 py-1 text-sm">${escapeHtml(String((row as any)[c] ?? ''))}</td>`).join('') + '</tr>').join('') + '</tbody>';
+                return `<table class="w-full divide-y divide-slate-200">${header}${body}</table>`;
+              }
+              return '<ul>' + v.map((it) => `<li>${escapeHtml(String(it))}</li>`).join('') + '</ul>';
+            }
+            if (v && typeof v === 'object') {
+              return `<pre class="text-xs">${escapeHtml(JSON.stringify(v, null, 2))}</pre>`;
+            }
+            return escapeHtml(String(v ?? ''));
+          };
+
+          // Slot-aware rendering: data-slot="loading|empty|error|ready"
+          const slotLoading = target.querySelector('[data-slot="loading"]') as HTMLElement | null;
+          const slotEmpty = target.querySelector('[data-slot="empty"]') as HTMLElement | null;
+          const slotError = target.querySelector('[data-slot="error"]') as HTMLElement | null;
+          const slotReady = target.querySelector('[data-slot="ready"]') as HTMLElement | null;
+
+          const hasSlots = Boolean(slotLoading || slotEmpty || slotError || slotReady);
+
+          const show = (el: HTMLElement | null, visible: boolean) => {
+            if (!el) return;
+            el.style.display = visible ? '' : 'none';
+          };
+
+          type SinkShape = { status?: string; data?: unknown; error?: unknown };
+          const shape = (value && typeof value === 'object' ? (value as SinkShape) : undefined);
+          const status = (shape && typeof shape.status === 'string') ? shape.status : 'ready';
+          const payload = shape && 'data' in shape ? (shape.data as unknown) : value;
+          const errorText = shape && shape.error != null ? String((shape.error as any)?.message ?? shape.error) : null;
+
+          const isEmpty = (d: unknown): boolean => {
+            if (d == null) return true;
+            if (Array.isArray(d)) return d.length === 0;
+            if (typeof d === 'string') return d.trim().length === 0;
+            if (typeof d === 'object') return Object.keys(d as Record<string, unknown>).length === 0;
+            return false;
+          };
+
+          if (hasSlots) {
+            if (status === 'loading') {
+              show(slotLoading, true);
+              show(slotError, false); show(slotEmpty, false); show(slotReady, false);
+              return;
+            }
+            if (status === 'error') {
+              if (slotError) {
+                if (errorText) slotError.textContent = errorText;
+              }
+              show(slotError, true);
+              show(slotLoading, false); show(slotEmpty, false); show(slotReady, false);
+              return;
+            }
+
+            if (isEmpty(payload)) {
+              show(slotEmpty, true);
+              show(slotLoading, false); show(slotError, false); show(slotReady, false);
+              return;
+            }
+
+            // Ready with data
+            if (slotReady) {
+              slotReady.innerHTML = toHtml(payload);
+            }
+            show(slotReady, true);
+            show(slotLoading, false); show(slotEmpty, false); show(slotError, false);
+            return;
+          }
+
+          // Fallback: replace target content with computed HTML
+          const html = toHtml(payload);
+          void domApplier.apply({ windowId: winId ?? (record?.id ?? ''), target: selector, html, mode: mode === 'append' ? 'append' : 'set', sanitize: true });
+        } catch (err) {
+          console.error('state.watch render failed', { selector, err });
+        }
+      };
+
+      const teardown = () => {
+        const bucketNow = watcherRegistry.get(scope)!;
+        const listeners = bucketNow.get(storeKey);
+        if (!listeners) return;
+        listeners.forEach((w) => {
+          if (w.selector === selector && w.windowId === winId) listeners.delete(w);
+        });
+        if (listeners.size === 0) bucketNow.delete(storeKey);
+      };
+
+      const entry: StateWatcherEntry = { scope, key, windowId: winId, selector, render, teardown };
+      set.add(entry);
+
+      // Fire immediately if a value exists
+      const current = readStateValue(scope, key, winId);
+      if (current !== undefined) {
+        try { render(current); } catch (err) { console.error('state.watch initial render failed', err); }
+      }
+
+      outcome.applied += 1;
+      break;
+    }
+
+    case 'state.unwatch': {
+      const params = envelope.params as { scope: StateScope; key: string; selector: string; windowId?: string };
+      const scope = params.scope;
+      const winId = params.windowId;
+      const storeKey = stateStoreKey(scope, params.key, winId);
+      const bucket = watcherRegistry.get(scope)!;
+      const listeners = bucket.get(storeKey);
+      if (listeners) {
+        listeners.forEach((w) => {
+          if (w.selector === params.selector && w.windowId === winId) listeners.delete(w);
+        });
+        if (listeners.size === 0) bucket.delete(storeKey);
+      }
+      outcome.applied += 1;
+      break;
+    }
+
+    case 'api.call': {
+      const params = envelope.params as OperationParamMap['api.call'];
+      try {
+        const renderForm = (clarifierBody: StructuredClarifierBody, command: Envelope): CommandResult<string> => {
+          void (async () => {
+            try {
+              await renderStructuredClarifier(clarifierBody, command, windowManager);
+            } catch (error) {
+              console.error('structured clarifier render failed', error);
+            }
+          })();
+          return { success: true, value: 'clarifier-rendered' };
+        };
+
+        // Into: seed loading state before dispatch
+        const into = (params as any).into as { scope: StateScope; key: string; windowId?: string; correlationId?: string } | undefined;
+        const correlationId = into?.correlationId ?? envelope.idempotencyKey ?? createId('api');
+        if (into) {
+          commitStateValue({
+            scope: into.scope,
+            key: into.key,
+            windowId: into.windowId,
+            value: { status: 'loading', correlationId, data: null, error: null },
+          });
+        }
+
+        // Execute via shared API dispatcher
+        const result = await routeApiCall(params, envelope, {}, renderForm);
+        if (result.success) {
+          outcome.applied += 1;
+          if (into) {
+            commitStateValue({
+              scope: into.scope,
+              key: into.key,
+              windowId: into.windowId,
+              value: { status: 'ready', correlationId, data: (result as any).data ?? null, error: null },
+            });
+          }
+        } else {
+          outcome.errors.push(`api.call failed: ${result.error}`);
+          if (into) {
+            commitStateValue({
+              scope: into.scope,
+              key: into.key,
+              windowId: into.windowId,
+              value: { status: 'error', correlationId, data: null, error: String(result.error) },
+            });
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        outcome.errors.push(`api.call error: ${message}`);
+      }
+      break;
+    }
+
     case 'window.update': {
       const params = envelope.params as {
         id: string;
@@ -593,6 +895,15 @@ const routeOperation = async (
       const params = envelope.params as Parameters<typeof windowManager.close>[0];
       const { applied } = await windowManager.close(params);
       telemetry.event(AdapterEvents.WINDOW_CLOSE, { windowId: params.id });
+      // Purge any window-scoped watchers for this window
+      const bucket = watcherRegistry.get('window');
+      if (bucket) {
+        for (const key of Array.from(bucket.keys())) {
+          if (key.startsWith(`${params.id}:`)) {
+            bucket.delete(key);
+          }
+        }
+      }
       if (applied) outcome.applied += 1;
       break;
     }
@@ -627,46 +938,43 @@ const routeOperation = async (
 
     case 'component.render': {
       const params = envelope.params as Parameters<typeof componentRenderer.render>[0];
-      // Auto-create window if it doesn't exist
       if (!windowManager.exists(params.windowId)) {
         await windowManager.create({ id: params.windowId, title: params.windowId });
         telemetry.event(AdapterEvents.WINDOW_CREATE, { windowId: params.windowId, synthetic: true });
-        // Persist synthetic window.create
         void persistCommand({ op: 'window.create', params: { id: params.windowId, title: params.windowId } });
         outcome.applied += 1;
       }
+      // Emit unknown-component telemetry if renderer doesn't recognize the type
+      try {
+        if (!componentRenderer.isKnownType(params.type)) {
+          telemetry.event(AdapterEvents.COMPONENT_UNKNOWN, { type: params.type });
+        }
+      } catch {
+        // best-effort; do not block on telemetry helpers
+      }
       await componentRenderer.render(params);
-      telemetry.event(AdapterEvents.COMPONENT_RENDER, {
-        windowId: params.windowId,
-        type: params.type,
-      });
+      telemetry.event(AdapterEvents.COMPONENT_RENDER, { windowId: params.windowId, type: params.type });
       outcome.applied++;
       break;
     }
 
-    case 'state.set': {
-      const params = envelope.params as { scope: StateScope; key: string; value: unknown; windowId?: string };
-      const scopeStore = stateStore.get(params.scope);
-      if (scopeStore) {
-        const key = params.scope === 'window' && params.windowId ? `${params.windowId}:${params.key}` : params.key;
-        scopeStore.set(key, params.value);
-        outcome.applied += 1;
-      }
+    case 'component.update': {
+      const params = envelope.params as Parameters<typeof componentRenderer.update>[0];
+      await componentRenderer.update(params);
+      telemetry.event(AdapterEvents.COMPONENT_RENDER, { action: 'update', id: params.id });
+      outcome.applied += 1;
       break;
     }
 
-    case 'state.get': {
-      // state.get is read-only, doesn't increment applied count
-      const params = envelope.params as { scope: StateScope; key: string; windowId?: string };
-      const scopeStore = stateStore.get(params.scope);
-      if (scopeStore) {
-        const key = params.scope === 'window' && params.windowId ? `${params.windowId}:${params.key}` : params.key;
-        scopeStore.get(key);
-        // Value is returned via command result in v1, but v2 batch doesn't return per-op results
-        // This is OK for now; state.get is rarely used in batch context
-      }
+    case 'component.destroy': {
+      const params = envelope.params as Parameters<typeof componentRenderer.destroy>[0];
+      await componentRenderer.destroy(params);
+      telemetry.event(AdapterEvents.COMPONENT_RENDER, { action: 'destroy', id: params.id });
+      outcome.applied += 1;
       break;
     }
+
+    
 
     case 'txn.cancel': {
       // Reset all state stores
@@ -685,42 +993,10 @@ const routeOperation = async (
       break;
     }
 
-    case 'api.call': {
-      const params = envelope.params as OperationParamMap['api.call'];
-      if (!params) {
-        outcome.errors.push('api.call missing params');
-        break;
-      }
-      
-      // Route to api handler (v1 compatibility shim)
-      try {
-        const renderForm = (clarifierBody: StructuredClarifierBody, command: Envelope): CommandResult<string> => {
-          void (async () => {
-            try {
-              await renderStructuredClarifier(clarifierBody, command, windowManager);
-            } catch (error) {
-              console.error('structured clarifier render failed', error);
-            }
-          })();
-          return { success: true, value: 'clarifier-rendered' };
-        };
-        
-        // Execute via shared API dispatcher
-        const result = await routeApiCall(params, envelope, {}, renderForm);
-        if (result.success) {
-          outcome.applied += 1;
-        } else {
-          outcome.errors.push(`api.call failed: ${result.error}`);
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        outcome.errors.push(`api.call error: ${message}`);
-      }
-      break;
-    }
+    
 
     default:
-      throw new AdapterError('Adapter.ValidationFailed', `Unknown operation: ${envelope.op}`);
+      throw new AdapterError('Adapter.ValidationFailed', 'Unknown operation');
   }
 };
 
@@ -771,6 +1047,13 @@ export const registerWindowLifecycle = (listener: WindowLifecycleListener): (() 
  * Clear workspace root (for testing cleanup)
  */
 export const clearWorkspaceRoot = (): void => {
+  try {
+    if (workspaceRoot && workspaceRoot.parentNode) {
+      workspaceRoot.parentNode.removeChild(workspaceRoot);
+    }
+  } catch {
+    // ignore detach errors in tests/SSR
+  }
   workspaceRoot = null;
   workspaceReady = false;
   windowManagerInstance = null;
@@ -875,6 +1158,9 @@ function scopeFromOp(op: Envelope['op']): PermissionScope {
     case 'dom.append':
       return 'dom';
     case 'component.render':
+      return 'components';
+    case 'component.update':
+    case 'component.destroy':
       return 'components';
     case 'state.set':
     case 'state.get':

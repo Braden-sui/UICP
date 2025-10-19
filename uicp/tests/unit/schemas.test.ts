@@ -1,4 +1,4 @@
-﻿// Schema tests guarantee planner output is validated before reaching the adapter.
+// Schema tests guarantee planner output is validated before reaching the adapter.
 import type { Envelope } from "../../src/lib/uicp/schemas";
 import { describe, it, expect } from "vitest";
 import { validateBatch, UICPValidationError, validatePlan } from "../../src/lib/uicp/schemas";
@@ -122,5 +122,33 @@ describe("UICP plan validation", () => {
         ],
       }),
     ).toThrow(UICPValidationError);
+  });
+});
+
+describe("api.call URL validation", () => {
+  const makeBatch = (url: string): Envelope[] => [
+    {
+      op: "api.call",
+      params: {
+        method: "POST",
+        url,
+        body: { ok: true },
+      },
+    } as Envelope<"api.call">,
+  ];
+
+  it("accepts internal schemes for intent, compute, and filesystem", () => {
+    expect(() => validateBatch(makeBatch("uicp://intent"))).not.toThrow();
+    expect(() => validateBatch(makeBatch("uicp://compute.call"))).not.toThrow();
+    expect(() => validateBatch(makeBatch("tauri://fs/writeTextFile"))).not.toThrow();
+  });
+
+  it("accepts standard https and mailto schemes", () => {
+    expect(() => validateBatch(makeBatch("https://example.com/api"))).not.toThrow();
+    expect(() => validateBatch(makeBatch("mailto:ops@example.com"))).not.toThrow();
+  });
+
+  it("rejects unsupported schemes", () => {
+    expect(() => validateBatch(makeBatch("ftp://example.com"))).toThrow(UICPValidationError);
   });
 });

@@ -108,6 +108,8 @@ const handleTauriFs = async (
     }
     return { success: false, error: safeResult.message };
   }
+  // This line is never reached; success returns inside try
+  // Keep for type consistency
   return { success: true, value: params.idempotencyKey ?? createId('api') };
 };
 
@@ -208,6 +210,23 @@ const handleHttpFetch = async (
       const label = statusText ? `${response.status} ${statusText}` : `${response.status}`;
       return { success: false, error: `HTTP ${label}` };
     }
+    // Parse response body into data for state sinks
+    let data: unknown = null;
+    try {
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else if (contentType.startsWith('text/')) {
+        data = await response.text();
+      } else {
+        // For non-text, non-json responses, leave data as null (not supported)
+        data = null;
+      }
+    } catch (e) {
+      // Swallow body parse errors; deliver OK without data
+      data = null;
+    }
+    return { success: true, value: params.idempotencyKey ?? createId('api'), ...(data !== undefined ? { data } : {}) } as unknown as CommandResult<string>;
   } catch (error) {
     const duration = Math.round(performance.now() - startedAt);
     const message = error instanceof Error ? error.message : String(error);

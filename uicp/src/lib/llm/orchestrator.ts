@@ -11,6 +11,7 @@ import { readNumberEnv } from '../env/values';
 import { collectWithFallback } from './collectWithFallback';
 import { emitTelemetryEvent } from '../telemetry';
 import { getToolRegistrySummary } from './registry';
+import { getComponentCatalogSummary as getAdapterComponentCatalogSummary } from '../uicp/adapters/componentRenderer';
 import { type TaskSpec } from './schemas';
 import { generateTaskSpec } from './generateTaskSpec';
 
@@ -29,6 +30,17 @@ const escapeHtml = (value: string): string =>
 export type RunIntentPhaseDetail =
   | { phase: 'planning'; traceId: string }
   | { phase: 'acting'; traceId: string; planMs: number };
+
+function buildCatalogSummary(): string {
+  const comps = getAdapterComponentCatalogSummary();
+  const ops = getToolRegistrySummary();
+  const rules = [
+    '- Prefer component.render for structured UI',
+    '- Use component.update/destroy with stable component ids',
+    '- Avoid dom.append when a catalog component applies',
+  ].join('\n');
+  return [comps, '', 'Rules:', rules, '', ops].join('\n');
+}
 
 export type RunIntentHooks = {
   onPhaseChange?: (detail: RunIntentPhaseDetail) => void;
@@ -101,7 +113,7 @@ export async function planWithProfile(
   }
 
   let lastErr: unknown;
-  let extraSystem: string | undefined;
+  let extraSystem: string | undefined = buildCatalogSummary();
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -110,7 +122,7 @@ export async function planWithProfile(
         extraSystem,
         meta: { traceId: options?.traceId, intent },
         taskSpec: options?.taskSpec,
-        toolSummary: options?.toolSummary,
+        toolSummary: options?.toolSummary ?? buildCatalogSummary(),
       });
 
       // JSON-first path: collect both tool calls AND text in single pass
@@ -216,7 +228,8 @@ export async function planWithProfile(
       };
     } catch (err) {
       lastErr = err;
-      extraSystem = buildStructuredRetryMessage('emit_plan', err, useJsonFirst);
+      const retry = buildStructuredRetryMessage('emit_plan', err, useJsonFirst);
+      extraSystem = `${buildCatalogSummary()}\n\n${retry}`;
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -333,7 +346,7 @@ export async function actWithProfile(
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, actor_hints: plan.actorHints, batch: plan.batch });
 
   let lastErr: unknown;
-  let extraSystem: string | undefined;
+  let extraSystem: string | undefined = buildCatalogSummary();
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -424,7 +437,8 @@ export async function actWithProfile(
       throw new Error('actor_nop: json-only actor');
     } catch (err) {
       lastErr = err;
-      extraSystem = buildStructuredRetryMessage('emit_batch', err, useJsonFirst);
+      const retry = buildStructuredRetryMessage('emit_batch', err, useJsonFirst);
+      extraSystem = `${buildCatalogSummary()}\n\n${retry}`;
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));

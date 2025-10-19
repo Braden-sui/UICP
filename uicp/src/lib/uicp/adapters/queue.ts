@@ -2,6 +2,7 @@ import type { Batch } from "./schemas";
 import { validateBatch } from "./schemas";
 import { applyBatch, deferBatchIfNotReady, type ApplyOutcome } from "./adapter";
 import { emitTelemetryEvent } from "../../telemetry";
+import { lintBatch, formatLintError } from "./batchLinter";
 
 // Per-window FIFO queue with idempotency and txn cancel support.
 // - Commands with the same windowId run sequentially
@@ -152,6 +153,27 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
   }
   if (!filtered.length) {
     return createEmptyOutcome();
+  }
+
+  // Pre-apply linter gate: reject low-value batches
+  const lintResult = lintBatch(filtered);
+  if (!lintResult.ok) {
+    const errorMsg = formatLintError(lintResult);
+    // Emit telemetry for rejected batches
+    const firstTrace = filtered.find((env) => env.traceId)?.traceId;
+    if (firstTrace) {
+      emitTelemetryEvent('batch_lint_rejected', {
+        traceId: firstTrace,
+        span: 'queue',
+        status: 'error',
+        data: {
+          code: lintResult.code,
+          reason: lintResult.reason,
+          batchSize: filtered.length,
+        },
+      });
+    }
+    throw new Error(errorMsg);
   }
 
   const partitions = partitionByWindow(filtered);

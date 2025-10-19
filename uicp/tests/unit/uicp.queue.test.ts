@@ -86,9 +86,9 @@ describe('uicp queue', () => {
   it('drops duplicates by idempotencyKey within same batch', async () => {
     const key = `k-${Math.random().toString(36).slice(2, 8)}`;
     const batch = [
-      { op: 'state.set', idempotencyKey: key, windowId: 'w1', params: { scope: 'global', key: 'k', value: 1 } },
-      { op: 'state.set', idempotencyKey: key, windowId: 'w1', params: { scope: 'global', key: 'k', value: 2 } },
-      { op: 'state.set', idempotencyKey: key, windowId: 'w1', params: { scope: 'global', key: 'k', value: 3 } },
+      { op: 'window.create', idempotencyKey: key, params: { id: 'w1', title: 'Test 1' } },
+      { op: 'window.create', idempotencyKey: key, params: { id: 'w1', title: 'Test 2' } },
+      { op: 'window.create', idempotencyKey: key, params: { id: 'w1', title: 'Test 3' } },
     ];
 
     const outcome = await enqueueBatch(batch as any);
@@ -99,19 +99,20 @@ describe('uicp queue', () => {
     
     // Verify execution log shows only one operation (duplicates dropped before apply)
     expect(executionLog).toHaveLength(1);
-    expect(executionLog[0].op).toBe('state.set');
+    expect(executionLog[0].op).toBe('window.create');
   });
 
   it('runs partitions per window in parallel and preserves FIFO per window', async () => {
     // Enqueue commands for w1 and w2 in interleaved order with unique idempotency keys
+    const ts = Date.now();
     const p1 = enqueueBatch([
-      { op: 'state.set', idempotencyKey: `a1-${Date.now()}`, windowId: 'w1', params: { scope: 'global', key: 'k', value: 1 } },
+      { op: 'dom.set', idempotencyKey: `a1-${ts}`, windowId: 'w1', params: { windowId: 'w1', target: '#root', html: '<div>1</div>' } },
     ] as any);
     const p2 = enqueueBatch([
-      { op: 'state.set', idempotencyKey: `b1-${Date.now()}`, windowId: 'w2', params: { scope: 'global', key: 'k', value: 2 } },
+      { op: 'dom.set', idempotencyKey: `b1-${ts}`, windowId: 'w2', params: { windowId: 'w2', target: '#root', html: '<div>2</div>' } },
     ] as any);
     const p3 = enqueueBatch([
-      { op: 'state.set', idempotencyKey: `a2-${Date.now()}`, windowId: 'w1', params: { scope: 'global', key: 'k', value: 3 } },
+      { op: 'dom.set', idempotencyKey: `a2-${ts}`, windowId: 'w1', params: { windowId: 'w1', target: '#root', html: '<div>3</div>' } },
     ] as any);
 
     await Promise.all([p1, p2, p3]);
@@ -232,7 +233,7 @@ describe('uicp queue', () => {
   it('skips duplicate batches by batchId + opsHash', async () => {
     const batchId = `batch-${Math.random().toString(36).slice(2, 8)}`;
     const batch = [
-      { op: 'state.set', idempotencyKey: 'unique-dedupe-test', params: { scope: 'global', key: 'k', value: 1 } },
+      { op: 'window.create', idempotencyKey: 'unique-dedupe-test', params: { title: 'Dedupe Test' } },
     ];
     
     // Apply same batch twice with same batchId using applyBatch directly

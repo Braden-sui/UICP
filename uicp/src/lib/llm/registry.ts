@@ -17,14 +17,14 @@ export const LLM_TOOLS: ToolDescriptor[] = [
   {
     name: 'emit_plan',
     kind: 'llm-function',
-    capabilities: ['window', 'dom', 'component', 'state', 'api', 'txn'],
+    capabilities: ['window', 'dom', 'component', 'state', 'api', 'compute', 'txn'],
     risk: 'low',
     schema: EMIT_PLAN.function.parameters,
   },
   {
     name: 'emit_batch',
     kind: 'llm-function',
-    capabilities: ['window', 'dom', 'component', 'state', 'api', 'txn'],
+    capabilities: ['window', 'dom', 'component', 'state', 'api', 'compute', 'txn'],
     risk: 'low',
     schema: EMIT_BATCH.function.parameters,
   },
@@ -47,7 +47,7 @@ export const OPERATIONS: Record<z.infer<typeof OperationName>, ToolDescriptor> =
   'state.get':          { name: 'state.get',     kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
   'state.watch':        { name: 'state.watch',   kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
   'state.unwatch':      { name: 'state.unwatch', kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
-  'api.call':           { name: 'api.call',      kind: 'local-operation', capabilities: ['api'],       risk: 'medium' },
+  'api.call':           { name: 'api.call',      kind: 'local-operation', capabilities: ['api', 'compute'], risk: 'medium' },
   'txn.cancel':         { name: 'txn.cancel',    kind: 'local-operation', capabilities: ['txn'],       risk: 'low' },
 } as const;
 
@@ -57,7 +57,9 @@ export const getToolRegistrySummary = (): string => {
   );
 
   const operationLines = Object.values(OPERATIONS).map((descriptor) =>
-    `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk})`,
+    descriptor.name === 'api.call'
+      ? `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk}, schemes=https://, mailto:, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile)`
+      : `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk})`,
   );
 
   return [

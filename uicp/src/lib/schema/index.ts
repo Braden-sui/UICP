@@ -150,15 +150,42 @@ const StateGetParams = z.object({
   windowId: z.string().min(1).optional(),
 }).strict();
 
-const StateWatchParams = StateGetParams;
-const StateUnwatchParams = StateGetParams;
+const StateWatchParams = StateGetParams.extend({
+  selector: z.string().min(1),
+  mode: z.enum(['replace', 'append']).default('replace'),
+}).strict();
+const StateUnwatchParams = StateWatchParams.omit({ mode: true }).strict();
+
+const ApiCallUrl = z
+  .string()
+  .refine(
+    (value) => {
+      if (value.startsWith('http://') || value.startsWith('https://')) return true;
+      if (value.startsWith('mailto:')) return true;
+      if (value.startsWith('uicp://intent')) return true;
+      if (value.startsWith('uicp://compute.call')) return true;
+      if (value.startsWith('tauri://fs/writeTextFile')) return true;
+      return false;
+    },
+    { message: 'Unsupported api.call URL scheme' },
+  );
+
+const ApiCallIntoParams = z
+  .object({
+    scope: scopeEnum,
+    key: z.string(),
+    windowId: z.string().min(1).optional(),
+    correlationId: z.string().optional(),
+  })
+  .strict();
 
 const ApiCallParams = z.object({
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
-  url: z.string().url(),
+  url: ApiCallUrl,
   headers: z.record(z.string()).optional(),
   body: z.unknown().optional(),
   idempotencyKey: z.string().optional(),
+  into: ApiCallIntoParams.optional(),
 }).strict();
 
 const TxnCancelParams = z.object({ id: z.string().optional() }).strict();
