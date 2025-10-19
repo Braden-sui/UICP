@@ -2,8 +2,16 @@ name: compute-ci
 
 on:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'uicp/docs/**'
+      - '**/*.md'
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
+      - 'uicp/docs/**'
+      - '**/*.md'
 
 jobs:
   build-and-test:

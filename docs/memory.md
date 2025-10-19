@@ -41,7 +41,7 @@ Startup validation checks:
 
 1. `quick_check` and `foreign_key_check` run before replay; failures enter Safe Mode.
 2. When in Safe Mode, command execution is blocked and a recovery modal is surfaced to the user.
-3. Recovery options (per `docs/compute/test-plan.md`):
+3. Recovery options (per `docs/compute/testing.md`):
    - Reindex database
    - Compact the command log to the last good checkpoint
    - Roll back to a persisted snapshot

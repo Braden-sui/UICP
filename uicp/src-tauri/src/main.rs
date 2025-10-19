@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use std::{
     collections::HashMap,
@@ -1249,7 +1249,7 @@ async fn chat_completion(
                             }
                         }
                         if iter.next().is_some() {
-                            out.push('…');
+                            out.push_str("...");
                             (out, true)
                         } else {
                             (out, false)
@@ -1869,7 +1869,7 @@ fn main() {
             "ts": chrono::Utc::now().timestamp(),
         }),
     ) {
-        eprintln!("E-UICP-660: failed to append boot action-log entry: {err:?}");
+        eprintln!("E-UICP-0660: failed to append boot action-log entry: {err:?}");
     }
 
     let state = AppState {

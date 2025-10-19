@@ -13,11 +13,11 @@ use sha2::{Digest as _, Sha256};
 use crate::compute::error_codes;
 use crate::ComputeJobSpec;
 
-const DETAIL_CSV_INPUT: &str = "E-UICP-401";
-const DETAIL_TABLE_INPUT: &str = "E-UICP-402";
-const DETAIL_WS_PATH: &str = "E-UICP-403";
-const DETAIL_FS_CAP: &str = "E-UICP-404";
-const DETAIL_IO: &str = "E-UICP-405";
+const DETAIL_CSV_INPUT: &str = "E-UICP-0401";
+const DETAIL_TABLE_INPUT: &str = "E-UICP-0402";
+const DETAIL_WS_PATH: &str = "E-UICP-0403";
+const DETAIL_FS_CAP: &str = "E-UICP-0404";
+const DETAIL_IO: &str = "E-UICP-0405";
 
 #[derive(Debug, Clone)]
 pub struct TaskInputError {
@@ -499,7 +499,7 @@ mod tests {
         let err = canonicalize_task_input(&spec).unwrap_err();
         assert_eq!(err.code, crate::compute::error_codes::CAPABILITY_DENIED);
         assert!(
-            err.message.contains("E-UICP-404"),
+            err.message.contains("E-UICP-0404"),
             "expected capability error code detail"
         );
     }

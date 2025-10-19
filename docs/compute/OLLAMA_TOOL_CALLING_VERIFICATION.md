@@ -303,7 +303,7 @@ The native API uses `format` for JSON mode:
 {
   "format": {
     "type": "object",
-    "properties": {...},
+    "properties": {},
     "required": [...]
   }
 }

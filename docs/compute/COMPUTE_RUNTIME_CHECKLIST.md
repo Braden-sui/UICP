@@ -11,7 +11,7 @@ Legend
 Last updated: 2025-10-13
 
 - JS/TS: npm run test → 114/114 passing; npm run lint → clean
-- Rust: integration suites present; see sections below and TEST_COVERAGE_SUMMARY.md
+- Rust: integration suites present; see sections below and testing.md
 
 -------------------------------------------------------------------------------
 
@@ -193,7 +193,7 @@ Last updated: 2025-10-13
     - Next: wire CI release job with `STRICT_MODULES_VERIFY=1` and `UICP_MODULES_PUBKEY` so unsigned artifacts are rejected automatically.
 
 - [x] Component feature preflight
-  - `preflight_component_imports` inspects top-level component imports via Wasmtime and compares against per-task allowlists (csv.parse: none, table.query: `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`, `uicp:host/control@1.0.0`). Violations raise `E-UICP-230` before instantiation. Tests in `module_smoke.rs` cover allowed and mismatched policies.
+  - `preflight_component_imports` inspects top-level component imports via Wasmtime and compares against per-task allowlists (csv.parse: none, table.query: `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`, `uicp:host/control@1.0.0`). Violations raise `E-UICP-0230` before instantiation. Tests in `module_smoke.rs` cover allowed and mismatched policies.
 
 -------------------------------------------------------------------------------
 
@@ -261,7 +261,7 @@ Last updated: 2025-10-13
 - [x] Baseline docs present: `docs/compute/README.md`, host skeleton (`docs/compute/host-skeleton.rs`), WIT draft
 
 - [~] Update docs with:
-  - Feature flags + enablement now covered in `docs/setup.md#wasm-compute`; module build/verify flow documented in `docs/compute/README.md`.
+  - Feature flags + enablement now covered in `docs/USER_GUIDE.md#setup`; module build/verify flow documented in `docs/compute/README.md`.
   - Error taxonomy captured in `docs/compute/error-taxonomy.md`; compute toasts reference these codes.
   - TODO: add determinism/record-replay guarantees, guest log policy, and UI surfacing guidelines.
 
@@ -281,7 +281,7 @@ Last updated: 2025-10-13
 ## 10) Nice-to-haves (Post-MVP)
 
 - [ ] Determinism probes for compute outputs and optional golden tests
-- [ ] Resource budgets/benchmarks (latency p95 deltas on changed path)
+- [ ] Resource budgets/benchmarks (latency p95 deltas on changed path) — tracked in `docs/PROPOSALS.md` (Perf baselines in CI)
 - [ ] Cache warming and cache-only mode for demos
 - [ ] Per-job log/metrics view in the UI
 
@@ -332,4 +332,5 @@ Last updated: 2025-10-13
 
 Notes
 
-- These tests run in CI via `compute-ci.yml` (JS/TS unit stage). Rust integration tests are covered in Section 7 and TEST_COVERAGE_SUMMARY.md.
+- These tests run in CI via `compute-ci.yml` (JS/TS unit stage). Rust integration tests are covered in Section 7 and testing.md.
+

@@ -250,7 +250,7 @@ impl ComputeTestHarness {
         crate::commands::get_modules_info(self.app.handle().clone())
             .await
             .map_err(|err| {
-                anyhow::anyhow!("E-UICP-410: get_modules_info via harness failed: {err}")
+                anyhow::anyhow!("E-UICP-0410: get_modules_info via harness failed: {err}")
             })
     }
 
@@ -262,10 +262,10 @@ impl ComputeTestHarness {
         let src_str = src
             .as_ref()
             .to_str()
-            .ok_or_else(|| anyhow::anyhow!("E-UICP-411: source path not valid UTF-8"))?;
+            .ok_or_else(|| anyhow::anyhow!("E-UICP-0411: source path not valid UTF-8"))?;
         crate::commands::copy_into_files(self.app.handle().clone(), src_str.into())
             .await
-            .map_err(|err| anyhow::anyhow!("E-UICP-412: copy_into_files via harness failed: {err}"))
+            .map_err(|err| anyhow::anyhow!("E-UICP-0412: copy_into_files via harness failed: {err}"))
     }
 
     /// WHY: Load workspace state through the command shim to ensure parity with the production entry point.
@@ -273,7 +273,7 @@ impl ComputeTestHarness {
         let state: tauri::State<'_, AppState> = self.app.state();
         crate::commands::load_workspace(state)
             .await
-            .map_err(|err| anyhow::anyhow!("E-UICP-413: load_workspace via harness failed: {err}"))
+            .map_err(|err| anyhow::anyhow!("E-UICP-0413: load_workspace via harness failed: {err}"))
     }
 
     /// WHY: Persist workspace state through the same code path the app uses, keeping invariants aligned.
@@ -281,7 +281,7 @@ impl ComputeTestHarness {
         let state: tauri::State<'_, AppState> = self.app.state();
         crate::commands::save_workspace((), state, windows)
             .await
-            .map_err(|err| anyhow::anyhow!("E-UICP-414: save_workspace via harness failed: {err}"))
+            .map_err(|err| anyhow::anyhow!("E-UICP-0414: save_workspace via harness failed: {err}"))
     }
 
     /// WHY: Provide direct access to cache eviction so compute-focused tests can start from a known state.
@@ -289,7 +289,7 @@ impl ComputeTestHarness {
         crate::commands::clear_compute_cache(self.app.handle().clone(), workspace_id)
             .await
             .map_err(|err| {
-                anyhow::anyhow!("E-UICP-415: clear_compute_cache via harness failed: {err}")
+                anyhow::anyhow!("E-UICP-0415: clear_compute_cache via harness failed: {err}")
             })
     }
 

@@ -8,7 +8,7 @@
 
 ## Summary
 
-- UI lifecycle and bridge paths now fail loud: invalid `data-command` payloads throw `E-UICP-301` errors and abort the triggering event, and iterator teardown logs `E-UICP-401` when `unlisten` fails.
+- UI lifecycle and bridge paths now fail loud: invalid `data-command` payloads throw `E-UICP-0301` errors and abort the triggering event, and iterator teardown logs `E-UICP-0401` when `unlisten` fails.
 - JSON recovery helpers (e.g., `tryRecoverJsonFromAttribute` in `uicp/src/lib/uicp/cleanup.ts`) remain intentionally: they repair planner artefacts before validation while still rejecting payloads that cannot be parsed after recovery. This deviation is documented below.
 - With those adjustments, the shipped behaviour matches the policy: no silent catch-and-continue paths remain in adapter event handling or the LLM iterator.
 
@@ -26,7 +26,7 @@
 
 ## Deviations (Documented)
 
-- **JSON recovery helpers**: We keep the narrow recovery logic that strips stray bracket artefacts and restores minimalist JSON (see `uicp/tests/unit/cleanup.test.ts`). Recovery runs before Zod validation; if the payload is still invalid, the handler throws `E-UICP-301`. Rationale: the planner occasionally emits trivial quote fixes, and patching them here prevents needless UX regressions without masking deeper issues.
+- **JSON recovery helpers**: We keep the narrow recovery logic that strips stray bracket artefacts and restores minimalist JSON (see `uicp/tests/unit/cleanup.test.ts`). Recovery runs before Zod validation; if the payload is still invalid, the handler throws `E-UICP-0301`. Rationale: the planner occasionally emits trivial quote fixes, and patching them here prevents needless UX regressions without masking deeper issues.
 
 No other exceptions remain.
 

@@ -1,4 +1,6 @@
-# How to Add a WIL Operation
+# How to Add a WIL Operation (Superseded)
+
+NOTE: This document is consolidated into `docs/compute/WIL.md`.
 
 ## Goal
 
@@ -29,7 +31,7 @@
    - For ranges (numbers), add a small table or property-like loop.
 
 6. **Update docs and prompts (optional)**
-   - Add examples to `docs/compute/WIL_QUICKSTART.md`.
+   - Add examples to `docs/compute/WIL.md` (Quick Reference section).
    - If helpful, reference common patterns in `uicp/src/prompts/actor.txt` (Actor only).
 
 ## Notes

@@ -196,3 +196,11 @@ await (window as any).uicpComputeCall({
 
 - CI workflow `.github/workflows/compute-ci.yml` runs `npm run gen:io` followed by `git diff --exit-code src/compute/types.gen.ts`, ensuring ABI changes stay in sync with generated bindings before merge.
 - Preflight validation (`preflight_component_imports`) loads each module with Wasmtime and rejects any import surface outside the allowlist above. Unknown tasks must register their import policy before modules will load.
+## Required Methods (Reference)
+
+- See `docs/compute/required-methods.txt` for WASI stream traits required in the current host.
+- Example host skeleton: `docs/compute/host-skeleton.rs` (minimal wiring for docs and experiments).
+
+## Upgrades
+
+- Wasmtime 37 notes and validation checklist: `docs/compute/WASMTIME_UPGRADE_STATUS.md`.

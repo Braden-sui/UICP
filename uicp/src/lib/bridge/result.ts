@@ -26,35 +26,35 @@ export class UICPError extends Error {
   }
 }
 
-// Standardized UICP error codes
+// Standardized UICP error codes (E-UICP-####)
 export const UICPErrorCode = {
-  // Bridge/Tauri errors (E-UICP-1xx)
-  BridgeUnavailable: 'E-UICP-100',
-  InvokeFailed: 'E-UICP-101',
-  EventListenerFailed: 'E-UICP-102',
+  // Bridge/Tauri errors (E-UICP-01xx)
+  BridgeUnavailable: 'E-UICP-0100',
+  InvokeFailed: 'E-UICP-0101',
+  EventListenerFailed: 'E-UICP-0102',
   
-  // Sanitization/Validation errors (E-UICP-3xx)
-  SanitizationFailed: 'E-UICP-300',
-  DataCommandInvalid: 'E-UICP-301',
-  SanitizeOutputInvalid: 'E-UICP-302',
+  // Sanitization/Validation errors (E-UICP-03xx)
+  SanitizationFailed: 'E-UICP-0300',
+  DataCommandInvalid: 'E-UICP-0301',
+  SanitizeOutputInvalid: 'E-UICP-0302',
   
-  // Adapter/State errors (E-UICP-4xx)
-  WorkspaceNotReady: 'E-UICP-400',
-  WindowNotFound: 'E-UICP-401',
-  ComponentNotFound: 'E-UICP-402',
+  // Adapter/State errors (E-UICP-04xx)
+  WorkspaceNotReady: 'E-UICP-0400',
+  WindowNotFound: 'E-UICP-0401',
+  ComponentNotFound: 'E-UICP-0402',
   
-  // Compute errors (E-UICP-5xx)
-  ComputeTimeout: 'E-UICP-500',
-  ComputeCancelled: 'E-UICP-501',
-  ComputeCapabilityDenied: 'E-UICP-502',
-  ComputeResourceLimit: 'E-UICP-503',
-  ComputeRuntimeFault: 'E-UICP-504',
-  ComputeIODenied: 'E-UICP-505',
-  ComputeTaskNotFound: 'E-UICP-506',
-  ComputeNondeterministic: 'E-UICP-507',
+  // Compute errors (E-UICP-05xx)
+  ComputeTimeout: 'E-UICP-0500',
+  ComputeCancelled: 'E-UICP-0501',
+  ComputeCapabilityDenied: 'E-UICP-0502',
+  ComputeResourceLimit: 'E-UICP-0503',
+  ComputeRuntimeFault: 'E-UICP-0504',
+  ComputeIODenied: 'E-UICP-0505',
+  ComputeTaskNotFound: 'E-UICP-0506',
+  ComputeNondeterministic: 'E-UICP-0507',
   
   // Unknown/Generic
-  Unknown: 'E-UICP-999',
+  Unknown: 'E-UICP-0999',
 } as const;
 
 export type UICPErrorCodeT = typeof UICPErrorCode[keyof typeof UICPErrorCode];

@@ -103,7 +103,7 @@ Eliminated silent error paths across UI lifecycle and bridge.
 
 **Deviations** (Documented):
 - JSON recovery helpers kept for planner artifact cleanup (strips stray brackets before Zod validation)
-- Recovery runs before validation; still throws `E-UICP-301` on failure
+- Recovery runs before validation; still throws `E-UICP-0301` on failure
 
 **References**: Global Rules #14 (no silent exceptions)
 

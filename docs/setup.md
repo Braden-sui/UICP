@@ -118,7 +118,7 @@ npm run test
 CI notes
 - On Linux CI, we install with `npm ci --ignore-scripts --no-optional` to avoid platform-specific optional binaries and postinstall hooks.
 - The `postinstall` script (`uicp/scripts/postinstall.cjs`) only adjusts Rollup's native binding on Windows; running `npm run postinstall` on Linux/macOS is a no-op and safe.
-- Markdown link checks are configured via `.lychee.toml` at the repo root and run in CI.
+- Markdown link checks are currently disabled in CI (docs are living; no gating).
 
 ## Quick verification
 

@@ -16,7 +16,7 @@ This doc captures the current state so a senior engineer can review the Wasmtime
 - `cargo build/test` succeeds once MSVC is installed (the repo no longer hits missing-import compile errors).
 - Integration tests skip cleanly when modules aren’t present; with valid components they exercise real jobs.
 - New diagnostics (`component_loaded`, `wasi_diag`, enriched final-error payloads) are live under `UICP_WASI_DIAG=1` and when jobs fail.
-- `docs/compute/BUILD_MODULES.md`, `docs/setup.md`, `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`, and `docs/compute/required-methods.txt` all reflect the new runtime requirements (Wasmtime 37, wasm32-wasip1, new docs.rs links).
+- `docs/compute/BUILD_MODULES.md`, `docs/USER_GUIDE.md#setup`, `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`, and `docs/compute/required-methods.txt` all reflect the new runtime requirements (Wasmtime 37, wasm32-wasip1, new docs.rs links).
 
 ### Outstanding Decisions / Optional Follow-ups
 
@@ -28,7 +28,7 @@ This doc captures the current state so a senior engineer can review the Wasmtime
 
 ## What Already Works
 
-- Enriched error reporting (`E-UICP-221`…`E-UICP-227`) is in place; failing module loads produce actionable payloads.
+- Enriched error reporting (`E-UICP-0221`…`E-UICP-0227`) is in place; failing module loads produce actionable payloads.
 - `UICP_WASI_DIAG=1` emits `component_loaded` and `wasi_diag` debug events showing file size and import summaries.
 - Integration tests preflight modules with an Engine configured for the component model and skip cleanly when modules are absent.
 - Windows build.rs now scopes `/DELAYLOAD:comctl32.dll` to tests/harness and links `delayimp`, preventing the earlier `__delayLoadHelper2` failure.
@@ -51,7 +51,7 @@ This doc captures the current state so a senior engineer can review the Wasmtime
 - `uicp/src-tauri/src/compute.rs` – updated Wasmtime wiring, logging bridge, partial-stream adapter.
 - `uicp/src-tauri/src/wasi_logging.rs` – intentionally empty placeholder (manual linker shim now handles logging).
 - `uicp/src-tauri/tests/integration_compute/*` – preflight logic and module skip behavior.
-- `docs/compute/BUILD_MODULES.md`, `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`, `docs/setup.md` – instructions now reference Wasmtime 37 + wasm32-wasip1.
+- `docs/compute/BUILD_MODULES.md`, `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`, `docs/USER_GUIDE.md#setup` – instructions now reference Wasmtime 37 + wasm32-wasip1.
 - `uicp/src-tauri/build.rs` – scoped `/DELAYLOAD:comctl32.dll` + `delayimp` link note.
 
 ## Checklist Before Finalizing

@@ -140,7 +140,7 @@ fn emit_partial(
     let frame = cbor_envelope(kind, bump_seq(seq), timestamp, payload);
     // WHY: Blocking write ensures ordering; treat failures as fatal traps to obey fail-loud.
     if let Err(err) = sink.blocking_write_and_flush(&frame) {
-        panic!("E-UICP-801: job {job_id}: partial emission failed: {err:?}");
+        panic!("E-UICP-0801: job {job_id}: partial emission failed: {err:?}");
     }
 }
 

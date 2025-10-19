@@ -1,4 +1,4 @@
-//! UICP Wasm compute host (WASI Preview 2, Component Model).
+﻿//! UICP Wasm compute host (WASI Preview 2, Component Model).
 //!
 //! This module selects implementation based on the `wasm_compute` feature:
 //! - when enabled, it embeds Wasmtime with typed hostcalls and module registry.
@@ -148,7 +148,7 @@ mod with_runtime {
             // WHY: Component-model execution may materialize multiple core Wasm instances under the hood
             // (e.g., canonical ABI adapters/lowerings created lazily on first typed call). An instances cap
             // of 1 caused typed calls to trap with a resource-limit error at runtime despite successful
-            // instantiation (E-UICP-225: call csv#run failed → Compute.Resource.Limit). We raise the cap
+            // instantiation (E-UICP-0225: call csv#run failed -> Compute.Resource.Limit). We raise the cap
             // to a conservative value to accommodate Wasmtime internals without sacrificing memory bounds.
             // INVARIANT: Memory remains bounded by `memory_size(mem_limit_bytes)`; instances is not a
             // correctness-critical limiter for our workloads and is set high enough to avoid false positives.
@@ -606,8 +606,8 @@ mod with_runtime {
                             "truncated": truncated,
                         }),
                     ) {
-                        // ERROR: E-UICP-601 Action log append failed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â terminate job for loud failure.
-                        panic!("E-UICP-601: action log append failed: {err}");
+                        // ERROR: E-UICP-0601 action log append failed; terminate job for loud failure.
+                        panic!("E-UICP-0601: action log append failed: {err}");
                     }
 
                     // Emit structured partial log event
@@ -983,9 +983,9 @@ mod with_runtime {
                 }
                 Err(err) => {
                     // WHY: Surface precise context so UI can see root-cause for module resolution faults.
-                    // ERROR: E-UICP-221 registry lookup failed for task; message carries inner error string.
+                    // ERROR: E-UICP-0221 registry lookup failed for task; message carries inner error string.
                     let any = anyhow::Error::from(err).context(format!(
-                        "E-UICP-221: registry lookup failed for task '{}': module resolve error",
+                        "E-UICP-0221: registry lookup failed for task '{}': module resolve error",
                         spec.task
                     ));
                     let (code, msg) = map_trap_error(&any);
@@ -1005,9 +1005,9 @@ mod with_runtime {
                 Ok(c) => c,
                 Err(err) => {
                     // WHY: Carry the on-disk path and root cause to aid diagnosing cache/compile errors.
-                    // ERROR: E-UICP-222 component load failed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â likely invalid encoding or wrong target (not a component).
+                    // ERROR: E-UICP-0222 component load failed; likely invalid encoding or wrong target (not a component).
                     let any = anyhow::Error::from(err).context(format!(
-                        "E-UICP-222: load component failed for path {}",
+                        "E-UICP-0222: load component failed for path {}",
                         module.path.display()
                     ));
                     let (code, msg) = map_trap_error(&any);
@@ -1292,7 +1292,7 @@ mod with_runtime {
             // Instantiate the world and call exports using typed API (no bindgen for now)
             {
                 // WHY: Add instantiation context so missing-import/linkage issues are visible in final error.
-                // ERROR: E-UICP-223 instantiation failure ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â often indicates a missing or version-mismatched import.
+                // ERROR: E-UICP-0223 instantiation failure; often indicates a missing or version-mismatched import.
                 let inst_res: Result<wasmtime::component::Instance, _> =
                     linker.instantiate_async(&mut store, &*component).await;
                 match inst_res {
@@ -1315,7 +1315,7 @@ mod with_runtime {
                                                 let bindings = CsvTask::new(&mut store, &instance)
                                                     .map_err(|e| {
                                                         anyhow::Error::from(e).context(
-                                                        "E-UICP-224: csv task binding init failed",
+                                                        "E-UICP-0224: csv task binding init failed",
                                                     )
                                                     })?;
                                                 let csv_iface = bindings.uicp_task_csv_parse_csv();
@@ -1334,7 +1334,7 @@ mod with_runtime {
                                                         Err(anyhow::Error::msg(msg))
                                                     }
                                                     Err(e) => Err(anyhow::Error::from(e).context(
-                                                        "E-UICP-225: call csv#run failed",
+                                                        "E-UICP-0225: call csv#run failed",
                                                     )),
                                                 }
                                             }
@@ -1354,7 +1354,7 @@ mod with_runtime {
                                         let bindings = TableTask::new(&mut store, &instance)
                                             .map_err(|e| {
                                                 anyhow::Error::from(e).context(
-                                                    "E-UICP-226: table task binding init failed",
+                                                    "E-UICP-0226: table task binding init failed",
                                                 )
                                             })?;
                                         let input = TableInput {
@@ -1375,7 +1375,7 @@ mod with_runtime {
                                                 }
                                             },
                                             Err(e) => Err(anyhow::Error::from(e)
-                                                .context("E-UICP-227: call table#run failed")),
+                                                .context("E-UICP-0227: call table#run failed")),
                                         }
                                     }
                                     Err(e) => {
@@ -1456,9 +1456,9 @@ mod with_runtime {
                     }
                     Err(err) => {
                         // WHY: Make instantiation failures actionable by including context.
-                        // ERROR: E-UICP-223 propagated ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â see message for missing imports or signature mismatch.
+                        // ERROR: E-UICP-0223 instantiation failure; often indicates a missing or version-mismatched import.
                         let any = anyhow::Error::from(err).context(format!(
-                            "E-UICP-223: instantiate component for task '{}' failed",
+                            "E-UICP-0223: instantiate component for task '{}' failed",
                             spec.task
                         ));
                         let (code, msg) = map_trap_error(&any);
@@ -1491,7 +1491,7 @@ mod with_runtime {
     pub fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
         let component = Component::from_file(&ENGINE, path).with_context(|| {
             format!(
-                "E-UICP-228: load component '{}' for import inspection failed",
+                "E-UICP-0228: load component '{}' for import inspection failed",
                 path.display()
             )
         })?;
@@ -1515,7 +1515,7 @@ mod with_runtime {
             .map(|s| s.to_string())
             .collect()),
             other => anyhow::bail!(
-                "E-UICP-229: no component import policy registered for task '{other}'"
+                "E-UICP-0229: no component import policy registered for task '{other}'"
             ),
         }
     }
@@ -1537,7 +1537,7 @@ mod with_runtime {
 
         if !unexpected.is_empty() || !missing.is_empty() {
             anyhow::bail!(
-                "E-UICP-230: component '{}' imports unsupported interfaces. unexpected={:?} missing={:?}",
+                "E-UICP-0230: component '{}' imports unsupported interfaces. unexpected={:?} missing={:?}",
                 task,
                 unexpected,
                 missing
@@ -1566,7 +1566,7 @@ mod with_runtime {
 
         let component = Component::from_file(&ENGINE, path).with_context(|| {
             format!(
-                "E-UICP-230: load component '{}' for contract verification failed",
+                "E-UICP-0230: load component '{}' for contract verification failed",
                 path.display()
             )
         })?;
@@ -1612,20 +1612,20 @@ mod with_runtime {
         let linker: &Linker<Ctx> = &*LINKER;
         let instance_pre = linker
             .instantiate_pre(&component)
-            .context("E-UICP-231: linker instantiate_pre for contract failed")?;
+            .context("E-UICP-0231: linker instantiate_pre for contract failed")?;
 
         let instance = block_on(async { instance_pre.instantiate_async(&mut store).await })
-            .context("E-UICP-233: instantiate component for contract verification failed")?;
+            .context("E-UICP-0233: instantiate component for contract verification failed")?;
 
         match task.split('@').next().unwrap_or("") {
             "csv.parse" => {
                 let bindings = CsvTask::new(&mut store, &instance)
-                    .context("E-UICP-234: csv contract binding init failed")?;
+                    .context("E-UICP-0234: csv contract binding init failed")?;
                 let _ = bindings.uicp_task_csv_parse_csv();
             }
             "table.query" => {
                 let bindings = TableTask::new(&mut store, &instance)
-                    .context("E-UICP-235: table contract binding init failed")?;
+                    .context("E-UICP-0235: table contract binding init failed")?;
                 let _ = bindings.uicp_task_table_query_table();
             }
             _ => {}

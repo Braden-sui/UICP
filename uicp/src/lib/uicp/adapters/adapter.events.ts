@@ -73,7 +73,7 @@ export const handleCommand = async (
 ): Promise<void> => {
   if (typeof command === 'string') {
     if (command.length > MAX_DATA_COMMAND_LEN) {
-      throw new Error(`E-UICP-300: data-command exceeds size cap: ${command.length} > ${MAX_DATA_COMMAND_LEN}`);
+      throw new Error(`E-UICP-0300: data-command exceeds size cap: ${command.length} > ${MAX_DATA_COMMAND_LEN}`);
     }
     const trimmed = command.trim();
     const first = trimmed[0];
@@ -82,7 +82,7 @@ export const handleCommand = async (
       const tokenMatches = trimmed.match(/\{\{\s*[^}]+\s*\}\}/g);
       const tokenCount = tokenMatches ? tokenMatches.length : 0;
       if (tokenCount > MAX_TEMPLATE_TOKENS) {
-        throw new Error(`E-UICP-300: data-command contains too many template tokens: ${tokenCount} > ${MAX_TEMPLATE_TOKENS}`);
+        throw new Error(`E-UICP-0300: data-command contains too many template tokens: ${tokenCount} > ${MAX_TEMPLATE_TOKENS}`);
       }
       const raw = JSON.parse(trimmed) as unknown;
       const evaluated = evalTemplates(raw, ctx);
@@ -90,7 +90,7 @@ export const handleCommand = async (
         ? (evaluated as Batch)
         : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
       if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
-        throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
+        throw new Error('E-UICP-0301: data-command evaluated to an empty or invalid batch');
       }
       void enqueueBatch(batchCandidate);
       return;
@@ -131,7 +131,7 @@ export const handleCommand = async (
     ? (evaluated as Batch)
     : ((evaluated as { batch?: unknown })?.batch as Batch | undefined);
   if (!batchCandidate || !Array.isArray(batchCandidate) || batchCandidate.length === 0) {
-    throw new Error('E-UICP-301: data-command evaluated to an empty or invalid batch');
+    throw new Error('E-UICP-0301: data-command evaluated to an empty or invalid batch');
   }
   void enqueueBatch(batchCandidate);
 };
@@ -229,7 +229,7 @@ export const createDelegatedEventHandler = (
           form: (payload.formData as Record<string, unknown> | undefined) ?? {},
         }).catch((err) => {
           const original = err instanceof Error ? err : new Error(String(err));
-          console.error('E-UICP-301: failed to process data-command JSON', original);
+          console.error('E-UICP-0301: failed to process data-command JSON', original);
         });
       }
     }

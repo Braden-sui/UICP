@@ -1,21 +1,33 @@
-## Adapter Module Split (2025-10-17)
+## Adapter V2 Architecture (2025-10-19)
 
-The monolithic `adapter.ts` has been decomposed into focused modules. Downstream code continues to import from
-`uicp/src/lib/uicp/adapter`, which now re-exports a stable façade.
+The adapter has been refactored into a modular v2 architecture. The v1 monolith (`adapter.lifecycle.ts`, 971 lines) has been **completely removed**. Downstream code continues to import from `uicp/src/lib/uicp/adapter`, which now re-exports the v2 implementation.
 
-### New Modules
+### V2 Modules (Production)
 
-- `adapter.lifecycle.ts` – Workspace/window lifecycle, DOM mutation helpers, event delegation, state stores, and
-  `applyCommand`.
-- `adapter.queue.ts` – Batch application orchestration with idempotency (tracks `{batchId, opsHash}` for 10 minutes),
-  exported `applyBatch`, `ApplyOptions`, `ApplyOutcome`, and reset hooks.
-- `adapter.security.ts` – Centralised permission check proxy and HTML utilities (`checkPermission`, `sanitizeHtmlStrict`,
-  `escapeHtml`).
-- `adapter.fs.ts` – `safeWrite` wrapper around `@tauri-apps/plugin-fs` enforcing path normalization, desktop gating via
-  `devDesktopWrite`, confirmation prompts, and telemetry logging.
-- `adapter.testkit.ts` – Pure helpers for unit tests (`buildComponentMarkupForTest`).
+**Core Orchestration:**
 
-The façade (`adapter.ts`) re-exports only the documented surface (register/reset/replay APIs, `applyBatch`, test kit hook).
+- `lifecycle.ts` – Main orchestrator with workspace management, batch application, and operation routing.
+
+**Specialized Modules:**
+
+- `windowManager.ts` – Window lifecycle operations (create, move, resize, focus, close).
+- `domApplier.ts` – DOM mutations with content deduplication and sanitization.
+- `componentRenderer.ts` – Component rendering factory with known type registry.
+- `permissionGate.ts` – Permission check wrapper around PermissionManager.
+- `adapter.telemetry.ts` – Telemetry event helpers with context enrichment.
+
+**Supporting Infrastructure:**
+
+- `adapter.clarifier.ts` – Clarification flow for structured input collection.
+- `adapter.api.ts` – API route handler for external HTTP calls.
+- `adapter.persistence.ts` – Command persistence and workspace replay.
+- `adapter.events.ts` – Event delegation setup for data-command handling.
+- `adapter.queue.ts` – Batch orchestration with idempotency (tracks `{batchId, opsHash}` for 10 minutes).
+- `adapter.security.ts` – HTML sanitization utilities (`sanitizeHtmlStrict`, `escapeHtml`).
+- `adapter.fs.ts` – Safe file write wrapper with permission checks.
+- `adapter.testkit.ts` – Test helpers and mocks.
+
+The façade (`adapter.ts`) re-exports only the documented surface (register/reset/replay APIs, `applyBatch`, test kit).
 
 ### Batch Application Changes
 

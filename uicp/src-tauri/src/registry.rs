@@ -425,7 +425,7 @@ pub fn find_module<R: Runtime>(
                 )
                 .with_context(|| {
                     format!(
-                        "E-UICP-229: component preflight failed for {}@{}",
+                        "E-UICP-0229: component preflight failed for {}@{}",
                         entry.task, entry.version
                     )
                 })?;
@@ -437,7 +437,7 @@ pub fn find_module<R: Runtime>(
             )
             .with_context(|| {
                 format!(
-                    "E-UICP-240: module contract verification failed for {}@{}",
+                    "E-UICP-0240: module contract verification failed for {}@{}",
                     entry.task, entry.version
                 )
             })?;

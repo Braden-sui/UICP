@@ -11,9 +11,9 @@ use bindings::exports::uicp::task_csv_parse::csv::{Guest, Rows};
 use csv::{ReaderBuilder, Trim};
 use percent_encoding::percent_decode_str;
 
-const ERROR_DATA_URI: &str = "E-UICP-701";
-const ERROR_UTF8: &str = "E-UICP-702";
-const ERROR_CSV: &str = "E-UICP-703";
+const ERROR_DATA_URI: &str = "E-UICP-0701";
+const ERROR_UTF8: &str = "E-UICP-0702";
+const ERROR_CSV: &str = "E-UICP-0703";
 
 struct Component;
 

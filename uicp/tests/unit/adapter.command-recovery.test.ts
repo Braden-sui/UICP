@@ -51,9 +51,9 @@ describe('adapter data-command strict parsing', () => {
     button.dispatchEvent(event);
     await Promise.resolve();
     
-    // Should have logged error with E-UICP-301
+    // Should have logged error with E-UICP-0301
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/E-UICP-301/),
+      expect.stringMatching(/E-UICP-0301/),
       expect.any(Error)
     );
     
@@ -108,9 +108,9 @@ describe('adapter data-command strict parsing', () => {
     button.dispatchEvent(event);
     await Promise.resolve();
     
-    // Should have logged error with E-UICP-301
+    // Should have logged error with E-UICP-0301
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/E-UICP-301/),
+      expect.stringMatching(/E-UICP-0301/),
       expect.any(Error)
     );
     
@@ -119,7 +119,7 @@ describe('adapter data-command strict parsing', () => {
     expect(vi.mocked(enqueueBatch)).not.toHaveBeenCalled();
   });
 
-  it('rejects data-command JSON exceeding MAX_DATA_COMMAND_LEN with E-UICP-300', async () => {
+  it('rejects data-command JSON exceeding MAX_DATA_COMMAND_LEN with E-UICP-0300', async () => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.dataset.windowId = 'win-123';
@@ -135,7 +135,7 @@ describe('adapter data-command strict parsing', () => {
     await Promise.resolve();
 
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/E-UICP-301/),
+      expect.stringMatching(/E-UICP-0301/),
       expect.any(Error)
     );
     // Enqueue should not be called when caps are exceeded
@@ -143,7 +143,7 @@ describe('adapter data-command strict parsing', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('rejects data-command JSON with too many template tokens (>{{}} cap) with E-UICP-300', async () => {
+  it('rejects data-command JSON with too many template tokens (>{{}} cap) with E-UICP-0300', async () => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.dataset.windowId = 'win-123';
@@ -160,7 +160,7 @@ describe('adapter data-command strict parsing', () => {
     await Promise.resolve();
 
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/E-UICP-301/),
+      expect.stringMatching(/E-UICP-0301/),
       expect.any(Error)
     );
     expect(vi.mocked(enqueueBatch)).not.toHaveBeenCalled();

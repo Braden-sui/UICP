@@ -226,8 +226,8 @@ const ensurePurifier = (): DOMPurifyInstance => {
     asWindowLike((globalThis as { document?: Document }).document?.defaultView);
 
   if (!domWindow || !domWindow.document) {
-    // ERROR: E-UICP-301 DOMPurify requires a window/document to operate; fail loud instead of silently passing unsanitized HTML.
-    throw new Error('E-UICP-301: sanitizeHtml requires a DOM environment');
+    // ERROR: E-UICP-0300 DOMPurify requires a window/document to operate; fail loud instead of silently passing unsanitized HTML.
+    throw new Error('E-UICP-0300: sanitizeHtml requires a DOM environment');
   }
 
   purifier = createDOMPurify(domWindow);
@@ -344,8 +344,8 @@ export const sanitizeHtml = (input: string) => {
   // INVARIANT: sanitizeHtml always returns markup produced by DOMPurify under the isSafeUrl policy.
   const sanitized = instance.sanitize(input);
   if (typeof sanitized !== 'string') {
-    // ERROR: E-UICP-302 DOMPurify returned unexpected payload; fail instead of passing unsanitized HTML.
-    throw new Error('E-UICP-302: sanitizeHtml expected string output');
+    // ERROR: E-UICP-0302 DOMPurify returned unexpected payload; fail instead of passing unsanitized HTML.
+    throw new Error('E-UICP-0302: sanitizeHtml expected string output');
   }
   return sanitized;
 };

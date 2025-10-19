@@ -17,7 +17,7 @@ fn run() -> Result<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
         print_usage();
-        return Err(anyhow!("E-UICP-640: missing command"));
+        return Err(anyhow!("E-UICP-0640: missing command"));
     }
     let cmd = args.remove(0);
     match cmd.as_str() {
@@ -26,7 +26,7 @@ fn run() -> Result<()> {
             print_usage();
             Ok(())
         }
-        other => Err(anyhow!("E-UICP-641: unknown command '{other}'")),
+        other => Err(anyhow!("E-UICP-0641: unknown command '{other}'")),
     }
 }
 
@@ -40,19 +40,19 @@ fn verify_cmd(args: &[String]) -> Result<()> {
                 idx += 1;
                 let path = args
                     .get(idx)
-                    .context("E-UICP-642: --db expects a file path")?;
+                    .context("E-UICP-0642: --db expects a file path")?;
                 db_path = Some(PathBuf::from(path));
             }
             "--pubkey" => {
                 idx += 1;
                 let raw = args
                     .get(idx)
-                    .context("E-UICP-643: --pubkey expects a base64 or hex key")?;
+                    .context("E-UICP-0643: --pubkey expects a base64 or hex key")?;
                 pubkey_raw = Some(raw.clone());
             }
             flag => {
                 return Err(anyhow!(
-                    "E-UICP-644: unexpected flag '{flag}' for verify command"
+                    "E-UICP-0644: unexpected flag '{flag}' for verify command"
                 ));
             }
         }
@@ -62,13 +62,13 @@ fn verify_cmd(args: &[String]) -> Result<()> {
     let db_path = db_path.unwrap_or_else(|| DATA_DIR.join("data.db"));
     let pubkey_source = pubkey_raw.or_else(|| env::var("UICP_ACTION_LOG_PUBKEY").ok());
     let verifying_key = match pubkey_source {
-        Some(raw) => Some(parse_pubkey(&raw).context("E-UICP-645: failed to parse verifying key")?),
+        Some(raw) => Some(parse_pubkey(&raw).context("E-UICP-0645: failed to parse verifying key")?),
         None => None,
     };
     let sig_checked = verifying_key.is_some();
 
     let report = verify_chain(&db_path, verifying_key)
-        .with_context(|| format!("E-UICP-646: verify failed for {:?}", db_path))?;
+        .with_context(|| format!("E-UICP-0646: verify failed for {:?}", db_path))?;
     emit_report(report, sig_checked);
     Ok(())
 }

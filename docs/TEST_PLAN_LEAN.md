@@ -13,7 +13,7 @@ Use this template to scope the minimum verification required for any change (doc
 
 ## Assertions
 - What outputs, events, metrics, or side-effects prove the behaviour? Reference specific toasts, logs, DB rows, or state paths.
-- If failure modes are expected, note the error codes (e.g., `Compute.Timeout`, `E-UICP-001`) and how they surface.
+- If failure modes are expected, note the error codes (e.g., `Compute.Timeout`, `E-UICP-0001`) and how they surface.
 
 ## Coverage expectations
 - List the critical files/functions and the test layer covering each (unit, integration, Playwright, manual).

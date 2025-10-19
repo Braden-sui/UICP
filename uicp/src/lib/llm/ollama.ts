@@ -394,7 +394,7 @@ export function streamOllamaCompletion(
           timeoutId = undefined;
         }
         if (unlisten) {
-          try { unlisten(); } catch (err) { console.error(`E-UICP-401: failed to unregister ollama listener for request ${requestId}`, err instanceof Error ? err : new Error(String(err))); }
+          try { unlisten(); } catch (err) { console.error(`E-UICP-0401: failed to unregister ollama listener for request ${requestId}`, err instanceof Error ? err : new Error(String(err))); }
           unlisten = null;
         }
         if (activeRequestId === requestId) {
@@ -431,7 +431,7 @@ export function streamOllamaCompletion(
         } catch (err) {
           // WHY: Listener teardown must be observable; log with dedicated code so CI can grep for regressions.
           const original = err instanceof Error ? err : new Error(String(err));
-          console.error(`E-UICP-401: failed to unregister ollama listener for request ${requestId}`, original);
+          console.error(`E-UICP-0401: failed to unregister ollama listener for request ${requestId}`, original);
         }
         unlisten = null;
       }

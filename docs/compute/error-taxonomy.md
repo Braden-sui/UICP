@@ -1,5 +1,7 @@
 UICP Compute Error Taxonomy (v1)
 
+See also: docs/error-appendix.md for the full E-UICP-#### catalog used across frontend, host, and tests.
+
 Terminal classes (surface to Adapter/UI; non-fatal to app):
 
 - Compute.Timeout — wall-clock deadline exceeded (epoch interruption). Include deadline and elapsed ms.

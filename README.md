@@ -75,12 +75,12 @@ The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.t
 ## Documentation
 
 - Compute runtime details: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md.
+- Error codes catalog: docs/error-appendix.md.
 - WIL Architecture and Protocol:
   - docs/architecture.md: Planner/Actor contracts, parsing, files.
-  - docs/compute/WIL_QUICKSTART.md: Allowed templates and examples.
-  - docs/WIL_REFACTOR.md: Tracking log and backlog.
+  - docs/compute/WIL.md: Quickstart + Add Op (consolidated).
 - Model endpoints and auth: docs/ollama cloud vs. turbo.md.
-- Docs reading order: docs/INDEX.md.
+- Docs index: docs/README.md.
 
 ## Environment
 
@@ -201,7 +201,7 @@ CI
 - Master checklist for compute runtime: `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`
 - Architecture overview: `docs/architecture.md`
 - MVP scope/status: `docs/MVP checklist.md`
-- Coverage and recent fixes: `docs/compute/TEST_COVERAGE_SUMMARY.md`, `docs/compute/TEST_FIXES_SUMMARY.md`
+- Coverage and recent fixes: `docs/compute/testing.md`
 
 ### Key workstreams (high level)
 
@@ -237,3 +237,4 @@ See also: `docs/INDEX.md` for onboarding and reading order.
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See the `LICENSE` file at the repository root for details.
+

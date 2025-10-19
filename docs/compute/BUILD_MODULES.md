@@ -53,9 +53,9 @@ Diagnostics
   - `component_loaded` debug logs (path/size)
   - `wasi_diag` with linked imports summary
 - Failures during load/instantiate surface concrete messages with codes:
-  - `E-UICP-222`: component load translation error (usually "not a component").
-  - `E-UICP-223`: instantiate failed (often missing import/signature mismatch).
-  - `E-UICP-224/225/226/227`: export lookup or call failures for `csv#run`/`table#run`.
+  - `E-UICP-0222`: component load translation error (usually "not a component").
+  - `E-UICP-0223`: instantiate failed (often missing import/signature mismatch).
+  - `E-UICP-0224/0225/0226/0227`: export lookup or call failures for `csv#run`/`table#run`.
 
 Notes
 - You can also adapt the provided WIT in `docs/wit/tasks/uicp-task-csv-parse@1.2.0.wit` and `docs/wit/uicp-host@1.0.0.wit` to your components.

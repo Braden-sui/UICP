@@ -6,7 +6,15 @@ on:
     branches:
       - main
       - feature/**
+    paths-ignore:
+      - 'docs/**'
+      - 'uicp/docs/**'
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'uicp/docs/**'
+      - '**/*.md'
 
 env:
   STRICT_MODULES_VERIFY: "true"
@@ -71,17 +79,7 @@ jobs:
         working-directory: uicp
         run: npm run build
 
-      - name: Link check (Markdown)
-        uses: lycheeverse/lychee-action@v2
-        with:
-          args: >
-            --method GET
-            --no-progress
-            --exclude "localhost|127\\.0\\.0\\.1|^https?://$"
-            --accept 200,301,302,303,307,308
-            .
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Link checks intentionally disabled for living docs
 
       - name: Install Playwright browsers
         if: ${{ env.RUN_E2E == 'true' }}

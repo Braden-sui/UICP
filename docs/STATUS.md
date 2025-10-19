@@ -8,7 +8,7 @@ Last updated: 2025-10-17
 
 - Desktop app (React + Tauri) runs as a desktop-first experience; when opened in a plain browser the UI degrades gracefully instead of crashing, while the Tauri bridge continues to drive native flows.
 - Compute plane (Wasmtime, feature-gated) is implemented with registry, cache, and policy; compute harness E2E smoke now runs in CI to guard guest/host drift.
-- CI runs lint, typecheck, unit, e2e, build, security scans, and link checking.
+- CI runs lint, typecheck, unit, e2e, build, security scans, .
 
 ## Now (Current Focus)
 
@@ -18,23 +18,9 @@ Last updated: 2025-10-17
 
 ## Done (Recently)
 
-**October 2025 Work** (see `docs/IMPLEMENTATION_LOG.md` for details):
+Major October 2025 milestones include: batch idempotency system, stream cancellation API, workspace registration guard, telemetry ID tracking, JSON tool calling (production default), error handling refactor, circuit breaker observability, SQLite maintenance, and compute observability improvements.
 
-- **Batch idempotency system**: FNV-1a hash-based deduplication prevents duplicate batch application from retries/races. In-memory LRU with 15-min TTL, telemetry events for skipped duplicates.
-- **Stream cancellation**: Explicit `cancel()` API with zero ghost echoes proven by soak tests. Cancelled streams never reach `onBatch` callback.
-- **Workspace registration guard**: Early batches queue until `Desktop.tsx` mounts, eliminating "Workspace root not registered" race condition.
-- **Telemetry ID tracking**: `batchId` and `runId` now tracked end-to-end. MetricsPanel and LogsPanel show full correlation. Enables plan→act→apply→batch debugging.
-- **JSON tool calling**: Production default for GLM 4.6 with 4-level cascading fallback (tool→json→WIL→commentary). `channelUsed` field tracks which path succeeded.
-- **Error handling refactor**: Eliminated silent error paths. `emitWindowEvent` throws on failures, `stableStringify` removed lossy fallback, JSON recovery limited to pre-validation cleanup.
-- **Circuit breaker observability**: Configurable thresholds via env vars, `debug_circuits` command, telemetry events for open/close transitions.
-- **SQLite maintenance**: Periodic WAL checkpoint, VACUUM, PRAGMA optimize. Schema versioning with migration guards.
-- **Performance improvements**: Ring buffer for telemetry (no array cloning), memoized compute metrics, chunked workspace replay with progress events, dynamic throttle sleep.
-- State & testing foundation documented (`docs/memory.md`, `docs/TEST_PLAN_LEAN.md`); error-handling note updated to match fail-loud behaviour.
-- Adapter `data-command` path throws `E-UICP-301` on malformed/empty payloads; LLM iterator teardown logs `E-UICP-401`.
-- UI bridge shims guard all `invoke` usage so Agent Settings, Compute Demo, and System Banner behave sensibly when Tauri is absent (prevents the “Cannot read properties of undefined (reading 'invoke')” crash).
-- Component preflight enforces per-task import allowlists before instantiation (rejects modules importing `wasi:http`/etc).
-- Compute observability gaps closed: float canonicalization tests added, RNG/clock determinism proven, host harness smoke runs under `STRICT_MODULES_VERIFY` in CI.
-- CI pins Wasmtime 37 and runs headless compute harness + Playwright smoke against signed modules.
+**For complete details**, see [`IMPLEMENTATION_LOG.md`](IMPLEMENTATION_LOG.md).
 
 ## In Progress
 
@@ -69,6 +55,7 @@ Last updated: 2025-10-17
 
 - MVP scope and status: docs/MVP checklist.md
 - Compute runtime checklist: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md
+- Compute testing (plan/boundary/coverage): docs/compute/testing.md
 - Architecture overview: docs/architecture.md
 - Model usage and endpoints: docs/model-usage.md, docs/ollama cloud vs. turbo.md
 
@@ -76,3 +63,4 @@ Last updated: 2025-10-17
 
 - Keep this snapshot accurate; update when you land meaningful changes.
 - Treat checklists as the source of truth for acceptance criteria; this page summarizes and links.
+

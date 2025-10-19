@@ -412,28 +412,28 @@ pub fn verify_chain(
         let sig: Option<Vec<u8>> = row.get(7)?;
 
         if hash.len() != 32 {
-            anyhow::bail!("E-UICP-620: hash length invalid for action_log id {}", id);
+            anyhow::bail!("E-UICP-0620: hash length invalid for action_log id {}", id);
         }
         if nonce.len() != 32 {
-            anyhow::bail!("E-UICP-621: nonce length invalid for action_log id {}", id);
+            anyhow::bail!("E-UICP-0621: nonce length invalid for action_log id {}", id);
         }
         if let Some(prev) = prev_hash.as_ref() {
             if prev.len() != 32 {
                 anyhow::bail!(
-                    "E-UICP-622: prev_hash length invalid for action_log id {}",
+                    "E-UICP-0622: prev_hash length invalid for action_log id {}",
                     id
                 );
             }
             if let Some(expected_prev) = last_hash.as_ref() {
                 if prev.as_slice() != expected_prev {
-                    anyhow::bail!("E-UICP-623: prev_hash mismatch at action_log id {}", id);
+                    anyhow::bail!("E-UICP-0623: prev_hash mismatch at action_log id {}", id);
                 }
             } else {
-                anyhow::bail!("E-UICP-624: non-genesis entry missing previous hash context");
+                anyhow::bail!("E-UICP-0624: non-genesis entry missing previous hash context");
             }
         } else if last_hash.is_some() {
             anyhow::bail!(
-                "E-UICP-625: prev_hash missing for non-genesis action_log id {}",
+                "E-UICP-0625: prev_hash missing for non-genesis action_log id {}",
                 id
             );
         }
@@ -446,29 +446,29 @@ pub fn verify_chain(
             nonce.as_slice(),
         );
         if computed.as_slice() != hash.as_slice() {
-            anyhow::bail!("E-UICP-626: hash mismatch for action_log id {}", id);
+            anyhow::bail!("E-UICP-0626: hash mismatch for action_log id {}", id);
         }
 
         if let Some(ref key) = expected_pubkey {
             let sig_bytes = sig
                 .as_ref()
-                .context("E-UICP-627: missing signature while verifying chain")?;
+                .context("E-UICP-0627: missing signature while verifying chain")?;
             if sig_bytes.len() != ed25519_dalek::SIGNATURE_LENGTH {
                 anyhow::bail!(
-                    "E-UICP-628: signature length invalid for action_log id {}",
+                    "E-UICP-0628: signature length invalid for action_log id {}",
                     id
                 );
             }
             let sig_arr: [u8; ed25519_dalek::SIGNATURE_LENGTH] =
                 sig_bytes.as_slice().try_into().map_err(|_| {
                     anyhow::anyhow!(
-                        "E-UICP-629: signature parse failed for action_log id {}",
+                        "E-UICP-0629: signature parse failed for action_log id {}",
                         id
                     )
                 })?;
             let signature = Signature::from_bytes(&sig_arr);
             key.verify_strict(hash.as_slice(), &signature)
-                .with_context(|| format!("E-UICP-630: signature verify failed at id {}", id))?;
+                .with_context(|| format!("E-UICP-0630: signature verify failed at id {}", id))?;
         }
 
         if first_id.is_none() {
@@ -492,7 +492,7 @@ pub fn verify_chain(
 fn ensure_parent_dir(path: &Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("E-UICP-631: create action log parent dir {:?}", parent))?;
+            .with_context(|| format!("E-UICP-0631: create action log parent dir {:?}", parent))?;
     }
     Ok(())
 }
@@ -530,7 +530,7 @@ pub fn parse_pubkey(raw: &str) -> anyhow::Result<VerifyingKey> {
     let bytes: [u8; 32] = decoded
         .as_slice()
         .try_into()
-        .map_err(|_| anyhow::anyhow!("E-UICP-632: pubkey must decode to 32 bytes (Ed25519)"))?;
+        .map_err(|_| anyhow::anyhow!("E-UICP-0632: pubkey must decode to 32 bytes (Ed25519)"))?;
     VerifyingKey::from_bytes(&bytes).context("parse verifying key")
 }
 

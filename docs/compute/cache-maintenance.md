@@ -230,7 +230,4 @@ Prevents:
 
 ## Future Work
 
-- [ ] Add telemetry histogram for VACUUM duration
-- [ ] Expose manual maintenance trigger via command
-- [ ] Add `schema_version` entries for other components (workspace, tool_call, etc.)
-- [ ] Implement automatic migration rollback on failure
+Moved to `docs/PROPOSALS.md` (Observability, Developer Experience, Persistence & Replay sections).
