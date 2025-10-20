@@ -406,6 +406,17 @@ test.describe('Agent code generation applets', () => {
       { gridCode: GRID_TS_SOURCE, specText: GRID_SPEC_TEXT },
     );
 
+    const gridWindow = page.locator('[data-window-id="win-code-grid"]');
+    const installButton = gridWindow.getByRole('button', { name: 'Install to panel' });
+    await expect(installButton).toBeVisible();
+
+    const viewButton = gridWindow.getByRole('button', { name: 'View code' });
+    await expect(viewButton).toBeVisible();
+    await viewButton.click();
+    await expect(page.locator('[data-window-id="win-artifacts-grid-game-applet-view"]')).toBeVisible();
+
+    await installButton.click();
+
     const panel = page.locator('.uicp-script-panel[data-script-panel-id="panel-grid-game"]');
     await expect(panel).toBeVisible();
 
@@ -460,6 +471,17 @@ test.describe('Agent code generation applets', () => {
       },
       { notesCode: NOTES_TS_SOURCE, specText: NOTES_SPEC_TEXT },
     );
+
+    const notesWindow = page.locator('[data-window-id="win-code-notes"]');
+    const installButton = notesWindow.getByRole('button', { name: 'Install to panel' });
+    await expect(installButton).toBeVisible();
+
+    const viewButton = notesWindow.getByRole('button', { name: 'View code' });
+    await expect(viewButton).toBeVisible();
+    await viewButton.click();
+    await expect(page.locator('[data-window-id="win-artifacts-notes-applet-view"]')).toBeVisible();
+
+    await installButton.click();
 
     const panel = page.locator('.uicp-script-panel[data-script-panel-id="panel-notes"]');
     await expect(panel).toBeVisible();
