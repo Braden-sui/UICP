@@ -216,6 +216,13 @@ export async function initializeTauriBridge() {
   ) {
     targetWindow.uicpComputeCall = async (spec: JobSpec) => {
       try {
+        // Kill switch: block codegen tasks when Safe Mode is enabled
+        if (spec.task.startsWith('codegen.run@')) {
+          const safe = useAppStore.getState().safeMode;
+          if (safe) {
+            throw new Error('Code generation disabled (Safe Mode)');
+          }
+        }
         pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
         prunePending();
         useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
@@ -267,6 +274,13 @@ export async function initializeTauriBridge() {
   // Expose compute helpers immediately to avoid races with async listener setup.
   bridgeWindow.uicpComputeCall = async (spec: JobSpec) => {
     try {
+      // Kill switch: block codegen tasks when Safe Mode is enabled
+      if (spec.task.startsWith('codegen.run@')) {
+        const safe = useAppStore.getState().safeMode;
+        if (safe) {
+          throw new Error('Code generation disabled (Safe Mode)');
+        }
+      }
       pendingBinds.set(spec.jobId, { task: spec.task, binds: spec.bind ?? [], ts: Date.now() });
       prunePending();
       useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });

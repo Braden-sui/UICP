@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppSelector, useAppStore } from '../state/app';
+import { selectSafeMode } from '../state/app';
 import {
   listPlannerProfiles,
   listActorProfiles,
@@ -32,6 +33,8 @@ const AgentSettingsWindow = () => {
   const setActorReasoningEffort = useAppSelector((state) => state.setActorReasoningEffort);
   const plannerTwoPhaseEnabled = useAppSelector((state) => state.plannerTwoPhaseEnabled);
   const setPlannerTwoPhaseEnabled = useAppSelector((state) => state.setPlannerTwoPhaseEnabled);
+  const safeMode = useAppSelector(selectSafeMode);
+  const setSafeMode = useAppSelector((state) => state.setSafeMode);
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
@@ -67,6 +70,27 @@ const AgentSettingsWindow = () => {
       setActorReasoningEffort(event.target.value as ReasoningEffort);
     },
     [setActorReasoningEffort],
+  );
+
+  const handleSafeModeToggle = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const enabled = event.target.checked;
+      // Update local store immediately for responsive UI
+      setSafeMode(enabled, enabled ? 'USER_KILL_SWITCH' : undefined);
+      try {
+        if (!hasTauriBridge()) {
+          // In test/dev without Tauri, just update local state
+          return;
+        }
+        await tauriInvoke('set_safe_mode', { enabled, reason: enabled ? 'USER_KILL_SWITCH' : null });
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'info', message: enabled ? 'Safe Mode enabled: codegen disabled' : 'Safe Mode disabled' });
+      } catch (err) {
+        useAppStore.getState().pushToast({ variant: 'error', message: `Toggle failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [setSafeMode],
   );
 
   const handleClose = useCallback(() => setAgentSettingsOpen(false), [setAgentSettingsOpen]);
@@ -254,6 +278,20 @@ const AgentSettingsWindow = () => {
               <span className="text-xs text-slate-500">
                 When enabled, the planner first generates a structured TaskSpec, then produces the final plan. This can improve plan quality for complex requests.
               </span>
+            </div>
+          </label>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <label className="flex items-center gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={safeMode}
+              onChange={handleSafeModeToggle}
+              className="h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500"
+            />
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-slate-700">Disable codegen (Safe Mode)</span>
+              <span className="text-xs text-slate-500">Prevents needs.code jobs from starting. Useful when auditing or recovering state.</span>
             </div>
           </label>
         </div>

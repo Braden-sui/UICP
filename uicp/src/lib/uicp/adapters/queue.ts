@@ -236,3 +236,15 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
   const outcomes = await Promise.all(results);
   return mergeOutcomes(outcomes);
 };
+
+// WHY: End-to-end tests need a stable entry point to drive batches without relying on internal module resolution.
+// SAFETY: Exposing enqueueBatch on window is idempotent and mirrors existing adapter APIs; tests only use it in controlled environments.
+if (typeof window !== 'undefined') {
+  const w = window as typeof window & { __UICP_TEST_ENQUEUE__?: typeof enqueueBatch };
+  Object.defineProperty(w, '__UICP_TEST_ENQUEUE__', {
+    configurable: true,
+    enumerable: false,
+    value: enqueueBatch,
+    writable: false,
+  });
+}

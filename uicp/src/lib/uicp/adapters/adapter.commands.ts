@@ -198,12 +198,19 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
       expectGolden: !!params.goldenKey,
     };
     
-    const writeProgress = (status: string) => {
+    const buildActionButton = (label: string, commandJson: string, title?: string) =>
+      `<button type="button" class="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100" data-command='${escapeHtml(commandJson)}'${
+        title ? ` title="${escapeHtml(title)}"` : ''
+      }>${escapeHtml(label)}</button>`;
+
+    const writeProgress = (status: string, actionsHtml?: string) => {
       if (!params.progressWindowId || !params.progressSelector || !deps.executeDomSet) return;
       const result = deps.executeDomSet({
         windowId: params.progressWindowId,
         target: params.progressSelector,
-        html: `<div class="text-xs text-slate-500">${escapeHtml(status)}</div>`,
+        html: `<div class="flex items-center gap-2 text-xs text-slate-600"><span>${escapeHtml(status)}</span>${
+          actionsHtml ? `<span class="ml-2 flex items-center gap-2">${actionsHtml}</span>` : ''
+        }</div>`,
         sanitize: true,
         mode: 'set',
       });
@@ -213,9 +220,23 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     };
 
     try {
-      writeProgress('Queued code generation...');
+      // If codegen is disabled via Safe Mode, surface a clear error early (frontend gate)
+      try {
+        const w = typeof window !== 'undefined' ? (window as any) : undefined;
+        const app = w?.uicpAppStore as { getState?: () => { safeMode?: boolean } } | undefined;
+        const disabled = Boolean(app?.getState?.().safeMode);
+        if (disabled) {
+          writeProgress('Code generation disabled (Safe Mode)');
+          return { success: false, error: 'Code generation disabled (Safe Mode)' };
+        }
+      } catch {}
+
+      // Initial status with Cancel affordance
+      const cancelCmd = `compute.cancel:${jobId}`;
+      const cancelBtn = buildActionButton('Cancel', cancelCmd, 'Cancel this codegen job');
+      writeProgress('Queued code generation...', cancelBtn);
       await window.uicpComputeCall(jobSpec);
-      writeProgress('Generating code...');
+      writeProgress('Generating code...', cancelBtn);
 
       const persistArtifactAndInstall = async (final: ComputeFinalEvent) => {
         if (!final.ok || !isRecord(final.output)) {
@@ -305,11 +326,72 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
                 console.warn('needs.code auto install render failed', renderResult.error);
               } else {
                 installSucceeded = true;
+                try {
+                  const status = `Installed to panel ${panelId}`;
+                  writeProgress(status);
+                } catch {}
               }
             } else {
               console.warn('needs.code install skipped: executeComponentRender dependency missing');
             }
           }
+        }
+
+        // Progress actions after success: view code and optional install button
+        try {
+          const actions: string[] = [];
+          // View code modal batch
+          if (sourceKeyFull && params.progressWindowId && params.progressSelector) {
+            const codeWinId = artifactKeyBase ? `win-${artifactKeyBase.replace(/\./g, '-')}-view` : `win-code-${jobId}`;
+            const codeTitle = artifactKeyBase ? `Code: ${artifactKeyBase.split('.').pop()}` : 'Code Artifact';
+            const viewBatch = [
+              {
+                op: 'window.create',
+                params: { id: codeWinId, title: codeTitle, size: 'md' },
+              },
+              {
+                op: 'dom.set',
+                params: {
+                  windowId: codeWinId,
+                  target: '#root',
+                  sanitize: true,
+                  html: `<div class=\"rounded border border-slate-200 bg-white/95\"><div class=\"border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase\">${escapeHtml(
+                    codeTitle,
+                  )}</div><pre class=\"m-0 max-h-[70vh] overflow-auto p-3 text-[11px] leading-tight\">${escapeHtml(code)}</pre></div>`,
+                },
+              },
+            ];
+            actions.push(buildActionButton('View code', JSON.stringify(viewBatch)));
+          }
+
+          if (!installSucceeded) {
+            // Provide an explicit install action into a default panel if not auto-installed
+            if (artifactKeyBase && sourceKeyFull) {
+              const panelId = artifactKeyBase ? `panel-${artifactKeyBase.replace(/\./g, '-')}` : `panel-${jobId}`;
+              const panelWin = 'win-code-panel';
+              const installBatch = [
+                { op: 'window.create', params: { id: panelWin, title: 'Code Panel', size: 'md' } },
+                {
+                  op: 'component.render',
+                  params: {
+                    id: panelId,
+                    windowId: panelWin,
+                    target: '#root',
+                    type: 'script.panel',
+                    props: { id: panelId, module: 'applet.quickjs@0.1.0', sourceKey: sourceKeyFull },
+                  },
+                },
+              ];
+              actions.push(buildActionButton('Install to panel', JSON.stringify(installBatch)));
+            }
+          }
+
+          if (actions.length > 0) {
+            const cached = final.metrics?.cacheHit ? ' (cache hit)' : '';
+            writeProgress(`Code ready${cached ? ' - cached result' : ''}`, actions.join(''));
+          }
+        } catch (uiError) {
+          console.warn('needs.code: post-success actions failed', uiError);
         }
 
         if (traceId) {
@@ -336,8 +418,6 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
       void waitForComputeFinalEvent(jobId)
         .then(async (final) => {
           if (final.ok) {
-            const cached = final.metrics?.cacheHit ? ' (cache hit)' : '';
-            writeProgress(`Code ready${cached ? ' - cached result' : ''}`);
             try {
               await persistArtifactAndInstall(final);
             } catch (postError) {

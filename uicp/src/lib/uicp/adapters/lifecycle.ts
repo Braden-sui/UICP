@@ -33,6 +33,7 @@ import { routeApiCall } from './adapter.api';
 import type { StructuredClarifierBody, StructuredClarifierFieldSpec, StructuredClarifierOption } from './adapter.clarifier';
 import { persistCommand } from './adapter.persistence';
 import { createDelegatedEventHandler, registerCommandHandler } from './adapter.events';
+import { getComputeCancelBridge } from '../../bridge/globals';
 import { escapeHtml } from './adapter.security';
 
 /**
@@ -973,6 +974,22 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
       const message = err instanceof Error ? err.message : String(err);
       setScriptPanelViewState(stateKey, { status: 'error', error: { message } });
       console.error('script.emit handler failed', err);
+    }
+  });
+
+  // Register compute.cancel bridge (kill running compute job by id)
+  registerCommandHandler('compute.cancel', async (cmd, _ctx) => {
+    try {
+      const trimmed = String(cmd).trim();
+      const idx = trimmed.indexOf(':');
+      const jobId = idx >= 0 ? trimmed.slice(idx + 1).trim() : '';
+      if (!jobId) return;
+      const cancel = getComputeCancelBridge();
+      if (typeof cancel === 'function') {
+        await cancel(jobId);
+      }
+    } catch (err) {
+      console.warn('[uicp] compute.cancel handler failed', err);
     }
   });
   

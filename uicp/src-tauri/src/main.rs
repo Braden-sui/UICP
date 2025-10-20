@@ -2092,6 +2092,7 @@ fn main() {
             recovery_auto,
             recovery_export,
             clear_compute_cache,
+            set_safe_mode,
             get_workspace_commands,
             clear_workspace_commands,
             delete_window_commands,
@@ -2450,6 +2451,26 @@ async fn clear_compute_cache(
         })
         .await
         .map_err(|e| format!("{e:?}"))
+}
+
+#[tauri::command]
+async fn set_safe_mode(app: tauri::AppHandle, enabled: bool, reason: Option<String>) -> Result<(), String> {
+    let state: State<'_, AppState> = app.state();
+    *state.safe_mode.write().await = enabled;
+    *state.safe_reason.write().await = if enabled { reason.clone() } else { None };
+    if enabled {
+        let why = reason.unwrap_or_else(|| "USER_KILL_SWITCH".into());
+        let _ = app.emit(
+            "replay-issue",
+            serde_json::json!({ "reason": why, "action": "enter_safe_mode" }),
+        );
+    } else {
+        let _ = app.emit(
+            "safe-mode",
+            serde_json::json!({ "enabled": false, "reason": "cleared_by_user" }),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
