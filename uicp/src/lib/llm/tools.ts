@@ -145,6 +145,75 @@ const StateUnwatchParams = {
   additionalProperties: false,
 } as const;
 
+const StatePatchPath = {
+  anyOf: [
+    { type: 'string', minLength: 1 },
+    {
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+      minItems: 1,
+    },
+  ],
+} as const;
+
+const StatePatchParams = {
+  type: 'object',
+  properties: {
+    scope: { type: 'string', enum: ['window', 'workspace', 'global'] },
+    key: { type: 'string' },
+    windowId: { type: 'string', minLength: 1 },
+    ops: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        oneOf: [
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'set' },
+              value: {},
+              path: StatePatchPath,
+            },
+            required: ['op', 'value'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'merge' },
+              value: { type: 'object', additionalProperties: true },
+              path: StatePatchPath,
+            },
+            required: ['op', 'value'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'toggle' },
+              path: StatePatchPath,
+            },
+            required: ['op'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'setIfNull' },
+              value: {},
+              path: StatePatchPath,
+            },
+            required: ['op', 'value'],
+            additionalProperties: false,
+          },
+        ],
+      },
+    },
+  },
+  required: ['scope', 'key', 'ops'],
+  additionalProperties: false,
+} as const;
+
 const ApiCallParams = {
   type: 'object',
   properties: {
@@ -199,6 +268,7 @@ const envelopeOneOf = [
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.get' }, params: { $ref: '#/definitions/StateGetParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.watch' }, params: { $ref: '#/definitions/StateWatchParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.unwatch' }, params: { $ref: '#/definitions/StateUnwatchParams' } }, required: ['op', 'params'], additionalProperties: false },
+  { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'state.patch' }, params: { $ref: '#/definitions/StatePatchParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'api.call' }, params: { $ref: '#/definitions/ApiCallParams' } }, required: ['op', 'params'], additionalProperties: false },
   { type: 'object', properties: { id: { type: 'string' }, idempotencyKey: { type: 'string' }, traceId: { type: 'string' }, txnId: { type: 'string' }, windowId: { type: 'string' }, op: { const: 'txn.cancel' }, params: { $ref: '#/definitions/TxnCancelParams' } }, required: ['op', 'params'], additionalProperties: false },
 ] as const;
@@ -236,6 +306,7 @@ export const planSchema = {
     StateGetParams,
     StateWatchParams,
     StateUnwatchParams,
+    StatePatchParams,
     ApiCallParams,
     TxnCancelParams,
     
@@ -265,6 +336,9 @@ export const batchSchema = {
     NeedsCodeParams,
     StateSetParams,
     StateGetParams,
+    StateWatchParams,
+    StateUnwatchParams,
+    StatePatchParams,
     ApiCallParams,
     TxnCancelParams,
     // Discriminated Envelope union

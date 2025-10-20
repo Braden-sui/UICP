@@ -338,6 +338,196 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 
 const asRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
 
+const cloneDeep = <T>(value: T): T => {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  try {
+    // structuredClone is available in modern browsers/node.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+    return structuredClone(value);
+  } catch {
+    if (Array.isArray(value)) {
+      return value.map((item) => cloneDeep(item)) as unknown as T;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = cloneDeep(entry);
+    }
+    return out as unknown as T;
+  }
+};
+
+const valuesEqual = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) {
+    return true;
+  }
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) {
+    return false;
+  }
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+};
+
+const toPatchSegments = (input?: string | string[]): string[] => {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input.map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+  }
+  return input
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+};
+
+const isNumericKey = (segment: string): boolean => /^\d+$/.test(segment);
+
+const getChildValue = (value: unknown, segment: string): unknown => {
+  if (Array.isArray(value)) {
+    if (isNumericKey(segment)) {
+      return value[Number(segment)];
+    }
+    return (value as Record<string, unknown>)[segment];
+  }
+  if (isRecord(value)) {
+    return value[segment];
+  }
+  return undefined;
+};
+
+const cloneParentForKey = (parent: unknown, segment: string): unknown => {
+  if (Array.isArray(parent)) {
+    return parent.slice();
+  }
+  if (isRecord(parent)) {
+    return { ...parent };
+  }
+  return isNumericKey(segment) ? [] : {};
+};
+
+const setChildValue = (container: unknown, segment: string, child: unknown): void => {
+  if (Array.isArray(container)) {
+    if (isNumericKey(segment)) {
+      (container as unknown[])[Number(segment)] = child;
+    } else {
+      (container as Record<string, unknown>)[segment] = child;
+    }
+    return;
+  }
+  if (isRecord(container)) {
+    container[segment] = child;
+    return;
+  }
+  throw new Error('state.patch encountered non-container parent');
+};
+
+const setValueAtPath = (
+  root: unknown,
+  path: string[],
+  updater: (previous: unknown) => unknown,
+): unknown => {
+  if (path.length === 0) {
+    const next = updater(root);
+    return valuesEqual(root, next) ? root : next;
+  }
+
+  const parents: unknown[] = [];
+  let cursor: unknown = root;
+  for (const segment of path) {
+    parents.push(cursor);
+    cursor = getChildValue(cursor, segment);
+  }
+
+  const previousLeaf = cursor;
+  let nextLeaf = updater(previousLeaf);
+  if (valuesEqual(previousLeaf, nextLeaf)) {
+    nextLeaf = previousLeaf;
+  }
+  if (Object.is(previousLeaf, nextLeaf)) {
+    return root;
+  }
+
+  let child = nextLeaf;
+  for (let index = path.length - 1; index >= 0; index -= 1) {
+    const parent = parents[index];
+    const segment = path[index];
+    const parentClone = cloneParentForKey(parent, segment);
+    setChildValue(parentClone, segment, child);
+    child = parentClone;
+  }
+  return child;
+};
+
+const applyStatePatchOps = (
+  initial: unknown,
+  ops: OperationParamMap['state.patch']['ops'],
+): unknown => {
+  let result = initial;
+  for (const op of ops) {
+    const segments = toPatchSegments(op.path);
+    switch (op.op) {
+      case 'set': {
+        const valueClone = cloneDeep(op.value);
+        result = setValueAtPath(result, segments, (previous) =>
+          valuesEqual(previous, valueClone) ? previous : valueClone,
+        );
+        break;
+      }
+      case 'merge': {
+        const additions = op.value ?? {};
+        const mergeKeys = Object.keys(additions);
+        if (mergeKeys.length === 0) {
+          // No changes to apply; continue.
+          break;
+        }
+        result = setValueAtPath(result, segments, (previous) => {
+          const base = isRecord(previous) ? { ...previous } : {};
+          let touched = false;
+          for (const key of mergeKeys) {
+            const nextValue = cloneDeep(additions[key]);
+            if (!valuesEqual(base[key], nextValue)) {
+              touched = true;
+              base[key] = nextValue;
+            }
+          }
+          if (!touched && isRecord(previous)) {
+            return previous;
+          }
+          return base;
+        });
+        break;
+      }
+      case 'toggle': {
+        result = setValueAtPath(result, segments, (previous) => {
+          if (typeof previous === 'boolean') {
+            return !previous;
+          }
+          if (previous == null) {
+            return true;
+          }
+          return !previous;
+        });
+        break;
+      }
+      case 'setIfNull': {
+        const valueClone = cloneDeep(op.value);
+        result = setValueAtPath(result, segments, (previous) =>
+          previous == null ? valueClone : previous,
+        );
+        break;
+      }
+      default: {
+        const exhaustive: never = op;
+        throw new Error(`Unsupported state.patch operation ${(exhaustive as { op: string }).op}`);
+      }
+    }
+  }
+  return result;
+};
+
 type ScriptSink = {
   status: string;
   html?: string;
@@ -995,6 +1185,23 @@ const routeOperation = async (
     case 'state.set': {
       const params = envelope.params as { scope: StateScope; key: string; value: unknown; windowId?: string };
       commitStateValue({ scope: params.scope, key: params.key, value: params.value, windowId: params.windowId });
+      outcome.applied += 1;
+      break;
+    }
+
+    case 'state.patch': {
+      const params = envelope.params as OperationParamMap['state.patch'];
+      const scope = params.scope;
+      const winId = params.windowId;
+      if (scope === 'window' && !winId) {
+        throw new AdapterError('Adapter.ValidationFailed', 'state.patch window scope requires windowId');
+      }
+      const currentValue = readStateValue(scope, params.key, winId);
+      const nextValue = applyStatePatchOps(currentValue, params.ops);
+      if (valuesEqual(currentValue, nextValue)) {
+        break;
+      }
+      commitStateValue({ scope, key: params.key, value: nextValue, windowId: winId });
       outcome.applied += 1;
       break;
     }
@@ -1684,6 +1891,7 @@ function scopeFromOp(op: Envelope['op']): PermissionScope {
       return 'components';
     case 'state.set':
     case 'state.get':
+    case 'state.patch':
     case 'txn.cancel':
     case 'api.call':
       return 'dom'; // Map new ops to dom scope (permissions always grant anyway)

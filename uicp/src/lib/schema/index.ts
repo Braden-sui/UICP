@@ -44,6 +44,7 @@ export const OperationName = z.enum([
   'state.get',
   'state.watch',
   'state.unwatch',
+  'state.patch',
   'api.call',
   'needs.code',
   'txn.cancel',
@@ -179,6 +180,47 @@ const StateWatchParams = StateGetParams.extend({
 }).strict();
 const StateUnwatchParams = StateWatchParams.omit({ mode: true }).strict();
 
+const statePatchPath = z.union([z.array(z.string().min(1)), z.string().min(1)]);
+
+const StatePatchOps = z.discriminatedUnion('op', [
+  z
+    .object({
+      op: z.literal('set'),
+      value: z.unknown(),
+      path: statePatchPath.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('merge'),
+      value: z.record(z.unknown()),
+      path: statePatchPath.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('toggle'),
+      path: statePatchPath.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('setIfNull'),
+      value: z.unknown(),
+      path: statePatchPath.optional(),
+    })
+    .strict(),
+]);
+
+const StatePatchParams = z
+  .object({
+    scope: scopeEnum,
+    key: z.string(),
+    ops: z.array(StatePatchOps).min(1),
+    windowId: z.string().min(1).optional(),
+  })
+  .strict();
+
 const ApiCallUrl = z
   .string()
   .refine(
@@ -230,6 +272,7 @@ export const operationSchemas = {
   'state.get': StateGetParams,
   'state.watch': StateWatchParams,
   'state.unwatch': StateUnwatchParams,
+  'state.patch': StatePatchParams,
   'api.call': ApiCallParams,
   'needs.code': NeedsCodeParams,
   'txn.cancel': TxnCancelParams,
@@ -262,6 +305,7 @@ export type OperationParamMap = {
   'state.get': z.infer<typeof StateGetParams>;
   'state.watch': z.infer<typeof StateWatchParams>;
   'state.unwatch': z.infer<typeof StateUnwatchParams>;
+  'state.patch': z.infer<typeof StatePatchParams>;
   'api.call': z.infer<typeof ApiCallParams>;
   'needs.code': z.infer<typeof NeedsCodeParams>;
   'txn.cancel': z.infer<typeof TxnCancelParams>;

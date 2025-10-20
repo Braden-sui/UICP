@@ -47,6 +47,7 @@ export const OPERATIONS: Record<z.infer<typeof OperationName>, ToolDescriptor> =
   'state.get':          { name: 'state.get',     kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
   'state.watch':        { name: 'state.watch',   kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
   'state.unwatch':      { name: 'state.unwatch', kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
+  'state.patch':        { name: 'state.patch',   kind: 'local-operation', capabilities: ['state'],     risk: 'low' },
   'api.call':           { name: 'api.call',      kind: 'local-operation', capabilities: ['api', 'compute'], risk: 'medium' },
   'needs.code':         { name: 'needs.code',    kind: 'local-operation', capabilities: ['compute'],   risk: 'medium' },
   'txn.cancel':         { name: 'txn.cancel',    kind: 'local-operation', capabilities: ['txn'],       risk: 'low' },

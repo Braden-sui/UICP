@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { applyBatch, registerWorkspaceRoot, clearWorkspaceRoot } from '../../src/lib/uicp/adapters/lifecycle';
+import * as DomApplierModule from '../../src/lib/uicp/adapters/domApplier';
 
 // Helper to get visible state of an element
 const isVisible = (el: HTMLElement | null): boolean => {
@@ -181,6 +182,70 @@ describe('adapter.lifecycle v2 — state.watch + slots + api.into', () => {
     const ready = shell.querySelector('[data-slot="ready"]') as HTMLElement;
     expect(isVisible(ready)).toBe(true);
     expect(ready.innerHTML).toContain('Carol');
+  });
+
+  it('state.patch updates nested values with a single watcher render', async () => {
+    clearWorkspaceRoot();
+    let domApplySpy: ReturnType<typeof vi.fn> | null = null;
+    const actualCreateDomApplier = DomApplierModule.createDomApplier;
+    const createDomApplierSpy = vi
+      .spyOn(DomApplierModule, 'createDomApplier')
+      .mockImplementation((...args) => {
+        const instance = actualCreateDomApplier(...(args as Parameters<typeof actualCreateDomApplier>));
+        const originalApply = instance.apply.bind(instance);
+        const spy = vi.fn(async (params: Parameters<typeof instance.apply>[0]) => originalApply(params));
+        (instance as typeof instance & { apply: typeof spy }).apply = spy;
+        domApplySpy = spy;
+        return instance;
+      });
+
+    try {
+      root = document.createElement('div');
+      root.id = 'workspace';
+      registerWorkspaceRoot(root);
+      root.innerHTML = '<div id="patch-target"></div>';
+
+      await applyBatch([
+        { op: 'state.watch', params: { scope: 'workspace', key: 'profile', selector: '#patch-target' } },
+        {
+          op: 'state.set',
+          params: {
+            scope: 'workspace',
+            key: 'profile',
+            value: { settings: { theme: 'light', flag: false } },
+          },
+        },
+      ] as any);
+
+      domApplySpy?.mockClear();
+
+      await applyBatch([
+        {
+          op: 'state.patch',
+          params: {
+            scope: 'workspace',
+            key: 'profile',
+            ops: [
+              { op: 'merge', path: 'settings', value: { layout: 'grid' } },
+              { op: 'set', path: ['settings', 'theme'], value: 'dark' },
+              { op: 'toggle', path: ['settings', 'flag'] },
+            ],
+          },
+        },
+      ] as any);
+
+      expect(domApplySpy).toBeTruthy();
+      expect(domApplySpy!.mock.calls.length).toBe(1);
+
+      const target = root.querySelector('#patch-target') as HTMLElement | null;
+      expect(target).toBeTruthy();
+      const text = (target!.textContent || '').toLowerCase();
+      expect(text).toContain('dark');
+      expect(text).toContain('grid');
+      expect(text).toContain('true');
+    } finally {
+      createDomApplierSpy.mockRestore();
+    }
   });
 
   it('unwatch prevents further renders', async () => {
