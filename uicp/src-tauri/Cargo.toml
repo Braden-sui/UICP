@@ -41,7 +41,7 @@ ciborium = "0.2"
  rand = { version = "0.8", features = ["std"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
-pollster = "0.3"
+pollster = "0.4"
 tree-sitter = "0.25"
 tree-sitter-typescript = "0.23"
 
