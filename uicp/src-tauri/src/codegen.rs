@@ -255,9 +255,9 @@ async fn run_codegen<R: Runtime>(
         let settings = provider_settings
             .as_ref()
             .expect("provider settings required when no mock response");
-        call_openai(&client, &plan, settings)
-            .await
-            .map_err(|err| CodegenFailure::provider(format!("{ERR_PROVIDER}: openai call failed: {err}")))?
+        call_openai(&client, &plan, settings).await.map_err(|err| {
+            CodegenFailure::provider(format!("{ERR_PROVIDER}: openai call failed: {err}"))
+        })?
     };
 
     let normalized = normalize_response(&plan, raw_output)

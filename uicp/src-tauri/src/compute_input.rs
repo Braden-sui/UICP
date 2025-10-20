@@ -219,8 +219,8 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
                 DETAIL_SCRIPT_INPUT,
                 "script input.mode must be one of 'render' | 'on-event' | 'init'",
             )
-                })?
-                .to_ascii_lowercase();
+        })?
+        .to_ascii_lowercase();
     match mode_raw.as_str() {
         "render" => {
             let state = obj

@@ -80,11 +80,11 @@ fn quickjs_preflight_allows_empty_imports() {
 async fn quickjs_init_returns_initial_state() {
     skip_contract_verify();
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
-    
+
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    
+
     let found = match registry::find_module(&app.handle(), "applet.quickjs@0.1.0") {
         Ok(Some(m)) => {
             let mut cfg = wasmtime::Config::new();
@@ -100,7 +100,7 @@ async fn quickjs_init_returns_initial_state() {
         }
         _ => false,
     };
-    
+
     if !found {
         eprintln!("skipping applet.quickjs smoke (module not present)");
         return;
@@ -130,14 +130,14 @@ async fn quickjs_init_returns_initial_state() {
         artifact_id: None,
         expect_golden: false,
     };
-    
+
     let final_ev = h.run_job(spec).await.expect("final event");
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(true));
-    
+
     let out = final_ev.get("output").cloned().unwrap_or_default();
     let mode = out.get("mode").and_then(|v| v.as_str()).unwrap_or_default();
     let data = out.get("data").and_then(|v| v.as_str()).unwrap_or_default();
-    
+
     assert_eq!(mode, "init");
     assert!(data.contains("count"));
     let state: serde_json::Value = serde_json::from_str(data).expect("parse init state");
@@ -148,11 +148,11 @@ async fn quickjs_init_returns_initial_state() {
 async fn quickjs_render_produces_html() {
     skip_contract_verify();
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
-    
+
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    
+
     if registry::find_module(&app.handle(), "applet.quickjs@0.1.0")
         .ok()
         .flatten()
@@ -187,14 +187,14 @@ async fn quickjs_render_produces_html() {
         artifact_id: None,
         expect_golden: false,
     };
-    
+
     let final_ev = h.run_job(spec).await.expect("final event");
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(true));
-    
+
     let out = final_ev.get("output").cloned().unwrap_or_default();
     let mode = out.get("mode").and_then(|v| v.as_str()).unwrap_or_default();
     let data = out.get("data").and_then(|v| v.as_str()).unwrap_or_default();
-    
+
     assert_eq!(mode, "render");
     assert!(data.contains("<div class=\"counter\">"));
     assert!(data.contains("Count: 5"));
@@ -205,11 +205,11 @@ async fn quickjs_render_produces_html() {
 async fn quickjs_on_event_updates_state() {
     skip_contract_verify();
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
-    
+
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    
+
     if registry::find_module(&app.handle(), "applet.quickjs@0.1.0")
         .ok()
         .flatten()
@@ -246,19 +246,20 @@ async fn quickjs_on_event_updates_state() {
         artifact_id: None,
         expect_golden: false,
     };
-    
+
     let final_ev = h.run_job(spec).await.expect("final event");
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(true));
-    
+
     let out = final_ev.get("output").cloned().unwrap_or_default();
     let mode = out.get("mode").and_then(|v| v.as_str()).unwrap_or_default();
     let data = out.get("data").and_then(|v| v.as_str()).unwrap_or_default();
-    
+
     assert_eq!(mode, "on-event");
     let result: serde_json::Value = serde_json::from_str(data).expect("parse onEvent result");
     let next_state_str = result.get("next_state").and_then(|v| v.as_str()).unwrap();
-    let next_state: serde_json::Value = serde_json::from_str(next_state_str).expect("parse next_state");
-    
+    let next_state: serde_json::Value =
+        serde_json::from_str(next_state_str).expect("parse next_state");
+
     assert_eq!(next_state.get("count"), Some(&json!(11)));
 }
 
@@ -266,11 +267,11 @@ async fn quickjs_on_event_updates_state() {
 async fn quickjs_rejects_missing_source() {
     skip_contract_verify();
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
-    
+
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    
+
     if registry::find_module(&app.handle(), "applet.quickjs@0.1.0")
         .ok()
         .flatten()
@@ -304,10 +305,10 @@ async fn quickjs_rejects_missing_source() {
         artifact_id: None,
         expect_golden: false,
     };
-    
+
     let final_ev = h.run_job(spec).await.expect("final event");
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(false));
-    
+
     let error_msg = final_ev
         .get("error")
         .and_then(|v| v.as_str())

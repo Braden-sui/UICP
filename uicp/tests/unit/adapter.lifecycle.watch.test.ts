@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { applyBatch, registerWorkspaceRoot, clearWorkspaceRoot } from '../../src/lib/uicp/adapters/lifecycle';
 import * as DomApplierModule from '../../src/lib/uicp/adapters/domApplier';
 
@@ -186,7 +187,7 @@ describe('adapter.lifecycle v2 — state.watch + slots + api.into', () => {
 
   it('state.patch updates nested values with a single watcher render', async () => {
     clearWorkspaceRoot();
-    let domApplySpy: ReturnType<typeof vi.fn> | null = null;
+    let domApplySpy: Mock | null = null;
     const actualCreateDomApplier = DomApplierModule.createDomApplier;
     const createDomApplierSpy = vi
       .spyOn(DomApplierModule, 'createDomApplier')

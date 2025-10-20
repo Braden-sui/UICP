@@ -76,6 +76,8 @@ node uicp/scripts/build-applet.mjs entry.ts --print-json  # For embedding in JSO
 - U+2028/U+2029 sanitization (line/paragraph separators)
 - Exports to `globalThis.__uicpApplet`
 
+**Release Optimization:** The `applet.quickjs` crate builds with `opt-level = "z"`, full LTO, `panic = "abort"`, and stripped debug info so the emitted component stays compact. `uicp/scripts/build-components.mjs` additionally runs `wasm-opt -Oz --strip-debug --strip-dwarf` over the artifact; install Binaryen’s `wasm-opt` to keep this step green (missing binaries raise `E-UICP-0701`).
+
 ### 3. Compute Host Integration
 
 **Source Detection:** `compute_input.rs::extract_script_input()`
@@ -94,6 +96,7 @@ if let Some(source) = script_input.source.as_ref() {
 - Routes `applet.quickjs` to script world bindings
 - Enforces source presence (E-UICP-0604)
 - Calls init/render/onEvent based on mode
+- Prewarms `applet.quickjs@0.1.0` on application boot with a synthetic init/render/onEvent cycle so Wasmtime compiles and caches the component before user interaction, removing the first-hit latency spike.
 
 ### 4. Frontend: script.panel Lifecycle
 

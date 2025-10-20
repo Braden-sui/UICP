@@ -77,7 +77,7 @@ mod with_runtime {
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     };
-    use tauri::AppHandle;
+    use tauri::{AppHandle, Runtime};
     use tokio::sync::{
         mpsc::{
             self,
@@ -108,6 +108,23 @@ mod with_runtime {
     // Max preview bytes per log frame to include in partial events
     const LOG_PREVIEW_MAX: usize = 256;
     const SCRIPT_SOURCE_ENV: &str = "UICP_SCRIPT_SOURCE_B64";
+    const PREWARM_SCRIPT: &str = r#"(() => {
+  const stableState = () => "{}";
+  const applet = {
+    init() {
+      return stableState();
+    },
+    render(state) {
+      const payload = typeof state === "string" && state.length ? state : stableState();
+      return `<div data-prewarm="quickjs">${payload}</div>`;
+    },
+    onEvent(_action, _payload, state) {
+      const payload = typeof state === "string" && state.length ? state : stableState();
+      return JSON.stringify({ next_state: payload });
+    },
+  };
+  globalThis.__uicpApplet = applet;
+})();"#;
 
     // Adaptive controller parameters
     const ADAPT_SAMPLE_MS: u64 = 800; // sampling interval
@@ -128,6 +145,13 @@ mod with_runtime {
         fn emit_debug(&self, payload: serde_json::Value);
         fn emit_partial(&self, event: crate::ComputePartialEvent);
         fn emit_partial_json(&self, payload: serde_json::Value);
+    }
+
+    struct NullTelemetry;
+    impl TelemetryEmitter for NullTelemetry {
+        fn emit_debug(&self, _payload: serde_json::Value) {}
+        fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+        fn emit_partial_json(&self, _payload: serde_json::Value) {}
     }
 
     #[derive(Clone)]
@@ -881,6 +905,48 @@ mod with_runtime {
         }
     }
 
+    fn make_ctx(
+        task: &str,
+        job_id: &str,
+        wasi: WasiCtx,
+        emitter: Arc<dyn TelemetryEmitter>,
+        deadline_ms: u32,
+    ) -> Ctx {
+        Ctx {
+            wasi,
+            table: ResourceTable::new(),
+            emitter,
+            job_id: job_id.into(),
+            task: task.into(),
+            partial_seq: Arc::new(AtomicU64::new(0)),
+            partial_frames: Arc::new(AtomicU64::new(0)),
+            invalid_partial_frames: Arc::new(AtomicU64::new(0)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            rng_seed: [0; 32],
+            logical_tick: Arc::new(AtomicU64::new(0)),
+            started: Instant::now(),
+            deadline_ms,
+            rng_counter: 0,
+            log_count: Arc::new(AtomicU64::new(0)),
+            emitted_log_bytes: Arc::new(AtomicU64::new(0)),
+            max_log_bytes: MAX_LOG_BYTES,
+            initial_fuel: 0,
+            log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(
+                RL_BYTES_MAX,
+                RL_BYTES_MAX,
+            ))),
+            log_throttle_waits: Arc::new(AtomicU64::new(0)),
+            logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(
+                LOGGER_BYTES_MAX,
+                LOGGER_BYTES_MAX,
+            ))),
+            logger_throttle_waits: Arc::new(AtomicU64::new(0)),
+            partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(EVENTS_MAX, EVENTS_MAX))),
+            partial_throttle_waits: Arc::new(AtomicU64::new(0)),
+            limits: LimitsWithPeak::new((DEFAULT_MEMORY_LIMIT_MB as usize) * 1024 * 1024),
+        }
+    }
+
     /// Global Engine configured for the Component Model with on-disk artifact cache enabled.
     static ENGINE: Lazy<Engine> = Lazy::new(|| {
         let mut cfg = Config::new();
@@ -1190,11 +1256,12 @@ mod with_runtime {
             }
 
             let task_prefix = spec.task.split('@').next().unwrap_or("").to_string();
-            let script_input_result = if matches!(task_prefix.as_str(), "script.hello" | "applet.quickjs") {
-                Some(extract_script_input(&spec.input))
-            } else {
-                None
-            };
+            let script_input_result =
+                if matches!(task_prefix.as_str(), "script.hello" | "applet.quickjs") {
+                    Some(extract_script_input(&spec.input))
+                } else {
+                    None
+                };
 
             let mut wasi_builder = WasiCtxBuilder::new();
             if let Some(Ok(ref script_input)) = script_input_result {
@@ -1423,23 +1490,33 @@ mod with_runtime {
                                     };
 
                                     if task_name == "applet.quickjs"
-                                        && script_input.source.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                                        && script_input
+                                            .source
+                                            .as_ref()
+                                            .map(|s| s.is_empty())
+                                            .unwrap_or(true)
                                     {
                                         return Err(anyhow::anyhow!(
                                             "E-UICP-0604: applet.quickjs requires bundled JS source"
                                         ));
                                     }
 
-                                    let bindings = ScriptTask::new(&mut store, &instance).map_err(|e| {
-                                        anyhow::Error::from(e)
-                                            .context("E-UICP-0232: script task binding init failed")
-                                    })?;
+                                    let bindings =
+                                        ScriptTask::new(&mut store, &instance).map_err(|e| {
+                                            anyhow::Error::from(e).context(
+                                                "E-UICP-0232: script task binding init failed",
+                                            )
+                                        })?;
                                     let script_iface = bindings.uicp_applet_script_script();
 
                                     let js_call = match script_input.mode {
-                                        ScriptMode::Init => script_iface.call_init(&mut store).await,
+                                        ScriptMode::Init => {
+                                            script_iface.call_init(&mut store).await
+                                        }
                                         ScriptMode::Render => {
-                                            script_iface.call_render(&mut store, &script_input.state).await
+                                            script_iface
+                                                .call_render(&mut store, &script_input.state)
+                                                .await
                                         }
                                         ScriptMode::OnEvent => {
                                             let action = script_input
@@ -1489,10 +1566,10 @@ mod with_runtime {
                                             "mode": script_mode_label(&script_input.mode),
                                             "error": { "message": msg },
                                         })),
-                                      Err(e) => {
-                                          let ctx_msg = match script_input.mode {
-                                              ScriptMode::Init => {
-                                                  "E-UICP-0233: call script#init failed"
+                                        Err(e) => {
+                                            let ctx_msg = match script_input.mode {
+                                                ScriptMode::Init => {
+                                                    "E-UICP-0233: call script#init failed"
                                                 }
                                                 ScriptMode::Render => {
                                                     "E-UICP-0234: call script#render failed"
@@ -1681,13 +1758,6 @@ mod with_runtime {
             return Ok(());
         }
 
-        struct ContractEmitter;
-        impl TelemetryEmitter for ContractEmitter {
-            fn emit_debug(&self, _payload: serde_json::Value) {}
-            fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
-            fn emit_partial_json(&self, _payload: serde_json::Value) {}
-        }
-
         let component = Component::from_file(&ENGINE, path).with_context(|| {
             format!(
                 "E-UICP-0230: load component '{}' for contract verification failed",
@@ -1695,41 +1765,11 @@ mod with_runtime {
             )
         })?;
 
-        let mut store = Store::new(
+        let emitter: Arc<dyn TelemetryEmitter> = Arc::new(NullTelemetry);
+        let wasi = WasiCtxBuilder::new().build();
+        let mut store: Store<Ctx> = Store::new(
             &ENGINE,
-            Ctx {
-                wasi: WasiCtxBuilder::new().build(),
-                table: ResourceTable::new(),
-                emitter: Arc::new(ContractEmitter),
-                job_id: "contract-check".into(),
-                task: task.into(),
-                partial_seq: Arc::new(AtomicU64::new(0)),
-                partial_frames: Arc::new(AtomicU64::new(0)),
-                invalid_partial_frames: Arc::new(AtomicU64::new(0)),
-                cancelled: Arc::new(AtomicBool::new(false)),
-                rng_seed: [0; 32],
-                logical_tick: Arc::new(AtomicU64::new(0)),
-                started: Instant::now(),
-                deadline_ms: 1_000,
-                rng_counter: 0,
-                log_count: Arc::new(AtomicU64::new(0)),
-                emitted_log_bytes: Arc::new(AtomicU64::new(0)),
-                max_log_bytes: MAX_LOG_BYTES,
-                initial_fuel: 0,
-                log_rate: Arc::new(Mutex::new(RateLimiterBytes::new(
-                    RL_BYTES_MAX,
-                    RL_BYTES_MAX,
-                ))),
-                log_throttle_waits: Arc::new(AtomicU64::new(0)),
-                logger_rate: Arc::new(Mutex::new(RateLimiterBytes::new(
-                    LOGGER_BYTES_MAX,
-                    LOGGER_BYTES_MAX,
-                ))),
-                logger_throttle_waits: Arc::new(AtomicU64::new(0)),
-                partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(EVENTS_MAX, EVENTS_MAX))),
-                partial_throttle_waits: Arc::new(AtomicU64::new(0)),
-                limits: LimitsWithPeak::new((DEFAULT_MEMORY_LIMIT_MB as usize) * 1024 * 1024),
-            },
+            make_ctx(task, "contract-check", wasi, emitter, 1_000),
         );
         store.limiter(|ctx| &mut ctx.limits);
 
@@ -1759,6 +1799,64 @@ mod with_runtime {
             }
             _ => {}
         }
+
+        Ok(())
+    }
+
+    pub fn prewarm_quickjs<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
+        let Some(module) = registry::find_module(app, "applet.quickjs@0.1.0")? else {
+            return Ok(());
+        };
+        let component = load_component_cached(&module.path)?;
+        let encoded = BASE64_ENGINE.encode(PREWARM_SCRIPT.as_bytes());
+
+        let mut wasi_builder = WasiCtxBuilder::new();
+        wasi_builder.env(SCRIPT_SOURCE_ENV, &encoded);
+        let wasi = wasi_builder.build();
+        let emitter: Arc<dyn TelemetryEmitter> = Arc::new(NullTelemetry);
+
+        let mut store: Store<Ctx> = Store::new(
+            &*ENGINE,
+            make_ctx(
+                "applet.quickjs@0.1.0",
+                "quickjs-prewarm",
+                wasi,
+                emitter,
+                1_000,
+            ),
+        );
+        store.limiter(|ctx| &mut ctx.limits);
+        let _ = store.set_fuel(DEFAULT_RUNTIME_FUEL);
+        store.set_epoch_deadline(u64::MAX);
+
+        let linker: &Linker<Ctx> = &*LINKER;
+        let instance = block_on(async { linker.instantiate_async(&mut store, &*component).await })
+            .context("E-UICP-0703: instantiate applet.quickjs component for prewarm failed")?;
+
+        let bindings = ScriptTask::new(&mut store, &instance)
+            .context("E-UICP-0704: script bindings init during prewarm failed")?;
+        let script_iface = bindings.uicp_applet_script_script();
+
+        let init_output = block_on(async { script_iface.call_init(&mut store).await })
+            .context("E-UICP-0705: prewarm init call trapped")?
+            .map_err(|msg| anyhow::anyhow!("E-UICP-0706: prewarm init returned error: {msg}"))?;
+        let state = if init_output.trim().is_empty() {
+            "{}".to_string()
+        } else {
+            init_output
+        };
+
+        block_on(async { script_iface.call_render(&mut store, &state).await })
+            .context("E-UICP-0707: prewarm render call trapped")?
+            .map_err(|msg| anyhow::anyhow!("E-UICP-0708: prewarm render returned error: {msg}"))?;
+
+        block_on(async {
+            script_iface
+                .call_on_event(&mut store, "noop", "{}", &state)
+                .await
+        })
+        .context("E-UICP-0709: prewarm onEvent call trapped")?
+        .map_err(|msg| anyhow::anyhow!("E-UICP-0710: prewarm onEvent returned error: {msg}"))?;
 
         Ok(())
     }
@@ -2051,7 +2149,7 @@ mod with_runtime {
         use sha2::Digest;
         hasher.update(canonical.as_bytes());
         let out_hash = hex::encode(hasher.finalize());
-        
+
         // Track C: Golden cache verification and storage
         let mut golden_hash_opt = None;
         let mut golden_matched = None;
@@ -2073,10 +2171,14 @@ mod with_runtime {
                         );
                         let state: tauri::State<'_, crate::AppState> = app.state();
                         *state.safe_mode.write().await = true;
-                        crate::emit_or_log(app, "replay-issue", serde_json::json!({
-                            "reason": format!("Nondeterministic code generation ({})", golden_key),
-                            "action": "safe_mode_enabled"
-                        }));
+                        crate::emit_or_log(
+                            app,
+                            "replay-issue",
+                            serde_json::json!({
+                                "reason": format!("Nondeterministic code generation ({})", golden_key),
+                                "action": "safe_mode_enabled"
+                            }),
+                        );
                     }
                 }
                 Ok(None) => {
@@ -2114,7 +2216,7 @@ mod with_runtime {
                 }
             }
         }
-        
+
         if let Some(map) = metrics.as_object_mut() {
             map.insert("outputHash".into(), serde_json::json!(out_hash));
             map.entry("queueMs".to_string())
@@ -2317,14 +2419,14 @@ mod with_runtime {
                 },
                 workspace_id: "default".into(),
                 replayable: true,
-        provenance: crate::ComputeProvenanceSpec {
-            env_hash: "dev".into(),
-            agent_trace_id: None,
-        },
-        golden_key: None,
-        artifact_id: None,
-        expect_golden: false,
-    };
+                provenance: crate::ComputeProvenanceSpec {
+                    env_hash: "dev".into(),
+                    agent_trace_id: None,
+                },
+                golden_key: None,
+                artifact_id: None,
+                expect_golden: false,
+            };
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
             spec.capabilities.fs_read = vec!["ws:/files/sub/file.txt".into()];
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
@@ -2367,14 +2469,14 @@ mod with_runtime {
                 capabilities: crate::ComputeCapabilitiesSpec::default(),
                 workspace_id: "default".into(),
                 replayable: true,
-        provenance: crate::ComputeProvenanceSpec {
-            env_hash: "dev".into(),
-            agent_trace_id: None,
-        },
-        golden_key: None,
-        artifact_id: None,
-        expect_golden: false,
-    };
+                provenance: crate::ComputeProvenanceSpec {
+                    env_hash: "dev".into(),
+                    agent_trace_id: None,
+                },
+                golden_key: None,
+                artifact_id: None,
+                expect_golden: false,
+            };
             let original = "data:text/csv,foo,bar";
             let resolved = resolve_csv_source(&spec, original).expect("passthrough");
             assert_eq!(resolved, original);
@@ -2406,14 +2508,14 @@ mod with_runtime {
                 },
                 workspace_id: "default".into(),
                 replayable: true,
-        provenance: crate::ComputeProvenanceSpec {
-            env_hash: "dev".into(),
-            agent_trace_id: None,
-        },
-        golden_key: None,
-        artifact_id: None,
-        expect_golden: false,
-    };
+                provenance: crate::ComputeProvenanceSpec {
+                    env_hash: "dev".into(),
+                    agent_trace_id: None,
+                },
+                golden_key: None,
+                artifact_id: None,
+                expect_golden: false,
+            };
             let ws_path = "ws:/files/tests/resolve_csv_source.csv";
             let resolved = resolve_csv_source(&spec_ok, ws_path).expect("resolves");
             assert!(resolved.starts_with("data:text/csv;base64,"));
@@ -3043,7 +3145,7 @@ mod with_runtime {
 #[cfg(feature = "wasm_compute")]
 #[allow(unused_imports)]
 pub use with_runtime::{
-    component_import_names, preflight_component_imports, verify_component_contract,
+    component_import_names, preflight_component_imports, prewarm_quickjs, verify_component_contract,
 };
 
 #[cfg(not(feature = "wasm_compute"))]

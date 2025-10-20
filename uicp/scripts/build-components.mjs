@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execSync, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const here = resolve(fileURLToPath(import.meta.url), '..');
@@ -101,6 +102,41 @@ function firstExisting(paths) {
   return null;
 }
 
+function optimizeApplet(outPath) {
+  const before = statSync(outPath).size;
+  const tempDir = mkdtempSync(join(tmpdir(), 'uicp-wasm-opt-'));
+  const optimized = join(tempDir, 'applet_quickjs.optimized.wasm');
+  try {
+    const result = spawnSync(
+      'wasm-opt',
+      [outPath, '-Oz', '--strip-debug', '--strip-dwarf', '--vacuum', '-o', optimized],
+      { stdio: 'inherit' },
+    );
+    if (result.error) {
+      if (result.error.code === 'ENOENT') {
+        throw new Error(
+          'E-UICP-0701: wasm-opt binary not found on PATH; install Binaryen (https://github.com/WebAssembly/binaryen) to optimize QuickJS applet artifacts.',
+        );
+      }
+      throw result.error;
+    }
+    if (typeof result.status === 'number' && result.status !== 0) {
+      throw new Error(`E-UICP-0702: wasm-opt exited with status ${result.status}`);
+    }
+    copyFileSync(optimized, outPath);
+    const after = statSync(outPath).size;
+    const delta = after - before;
+    const pct = before === 0 ? 0 : (delta / before) * 100;
+    const signedDelta = `${delta >= 0 ? '+' : ''}${delta}`;
+    const signedPct = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}`;
+    console.log(
+      `[applet.quickjs] wasm-opt applied (-Oz, strip debug). size ${before}B -> ${after}B (${signedDelta}B, ${signedPct}%)`,
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function buildOne(c) {
   try {
     run('cargo component --version', { cwd: c.dir, shell: true });
@@ -114,6 +150,9 @@ function buildOne(c) {
     outPath = firstExisting(c.outs);
   }
   if (!outPath) throw new Error(`Failed to find built wasm at any of: \n  ${c.outs.join('\n  ')}`);
+  if (c.name === 'applet.quickjs') {
+    optimizeApplet(outPath);
+  }
   const manifest = join(modulesDir, 'manifest.json');
   const script = join(repoRoot, 'scripts', 'update-manifest.mjs');
   // Quote paths to handle spaces on Windows

@@ -274,15 +274,15 @@ mod tests {
             capabilities: ComputeCapabilitiesSpec::default(),
             replayable: true,
             workspace_id: "default".into(),
-        provenance: ComputeProvenanceSpec {
-            env_hash: "test-env".into(),
-            agent_trace_id: None,
-        },
-        golden_key: None,
-        artifact_id: None,
-        expect_golden: false,
+            provenance: ComputeProvenanceSpec {
+                env_hash: "test-env".into(),
+                agent_trace_id: None,
+            },
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        }
     }
-}
 
     #[test]
     fn timeout_below_minimum_is_denied() {

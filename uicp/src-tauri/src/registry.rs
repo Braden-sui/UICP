@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use std::io::ErrorKind;
 use std::{
     collections::HashSet,
     env, fs,
@@ -6,8 +8,6 @@ use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
 };
-#[cfg(windows)]
-use std::io::ErrorKind;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};

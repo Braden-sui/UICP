@@ -198,6 +198,17 @@ export const LEXICON: { [K in OperationNameT]: LexEntry<K> } = {
     skip: ["please", "the"],
   },
 
+  "state.patch": {
+    verbs: ["patch", "update", "merge"],
+    templates: [
+      "patch state {key} in {scope} {ops}",
+      "patch state {key} {ops}",
+      "merge state {key} in {scope} {ops}",
+      "merge state {key} {ops}",
+    ],
+    skip: ["please", "the"],
+  },
+
   // Code generation ---------------------------------------------------------
   "needs.code": {
     verbs: ["request", "need"],

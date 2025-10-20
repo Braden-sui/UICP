@@ -18,7 +18,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
-    async_runtime::{spawn, JoinHandle},
+    async_runtime::{spawn, spawn_blocking, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
 };
 use tokio::{
@@ -53,8 +53,8 @@ pub use policy::{
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
-use core::CircuitBreakerConfig;
 use compute_input::canonicalize_task_input;
+use core::CircuitBreakerConfig;
 
 // Re-export shared core items so crate::... references in submodules remain valid
 pub use core::{
@@ -1967,6 +1967,16 @@ fn main() {
             spawn_autosave(app.handle().clone());
             // Periodic DB maintenance to keep WAL and stats tidy
             spawn_db_maintenance(app.handle().clone());
+
+            #[cfg(feature = "wasm_compute")]
+            {
+                let handle = app.handle().clone();
+                let _ = spawn_blocking(move || {
+                    if let Err(err) = crate::compute::prewarm_quickjs(&handle) {
+                        eprintln!("quickjs prewarm failed: {err:?}");
+                    }
+                });
+            }
 
             // Create a native splash window using a bundled asset served by the frontend (works in dev and prod).
             let splash_html = r#"<!doctype html><html lang=\"en\"><head>

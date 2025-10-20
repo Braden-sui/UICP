@@ -24,3 +24,13 @@ world = "task"
 
 [patch.crates-io]
 fast-float = { path = "vendor/fast-float" }
+
+[profile.release]
+# WHY: Favor smallest Wasm artifact; mirror Binaryen `-Oz` by enabling full LTO, panic abort,
+# and stripping debug sections so the optimized binary ships without DWARF.
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
+debug = false
