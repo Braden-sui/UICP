@@ -21,6 +21,7 @@ env:
   UICP_MODULES_PUBKEY: ih4HBWNN6fqiMx8ee5NICPwDUzu/4ORtUjo7OTVu4wg=
 
 permissions:
+  actions: write
   contents: read
   security-events: write
 

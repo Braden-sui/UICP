@@ -51,11 +51,13 @@
     "react-hook-form": "^7.53.0",
     "react-rnd": "^10.4.10",
     "react-window": "^1.8.10",
+    "uicp-root": "file:..",
     "wit-component": "^0.0.1",
     "zod": "^3.23.8",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@noble/ed25519": "^2.1.0",
     "@playwright/test": "^1.48.2",
     "@tauri-apps/cli": "^2.8.4",
     "@testing-library/jest-dom": "^6.6.3",
