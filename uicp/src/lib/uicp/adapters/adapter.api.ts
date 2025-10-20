@@ -11,7 +11,7 @@ import { getComputeBridge } from "../../bridge/globals";
 import { safeWrite, BaseDirectory } from "./adapter.fs";
 import { emitTelemetryEvent } from "../../telemetry";
 import type { OperationParamMap, Envelope } from "./schemas";
-import type { JobSpec } from "../../../compute/types";
+import { jobSpecSchema, type JobSpec } from "../../../compute/types";
 import type { StructuredClarifierBody } from "./adapter.clarifier";
 import { isStructuredClarifierBody } from "./adapter.clarifier";
 
@@ -76,81 +76,21 @@ const handleComputeCall = async (
   params: OperationParamMap["api.call"],
 ): Promise<CommandResult<string>> => {
   try {
-    const body = asRecord(params.body) ?? {};
-
-    // DIRECT applet mode: when input has { mode, source|module }
-    const input = body.input;
-    const maybeApplet = asRecord(input);
-    const hasAppletMarkers = !!(maybeApplet && typeof maybeApplet['mode'] === 'string' && (maybeApplet['source'] || maybeApplet['module']));
-    if (hasAppletMarkers) {
-      const mode = String(maybeApplet.mode);
-      const appletModule: unknown = maybeApplet.module ?? undefined;
-      const appletSource: unknown = maybeApplet.source ?? undefined;
-      const stateArg: unknown = maybeApplet.state;
-      const actionArg: unknown = maybeApplet.action;
-      const payloadArg: unknown = maybeApplet.payload;
-
-      // Resolve module from either provided object or evaluated source string
-      const resolveApplet = (): Record<string, unknown> => {
-        if (isRecord(appletModule)) return appletModule;
-        if (typeof appletSource === 'string') {
-          // Best-effort sandbox: no arguments, no window injected
-          // INVARIANT: Caller is responsible for safe HTML; downstream DOM insertion sanitizes.
-          const factory = new Function('"use strict"; let module = {}; let exports = module; ' + String(appletSource) + '; return module || exports || {};');
-          const mod = factory();
-          if (isRecord(mod)) return mod;
-        }
-        return {};
-      };
-
-      const mod = resolveApplet();
-      const rid = params.idempotencyKey ?? createId('api');
-
-      if (mode === 'init') {
-        const next = await callIfFn(getFunction(mod, 'init'));
-        const result: CommandResult<string> = { success: true, value: rid };
-        if (next !== undefined) {
-          return { ...result, data: { next_state: next } };
-        }
-        return result;
-      }
-
-      if (mode === 'render') {
-        const rendered = await callIfFn(getFunction(mod, 'render'), { state: stateArg });
-        const html = isRecord(rendered) && typeof rendered.html === 'string' ? rendered.html : '';
-        return { success: true, value: rid, data: html };
-      }
-
-      if (mode === 'on-event' || mode === 'on_event' || mode === 'event') {
-        const handler = getFunction(mod, 'onEvent') ?? getFunction(mod, 'on_event');
-        const result = await callIfFn(handler, { action: actionArg, payload: payloadArg, state: stateArg });
-        const response: CommandResult<string> = { success: true, value: rid };
-        if (result !== undefined) {
-          return { ...response, data: result };
-        }
-        return response;
-      }
-
-      // Unknown mode: treat as no-op
-      return { success: true, value: rid };
+    const parsed = jobSpecSchema.safeParse(params.body);
+    if (!parsed.success) {
+      return { success: false, error: `Compute job spec invalid: ${parsed.error.message}` };
     }
 
-    // Default async compute bridge path (WASI tasks)
     const computeCall = getComputeBridge();
     if (!computeCall) throw new Error('compute bridge not initialized');
-    const job = body as Partial<JobSpec>;
-    const jobId = job.jobId;
-    const task = job.task;
-    if (!jobId || !task) {
-      throw new Error('compute.call payload missing jobId or task');
-    }
-    const spec = {
-      ...job,
-      jobId,
-      task,
-      workspaceId: job.workspaceId ?? 'default',
-    } as JobSpec;
-    await computeCall(spec);
+
+    const spec = parsed.data as JobSpec;
+    const finalSpec: JobSpec = {
+      ...spec,
+      workspaceId: spec.workspaceId ?? 'default',
+    };
+
+    await computeCall(finalSpec);
     return { success: true, value: params.idempotencyKey ?? createId('api') };
   } catch (error) {
     console.error('compute.call failed', error);

@@ -1,0 +1,18 @@
+[package]
+name = "fast-float"
+version = "0.2.1"
+edition = "2018"
+license = "MIT OR Apache-2.0"
+description = "Shim re-export of fast-float2 to address RUSTSEC-2024-0379 and RUSTSEC-2025-0003."
+publish = false
+
+[lib]
+name = "fast_float"
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+std = ["fast-float2/std"]
+
+[dependencies]
+fast-float2 = { version = "0.2.3", default-features = false }

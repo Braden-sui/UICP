@@ -1464,15 +1464,35 @@ mod with_runtime {
                                     };
 
                                     match js_call {
-                                        Ok(Ok(value)) => Ok(serde_json::json!({
+                                        Ok(Ok(value)) => {
+                                            let payload = match script_input.mode {
+                                                ScriptMode::Init => serde_json::json!({
+                                                    "status": "ready",
+                                                    "mode": script_mode_label(&script_input.mode),
+                                                    "data": value,
+                                                }),
+                                                ScriptMode::Render => serde_json::json!({
+                                                    "status": "ready",
+                                                    "mode": script_mode_label(&script_input.mode),
+                                                    "html": value,
+                                                }),
+                                                ScriptMode::OnEvent => serde_json::json!({
+                                                    "status": "ready",
+                                                    "mode": script_mode_label(&script_input.mode),
+                                                    "data": value,
+                                                }),
+                                            };
+                                            Ok(payload)
+                                        }
+                                        Ok(Err(msg)) => Ok(serde_json::json!({
+                                            "status": "error",
                                             "mode": script_mode_label(&script_input.mode),
-                                            "data": value,
+                                            "error": { "message": msg },
                                         })),
-                                        Ok(Err(msg)) => Err(anyhow::Error::msg(msg)),
-                                        Err(e) => {
-                                            let ctx_msg = match script_input.mode {
-                                                ScriptMode::Init => {
-                                                    "E-UICP-0233: call script#init failed"
+                                      Err(e) => {
+                                          let ctx_msg = match script_input.mode {
+                                              ScriptMode::Init => {
+                                                  "E-UICP-0233: call script#init failed"
                                                 }
                                                 ScriptMode::Render => {
                                                     "E-UICP-0234: call script#render failed"

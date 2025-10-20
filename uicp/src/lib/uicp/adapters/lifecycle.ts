@@ -27,6 +27,8 @@ import type { ComponentRenderer } from './componentRenderer';
 import { createPermissionGate } from './permissionGate';
 import { createAdapterTelemetry, AdapterEvents } from './adapter.telemetry';
 import { createId } from '../../utils';
+import { getComputeBridge } from '../../bridge/globals';
+import type { ComputeFinalEvent, JobSpec } from '../../../compute/types';
 import { routeApiCall } from './adapter.api';
 import type { StructuredClarifierBody, StructuredClarifierFieldSpec, StructuredClarifierOption } from './adapter.clarifier';
 import { persistCommand } from './adapter.persistence';
@@ -117,6 +119,90 @@ const commitStateValue = ({ scope, key, value, windowId }: CommitStateParams): v
   notifyStateWatchers(scope, key, windowId, value);
 };
 
+const nextJobId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return createId('job');
+};
+
+const waitForComputeFinalEvent = (jobId: string, timeoutMs = 60_000): Promise<ComputeFinalEvent> => {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Compute final events unavailable in this environment'));
+  }
+  return new Promise<ComputeFinalEvent>((resolve, reject) => {
+    let settled = false;
+    let timer: number | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+      window.removeEventListener('uicp-compute-final', handler as EventListener);
+    };
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<ComputeFinalEvent>).detail;
+      if (!detail || detail.jobId !== jobId || settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      if (!detail.ok) {
+        const error = new Error(detail.message ?? 'Compute job failed');
+        (error as Record<string, unknown>).code = detail.code ?? 'Compute.Error';
+        reject(error);
+        return;
+      }
+      resolve(detail);
+    };
+    window.addEventListener('uicp-compute-final', handler as EventListener);
+    timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(`Compute job ${jobId} timed out`));
+    }, timeoutMs);
+  });
+};
+
+type ScriptJobOptions = {
+  source?: string;
+  traceId?: string;
+  timeoutMs?: number;
+};
+
+const submitScriptComputeJob = async (
+  moduleId: string,
+  input: Record<string, unknown>,
+  options: ScriptJobOptions = {},
+): Promise<ComputeFinalEvent> => {
+  const compute = getComputeBridge();
+  if (!compute) {
+    throw new Error('Compute bridge unavailable');
+  }
+  const jobId = nextJobId();
+  const payload: Record<string, unknown> = { ...input };
+  if (options.source) {
+    payload.source = options.source;
+  }
+  const spec: JobSpec = {
+    jobId,
+    task: moduleId,
+    input: payload,
+    timeoutMs: options.timeoutMs ?? 15_000,
+    bind: [],
+    cache: 'readwrite',
+    capabilities: {},
+    replayable: true,
+    workspaceId: 'default',
+    provenance: {
+      envHash: `script-panel:${moduleId}`,
+      agentTraceId: options.traceId,
+    },
+  };
+  await compute(spec);
+  return waitForComputeFinalEvent(jobId, options.timeoutMs ?? 60_000);
+};
+
 // Allow host UI to inject a predicate indicating whether a window is pinned as a desktop shortcut.
 // When pinned, we preserve persisted commands on close so replay can restore it later.
 let isPinnedWindowPredicate: ((id: string) => boolean) | null = null;
@@ -158,6 +244,39 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 };
 
 const asRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
+
+type ScriptSink = {
+  status: string;
+  html?: string;
+  data?: unknown;
+  error?: unknown;
+  mode?: string;
+};
+
+const scriptSinkFromOutput = (value: unknown): ScriptSink => {
+  const record = isRecord(value) ? value : {};
+  const status = typeof record.status === 'string' ? record.status : 'ready';
+  return {
+    status,
+    html: typeof record.html === 'string' ? record.html : undefined,
+    data: Object.prototype.hasOwnProperty.call(record, 'data') ? record.data : undefined,
+    error: Object.prototype.hasOwnProperty.call(record, 'error') ? record.error : undefined,
+    mode: typeof record.mode === 'string' ? record.mode : undefined,
+  };
+};
+
+const setScriptPanelViewState = (stateKey: string, sink: ScriptSink) => {
+  commitStateValue({
+    scope: 'workspace',
+    key: stateKey,
+    value: {
+      status: sink.status,
+      html: sink.html,
+      data: sink.data ?? null,
+      error: sink.error ?? null,
+    },
+  });
+};
 
 const renderStructuredClarifier = async (
   body: StructuredClarifierBody,
@@ -476,51 +595,121 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
   
   // Register script.emit bridge
   registerCommandHandler('script.emit', async (_cmd, ctx) => {
+    const context = isRecord(ctx) ? ctx : {};
+    const panelId = typeof context.panelId === 'string' ? context.panelId : '';
+    const windowId = typeof context.windowId === 'string' ? context.windowId : undefined;
+    if (!panelId || !windowId) return;
+
+    const modelKey = `panels.${panelId}.model`;
+    const configKey = `panels.${panelId}.config`;
+    const rawConfig = readStateValue('workspace', configKey, undefined);
+    const config = isRecord(rawConfig) ? rawConfig : {};
+    const moduleId = typeof config.module === 'string' && config.module.trim() ? config.module.trim() : '';
+    const stateKey =
+      typeof config.stateKey === 'string' && config.stateKey.trim()
+        ? config.stateKey.trim()
+        : `panels.${panelId}.view`;
+    const source = typeof config.source === 'string' && config.source.trim() ? config.source : undefined;
+
+    if (!moduleId) {
+      console.warn(`script.emit ignored: panel ${panelId} missing module configuration.`);
+      return;
+    }
+
+    const currentStateRaw = readStateValue('workspace', modelKey, undefined);
+    const currentState = typeof currentStateRaw === 'string' ? currentStateRaw : '';
+    const action =
+      typeof context.action === 'string' && context.action.trim() ? context.action.trim() : '';
+    let payloadString: string | undefined;
+    if (typeof context.payload === 'string') {
+      payloadString = context.payload;
+    } else if (context.payload != null) {
+      try {
+        payloadString = JSON.stringify(context.payload);
+      } catch {
+        payloadString = String(context.payload);
+      }
+    }
+
+    setScriptPanelViewState(stateKey, { status: 'loading' });
+
     try {
-      const context = isRecord(ctx) ? ctx : {};
-      const panelId = typeof context.panelId === 'string' ? context.panelId : '';
-      const windowId = typeof context.windowId === 'string' ? context.windowId : undefined;
-      const action = context.action;
-      const payload = context.payload;
-      if (!panelId || !windowId) return;
-      const modelKey = `panels.${panelId}.model`;
-      const viewKey = `panels.${panelId}.view`;
-      const configKey = `panels.${panelId}.config`;
-      const model = readStateValue('workspace', modelKey, undefined);
-      const rawConfig = readStateValue('workspace', configKey, undefined);
-      const config = isRecord(rawConfig) ? rawConfig : {};
-      const source = typeof config.source === 'string' ? config.source : undefined;
-      const mod = isRecord(config.module) ? config.module : undefined;
+      const onEventInput: Record<string, unknown> = { mode: 'on-event', state: currentState };
+      if (action) onEventInput.action = action;
+      if (payloadString !== undefined) onEventInput.payload = payloadString;
 
-      // DIRECT on-event
-      const directParams: OperationParamMap['api.call'] = {
-        method: 'POST',
-        url: 'uicp://compute.call',
-        body: { input: { mode: 'on-event', action, payload, state: model, source, module: mod } },
-      };
-      const renderFormNoop = (_b: StructuredClarifierBody, _c: Envelope): CommandResult<string> => ({ success: true, value: 'noop' });
-      const directEnvelope: Envelope<'api.call'> = { op: 'api.call', params: directParams };
-      const result = await routeApiCall(directParams, directEnvelope, {}, renderFormNoop);
-      const data = result.success && result.data && isRecord(result.data) ? result.data : undefined;
-      let nextModel = model;
-      if (data && 'next_state' in data) {
-        nextModel = (data as { next_state?: unknown }).next_state;
-        commitStateValue({ scope: 'workspace', key: modelKey, value: nextModel });
+      const onEventFinal = await submitScriptComputeJob(moduleId, onEventInput, {
+        source,
+        traceId: typeof context.traceId === 'string' ? context.traceId : undefined,
+      });
+      const onEventSink = scriptSinkFromOutput(onEventFinal.output);
+
+      if (onEventSink.status === 'error') {
+        setScriptPanelViewState(stateKey, onEventSink);
+        return;
       }
-      if (data && Array.isArray(data.batch)) {
+
+      let nextState = currentState;
+      let batchPayload: unknown;
+      const sinkData = onEventSink.data;
+      const coerceState = (value: unknown): string => {
+        if (typeof value === 'string') return value;
+        if (value == null) return '';
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return '';
+        }
+      };
+      const coercePayload = (value: unknown) => {
+        if (Array.isArray(value)) return value;
+        return undefined;
+      };
+
+      if (typeof sinkData === 'string') {
+        try {
+          const parsed = JSON.parse(sinkData);
+          if (isRecord(parsed)) {
+            if (Object.prototype.hasOwnProperty.call(parsed, 'next_state')) {
+              nextState = coerceState(parsed.next_state);
+            }
+            if (Object.prototype.hasOwnProperty.call(parsed, 'batch')) {
+              batchPayload = coercePayload(parsed.batch);
+            }
+          }
+        } catch {
+          // ignore parse failure
+        }
+      } else if (isRecord(sinkData)) {
+        if (Object.prototype.hasOwnProperty.call(sinkData, 'next_state')) {
+          nextState = coerceState(sinkData.next_state);
+        }
+        if (Object.prototype.hasOwnProperty.call(sinkData, 'batch')) {
+          batchPayload = coercePayload(sinkData.batch);
+        }
+      }
+
+      if (nextState !== currentState) {
+        commitStateValue({ scope: 'workspace', key: modelKey, value: nextState });
+      }
+
+      if (Array.isArray(batchPayload)) {
         const { enqueueBatch } = await import('./queue');
-        void enqueueBatch(data.batch);
+        void enqueueBatch(batchPayload as Batch);
       }
 
-      // INTO render
-      const intoParams: OperationParamMap['api.call'] = {
-        method: 'POST',
-        url: 'uicp://compute.call',
-        body: { input: { mode: 'render', state: nextModel, source, module: mod } },
-        into: { scope: 'window', key: viewKey, windowId },
-      };
-      await applyApiCallWithModules(intoParams, windowId);
+      const renderFinal = await submitScriptComputeJob(
+        moduleId,
+        { mode: 'render', state: nextState },
+        {
+          source,
+          traceId: typeof context.traceId === 'string' ? context.traceId : undefined,
+        },
+      );
+      setScriptPanelViewState(stateKey, scriptSinkFromOutput(renderFinal.output));
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setScriptPanelViewState(stateKey, { status: 'error', error: { message } });
       console.error('script.emit handler failed', err);
     }
   });
@@ -1119,56 +1308,91 @@ const routeOperation = async (
 
       // Special handling for script.panel lifecycle
       if (params.type.toLowerCase() === 'script.panel') {
+        const props = asRecord(params.props);
+        const panelId = typeof props.id === 'string' && props.id.trim() ? props.id.trim() : createId('panel');
+        const moduleId = typeof props.module === 'string' && props.module.trim() ? props.module.trim() : '';
+        const stateKey =
+          typeof props.stateKey === 'string' && props.stateKey.trim()
+            ? props.stateKey.trim()
+            : `panels.${panelId}.view`;
+        const inlineSource = typeof props.source === 'string' && props.source.trim() ? props.source : undefined;
+        const modelKey = `panels.${panelId}.model`;
+        const configKey = `panels.${panelId}.config`;
+        const selector = `${params.target} .uicp-script-panel[data-script-panel-id="${panelId}"]`;
+
+        commitStateValue({
+          scope: 'workspace',
+          key: configKey,
+          value: { module: moduleId, source: inlineSource, stateKey, windowId: params.windowId },
+        });
+
+        setScriptPanelViewState(stateKey, { status: 'loading' });
+
+        const watchEnvelope: Envelope<'state.watch'> = {
+          op: 'state.watch',
+          params: { scope: 'workspace', key: stateKey, selector, windowId: params.windowId, mode: 'replace' },
+          windowId: params.windowId,
+        };
+        await routeOperation(
+          watchEnvelope,
+          { windowManager, domApplier, componentRenderer, telemetry, outcome },
+        );
+
+        if (!moduleId) {
+          const message = 'script.panel props.module must be a module identifier string';
+          console.error(message);
+          setScriptPanelViewState(stateKey, { status: 'error', error: { message } });
+          break;
+        }
+
+        const toStateString = (value: unknown): string => {
+          if (typeof value === 'string') return value;
+          if (isRecord(value) && typeof value.state === 'string') return value.state;
+          return '';
+        };
+
         try {
-          const props = asRecord(params.props);
-          const panelId = typeof props.id === 'string' && props.id.trim() ? props.id : createId('panel');
-          const modelKey = `panels.${panelId}.model`;
-          const viewKey = `panels.${panelId}.view`;
-          const source = typeof props.source === 'string' ? props.source : undefined;
-          const mod = isRecord(props.module) ? props.module : undefined;
-          // Persist config for event bridge
-          commitStateValue({ scope: 'workspace', key: `panels.${panelId}.config`, value: { source, module: mod } });
-
-          // Install watcher on viewKey targeting this panel wrapper
-          const selector = `${params.target} .uicp-script-panel[data-script-panel-id="${panelId}"]`;
-          const watchEnvelope: Envelope<'state.watch'> = {
-            op: 'state.watch',
-            params: { scope: 'window', key: viewKey, selector, windowId: params.windowId, mode: 'replace' },
-            windowId: params.windowId,
+          const runJob = async (
+            mode: 'init' | 'render',
+            extras: { state?: string } = {},
+          ): Promise<ScriptSink> => {
+            const input: Record<string, unknown> = { mode };
+            if (extras.state !== undefined) {
+              input.state = extras.state;
+            }
+            const final = await submitScriptComputeJob(moduleId, input, {
+              source: inlineSource,
+              traceId: envelope.traceId ?? envelope.id,
+            });
+            return scriptSinkFromOutput(final.output);
           };
-          await routeOperation(
-            watchEnvelope,
-            { windowManager, domApplier, componentRenderer, telemetry, outcome }
-          );
 
-          // Initialize model via DIRECT init
-          const initParams: OperationParamMap['api.call'] = {
-            method: 'POST',
-            url: 'uicp://compute.call',
-            body: { input: { mode: 'init', source, module: mod } },
-          };
-          const renderFormNoop = (_b: StructuredClarifierBody, _c: Envelope): CommandResult<string> => ({ success: true, value: 'noop' });
-          const initEnvelope: Envelope<'api.call'> = { op: 'api.call', params: initParams, windowId: params.windowId };
-          const initRes = await routeApiCall(initParams, initEnvelope, {}, renderFormNoop);
-          const initData = initRes.success && initRes.data && isRecord(initRes.data) ? initRes.data : undefined;
-          if (initData && 'next_state' in initData) {
-            commitStateValue({ scope: 'workspace', key: modelKey, value: (initData as { next_state?: unknown }).next_state });
+          let currentState = toStateString(readStateValue('workspace', modelKey, undefined));
+
+          if (!currentState) {
+            const initSink = await runJob('init');
+            if (initSink.status === 'error') {
+              setScriptPanelViewState(stateKey, initSink);
+              commitStateValue({ scope: 'workspace', key: modelKey, value: null });
+              break;
+            }
+            if (typeof initSink.data === 'string') {
+              currentState = initSink.data;
+            } else if (initSink.data != null) {
+              try {
+                currentState = JSON.stringify(initSink.data);
+              } catch {
+                currentState = '';
+              }
+            }
+            commitStateValue({ scope: 'workspace', key: modelKey, value: currentState });
           }
 
-          const currentModel = readStateValue('workspace', modelKey, undefined);
-          // Trigger initial render via INTO
-          const intoParams: OperationParamMap['api.call'] = {
-            method: 'POST',
-            url: 'uicp://compute.call',
-            body: { input: { mode: 'render', state: currentModel, source, module: mod } },
-            into: { scope: 'window', key: viewKey, windowId: params.windowId },
-          };
-          const intoEnvelope: Envelope<'api.call'> = { op: 'api.call', params: intoParams, windowId: params.windowId };
-          await routeOperation(
-            intoEnvelope,
-            { windowManager, domApplier, componentRenderer, telemetry, outcome }
-          );
+          const renderSink = await runJob('render', { state: currentState });
+          setScriptPanelViewState(stateKey, renderSink);
         } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setScriptPanelViewState(stateKey, { status: 'error', error: { message } });
           console.error('script.panel lifecycle failed', err);
         }
       }

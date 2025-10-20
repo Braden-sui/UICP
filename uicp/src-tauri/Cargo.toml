@@ -90,3 +90,6 @@ required-features = ["compute_harness"]
 [[bin]]
 name = "uicp-log"
 path = "src/bin/uicp_log.rs"
+
+[patch.crates-io]
+glib = { path = "vendor/glib" }

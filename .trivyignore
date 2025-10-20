@@ -1,0 +1,2 @@
+# GHSA-wrw7-89jp-8q8g patched locally in vendor glib 0.18.6 (VariantStrIter uses &mut out-arg)
+GHSA-wrw7-89jp-8q8g

@@ -17,6 +17,10 @@ export type LintResult =
   | { ok: true }
   | { ok: false; code: string; reason: string; hint: string };
 
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
 const VISUAL_OPS = new Set([
   'window.create',
   'window.update',
@@ -25,7 +29,6 @@ const VISUAL_OPS = new Set([
   'dom.append',
   'component.render',
   'component.update',
-  'needs.code',
 ]);
 
 const INTERACTIVE_PATTERNS = [
@@ -165,6 +168,30 @@ export function lintBatch(batch: Batch): LintResult {
       reason: 'Batch only appends plain text without interactive elements or structure',
       hint: `Use component.render for structured UI, or add interactive elements (buttons, forms, data-command attributes).\n\n${catalog}`,
     };
+  }
+
+  const hasNeedsCode = batch.some((env) => env.op === 'needs.code');
+  if (hasNeedsCode) {
+    const hasComponentEffect = batch.some((env) =>
+      env.op === 'component.render' ||
+      env.op === 'component.update' ||
+      env.op === 'dom.set' ||
+      env.op === 'dom.replace' ||
+      env.op === 'dom.append',
+    );
+    const hasVisualInto = batch.some((env) => {
+      if (env.op !== 'api.call') return false;
+      const maybe = env.params as { into?: unknown };
+      return isRecord(maybe.into);
+    });
+    if (!hasComponentEffect && !hasVisualInto) {
+      return {
+        ok: false,
+        code: 'E-UICP-0404',
+        reason: 'needs.code must be paired with visible UI updates or an into sink.',
+        hint: 'Add component.render/component.update/dom.* in the same batch or attach an api.call with an into sink that drives a watched state key.',
+      };
+    }
   }
 
   return { ok: true };

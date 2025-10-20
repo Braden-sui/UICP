@@ -129,6 +129,14 @@ export async function initializeTauriBridge() {
     }
   };
 
+  const dispatchComputeFinal = (final: ComputeFinalEvent) => {
+    try {
+      bridgeWindow.dispatchEvent(new CustomEvent<ComputeFinalEvent>('uicp-compute-final', { detail: final }));
+    } catch (error) {
+      console.error('Failed to dispatch uicp-compute-final event', error);
+    }
+  };
+
   function applyFinalEvent(final: ComputeFinalEvent) {
     const entry = pendingBinds.get(final.jobId);
     if (!final.ok) {
@@ -160,6 +168,7 @@ export async function initializeTauriBridge() {
         final.code,
       );
       pendingBinds.delete(final.jobId);
+      dispatchComputeFinal(final);
       return;
     }
     if (entry && entry.binds && entry.binds.length) {
@@ -197,6 +206,7 @@ export async function initializeTauriBridge() {
       goldenMatched: meta?.goldenMatched,
     });
     pendingBinds.delete(final.jobId);
+    dispatchComputeFinal(final);
   }
 
   function setupTestComputeFallback(

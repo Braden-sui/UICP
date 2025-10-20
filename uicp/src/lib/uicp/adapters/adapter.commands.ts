@@ -9,6 +9,7 @@
 import type { Envelope, OperationParamMap } from "./schemas";
 import { routeApiCall } from "./adapter.api";
 import type { StructuredClarifierBody } from "./adapter.clarifier";
+import type { ComputeFinalEvent } from "../../../compute/types";
 
 export type CommandResult<T = unknown> =
   | { success: true; value: T }
@@ -85,6 +86,48 @@ export interface CommandExecutorDeps {
   components?: Map<string, { id: string; element: HTMLElement }>;
 }
 
+const waitForComputeFinalEvent = (jobId: string, timeoutMs = 120_000): Promise<ComputeFinalEvent> => {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Compute final events unavailable'));
+  }
+  return new Promise<ComputeFinalEvent>((resolve, reject) => {
+    let settled = false;
+    let timer: number | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+      window.removeEventListener('uicp-compute-final', handler as EventListener);
+    };
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<ComputeFinalEvent>).detail;
+      if (!detail || detail.jobId !== jobId || settled) return;
+      settled = true;
+      cleanup();
+      if (!detail.ok) {
+        reject(new Error(detail.message ?? 'Compute job failed'));
+        return;
+      }
+      resolve(detail);
+    };
+    window.addEventListener('uicp-compute-final', handler as EventListener);
+    timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(`Compute job ${jobId} timed out`));
+    }, timeoutMs);
+  });
+};
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 /**
  * Creates command executor for needs.code operations.
  * 
@@ -92,7 +135,7 @@ export interface CommandExecutorDeps {
  * INVARIANT: Must be paired with progress UI elements in same batch (linter enforces).
  */
 const createNeedsCodeExecutor = (): CommandExecutor => ({
-  async execute(command: Envelope, ctx: ApplyContext, _deps: CommandExecutorDeps): Promise<CommandResult> {
+  async execute(command: Envelope, ctx: ApplyContext, deps: CommandExecutorDeps): Promise<CommandResult> {
     const params = command.params as OperationParamMap["needs.code"];
     
     if (!params.spec) {
@@ -149,18 +192,48 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
       expectGolden: !!params.goldenKey,
     };
     
+    const writeProgress = (status: string) => {
+      if (!params.progressWindowId || !params.progressSelector || !deps.executeDomSet) return;
+      const result = deps.executeDomSet({
+        windowId: params.progressWindowId,
+        target: params.progressSelector,
+        html: `<div class="text-xs text-slate-500">${escapeHtml(status)}</div>`,
+        sanitize: true,
+        mode: 'set',
+      });
+      if (result && !result.success) {
+        console.warn('needs.code progress update failed', result.error);
+      }
+    };
+
     try {
-      // Invoke compute bridge (async, result comes via event listener)
+      writeProgress('Queued code generation…');
       await window.uicpComputeCall(jobSpec);
-      
-      return { 
-        success: true, 
+      writeProgress('Generating code…');
+      void waitForComputeFinalEvent(jobId)
+        .then((final) => {
+          if (final.ok) {
+            const cached = final.metrics?.cacheHit ? ' (cache hit)' : '';
+            writeProgress(`Code ready${cached ? ' — cached result' : ''}`);
+          } else {
+            writeProgress(`Code generation failed: ${final.message ?? 'Unknown error'}`);
+          }
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          writeProgress(`Code generation failed: ${message}`);
+        });
+
+      return {
+        success: true,
         value: `Code generation job ${jobId} submitted`,
       };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : String(error),
+      const message = error instanceof Error ? error.message : String(error);
+      writeProgress(`Code generation failed: ${message}`);
+      return {
+        success: false,
+        error: message,
       };
     }
   },
