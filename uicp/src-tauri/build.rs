@@ -9,7 +9,9 @@ fn compile_windows_resources() {
 #[cfg(not(target_os = "windows"))]
 fn compile_windows_resources() {}
 
-use std::{env, fs};
+#[cfg(target_os = "windows")]
+use std::env;
+use std::fs;
 
 #[cfg(target_os = "windows")]
 fn add_delayload_for_tests_and_harness() {

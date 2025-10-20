@@ -39,8 +39,8 @@ async fn run_command(mut args: impl Iterator<Item = String>) -> Result<()> {
     }
 
     let harness = match data_dir {
-        Some(path) => ComputeTestHarness::with_data_dir(path)?,
-        None => ComputeTestHarness::new()?,
+        Some(path) => ComputeTestHarness::with_data_dir_async(path).await?,
+        None => ComputeTestHarness::new_async().await?,
     };
 
     let stdin = io::stdin();

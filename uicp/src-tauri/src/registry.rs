@@ -2,10 +2,12 @@ use std::{
     collections::HashSet,
     env, fs,
     fs::OpenOptions,
-    io::{ErrorKind, Read, Write},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
+#[cfg(windows)]
+use std::io::ErrorKind;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
