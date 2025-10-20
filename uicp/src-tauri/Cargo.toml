@@ -49,7 +49,7 @@ tree-sitter-typescript = "0.23"
   # Enable via `--features "wasm_compute uicp_wasi_enable"` when you want local compute.
   # WHY: Newer Wasm component encoding (0x0d) requires an updated Wasmtime runtime.
   # SAFETY: Keep feature set minimal; we rely on component model + cranelift JIT + cache.
-  wasmtime = { version = "37.0.2", default-features = false, features = ["cranelift", "component-model", "cache"], optional = true }
+  wasmtime = { version = "38.0.1", default-features = false, features = ["cranelift", "component-model", "cache"], optional = true }
   wasmtime-wasi = { version = "37.0.2", optional = true }
   dashmap = "6.0"
 
