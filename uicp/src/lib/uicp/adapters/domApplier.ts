@@ -43,11 +43,13 @@ export const createDomApplier = (
   windowManager: WindowManager,
   options?: {
     enableDeduplication?: boolean;
+    getWorkspaceRoot?: () => HTMLElement | null;
   }
 ): DomApplier => {
   // Map of target selector -> content hash for deduplication
   const contentHashes = new Map<string, string>();
   const dedupeEnabled = options?.enableDeduplication !== false;
+  const resolveWorkspaceRoot = options?.getWorkspaceRoot ?? (() => null);
 
   /**
    * Apply DOM mutation with sanitization and deduplication
@@ -55,21 +57,40 @@ export const createDomApplier = (
   const apply = async (
     params: OperationParamMap['dom.set']
   ): Promise<{ applied: number; skippedDuplicates: number }> => {
-    // Validate window exists
-    const windowId = params.windowId;
-    if (!windowManager.exists(windowId)) {
-      throw new AdapterError('Adapter.WindowNotFound', `Window not found: ${windowId}`, { windowId });
+    const rawWindowId = (params.windowId ?? '').trim();
+    const isWorkspaceTarget = rawWindowId.length === 0;
+    const workspaceRoot = isWorkspaceTarget ? resolveWorkspaceRoot() : null;
+
+    if (!isWorkspaceTarget && !windowManager.exists(rawWindowId)) {
+      throw new AdapterError('Adapter.WindowNotFound', `Window not found: ${rawWindowId}`, { windowId: rawWindowId });
     }
 
-    const record = windowManager.getRecord(windowId);
-    if (!record) {
-      throw new AdapterError('Adapter.WindowNotFound', `Window record not accessible: ${windowId}`);
+    const record = isWorkspaceTarget ? undefined : windowManager.getRecord(rawWindowId);
+    if (!isWorkspaceTarget && !record) {
+      throw new AdapterError('Adapter.WindowNotFound', `Window record not accessible: ${rawWindowId}`, { windowId: rawWindowId });
+    }
+
+    const searchRoot: HTMLElement | null = isWorkspaceTarget ? workspaceRoot : record?.content ?? null;
+    if (!searchRoot) {
+      throw new AdapterError(
+        'Adapter.WindowNotFound',
+        isWorkspaceTarget ? 'Workspace root not registered' : `Window record not accessible: ${rawWindowId}`,
+        { windowId: rawWindowId, workspace: isWorkspaceTarget }
+      );
     }
 
     // Get target element
-    const target = params.target === '#root' 
-      ? record.content.querySelector('#root') 
-      : record.content.querySelector(params.target);
+    let target: HTMLElement | null;
+    if (params.target === '#root') {
+      if (isWorkspaceTarget) {
+        target = searchRoot;
+      } else {
+        const explicitRoot = searchRoot.querySelector('#root') as HTMLElement | null;
+        target = explicitRoot ?? searchRoot;
+      }
+    } else {
+      target = searchRoot.querySelector(params.target) as HTMLElement | null;
+    }
 
     if (!target) {
       throw new AdapterError(
@@ -86,7 +107,8 @@ export const createDomApplier = (
     // Check deduplication (only for set/replace, not append)
     const mode = params.mode ?? 'set';
     if (dedupeEnabled && mode !== 'append') {
-      const dedupeKey = `${windowId}:${params.target}`;
+      const dedupeScope = isWorkspaceTarget ? '__workspace__' : rawWindowId;
+      const dedupeKey = `${dedupeScope}:${params.target}`;
       const contentHash = hashString(html);
       const existing = contentHashes.get(dedupeKey);
 

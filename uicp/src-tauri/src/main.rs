@@ -33,7 +33,6 @@ mod action_log;
 mod circuit;
 #[cfg(test)]
 mod circuit_tests;
-mod commands;
 mod codegen;
 #[cfg(feature = "wasm_compute")]
 mod component_bindings;
@@ -46,12 +45,16 @@ mod registry;
 #[cfg(feature = "wasm_compute")]
 mod wasi_logging;
 
+#[cfg(any(test, feature = "compute_harness"))]
+mod commands;
+
 pub use policy::{
     enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
 use core::CircuitBreakerConfig;
+use compute_input::canonicalize_task_input;
 
 // Re-export shared core items so crate::... references in submodules remain valid
 pub use core::{
@@ -174,10 +177,27 @@ async fn compute_call(
         return Ok(());
     }
 
+    let normalized_input = match canonicalize_task_input(&spec) {
+        Ok(value) => value,
+        Err(err) => {
+            let payload = ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: err.code.into(),
+                message: err.message,
+                metrics: None,
+            };
+            emit_or_log(&app_handle, "compute-result-final", &payload);
+            return Ok(());
+        }
+    };
+
     // Content-addressed cache lookup when enabled (normalize policy casing)
     let cache_mode = spec.cache.to_lowercase();
     if cache_mode == "readwrite" || cache_mode == "readonly" {
-        let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+        let key =
+            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash);
         if let Ok(Some(mut cached)) =
             compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
         {
@@ -228,9 +248,14 @@ async fn compute_call(
     // Pass a normalized cache policy down to the host
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
+    spec_norm.input = normalized_input;
     #[cfg(feature = "otel_spans")]
     tracing::info!(target = "uicp", job_id = %spec.job_id, wait_ms = queue_wait_ms, "compute queued permit acquired");
-    let join = compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms);
+    let join = if codegen::is_codegen_task(&spec_norm.task) {
+        codegen::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+    } else {
+        compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+    };
     // Bookkeeping: track the running job so we can cancel/cleanup later.
     state
         .compute_ongoing

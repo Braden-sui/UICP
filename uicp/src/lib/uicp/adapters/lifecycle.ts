@@ -410,7 +410,10 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
       }
     },
   });
-  domApplierInstance = createDomApplier(windowManagerInstance, { enableDeduplication: true });
+  domApplierInstance = createDomApplier(windowManagerInstance, {
+    enableDeduplication: true,
+    getWorkspaceRoot: () => workspaceRoot,
+  });
   const readState = (scope: StateScope, key: string, windowId?: string): unknown => {
     const store = stateStore.get(scope);
     if (!store) return undefined;
@@ -558,7 +561,10 @@ const ensureInitialized = () => {
     });
   }
   if (!domApplierInstance) {
-    domApplierInstance = createDomApplier(windowManagerInstance, { enableDeduplication: true });
+    domApplierInstance = createDomApplier(windowManagerInstance, {
+      enableDeduplication: true,
+      getWorkspaceRoot: () => workspaceRoot,
+    });
   }
   if (!componentRendererInstance) {
     componentRendererInstance = createComponentRenderer(domApplierInstance);
