@@ -51,21 +51,6 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined => {
   return isRecord(value) ? value : undefined;
 };
 
-const getFunction = (record: Record<string, unknown>, key: string): ((...args: unknown[]) => unknown) | undefined => {
-  const candidate = record[key];
-  return typeof candidate === 'function' ? (candidate as (...args: unknown[]) => unknown) : undefined;
-};
-
-const callIfFn = async <R>(fn: ((...args: unknown[]) => R) | undefined, ...args: unknown[]): Promise<R | undefined> => {
-  if (!fn) return undefined;
-  try {
-    const result = fn(...args);
-    return result instanceof Promise ? await result : result;
-  } catch (err) {
-    throw err instanceof Error ? err : new Error(String(err));
-  }
-};
-
 /**
  * Handles uicp://compute.call requests.
  * 

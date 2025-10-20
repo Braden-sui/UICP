@@ -97,7 +97,7 @@ const waitForComputeFinalEvent = (jobId: string, timeoutMs = 120_000): Promise<C
       if (timer !== undefined) {
         window.clearTimeout(timer);
       }
-      window.removeEventListener('uicp-compute-final', handler as EventListener);
+      window.removeEventListener('uicp-compute-final', handler);
     };
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<ComputeFinalEvent>).detail;
@@ -110,7 +110,7 @@ const waitForComputeFinalEvent = (jobId: string, timeoutMs = 120_000): Promise<C
       }
       resolve(detail);
     };
-    window.addEventListener('uicp-compute-final', handler as EventListener);
+    window.addEventListener('uicp-compute-final', handler);
     timer = window.setTimeout(() => {
       if (settled) return;
       settled = true;

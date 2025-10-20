@@ -137,7 +137,7 @@ const waitForComputeFinalEvent = (jobId: string, timeoutMs = 60_000): Promise<Co
       if (timer !== undefined) {
         window.clearTimeout(timer);
       }
-      window.removeEventListener('uicp-compute-final', handler as EventListener);
+      window.removeEventListener('uicp-compute-final', handler);
     };
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<ComputeFinalEvent>).detail;
@@ -154,7 +154,7 @@ const waitForComputeFinalEvent = (jobId: string, timeoutMs = 60_000): Promise<Co
       }
       resolve(detail);
     };
-    window.addEventListener('uicp-compute-final', handler as EventListener);
+    window.addEventListener('uicp-compute-final', handler);
     timer = window.setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -560,38 +560,6 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
   element.addEventListener('input', handleDelegatedEvent, true);
   element.addEventListener('submit', handleDelegatedEvent, true);
   element.addEventListener('change', handleDelegatedEvent, true);
-  
-  const applyApiCallWithModules = async (
-    params: OperationParamMap['api.call'],
-    windowId: string
-  ): Promise<void> => {
-    if (!windowManagerInstance || !domApplierInstance || !componentRendererInstance) {
-      throw new AdapterError('Adapter.Internal', 'Workspace modules not initialized');
-    }
-    const batchId = createId('batch');
-    const telemetry = createAdapterTelemetry({ traceId: undefined, batchId });
-    const outcome: ApplyOutcome = {
-      success: true,
-      applied: 0,
-      skippedDuplicates: 0,
-      deniedByPolicy: 0,
-      errors: [],
-      batchId,
-    };
-    await routeOperation(
-      { op: 'api.call', params, windowId } as Envelope,
-      {
-        windowManager: windowManagerInstance,
-        domApplier: domApplierInstance,
-        componentRenderer: componentRendererInstance,
-        telemetry,
-        outcome,
-      }
-    );
-    if (outcome.errors.length > 0) {
-      throw new Error(outcome.errors[0]);
-    }
-  };
   
   // Register script.emit bridge
   registerCommandHandler('script.emit', async (_cmd, ctx) => {
