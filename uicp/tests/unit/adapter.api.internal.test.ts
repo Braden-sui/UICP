@@ -52,6 +52,7 @@ describe('routeApiCall internal schemes', () => {
       task: 'csv.parse@1.2.0',
       workspaceId: 'default',
       input: { rows: [] },
+      provenance: { envHash: 'adapter.api@v2' },
     });
     expect(renderClarifier).not.toHaveBeenCalled();
   });

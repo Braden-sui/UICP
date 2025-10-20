@@ -10,6 +10,7 @@ import type { Envelope, OperationParamMap } from "./schemas";
 import { routeApiCall } from "./adapter.api";
 import type { StructuredClarifierBody } from "./adapter.clarifier";
 import type { ComputeFinalEvent } from "../../../compute/types";
+import { emitTelemetryEvent } from "../../telemetry";
 
 export type CommandResult<T = unknown> =
   | { success: true; value: T }
@@ -141,6 +142,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 const createNeedsCodeExecutor = (): CommandExecutor => ({
   async execute(command: Envelope, ctx: ApplyContext, deps: CommandExecutorDeps): Promise<CommandResult> {
     const params = command.params as OperationParamMap["needs.code"];
+    const traceId = ctx.runId ?? command.traceId;
     
     if (!params.spec) {
       return { success: false, error: 'needs.code requires spec parameter' };
@@ -243,6 +245,8 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
           : goldenKey
             ? `codegen.${goldenKey}`
             : null;
+        const artifactWorkspaceKey = artifactKeyBase ? `workspace.${artifactKeyBase}` : null;
+        const sourceKeyFull = artifactKeyBase ? `${artifactWorkspaceKey}.code` : null;
 
         if (artifactKeyBase && deps.setStateValue) {
           const baseValue = { code, language, meta };
@@ -257,49 +261,75 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         }
 
         const install = params.install;
-        if (!install || !artifactKeyBase) {
-          return;
-        }
+        let installAttempted = false;
+        let installSucceeded = false;
+        let installPanelId: string | null = null;
+        let installWindowId: string | null = null;
 
-        const panelId = coerceNonEmpty(install.panelId);
-        const windowId = coerceNonEmpty(install.windowId);
-        const target = coerceNonEmpty(install.target);
-        if (!panelId || !windowId || !target) {
-          return;
-        }
+        if (install && artifactKeyBase) {
+          const panelId = coerceNonEmpty(install.panelId);
+          const windowId = coerceNonEmpty(install.windowId);
+          const target = coerceNonEmpty(install.target);
+          installPanelId = panelId ?? null;
+          installWindowId = windowId ?? null;
 
-        const sourceKey = `workspace.${artifactKeyBase}.code`;
-        const props: Record<string, unknown> = {
-          id: panelId,
-          module: 'applet.quickjs@0.1.0',
-          sourceKey,
-        };
-        const stateKey = coerceNonEmpty(install.stateKey);
-        if (stateKey) {
-          props.stateKey = stateKey;
-        }
+          if (panelId && windowId && target) {
+            const props: Record<string, unknown> = {
+              id: panelId,
+              module: 'applet.quickjs@0.1.0',
+              sourceKey: sourceKeyFull ?? '',
+            };
+            const stateKey = coerceNonEmpty(install.stateKey);
+            if (stateKey) {
+              props.stateKey = stateKey;
+            }
 
-        if (deps.ensureWindowExists) {
-          try {
-            await deps.ensureWindowExists(windowId, { id: windowId, title: windowId });
-          } catch (ensureError) {
-            console.warn('needs.code install ensure window failed', ensureError);
+            if (deps.ensureWindowExists) {
+              try {
+                await deps.ensureWindowExists(windowId, { id: windowId, title: windowId });
+              } catch (ensureError) {
+                console.warn('needs.code install ensure window failed', ensureError);
+              }
+            }
+
+            if (deps.executeComponentRender) {
+              installAttempted = true;
+              const renderResult = deps.executeComponentRender({
+                id: panelId,
+                windowId,
+                target,
+                type: 'script.panel',
+                props,
+              } as OperationParamMap["component.render"]);
+              if (renderResult && !renderResult.success) {
+                console.warn('needs.code auto install render failed', renderResult.error);
+              } else {
+                installSucceeded = true;
+              }
+            } else {
+              console.warn('needs.code install skipped: executeComponentRender dependency missing');
+            }
           }
         }
 
-        if (deps.executeComponentRender) {
-          const renderResult = deps.executeComponentRender({
-            id: panelId,
-            windowId,
-            target,
-            type: 'script.panel',
-            props,
-          } as OperationParamMap["component.render"]);
-          if (renderResult && !renderResult.success) {
-            console.warn('needs.code auto install render failed', renderResult.error);
-          }
-        } else {
-          console.warn('needs.code install skipped: executeComponentRender dependency missing');
+        if (traceId) {
+          emitTelemetryEvent('needs_code_artifact', {
+            traceId,
+            span: 'compute',
+            status: 'ok',
+            data: {
+              jobId,
+              artifactKey: artifactWorkspaceKey,
+              sourceKey: sourceKeyFull,
+              language,
+              installRequested: Boolean(install),
+              installAttempted,
+              installSucceeded,
+              panelId: installPanelId,
+              windowId: installWindowId,
+              cacheHit: Boolean(final.metrics?.cacheHit),
+            },
+          });
         }
       };
 

@@ -1,10 +1,16 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+
+vi.mock('../../src/lib/telemetry', () => ({
+  emitTelemetryEvent: vi.fn(),
+}));
+
 import { createCommandTable } from '../../src/lib/uicp/adapters/adapter.commands';
+import { emitTelemetryEvent } from '../../src/lib/telemetry';
 
 describe('needs.code executor', () => {
   afterEach(() => {
     delete (window as unknown as { uicpComputeCall?: unknown }).uicpComputeCall;
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   it('persists artifact state and renders install panel on success', async () => {
@@ -103,5 +109,19 @@ describe('needs.code executor', () => {
         stateKey: 'panels.panel-demo.view',
       },
     });
+
+    expect(emitTelemetryEvent).toHaveBeenCalledWith(
+      'needs_code_artifact',
+      expect.objectContaining({
+        traceId: 'run-1',
+        data: expect.objectContaining({
+          artifactKey: 'workspace.artifacts.demo-artifact',
+          installRequested: true,
+          installSucceeded: true,
+          panelId: 'panel-demo',
+          windowId: 'app-window',
+        }),
+      }),
+    );
   });
 });

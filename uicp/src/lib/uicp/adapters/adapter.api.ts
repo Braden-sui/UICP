@@ -59,9 +59,24 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined => {
  */
 const handleComputeCall = async (
   params: OperationParamMap["api.call"],
+  command: Envelope,
+  ctx: ApplyContext,
 ): Promise<CommandResult<string>> => {
   try {
-    const parsed = jobSpecSchema.safeParse(params.body);
+    const rawBody = isRecord(params.body) ? params.body : {};
+    const provenanceRecord = isRecord(rawBody.provenance) ? rawBody.provenance : undefined;
+    const rawEnvHash = typeof provenanceRecord?.envHash === 'string' ? provenanceRecord.envHash.trim() : '';
+    const envHash = rawEnvHash || 'adapter.api@v2';
+    const rawAgent = typeof provenanceRecord?.agentTraceId === 'string' ? provenanceRecord.agentTraceId.trim() : '';
+    const fallbackTrace = ctx.runId ?? command.traceId;
+    const agentTraceId = rawAgent || (fallbackTrace ? fallbackTrace : undefined);
+
+    const normalizedBody: Record<string, unknown> = {
+      ...rawBody,
+      provenance: agentTraceId ? { envHash, agentTraceId } : { envHash },
+    };
+
+    const parsed = jobSpecSchema.safeParse(normalizedBody);
     if (!parsed.success) {
       return { success: false, error: `Compute job spec invalid: ${parsed.error.message}` };
     }
@@ -281,7 +296,7 @@ export const routeApiCall = async (
     
     // UICP compute plane submission: uicp://compute.call (body = JobSpec)
     if (url.startsWith('uicp://compute.call')) {
-      return await handleComputeCall(params);
+      return await handleComputeCall(params, command, ctx);
     }
     
     // Tauri FS special-case

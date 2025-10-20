@@ -110,9 +110,10 @@ register('script.panel', (params) => {
 ```
 
 **State Keys:**
-- `panels.{id}.model` (workspace) — Current model JSON
-- `panels.{id}.view` (window) — Rendered HTML sink
-- `panels.{id}.config` (workspace) — Panel configuration
+- `panels.{id}.model` (workspace) - Current model JSON
+- `panels.{id}.view` (window) - Rendered HTML sink
+- `panels.{id}.config` (workspace) - Panel configuration
+- `workspace.artifacts.{artifactId}` (workspace) - Normalized code artifacts persisted by `needs.code`; `.code` holds source, `.language` and `.meta` mirror compute output metadata
 
 **Event Flow:**
 1. User clicks button with `data-command='{"type":"script.emit","action":"...","payload":{}}'`

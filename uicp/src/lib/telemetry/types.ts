@@ -29,9 +29,10 @@ export type TelemetryEventName =
   | 'adapter.permission.denied'
   | 'adapter.validation.error'
   | 'adapter.dedupe.skip'
-  | 'adapter.ui.command';
+  | 'adapter.ui.command'
+  | 'needs_code_artifact';
 
-export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs';
+export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs' | 'compute';
 
 export type TraceEventStatus = 'ok' | 'error' | 'timeout' | 'prompt' | 'dropped' | 'skipped';
 

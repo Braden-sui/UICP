@@ -47,6 +47,7 @@ const EVENT_DEFAULTS: Partial<Record<TelemetryEventName, EventDefaults>> = {
   'adapter.validation.error': { span: 'batch', kind: 'instant', status: 'error' },
   'adapter.dedupe.skip': { span: 'batch', kind: 'instant', status: 'skipped' },
   'adapter.ui.command': { span: 'batch', kind: 'instant' },
+  needs_code_artifact: { span: 'compute', kind: 'instant', status: 'ok' },
 };
 
 const sanitizeData = (input: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
