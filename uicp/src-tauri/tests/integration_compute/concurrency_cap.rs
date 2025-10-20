@@ -44,12 +44,15 @@ mod wasm_tests {
             capabilities: ComputeCapabilitiesSpec::default(),
             replayable: true,
             workspace_id: "default".into(),
-            provenance: ComputeProvenanceSpec {
-                env_hash: env_hash.to_string(),
-                agent_trace_id: None,
-            },
-        }
+        provenance: ComputeProvenanceSpec {
+            env_hash: env_hash.to_string(),
+            agent_trace_id: None,
+        },
+        golden_key: None,
+        artifact_id: None,
+        expect_golden: false,
     }
+}
 
     #[tokio::test]
     async fn concurrency_cap_enforces_queue_with_n_equals_2() {

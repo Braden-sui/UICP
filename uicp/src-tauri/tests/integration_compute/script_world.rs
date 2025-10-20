@@ -84,6 +84,9 @@ async fn script_render_smoke_when_module_present() {
             env_hash: "script-smoke".into(),
             agent_trace_id: None,
         },
+        golden_key: None,
+        artifact_id: None,
+        expect_golden: false,
     };
     let final_ev = h.run_job(spec).await.expect("final event");
     assert_eq!(final_ev.get("ok").and_then(|v| v.as_bool()), Some(true));

@@ -2292,11 +2292,14 @@ mod with_runtime {
                 },
                 workspace_id: "default".into(),
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-            };
+        provenance: crate::ComputeProvenanceSpec {
+            env_hash: "dev".into(),
+            agent_trace_id: None,
+        },
+        golden_key: None,
+        artifact_id: None,
+        expect_golden: false,
+    };
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
             spec.capabilities.fs_read = vec!["ws:/files/sub/file.txt".into()];
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
@@ -2339,11 +2342,14 @@ mod with_runtime {
                 capabilities: crate::ComputeCapabilitiesSpec::default(),
                 workspace_id: "default".into(),
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-            };
+        provenance: crate::ComputeProvenanceSpec {
+            env_hash: "dev".into(),
+            agent_trace_id: None,
+        },
+        golden_key: None,
+        artifact_id: None,
+        expect_golden: false,
+    };
             let original = "data:text/csv,foo,bar";
             let resolved = resolve_csv_source(&spec, original).expect("passthrough");
             assert_eq!(resolved, original);
@@ -2375,11 +2381,14 @@ mod with_runtime {
                 },
                 workspace_id: "default".into(),
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-            };
+        provenance: crate::ComputeProvenanceSpec {
+            env_hash: "dev".into(),
+            agent_trace_id: None,
+        },
+        golden_key: None,
+        artifact_id: None,
+        expect_golden: false,
+    };
             let ws_path = "ws:/files/tests/resolve_csv_source.csv";
             let resolved = resolve_csv_source(&spec_ok, ws_path).expect("resolves");
             assert!(resolved.starts_with("data:text/csv;base64,"));

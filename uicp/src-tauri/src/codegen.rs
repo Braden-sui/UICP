@@ -376,7 +376,7 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
             .unwrap_or_else(|| spec.task.split('@').next().unwrap_or("ts")),
     )?;
 
-    let constraints = input.constraints.unwrap_or(Value::Null);
+    let constraints = input.constraints.clone().unwrap_or(Value::Null);
     let constraints_for_key = sanitize_constraints(&constraints);
     let validator_version = input
         .validator_version
@@ -683,7 +683,7 @@ fn validate_code(language: CodeLanguage, code: &str) -> Result<(), String> {
 }
 
 static INNER_HTML_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?i)innerhtml\s*=\s*(['"]).*?\1"#).expect("inner html literal regex")
+    Regex::new(r#"(?i)innerhtml\s*=\s*(?:'[^']*'|"[^"]*")"#).expect("inner html literal regex")
 });
 static SET_TIMEOUT_STRING_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"setTimeout\s*\(\s*(['"])"#).expect("setTimeout string regex"));

@@ -34,6 +34,7 @@ mod circuit;
 #[cfg(test)]
 mod circuit_tests;
 mod commands;
+mod codegen;
 #[cfg(feature = "wasm_compute")]
 mod component_bindings;
 mod compute;
