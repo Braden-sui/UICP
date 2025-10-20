@@ -44,7 +44,8 @@
 | ---- | ----------- | ------ | ------- | ----- |
 | `csv.parse@1.2.0` | `uicp:task-csv-parse@1.2.0` (`components/csv.parse/csv-parse/wit/world.wit`) | `func run(job-id: string, input: string, has-header: bool) -> result<list<list<string>>, string>` | _None_ | Pure parser. Input is a `data:` URI (CSV text). Returns rows or a string error. |
 | `table.query@0.1.0` | `uicp:task-table-query@0.1.0` (`components/table.query/wit/world.wit`) | `func run(job-id: string, rows: list<list<string>>, select: list<u32>, where?: record { col: u32, needle: string }) -> result<list<list<string>>, string>` | `uicp:host/control`, `wasi:io/streams`, `wasi:clocks/monotonic-clock` | Relies on host control for partial logging/cancel checks. No filesystem or network imports are linked. |
-| `script.*@x.y.z` | `uicp:applet-script@0.1.0` (`src-tauri/wit/script.world.wit`) | `render(state) -> result<string,string>`, `on-event(action,payload,state) -> result<string,string>`, `init() -> result<string,string>` | _None_ | Minimal applet runtime for HTML rendering and JSON event handling. No ambient FS/network. |
+| `script.*@x.y.z` | `uicp:applet-script@0.1.0` (`src-tauri/wit/script.world.wit`) | `render(state) -> result<string,string>`, `on-event(action,payload,state) -> result<string,string>`, `init() -> result<string,string>` | _None_ | Backed by in-process JS runtime (`script.hello` stub or `applet.quickjs@0.1.0`). Bundled JS must assign exports to `globalThis.__uicpApplet` (use `npm run bundle:applet`). |
+
 
 Host shims:
 
@@ -262,3 +263,4 @@ Safety and guardrails:
 ## Upgrades
 
 - Wasmtime 37 notes and validation checklist: `docs/compute/WASMTIME_UPGRADE_STATUS.md`.
+

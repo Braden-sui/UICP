@@ -61,6 +61,32 @@ const components = [
     ],
     filename: 'table.query@0.1.0.wasm',
   },
+  {
+    name: 'applet.quickjs',
+    version: '0.1.0',
+    dir: join(repoRoot, 'components', 'applet.quickjs'),
+    outs: [
+      join(
+        repoRoot,
+        'components',
+        'applet.quickjs',
+        'target',
+        'wasm32-wasi',
+        'release',
+        'applet_quickjs.wasm',
+      ),
+      join(
+        repoRoot,
+        'components',
+        'applet.quickjs',
+        'target',
+        'wasm32-wasip1',
+        'release',
+        'applet_quickjs.wasm',
+      ),
+    ],
+    filename: 'applet.quickjs@0.1.0.wasm',
+  },
 ];
 
 function run(cmd, opts = {}) {

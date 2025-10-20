@@ -19,7 +19,8 @@ use tokio::sync::OwnedSemaphorePermit;
 
 #[cfg(feature = "wasm_compute")]
 use crate::compute_input::{
-    derive_job_seed, extract_csv_input, extract_table_query_input, resolve_csv_source,
+    derive_job_seed, extract_csv_input, extract_script_input, extract_table_query_input,
+    resolve_csv_source, ScriptMode,
 };
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
@@ -49,6 +50,7 @@ pub mod error_codes {
 mod with_runtime {
     use super::*;
     use crate::component_bindings::csv_parse::Task as CsvTask;
+    use crate::component_bindings::script::Task as ScriptTask;
     use crate::component_bindings::table_query::{
         exports::uicp::task_table_query::table::Error as TableRunError,
         uicp::task_table_query::types::{Filter as TableFilter, Input as TableInput},
@@ -105,6 +107,7 @@ mod with_runtime {
     const MAX_LOG_BYTES: usize = 256 * 1024;
     // Max preview bytes per log frame to include in partial events
     const LOG_PREVIEW_MAX: usize = 256;
+    const SCRIPT_SOURCE_ENV: &str = "UICP_SCRIPT_SOURCE_B64";
 
     // Adaptive controller parameters
     const ADAPT_SAMPLE_MS: u64 = 800; // sampling interval
@@ -711,6 +714,14 @@ mod with_runtime {
         }
     }
 
+    fn script_mode_label(mode: &ScriptMode) -> &'static str {
+        match mode {
+            ScriptMode::Init => "init",
+            ScriptMode::Render => "render",
+            ScriptMode::OnEvent => "on-event",
+        }
+    }
+
     fn integer_key_to_u64(value: &Value) -> Option<u64> {
         match value {
             Value::Integer(int) => u64::try_from(*int).ok(),
@@ -1178,7 +1189,20 @@ mod with_runtime {
                 });
             }
 
+            let task_prefix = spec.task.split('@').next().unwrap_or("").to_string();
+            let script_input_result = if matches!(task_prefix.as_str(), "script.hello" | "applet.quickjs") {
+                Some(extract_script_input(&spec.input))
+            } else {
+                None
+            };
+
             let mut wasi_builder = WasiCtxBuilder::new();
+            if let Some(Ok(ref script_input)) = script_input_result {
+                if let Some(source) = script_input.source.as_ref() {
+                    let encoded = BASE64_ENGINE.encode(source.as_bytes());
+                    wasi_builder = wasi_builder.env(SCRIPT_SOURCE_ENV, &encoded);
+                }
+            }
             // Single readonly preopen for workspace files, mounted at /ws/files in the guest.
             // Only enable when the job requested workspace file access via capabilities.
             let want_ws_preopen = spec
@@ -1297,7 +1321,7 @@ mod with_runtime {
                     linker.instantiate_async(&mut store, &*component).await;
                 match inst_res {
                     Ok(instance) => {
-                        let task_name = spec.task.split('@').next().unwrap_or("");
+                        let task_name = task_prefix.as_str();
                         let artificial_delay_ms = std::env::var("UICP_TEST_COMPUTE_DELAY_MS")
                             .ok()
                             .and_then(|v| v.parse::<u64>().ok());
@@ -1382,6 +1406,85 @@ mod with_runtime {
                                         Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
                                     }
                                 },
+                                "applet.quickjs" | "script.hello" => {
+                                    let script_input = match &script_input_result {
+                                        Some(Ok(input)) => input.clone(),
+                                        Some(Err(err)) => {
+                                            return Err(anyhow::anyhow!(format!(
+                                                "{}: {}",
+                                                err.code, err.message
+                                            )));
+                                        }
+                                        None => {
+                                            return Err(anyhow::anyhow!(
+                                                "script input not parsed for task"
+                                            ));
+                                        }
+                                    };
+
+                                    if task_name == "applet.quickjs"
+                                        && script_input.source.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                                    {
+                                        return Err(anyhow::anyhow!(
+                                            "E-UICP-0604: applet.quickjs requires bundled JS source"
+                                        ));
+                                    }
+
+                                    let bindings = ScriptTask::new(&mut store, &instance).map_err(|e| {
+                                        anyhow::Error::from(e)
+                                            .context("E-UICP-0232: script task binding init failed")
+                                    })?;
+                                    let script_iface = bindings.uicp_applet_script_script();
+
+                                    let js_call = match script_input.mode {
+                                        ScriptMode::Init => script_iface.call_init(&mut store).await,
+                                        ScriptMode::Render => {
+                                            script_iface.call_render(&mut store, &script_input.state).await
+                                        }
+                                        ScriptMode::OnEvent => {
+                                            let action = script_input
+                                                .action
+                                                .as_deref()
+                                                .unwrap_or_default()
+                                                .to_string();
+                                            let payload = script_input
+                                                .payload
+                                                .as_deref()
+                                                .unwrap_or_default()
+                                                .to_string();
+                                            script_iface
+                                                .call_on_event(
+                                                    &mut store,
+                                                    &action,
+                                                    &payload,
+                                                    &script_input.state,
+                                                )
+                                                .await
+                                        }
+                                    };
+
+                                    match js_call {
+                                        Ok(Ok(value)) => Ok(serde_json::json!({
+                                            "mode": script_mode_label(&script_input.mode),
+                                            "data": value,
+                                        })),
+                                        Ok(Err(msg)) => Err(anyhow::Error::msg(msg)),
+                                        Err(e) => {
+                                            let ctx_msg = match script_input.mode {
+                                                ScriptMode::Init => {
+                                                    "E-UICP-0233: call script#init failed"
+                                                }
+                                                ScriptMode::Render => {
+                                                    "E-UICP-0234: call script#render failed"
+                                                }
+                                                ScriptMode::OnEvent => {
+                                                    "E-UICP-0235: call script#onEvent failed"
+                                                }
+                                            };
+                                            Err(anyhow::Error::from(e).context(ctx_msg))
+                                        }
+                                    }
+                                }
                                 _ => Err(anyhow::anyhow!("unknown task for this world")),
                             }
                         };
@@ -1514,6 +1617,7 @@ mod with_runtime {
             .into_iter()
             .map(|s| s.to_string())
             .collect()),
+            "applet.quickjs" | "script.hello" => Ok(BTreeSet::new()),
             other => anyhow::bail!(
                 "E-UICP-0229: no component import policy registered for task '{other}'"
             ),
@@ -1627,6 +1731,11 @@ mod with_runtime {
                 let bindings = TableTask::new(&mut store, &instance)
                     .context("E-UICP-0235: table contract binding init failed")?;
                 let _ = bindings.uicp_task_table_query_table();
+            }
+            "applet.quickjs" | "script.hello" => {
+                let bindings = ScriptTask::new(&mut store, &instance)
+                    .context("E-UICP-0236: script contract binding init failed")?;
+                let _ = bindings.uicp_applet_script_script();
             }
             _ => {}
         }

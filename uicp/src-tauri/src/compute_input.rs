@@ -185,9 +185,16 @@ pub enum ScriptMode {
     Init,
 }
 
-pub fn extract_script_input(
-    input: &serde_json::Value,
-) -> Result<(ScriptMode, String, Option<(String, String)>), TaskInputError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptInput {
+    pub mode: ScriptMode,
+    pub state: String,
+    pub action: Option<String>,
+    pub payload: Option<String>,
+    pub source: Option<String>,
+}
+
+pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, TaskInputError> {
     let obj = input.as_object().ok_or_else(|| {
         TaskInputError::new(
             error_codes::INPUT_INVALID,
@@ -204,8 +211,8 @@ pub fn extract_script_input(
                 DETAIL_SCRIPT_INPUT,
                 "script input.mode must be one of 'render' | 'on-event' | 'init'",
             )
-        })?
-        .to_ascii_lowercase();
+                })?
+                .to_ascii_lowercase();
     match mode_raw.as_str() {
         "render" => {
             let state = obj
@@ -219,7 +226,16 @@ pub fn extract_script_input(
                     )
                 })?
                 .to_string();
-            Ok((ScriptMode::Render, state, None))
+            Ok(ScriptInput {
+                mode: ScriptMode::Render,
+                state,
+                action: None,
+                payload: None,
+                source: obj
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            })
         }
         "on-event" => {
             let action = obj
@@ -255,9 +271,27 @@ pub fn extract_script_input(
                     )
                 })?
                 .to_string();
-            Ok((ScriptMode::OnEvent, state, Some((action, payload))))
+            Ok(ScriptInput {
+                mode: ScriptMode::OnEvent,
+                state,
+                action: Some(action),
+                payload: Some(payload),
+                source: obj
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            })
         }
-        "init" => Ok((ScriptMode::Init, String::new(), None)),
+        "init" => Ok(ScriptInput {
+            mode: ScriptMode::Init,
+            state: String::new(),
+            action: None,
+            payload: None,
+            source: obj
+                .get("source")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        }),
         _ => Err(TaskInputError::new(
             error_codes::INPUT_INVALID,
             DETAIL_SCRIPT_INPUT,
@@ -496,6 +530,22 @@ mod tests {
         assert_eq!(rows[0], vec!["a".to_string(), "b".to_string()]);
         assert_eq!(sel, vec![1u32, 0u32]);
         assert_eq!(where_opt, Some((0u32, "a".into())));
+    }
+
+    #[test]
+    fn extract_script_input_captures_source_when_present() {
+        let v = serde_json::json!({
+            "mode": "render",
+            "state": "{}",
+            "source": "export function render(state){ return state; }"
+        });
+        let script = extract_script_input(&v).expect("script input");
+        assert_eq!(script.mode, ScriptMode::Render);
+        assert_eq!(script.state, "{}");
+        assert_eq!(
+            script.source.as_deref(),
+            Some("export function render(state){ return state; }")
+        );
     }
 
     #[test]

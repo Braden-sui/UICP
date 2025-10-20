@@ -17,6 +17,12 @@
       "signature": "gHkjht3MUfctzTCN+PB4mljvt2sUOSZpjxUqhcv0ziTONRsuFIR9RJSDYbVnjLY6L6bROwyIDhgUF5aXZfzBDA==",
       "keyid": "dev-seed",
       "signed_at": 1760742002
+    },
+    {
+      "task": "applet.quickjs",
+      "version": "0.1.0",
+      "filename": "applet.quickjs@0.1.0.wasm",
+      "digest_sha256": "00bb1cdf10af9c14fed818150c9f2bc87253ca99d9cce4efccd7176a8d487e1b"
     }
   ]
 }

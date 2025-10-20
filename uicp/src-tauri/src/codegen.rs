@@ -257,7 +257,7 @@ async fn run_codegen<R: Runtime>(
             .expect("provider settings required when no mock response");
         call_openai(&client, &plan, settings)
             .await
-            .map_err(CodegenFailure::provider)?
+            .map_err(|err| CodegenFailure::provider(format!("{ERR_PROVIDER}: openai call failed: {err}")))?
     };
 
     let normalized = normalize_response(&plan, raw_output)
@@ -380,6 +380,8 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
     let constraints_for_key = sanitize_constraints(&constraints);
     let validator_version = input
         .validator_version
+        .as_ref()
+        .cloned()
         .or_else(|| {
             constraints
                 .get("validatorVersion")
@@ -454,34 +456,7 @@ fn sanitize_constraints(value: &Value) -> Value {
     }
 }
 
-fn infer_provider(input: &CodegenJobInput, constraints: &Value) -> ProviderKind {
-    let provider_hint = input
-        .caps
-        .as_ref()
-        .and_then(|v| v.get("provider").and_then(|s| s.as_str()))
-        .or_else(|| constraints.get("provider").and_then(|s| s.as_str()))
-        .map(|s| s.to_ascii_lowercase());
-    if let Some(hint) = provider_hint {
-        if hint.contains("anthropic") || hint.contains("claude") {
-            return ProviderKind::Anthropic;
-        }
-        if hint.contains("openai") || hint.contains("gpt") || hint.contains("o4") {
-            return ProviderKind::OpenAi;
-        }
-    }
-    if let Some(model) = input
-        .model_id
-        .as_ref()
-        .or(input.model.as_ref())
-        .or_else(|| constraints.get("model").and_then(|v| v.as_str()))
-    {
-        let lower = model.to_ascii_lowercase();
-        if lower.contains("claude") {
-            return ProviderKind::Anthropic;
-        }
-    }
-    ProviderKind::OpenAi
-}
+// NOTE: Only OpenAI provider is supported in this module.
 
 fn resolve_model_id(input: &CodegenJobInput, constraints: &Value) -> Option<String> {
     input
@@ -603,9 +578,9 @@ fn normalize_response(plan: &CodegenPlan, value: Value) -> anyhow::Result<Value>
         .remove("meta")
         .unwrap_or_else(|| Value::Object(Map::new()));
     let mut meta = meta_value.as_object().cloned().unwrap_or_else(Map::new);
-    meta.entry("modelId".into())
+    meta.entry("modelId")
         .or_insert_with(|| Value::String(plan.model_id.clone()));
-    meta.entry("provider".into())
+    meta.entry("provider")
         .or_insert_with(|| Value::String(PROVIDER_NAME.into()));
     meta.insert(
         "validatorVersion".into(),
