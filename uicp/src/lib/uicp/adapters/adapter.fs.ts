@@ -1,4 +1,4 @@
-import { BaseDirectory, writeTextFile } from "@tauri-apps/plugin-fs";
+import { BaseDirectory, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { emitTelemetryEvent } from "../../telemetry";
 
 export { BaseDirectory };
@@ -85,23 +85,6 @@ const normalizeRelativePath = (input: string): string | null => {
   return safe.join("/");
 };
 
-type BinaryWriter = (path: string, data: Uint8Array, options: { baseDir?: BaseDirectory }) => Promise<void>;
-let binaryWriter: BinaryWriter | null | undefined;
-
-const ensureBinaryWriter = async (): Promise<BinaryWriter | null> => {
-  if (binaryWriter !== undefined) {
-    return binaryWriter;
-  }
-  try {
-    const mod = await import("@tauri-apps/plugin-fs");
-    const maybe = (mod as Record<string, unknown>).writeBinaryFile;
-    binaryWriter = typeof maybe === "function" ? (maybe as BinaryWriter) : null;
-  } catch {
-    binaryWriter = null;
-  }
-  return binaryWriter;
-};
-
 const logWriteEvent = (runId: string | undefined, path: string, size: number, ok: boolean, errorCode?: SafeWriteErrorCode) => {
   try {
     emitTelemetryEvent("safe_write", {
@@ -168,14 +151,11 @@ export const safeWrite = async (
   const size = bytes.byteLength;
 
   try {
+    const writeOpts = { baseDir: base };
     if (typeof data === "string") {
-      await writeTextFile(normalized, data, { baseDir: base });
+      await writeTextFile(normalized, data, writeOpts);
     } else {
-      const writer = await ensureBinaryWriter();
-      if (!writer) {
-        throw new Error("binary writer unavailable");
-      }
-      await writer(normalized, data, { baseDir: base });
+      await writeFile(normalized, data, writeOpts);
     }
     logWriteEvent(runId, normalized, size, true);
     return { ok: true, bytesWritten: size, path: normalized };

@@ -2454,7 +2454,11 @@ async fn clear_compute_cache(
 }
 
 #[tauri::command]
-async fn set_safe_mode(app: tauri::AppHandle, enabled: bool, reason: Option<String>) -> Result<(), String> {
+async fn set_safe_mode(
+    app: tauri::AppHandle,
+    enabled: bool,
+    reason: Option<String>,
+) -> Result<(), String> {
     let state: State<'_, AppState> = app.state();
     *state.safe_mode.write().await = enabled;
     *state.safe_reason.write().await = if enabled { reason.clone() } else { None };

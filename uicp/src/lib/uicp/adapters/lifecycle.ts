@@ -31,7 +31,7 @@ import { getComputeBridge } from '../../bridge/globals';
 import type { ComputeFinalEvent, JobSpec } from '../../../compute/types';
 import { routeApiCall } from './adapter.api';
 import type { StructuredClarifierBody, StructuredClarifierFieldSpec, StructuredClarifierOption } from './adapter.clarifier';
-import { persistCommand } from './adapter.persistence';
+import { persistCommand, replayWorkspace as replayWorkspaceImpl } from './adapter.persistence';
 import { createDelegatedEventHandler, registerCommandHandler } from './adapter.events';
 import { getComputeCancelBridge } from '../../bridge/globals';
 import { escapeHtml } from './adapter.security';
@@ -953,8 +953,8 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
       }
 
       if (Array.isArray(batchPayload)) {
-        const { enqueueBatch } = await import('./queue');
-        void enqueueBatch(batchPayload as Batch);
+        const { enqueueScriptBatch } = await import('./queue.lazy');
+        void enqueueScriptBatch(batchPayload as Batch);
       }
 
       const renderFinal = await submitScriptComputeJob(
@@ -1864,16 +1864,13 @@ export const resetWorkspace = (options?: { deleteFiles?: boolean }): void => {
  * Delegates to persistence module which handles Tauri IPC.
  */
 export const replayWorkspace = async (): Promise<{ applied: number; errors: string[] }> => {
-  const { replayWorkspace: replayWorkspaceImpl } = await import('./adapter.persistence');
-  
-  // Create applyCommand wrapper that routes to applyEnvelope
   const applyCommand = async (
     command: Envelope,
-    _ctx: { runId?: string }
+    _ctx: { runId?: string },
   ): Promise<{ success: boolean; error?: string }> => {
     return await applyEnvelope(command);
   };
-  
+
   return await replayWorkspaceImpl(applyCommand, stateStore);
 };
 

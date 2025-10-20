@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { registerWorkspaceRoot, registerWindowLifecycle, listWorkspaceWindows, closeWorkspaceWindow, replayWorkspace } from '../lib/uicp/adapters/adapter';
-import { applyEnvelope, setPinnedWindowPredicate } from '../lib/uicp/adapters/lifecycle';
+import {
+  applyEnvelope,
+  closeWorkspaceWindow,
+  listWorkspaceWindows,
+  registerWindowLifecycle,
+  registerWorkspaceRoot,
+  replayWorkspace,
+  setPinnedWindowPredicate,
+} from '../lib/uicp/adapters/lifecycle';
 import LogsPanel from './LogsPanel';
 import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
