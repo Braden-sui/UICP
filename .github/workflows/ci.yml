@@ -44,8 +44,13 @@ jobs:
         uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
         with:
           node-version: '20.19.5'
-          cache: npm
-          cache-dependency-path: uicp/package-lock.json
+          cache: pnpm
+          cache-dependency-path: uicp/pnpm-lock.yaml
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c
+        with:
+          version: 9.0.0
 
       - name: Create .env for tests
         working-directory: uicp
@@ -58,39 +63,39 @@ jobs:
 
       - name: Install dependencies (no scripts)
         working-directory: uicp
-        run: npm ci --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Postinstall (whitelisted)
         working-directory: uicp
-        run: npm run postinstall
+        run: pnpm run postinstall
 
       - name: Lint
         working-directory: uicp
-        run: npm run lint
+        run: pnpm run lint
 
       - name: Typecheck
         working-directory: uicp
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Unit tests
         working-directory: uicp
-        run: npm run test
+        run: pnpm run test
 
       - name: Build
         working-directory: uicp
-        run: npm run build
+        run: pnpm run build
 
       # Link checks intentionally disabled for living docs
 
       - name: Install Playwright browsers
         if: ${{ env.RUN_E2E == 'true' }}
         working-directory: uicp
-        run: npx playwright install --with-deps
+        run: pnpm exec playwright install --with-deps
 
       - name: E2E tests
         if: ${{ env.RUN_E2E == 'true' }}
         working-directory: uicp
-        run: npm run test:e2e
+        run: pnpm run test:e2e
 
       - name: Generate SBOM (CycloneDX)
         if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}

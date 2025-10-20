@@ -42,6 +42,10 @@ ciborium = "0.2"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 pollster = "0.3"
+swc_common = { version = "0.144", features = ["sync"] }
+swc_ecma_ast = "0.144"
+swc_ecma_parser = { version = "0.144", features = ["typescript"] }
+swc_ecma_visit = "0.144"
 
   # Optional Wasm runtime (WASI Preview 2) for the compute plane.
   # Enable via `--features "wasm_compute uicp_wasi_enable"` when you want local compute.
