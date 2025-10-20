@@ -1,0 +1,37 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      ollama:
+        specifier: ^0.6.0
+        version: 0.6.0
+      winget:
+        specifier: ^0.0.1
+        version: 0.0.1
+
+packages:
+
+  ollama@0.6.0:
+    resolution: {integrity: sha512-FHjdU2Ok5x2HZsxPui/MBJZ5J+HzmxoWYa/p9wk736eT+uAhS8nvIICar5YgwlG5MFNjDR6UA5F3RSKq+JseOA==}
+
+  whatwg-fetch@3.6.20:
+    resolution: {integrity: sha512-EqhiFU6daOA8kpjOWTL0olhVOF3i7OrFzSYiGsEMB8GcXS+RrzauAERX65xMeNWVqxA6HXH2m69Z9LaKKdisfg==}
+
+  winget@0.0.1:
+    resolution: {integrity: sha512-Gl4KLhsYeRhYtTn4PPJ0RqlClw7MUPpfhzrA61KV3CxfvddPzTrdFDqmLk2zIbiauyb4kzDAtDLxUIZ2b+x0iw==}
+
+snapshots:
+
+  ollama@0.6.0:
+    dependencies:
+      whatwg-fetch: 3.6.20
+
+  whatwg-fetch@3.6.20: {}
+
+  winget@0.0.1: {}

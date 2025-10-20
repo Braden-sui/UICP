@@ -222,14 +222,16 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     try {
       // If codegen is disabled via Safe Mode, surface a clear error early (frontend gate)
       try {
-        const w = typeof window !== 'undefined' ? (window as any) : undefined;
-        const app = w?.uicpAppStore as { getState?: () => { safeMode?: boolean } } | undefined;
-        const disabled = Boolean(app?.getState?.().safeMode);
+        const w = typeof window === 'undefined' ? undefined : window;
+        const appStore = w?.__UICP_APP_STORE__;
+        const disabled = Boolean(appStore?.getState?.().safeMode);
         if (disabled) {
           writeProgress('Code generation disabled (Safe Mode)');
           return { success: false, error: 'Code generation disabled (Safe Mode)' };
         }
-      } catch {}
+      } catch (safeModeError) {
+        console.warn('needs.code safe mode check failed', safeModeError);
+      }
 
       // Initial status with Cancel affordance
       const cancelCmd = `compute.cancel:${jobId}`;
@@ -329,7 +331,9 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
                 try {
                   const status = `Installed to panel ${panelId}`;
                   writeProgress(status);
-                } catch {}
+                } catch (progressError) {
+                  console.warn('needs.code install progress update failed', progressError);
+                }
               }
             } else {
               console.warn('needs.code install skipped: executeComponentRender dependency missing');
@@ -355,9 +359,9 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
                   windowId: codeWinId,
                   target: '#root',
                   sanitize: true,
-                  html: `<div class=\"rounded border border-slate-200 bg-white/95\"><div class=\"border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase\">${escapeHtml(
+                  html: `<div class="rounded border border-slate-200 bg-white/95"><div class="border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase">${escapeHtml(
                     codeTitle,
-                  )}</div><pre class=\"m-0 max-h-[70vh] overflow-auto p-3 text-[11px] leading-tight\">${escapeHtml(code)}</pre></div>`,
+                  )}</div><pre class="m-0 max-h-[70vh] overflow-auto p-3 text-[11px] leading-tight">${escapeHtml(code)}</pre></div>`,
                 },
               },
             ];
