@@ -41,6 +41,14 @@ impl TaskInputError {
     }
 }
 
+impl std::fmt::Display for TaskInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for TaskInputError {}
+
 /// WHY: csv.parse accepts multiple casings for `hasHeader`; normalize + validate once for reuse.
 /// INVARIANT: Returned source is the exact string provided and `hasHeader` defaults to true.
 pub fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), TaskInputError> {

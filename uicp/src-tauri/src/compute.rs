@@ -2267,8 +2267,9 @@ mod with_runtime {
             let err =
                 sanitize_ws_files_path("ws:/files/symlink-escape-link/secret.txt").unwrap_err();
             assert!(
-                err.contains("escapes workspace"),
-                "unexpected error message: {err}"
+                err.message.contains("escapes workspace"),
+                "unexpected error message: {:?}",
+                err
             );
 
             let _ = std::fs::remove_file(&outside_file);
