@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, fireEvent, screen } from '@testing-library/react';
 import { useAppStore } from '../../src/state/app';
+import type { Result } from '../../src/lib/bridge/result';
 
 describe('Pinned app deletion via right-click', () => {
   beforeEach(() => {
@@ -13,10 +14,11 @@ describe('Pinned app deletion via right-click', () => {
   it('shows confirm and deletes pinned app data when confirmed', async () => {
     const tauriBridge = await import('../../src/lib/bridge/tauri');
     const invCalls: Array<{ command: string; args: unknown }> = [];
-    tauriBridge.setInvOverride(async (command, args) => {
+    async function invOverride<T>(command: string, args?: unknown): Promise<Result<T>> {
       invCalls.push({ command, args });
-      return { ok: true, value: undefined };
-    });
+      return { ok: true, value: undefined as T };
+    }
+    tauriBridge.setInvOverride(invOverride);
     try {
       const { Desktop } = await import('../../src/components/Desktop');
       // Seed a pinned window and its shortcut
