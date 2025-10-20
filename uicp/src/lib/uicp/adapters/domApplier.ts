@@ -96,7 +96,11 @@ export const createDomApplier = (
       throw new AdapterError(
         'Adapter.DomApplyFailed',
         `Target element not found: ${params.target}`,
-        { windowId, target: params.target }
+        {
+          windowId: isWorkspaceTarget ? undefined : rawWindowId,
+          workspace: isWorkspaceTarget,
+          target: params.target,
+        }
       );
     }
 
@@ -148,7 +152,13 @@ export const createDomApplier = (
       throw new AdapterError(
         'Adapter.DomApplyFailed',
         `DOM mutation failed: ${error instanceof Error ? error.message : String(error)}`,
-        { windowId, target: params.target, mode, error }
+        {
+          windowId: isWorkspaceTarget ? undefined : rawWindowId,
+          workspace: isWorkspaceTarget,
+          target: params.target,
+          mode,
+          error,
+        }
       );
     }
 

@@ -1200,7 +1200,7 @@ mod with_runtime {
             if let Some(Ok(ref script_input)) = script_input_result {
                 if let Some(source) = script_input.source.as_ref() {
                     let encoded = BASE64_ENGINE.encode(source.as_bytes());
-                    wasi_builder = wasi_builder.env(SCRIPT_SOURCE_ENV, &encoded);
+                    wasi_builder.env(SCRIPT_SOURCE_ENV, &encoded);
                 }
             }
             // Single readonly preopen for workspace files, mounted at /ws/files in the guest.
@@ -2060,7 +2060,7 @@ mod with_runtime {
                     }
                 }
                 Ok(None) => {
-                    if let Err(e) = crate::compute_cache::store_golden(
+                    if let Err(err) = crate::compute_cache::store_golden(
                         app,
                         &spec.workspace_id,
                         golden_key,
@@ -2070,8 +2070,10 @@ mod with_runtime {
                     )
                     .await
                     {
+                        #[cfg(not(feature = "otel_spans"))]
+                        let _ = &err;
                         #[cfg(feature = "otel_spans")]
-                        tracing::warn!(target = "uicp", error = %e, "Failed to store golden hash");
+                        tracing::warn!(target = "uicp", error = %err, "Failed to store golden hash");
                     } else {
                         golden_hash_opt = Some(out_hash.clone());
                         golden_matched = Some(true);
@@ -2084,9 +2086,11 @@ mod with_runtime {
                         );
                     }
                 }
-                Err(e) => {
+                Err(err) => {
+                    #[cfg(not(feature = "otel_spans"))]
+                    let _ = &err;
                     #[cfg(feature = "otel_spans")]
-                    tracing::warn!(target = "uicp", error = %e, "Failed to lookup golden hash");
+                    tracing::warn!(target = "uicp", error = %err, "Failed to lookup golden hash");
                 }
             }
         }
@@ -2541,7 +2545,6 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn wasi_logging_bridge_emits_partial_event() {
-            use parking_lot::Mutex;
             use std::sync::Arc;
 
             struct TestEmitter {
@@ -2558,11 +2561,11 @@ mod with_runtime {
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    self.debugs.lock().push(payload);
+                    self.debugs.blocking_lock().push(payload);
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, payload: serde_json::Value) {
-                    self.partials.lock().push(payload);
+                    self.partials.blocking_lock().push(payload);
                 }
             }
 
@@ -2612,7 +2615,10 @@ mod with_runtime {
             }
 
             // Verify a partial event was captured with expected fields
-            let part = captured_partials.lock().pop().expect("one partial emitted");
+            let part = captured_partials
+                .blocking_lock()
+                .pop()
+                .expect("one partial emitted");
             assert_eq!(part.get("kind").and_then(|v| v.as_str()), Some("log"));
             assert_eq!(
                 part.get("stream").and_then(|v| v.as_str()),
@@ -2624,11 +2630,9 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn wasi_logging_guest_component_emits_partial_event() {
-            use parking_lot::Mutex;
             use std::path::PathBuf;
             use std::process::Command as PCommand;
             use std::sync::Arc;
-            use tokio::runtime::Runtime;
 
             // Build the tiny log test component
             let comp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2657,12 +2661,12 @@ mod with_runtime {
             // Capture partials emitted by the host logging bridge
 
             struct TestEmitter {
-                partials: Arc<Mutex<Vec<serde_json::Value>>>,
+                partials: Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
             }
             impl Default for TestEmitter {
                 fn default() -> Self {
                     Self {
-                        partials: Arc::new(Mutex::new(Vec::new())),
+                        partials: Arc::new(parking_lot::Mutex::new(Vec::new())),
                     }
                 }
             }
@@ -2676,18 +2680,16 @@ mod with_runtime {
 
             let engine = build_engine().expect("engine");
             let mut linker: Linker<Ctx> = Linker::new(&engine);
-            let app = registry::test_app_handle();
             add_wasi_and_host(&mut linker).expect("wasi+host add ok");
-            let component = Component::from_file(&app, &wasm).expect("component");
+            let component = Component::from_file(&engine, &wasm).expect("component");
 
             // Minimal job context
             let tele = Arc::new(TestEmitter::default());
             let tele_trait: Arc<dyn TelemetryEmitter> = tele.clone();
             let limits = LimitsWithPeak::new(64 * 1024 * 1024);
-            let rt = Runtime::new().expect("tokio runtime");
             let tele_exec = tele_trait.clone();
             let linker = linker;
-            rt.block_on(async {
+            block_on(async move {
                 let mut store: Store<Ctx> = Store::new(
                     &engine,
                     Ctx {
@@ -2944,24 +2946,27 @@ mod with_runtime {
         #[cfg(feature = "uicp_wasi_enable")]
         #[test]
         fn collect_metrics_accumulates_counters_and_mempeak() {
+            use wasmtime::ResourceLimiter;
+
             #[derive(Clone, Default)]
             struct TestEmitter {
-                debugs: Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
+                debugs: Arc<Mutex<Vec<serde_json::Value>>>,
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    *self.debugs.lock() = payload;
+                    self.debugs.blocking_lock().push(payload);
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
             }
 
-            let num = rng_counter_post.load(Ordering::Relaxed);
+            let engine = build_engine().expect("engine");
             let tele: Arc<dyn TelemetryEmitter> = Arc::new(TestEmitter::default());
             let limits = LimitsWithPeak::new(64 * 1024 * 1024);
             let mut store: Store<Ctx> = Store::new(
                 &engine,
                 Ctx {
+                    wasi: WasiCtxBuilder::new().build(),
                     table: ResourceTable::new(),
                     emitter: tele,
                     job_id: "metrics-job".into(),
@@ -3015,6 +3020,7 @@ mod with_runtime {
 }
 
 #[cfg(feature = "wasm_compute")]
+#[allow(unused_imports)]
 pub use with_runtime::{
     component_import_names, preflight_component_imports, verify_component_contract,
 };

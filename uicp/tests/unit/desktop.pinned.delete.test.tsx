@@ -1,15 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, fireEvent, screen } from '@testing-library/react';
-import { Desktop } from '../../src/components/Desktop';
 import { useAppStore } from '../../src/state/app';
-
-vi.mock('../../src/lib/bridge/tauri', async () => {
-  const actual = await vi.importActual<typeof import('../../src/lib/bridge/tauri')>('../../src/lib/bridge/tauri');
-  return {
-    ...actual,
-    inv: vi.fn(async () => ({ ok: true, value: undefined })),
-  };
-});
 
 describe('Pinned app deletion via right-click', () => {
   beforeEach(() => {
@@ -20,23 +11,38 @@ describe('Pinned app deletion via right-click', () => {
   });
 
   it('shows confirm and deletes pinned app data when confirmed', async () => {
-    const { inv } = await import('../../src/lib/bridge/tauri');
-    // Seed a pinned window and its shortcut
-    useAppStore.getState().pinWindow('win-xyz', 'My App');
-    useAppStore.getState().ensureDesktopShortcut('pinned:win-xyz', { x: 128, y: 64 });
+    const tauriBridge = await import('../../src/lib/bridge/tauri');
+    const invCalls: Array<{ command: string; args: unknown }> = [];
+    tauriBridge.setInvOverride(async (command, args) => {
+      invCalls.push({ command, args });
+      return { ok: true, value: undefined };
+    });
+    try {
+      const { Desktop } = await import('../../src/components/Desktop');
+      // Seed a pinned window and its shortcut
+      useAppStore.getState().pinWindow('win-xyz', 'My App');
+      useAppStore.getState().ensureDesktopShortcut('pinned:win-xyz', { x: 128, y: 64 });
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-    render(<Desktop />);
+      render(<Desktop />);
 
-    // Find pinned icon by label
-    const icon = await screen.findByRole('button', { name: /my app/i });
-    // Right click
-    fireEvent.contextMenu(icon);
+      // Find pinned icon by label
+      const icon = await screen.findByRole('button', { name: /my app/i });
+      // Right click
+      fireEvent.contextMenu(icon);
 
-    expect(confirmSpy).toHaveBeenCalled();
-    expect((inv as any)).toHaveBeenCalledWith('delete_window_commands', { windowId: 'win-xyz' });
+      expect(confirmSpy).toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(invCalls).toContainEqual({
+          command: 'delete_window_commands',
+          args: { windowId: 'win-xyz' },
+        });
+      }, { timeout: 2000 });
 
-    confirmSpy.mockRestore();
+      confirmSpy.mockRestore();
+    } finally {
+      tauriBridge.setInvOverride(null);
+    }
   });
 });

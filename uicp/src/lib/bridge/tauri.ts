@@ -44,7 +44,19 @@ export const tauriInvoke = async <T>(command: string, args?: unknown): Promise<T
 // WHY: Universal invoke wrapper that returns Result<T, UICPError> for standardized error handling.
 // INVARIANT: All errors are tagged with E-UICP-xxx codes for consistent telemetry and debugging.
 // USAGE: const result = await inv<YourType>('command_name', { args }); if (!result.ok) handle(result.error);
+const INV_OVERRIDE_KEY = '__UICP_TAURI_INV_OVERRIDE__';
+
+const getInvOverride = (): InvOverride | null => {
+  const store = globalThis as Record<string, unknown>;
+  const override = store[INV_OVERRIDE_KEY];
+  return (typeof override === 'function' ? override : null) as InvOverride | null;
+};
+
 export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>> => {
+  const override = getInvOverride();
+  if (override) {
+    return override<T>(command, args);
+  }
   if (!hasTauriBridge()) {
     return { ok: false, error: createBridgeUnavailableError(command) };
   }
@@ -55,6 +67,13 @@ export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>
   } catch (error) {
     return { ok: false, error: toUICPError(error, UICPErrorCode.InvokeFailed) };
   }
+};
+
+type InvOverride = <T>(command: string, args?: unknown) => Promise<Result<T>>;
+
+export const setInvOverride = (impl: InvOverride | null): void => {
+  const store = globalThis as Record<string, unknown>;
+  store[INV_OVERRIDE_KEY] = impl ?? null;
 };
 
 type OllamaEvent = {
