@@ -33,6 +33,7 @@ Build a trustworthy, local‑first generative desktop where models describe inte
 ## Quickstart
 
 ```bash
+# From repository root
 cd uicp
 pnpm install
 pnpm run dev            # Vite dev server (web)
@@ -67,29 +68,41 @@ The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.t
 ### Compute modules and runtime
 
 - `pnpm run dev:wasm` – Tauri dev with `UICP_MODULES_DIR` on PATH for faster inner loop
-- `pnpm run dev:wasm:runtime` – Tauri dev with compute host features (`wasm_compute,uicp_wasi_enable`)
-- `pnpm run modules:build` – build Wasm components under `uicp/components/*`
+- `pnpm run dev:wasm:runtime` – Tauri dev with compute host features (`wasm_compute,uicp_wasi_enable,compute_harness`)
+- `pnpm run modules:build` – build Wasm components (csv.parse, table.query) under `uicp/components/*`
+- `pnpm run modules:build:csv` – build csv.parse component
+- `pnpm run modules:build:table` – build table.query component
 - `pnpm run modules:publish` – copy built components into `uicp/src-tauri/modules` and update manifest
+- `pnpm run modules:update:csv` – update csv.parse in manifest
+- `pnpm run modules:update:table` – update table.query in manifest
+- `pnpm run modules:verify` – validate module manifest integrity
+- `pnpm run modules:targets` – validate component targets with wac
 - `pnpm run gen:io` – regenerate TypeScript bindings from WIT into `uicp/src/compute/types.gen.ts`
+- `pnpm run build:components` – build components script
+- `pnpm run bundle:applet` – build applet.quickjs component
 
 ## Documentation
 
-- Compute runtime details: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md.
-- Error codes catalog: docs/error-appendix.md.
-- WIL Architecture and Protocol:
-  - docs/architecture.md: Planner/Actor contracts, parsing, files.
-  - docs/compute/WIL.md: Quickstart + Add Op (consolidated).
-- Model endpoints and auth: docs/ollama cloud vs. turbo.md.
-- Docs index: docs/README.md.
+- Compute runtime details: `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`
+- Error codes catalog: `docs/error-appendix.md`
+- Architecture and Protocol:
+  - `docs/architecture.md`: Planner/Actor contracts, parsing, files
+  - `docs/compute/WIL.md`: Quickstart + Add Op (consolidated)
+  - `docs/compute/WIL_ADD_OP.md`: WIL operation details
+- Model integration: `docs/MODEL_INTEGRATION.md`
+- Project status: `docs/STATUS.md`
+- Testing documentation: `docs/compute/testing.md`
+- Docs overview: `docs/README.md`
 
 ## Environment
 
 | variable | default | notes |
 | --- | --- | --- |
-| `VITE_DEV_MODE` | `true` | enables developer UX touches |
-| `E2E_ORCHESTRATOR` | unset | set to `1` to run the orchestrator E2E (requires real backend) |
-| `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window. |
-| `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window. |
+| `VITE_DEV_MODE` | `true` | enables developer UX touches (not in .env.example) |
+| `VITE_MOCK_MODE` | `true` | enables mock mode for development |
+| `E2E_ORCHESTRATOR` | `0` | set to `1` to run the orchestrator E2E (requires real backend) |
+| `VITE_PLANNER_PROFILE` | `deepseek` | default planner profile (`deepseek`, `kimi`). Overridable via Agent Settings window (not in .env.example) |
+| `VITE_ACTOR_PROFILE` | `qwen` | default actor profile (`qwen`, `kimi`). Overridable via Agent Settings window (not in .env.example) |
 
 ### Configuration & Credentials
 
@@ -159,6 +172,9 @@ These tools provide visibility into the system's operation and help with debuggi
 ### Compute Plane
 
 - Optional Wasm host behind Tauri feature flags (`wasm_compute`, `uicp_wasi_enable`). See `docs/compute/README.md`.
+  - Uses Wasmtime 37.x runtime with WASI Preview 2
+  - Current modules: `csv.parse@1.2.0`, `table.query@0.1.0`, `applet.quickjs@0.1.0`
+  - All modules are signed and verified (see `uicp/src-tauri/modules/manifest.json`)
   - Workspace-scoped cache: `JobSpec.workspaceId` (default `"default"`) scopes cache keys and reads.
   - Clear Cache: Agent Settings exposes "Clear Cache" for the active workspace.
   - External APIs remain first‑class via `api.call` when a task is not suitable for local compute.
@@ -170,28 +186,34 @@ These tools provide visibility into the system's operation and help with debuggi
 
 ## Testing
 
-1. `pnpm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation.
-2. `pnpm run test:e2e` drives flows end-to-end in Playwright. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
+1. `pnpm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation. Tests are organized under:
+   - `tests/unit/wil` - WIL protocol tests
+   - `tests/unit/ollama` - Ollama integration tests
+   - `tests/unit/time` - Time-related tests
+   - Additional unit tests in `tests/unit`
+2. `pnpm run test:e2e` drives flows end-to-end in Playwright (see `tests/e2e/specs`). Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
 
 Rust (compute host)
 
 - From `uicp/src-tauri`: `cargo test --features "wasm_compute uicp_wasi_enable" -- --nocapture`
 - Build only: `cargo check --features "wasm_compute uicp_wasi_enable"`
+- Integration tests: `cargo test --all-targets --locked --verbose`
 
 CI
 
-- UI: `.github/workflows/ci.yml` runs lint, typecheck, unit, e2e, build, SBOM generation, Trivy, and Gitleaks.
-- Compute: `.github/workflows/compute-ci.yml` builds the Rust host, checks/pins Wasmtime, validates WIT packages, runs Rust tests, regenerates TS bindings, and executes a Playwright compute harness.
-- Link checks: Markdown links are validated using Lychee with settings in `.lychee.toml`.
+- UI: `.github/workflows/ci.yml` runs lint, typecheck, unit, build, SBOM generation, Trivy, and Gitleaks. Also includes Rust tests and compute build verification. E2E tests are disabled by default (`RUN_E2E: false`).
+- Compute: `.github/workflows/compute-ci.yml` builds the Rust host, checks/pins Wasmtime 37.x, validates WIT packages, runs Rust tests, regenerates TS bindings, and executes a Playwright compute harness.
+- Module verification: `.github/workflows/verify-modules.yml` validates WASM module manifest integrity.
+- Link checks: Intentionally disabled for living docs (see ci.yml line 88).
 
 ### CI Troubleshooting: deps install
 
-- Use Node 20 and pnpm 10. The workflow sets `node-version: 20`; local failures like `pnpm ERR! code EBADENGINE` usually indicate a different Node version.
-- Installs run with `pnpm ci --ignore-scripts --no-optional` to avoid platform-specific native installs. If your jobs use plain `pnpm install`, switch to `pnpm ci` with the same flags.
-- Postinstall is explicitly run after install, but our script is a no-op on Linux/macOS and only restores Rollup’s Windows binding on Windows (`uicp/scripts/postinstall.cjs`). Safe to keep.
+- Use Node 20.19.5 and pnpm 9.0.0. The workflow sets `node-version: 20.19.5`; local failures like `pnpm ERR! code EBADENGINE` usually indicate a different Node version.
+- Installs run with `pnpm install --frozen-lockfile --ignore-scripts` to avoid platform-specific native installs. If your jobs use plain `pnpm install`, add the flags for consistency.
+- Postinstall is explicitly run after install, but our script is a no-op on Linux/macOS and only restores Rollup's Windows binding on Windows (`uicp/scripts/postinstall.cjs`). Safe to keep.
 - Build/test commands are wrapped by `scripts/run-with-rollup-env.mjs`, which sets `ROLLUP_SKIP_NODE_NATIVE=true` to avoid native Rollup bindings; do not call `vite build` or `vitest` directly in CI.
-- If caching issues appear, clear Actions cache for `uicp/pnpm-lock.yaml` and re-run. Lockfile drift will cause `pnpm ci` to fail; commit the updated `pnpm-lock.yaml` when dependencies change.
-- Reproduce locally with: `cd uicp && pnpm ci --ignore-scripts --no-optional`.
+- If caching issues appear, clear Actions cache for `uicp/pnpm-lock.yaml` and re-run. Lockfile drift will cause install to fail; commit the updated `pnpm-lock.yaml` when dependencies change.
+- Reproduce locally with: `cd uicp && pnpm install --frozen-lockfile --ignore-scripts`.
 
 ## In Development
 
@@ -200,8 +222,11 @@ CI
 - Status snapshot: `docs/STATUS.md`
 - Master checklist for compute runtime: `docs/compute/COMPUTE_RUNTIME_CHECKLIST.md`
 - Architecture overview: `docs/architecture.md`
-- MVP scope/status: `docs/MVP checklist.md`
+- Implementation log: `docs/IMPLEMENTATION_LOG.md`
+- Proposals: `docs/PROPOSALS.md`
 - Coverage and recent fixes: `docs/compute/testing.md`
+- User guide: `docs/USER_GUIDE.md`
+- Setup documentation: `docs/setup.md`
 
 ### Key workstreams (high level)
 
@@ -221,13 +246,14 @@ CI
 - CI and Contracts
   - WIT binding regeneration guard; component metadata checks; pinned Wasmtime
 
-See also: `docs/INDEX.md` for onboarding and reading order.
+See also: `docs/README.md` for documentation overview and reading order.
 
 ## Requirements
 
-- Node 20, pnpm 10
-- Tauri CLI 2 (`@tauri-apps/cli`), Rust toolchain
+- Node 20.19.5 (specified in Volta config), pnpm 9.0.0
+- Tauri CLI 2 (`@tauri-apps/cli`), Rust toolchain (stable)
 - For components: `cargo-component` and `wit-component` if building Wasm modules locally
+- For module validation: `wac-cli` (WebAssembly Compositions)
 
 ## Security
 
