@@ -97,7 +97,10 @@ jobs:
         with:
           path: .
           format: cyclonedx-json
-          artifact-name: sbomcyclonedx
+          # Explicit filename and unique artifact name to satisfy upload-artifact rules
+          output-file: sbom.cyclonedx.json
+          upload-artifact: true
+          artifact-name: sbom-cyclonedx-${{ github.run_id }}
 
       - name: Trivy scan (filesystem)
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8

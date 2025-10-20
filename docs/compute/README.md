@@ -26,6 +26,7 @@
 - Wasmtime + WASI Preview 2 host is feature-gated (`wasm_compute`) in `uicp/src-tauri/src/compute.rs`.
 - Workspace-scoped cache implemented in `uicp/src-tauri/src/compute_cache.rs`.
 - Clear Compute Cache UI is available in `uicp/src/components/AgentSettingsWindow.tsx` (invokes `clear_compute_cache`).
+- JavaScript execution path is production-ready: `applet.quickjs@0.1.0` loads bundled sources via `UICP_SCRIPT_SOURCE_B64`, `script.panel` manages state/view keys, integration coverage lives in `uicp/src-tauri/tests/integration_compute/quickjs_applet.rs`, the counter example ships in `examples/counter-applet/`, and `docs/compute/JS_EXECUTION_PATH.md` captures full architecture and constraints.
 
 ## Track C: Code Generation with Golden Cache (V2)
 

@@ -291,6 +291,8 @@ cargo test --features wasm_compute,uicp_wasi_enable,compute_harness quickjs
 - ✅ `onEvent()` updates state correctly
 - ✅ Missing source validation (E-UICP-0604)
 
+Integration tests execute through `ComputeTestHarness` on a multi-thread Tokio runtime so asynchronous guest jobs do not nest inside the global runtime used by other suites. This mirrors the production host scheduler and keeps the test harness deterministic.
+
 ### Unit Tests
 
 Component-level tests in `uicp/components/applet.quickjs/src/lib.rs` validate:
@@ -350,6 +352,26 @@ For most interactive panels, JS performance is sufficient. Only migrate to Rust 
 - Compute-heavy operations (data processing, parsing)
 - Large state (> 1 MB)
 - Tight latency requirements (< 10ms render)
+
+## Verification Checklist
+
+- [x] `applet.quickjs@0.1.0` WASI component is published and versioned in `uicp/components/applet.quickjs`.
+- [x] Module manifest entry includes digest and signature for `applet.quickjs@0.1.0.wasm`.
+- [x] `uicp:applet-script@0.1.0` WIT contract documents `init`, `render`, and `on-event`.
+- [x] Host routing in `uicp/src-tauri/src/compute.rs` injects bundled JS via `UICP_SCRIPT_SOURCE_B64`.
+- [x] Frontend `script.panel` lifecycle wires event delegation and state sinks.
+- [x] `build-applet.mjs` bundles TypeScript to a single JS artifact with safety guards.
+- [x] Integration coverage lives in `uicp/src-tauri/tests/integration_compute/quickjs_applet.rs`.
+- [x] Reference applet is published at `examples/counter-applet/`.
+- [x] This guide and related docs capture architecture, testing, and constraints.
+
+## Future Enhancements
+
+- Performance benchmarking that compares QuickJS applets with equivalent Rust components for hot paths.
+- Editor tooling (for example, VS Code snippets and preview commands) to streamline applet development.
+- Additional sample applets that exercise forms, charts, and multi-panel coordination.
+- Investigate caching compiled bundles to reduce QuickJS start-up latency on repeated jobs.
+- Add telemetry fields for JS execution timing so dashboards can chart p50/p95 latency.
 
 ## References
 

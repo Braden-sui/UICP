@@ -2,12 +2,13 @@
 
 Purpose: one-page, human-readable snapshot of what is Done, In Progress, Next, plus risks and CI health. This page is the entry point for status; deeper, authoritative checklists remain in docs/MVP checklist.md and docs/compute/COMPUTE_RUNTIME_CHECKLIST.md.
 
-Last updated: 2025-10-17
+Last updated: 2025-10-19
 
 ## Summary
 
 - Desktop app (React + Tauri) runs as a desktop-first experience; when opened in a plain browser the UI degrades gracefully instead of crashing, while the Tauri bridge continues to drive native flows.
 - Compute plane (Wasmtime, feature-gated) is implemented with registry, cache, and policy; compute harness E2E smoke now runs in CI to guard guest/host drift.
+- Track E (JS execution path in WASI) is complete: QuickJS component is signed, host injects bundled sources, integration suite covers init/render/onEvent, counter applet ships as a reference, and docs live in `docs/compute/JS_EXECUTION_PATH.md`.
 - CI runs lint, typecheck, unit, e2e, build, security scans, .
 
 ## Now (Current Focus)
@@ -19,6 +20,7 @@ Last updated: 2025-10-17
 ## Done (Recently)
 
 Major October 2025 milestones include: batch idempotency system, stream cancellation API, workspace registration guard, telemetry ID tracking, JSON tool calling (production default), error handling refactor, circuit breaker observability, SQLite maintenance, and compute observability improvements.
+Track E closed out with docs, tests, and example applet covering the QuickJS execution path end-to-end.
 
 **For complete details**, see [`IMPLEMENTATION_LOG.md`](IMPLEMENTATION_LOG.md).
 
