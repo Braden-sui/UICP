@@ -119,6 +119,99 @@ const commitStateValue = ({ scope, key, value, windowId }: CommitStateParams): v
   notifyStateWatchers(scope, key, windowId, value);
 };
 
+type ParsedStateReference = {
+  scope: StateScope;
+  windowId?: string;
+  segments: string[];
+};
+
+const parseStateReference = (path: string): ParsedStateReference | null => {
+  if (typeof path !== 'string') return null;
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  const segments = trimmed.split('.').map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length === 0) return null;
+
+  let scope: StateScope = 'workspace';
+  let windowId: string | undefined;
+
+  const scopeCandidate = segments[0]?.toLowerCase();
+  if (scopeCandidate === 'workspace' || scopeCandidate === 'global') {
+    scope = scopeCandidate as StateScope;
+    segments.shift();
+  } else if (scopeCandidate === 'window') {
+    scope = 'window';
+    segments.shift();
+    const targetWindow = segments.shift();
+    if (!targetWindow) {
+      return null;
+    }
+    windowId = targetWindow;
+  }
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  return { scope, windowId, segments };
+};
+
+const resolveStateReferenceValue = (path: string): unknown => {
+  const parsed = parseStateReference(path);
+  if (!parsed) return undefined;
+  const { scope, windowId, segments } = parsed;
+
+  for (let i = segments.length; i >= 1; i--) {
+    const keyCandidate = segments.slice(0, i).join('.');
+    const candidateValue = readStateValue(scope, keyCandidate, windowId);
+    if (candidateValue === undefined) {
+      continue;
+    }
+    const remaining = segments.slice(i);
+    if (remaining.length === 0) {
+      return candidateValue;
+    }
+    let current: unknown = candidateValue;
+    let failed = false;
+    for (const part of remaining) {
+      if (!isRecord(current)) {
+        failed = true;
+        break;
+      }
+      if (!Object.prototype.hasOwnProperty.call(current, part)) {
+        failed = true;
+        break;
+      }
+      current = (current as Record<string, unknown>)[part];
+    }
+    if (!failed) {
+      return current;
+    }
+  }
+
+  return undefined;
+};
+
+const resolveScriptSource = (
+  inlineSource: string | undefined,
+  sourceKey: string | undefined,
+): string | undefined => {
+  if (typeof inlineSource === 'string' && inlineSource.length > 0) {
+    return inlineSource;
+  }
+  if (!sourceKey) {
+    return undefined;
+  }
+  const resolved = resolveStateReferenceValue(sourceKey);
+  if (typeof resolved === 'string') {
+    return resolved;
+  }
+  if (isRecord(resolved) && typeof resolved.code === 'string') {
+    return resolved.code;
+  }
+  return undefined;
+};
+
 const nextJobId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -577,7 +670,11 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
       typeof config.stateKey === 'string' && config.stateKey.trim()
         ? config.stateKey.trim()
         : `panels.${panelId}.view`;
-    const source = typeof config.source === 'string' && config.source.trim() ? config.source : undefined;
+    const inlineSource =
+      typeof config.source === 'string' && config.source.trim() ? config.source : undefined;
+    const sourceKeyRef =
+      typeof config.sourceKey === 'string' && config.sourceKey.trim() ? config.sourceKey.trim() : undefined;
+    const source = resolveScriptSource(inlineSource, sourceKeyRef);
 
     if (!moduleId) {
       console.warn(`script.emit ignored: panel ${panelId} missing module configuration.`);
@@ -1292,6 +1389,8 @@ const routeOperation = async (
             ? props.stateKey.trim()
             : `panels.${panelId}.view`;
         const inlineSource = typeof props.source === 'string' && props.source.trim() ? props.source : undefined;
+        const sourceKeyRef =
+          typeof props.sourceKey === 'string' && props.sourceKey.trim() ? props.sourceKey.trim() : undefined;
         const modelKey = `panels.${panelId}.model`;
         const configKey = `panels.${panelId}.config`;
         const selector = `${params.target} .uicp-script-panel[data-script-panel-id="${panelId}"]`;
@@ -1299,7 +1398,7 @@ const routeOperation = async (
         commitStateValue({
           scope: 'workspace',
           key: configKey,
-          value: { module: moduleId, source: inlineSource, stateKey, windowId: params.windowId },
+          value: { module: moduleId, source: inlineSource, sourceKey: sourceKeyRef, stateKey, windowId: params.windowId },
         });
 
         setScriptPanelViewState(stateKey, { status: 'loading' });
@@ -1336,8 +1435,9 @@ const routeOperation = async (
             if (extras.state !== undefined) {
               input.state = extras.state;
             }
+            const sourceForJob = resolveScriptSource(inlineSource, sourceKeyRef);
             const final = await submitScriptComputeJob(moduleId, input, {
-              source: inlineSource,
+              source: sourceForJob,
               traceId: envelope.traceId ?? envelope.id,
             });
             if (!final.ok) {

@@ -26,9 +26,14 @@ describe('script.panel lifecycle + script.emit bridge', () => {
     clearWorkspaceRoot();
   });
 
-  const installComputeStub = (initialCount: number) => {
-    currentState = { count: initialCount };
-    (window as any).uicpComputeCall = async (spec: import('../../src/compute/types').JobSpec) => {
+const installComputeStub = (initialCount: number, options: { expectedSource?: string } = {}) => {
+  currentState = { count: initialCount };
+  const expectSourceIfProvided = (spec: import('../../src/compute/types').JobSpec) => {
+    if (!options.expectedSource) return;
+    expect((spec.input as Record<string, unknown>).source).toBe(options.expectedSource);
+  };
+  (window as any).uicpComputeCall = async (spec: import('../../src/compute/types').JobSpec) => {
+      expectSourceIfProvided(spec);
       const mode = (spec.input as Record<string, unknown>).mode as string;
       if (mode === 'init') {
         currentState = { count: initialCount };
@@ -45,6 +50,7 @@ describe('script.panel lifecycle + script.emit bridge', () => {
       }
 
       if (mode === 'render') {
+        expectSourceIfProvided(spec);
         const stateStr = String((spec.input as Record<string, unknown>).state ?? '{}');
         try {
           const parsed = JSON.parse(stateStr);
@@ -68,6 +74,7 @@ describe('script.panel lifecycle + script.emit bridge', () => {
       }
 
       if (mode === 'on-event') {
+        expectSourceIfProvided(spec);
         const action = String((spec.input as Record<string, unknown>).action ?? '');
         const stateStr = String((spec.input as Record<string, unknown>).state ?? '{}');
         try {
@@ -148,9 +155,41 @@ describe('script.panel lifecycle + script.emit bridge', () => {
 
     inc!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await tick();
+    await tick();
 
     const countEl = wrapper!.querySelector('[data-testid="count"]') as HTMLElement | null;
     expect(countEl).toBeTruthy();
     expect((countEl!.textContent || '').trim()).toBe('2');
+  });
+
+  it('uses workspace sourceKey when rendering script panel', async () => {
+    const panelId = 'panel-source';
+    const sourceCode = 'export const render = () => ({ html: \"<div>ok</div>\" });';
+    installComputeStub(0, { expectedSource: sourceCode });
+
+    await applyBatch([
+      { op: 'state.set', params: { scope: 'workspace', key: 'artifacts.widget', value: { code: sourceCode, language: 'ts', meta: {} } } },
+      { op: 'state.set', params: { scope: 'workspace', key: 'artifacts.widget.code', value: sourceCode } },
+      { op: 'window.create', params: { id: 'w3', title: 'Source Key Test' } },
+      {
+        op: 'component.render',
+        params: {
+          windowId: 'w3',
+          target: '#root',
+          type: 'script.panel',
+          props: {
+            id: panelId,
+            stateKey: `panels.${panelId}.view`,
+            module: 'applet.quickjs@0.1.0',
+            sourceKey: 'workspace.artifacts.widget.code',
+          },
+        },
+      },
+    ] as any);
+
+    await tick();
+
+    const wrapper = root.querySelector(`.uicp-script-panel[data-script-panel-id="${panelId}"]`) as HTMLElement | null;
+    expect(wrapper).toBeTruthy();
   });
 });

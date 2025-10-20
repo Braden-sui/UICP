@@ -128,6 +128,10 @@ const escapeHtml = (value: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
 /**
  * Creates command executor for needs.code operations.
  * 
@@ -207,14 +211,108 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     };
 
     try {
-      writeProgress('Queued code generation…');
+      writeProgress('Queued code generation...');
       await window.uicpComputeCall(jobSpec);
-      writeProgress('Generating code…');
+      writeProgress('Generating code...');
+
+      const persistArtifactAndInstall = async (final: ComputeFinalEvent) => {
+        if (!final.ok || !isRecord(final.output)) {
+          return;
+        }
+        const coerceString = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+        const coerceNonEmpty = (value: unknown): string | null => {
+          if (typeof value !== 'string') return null;
+          const trimmed = value.trim();
+          return trimmed ? trimmed : null;
+        };
+
+        const code = coerceString(final.output.code);
+        if (!code) {
+          return;
+        }
+
+        const languageRaw = coerceNonEmpty(final.output.language);
+        const language = languageRaw || (typeof params.language === 'string' ? params.language : 'ts');
+        const metaValue = isRecord(final.output.meta) ? final.output.meta : {};
+        const meta = { ...metaValue };
+
+        const artifactId = coerceNonEmpty(params.artifactId);
+        const goldenKey = coerceNonEmpty(params.goldenKey);
+        const artifactKeyBase = artifactId
+          ? `artifacts.${artifactId}`
+          : goldenKey
+            ? `codegen.${goldenKey}`
+            : null;
+
+        if (artifactKeyBase && deps.setStateValue) {
+          const baseValue = { code, language, meta };
+          try {
+            deps.setStateValue({ scope: 'workspace', key: artifactKeyBase, value: baseValue });
+            deps.setStateValue({ scope: 'workspace', key: `${artifactKeyBase}.code`, value: code });
+            deps.setStateValue({ scope: 'workspace', key: `${artifactKeyBase}.language`, value: language });
+            deps.setStateValue({ scope: 'workspace', key: `${artifactKeyBase}.meta`, value: meta });
+          } catch (persistError) {
+            console.error('needs.code artifact persistence failed', persistError);
+          }
+        }
+
+        const install = params.install;
+        if (!install || !artifactKeyBase) {
+          return;
+        }
+
+        const panelId = coerceNonEmpty(install.panelId);
+        const windowId = coerceNonEmpty(install.windowId);
+        const target = coerceNonEmpty(install.target);
+        if (!panelId || !windowId || !target) {
+          return;
+        }
+
+        const sourceKey = `workspace.${artifactKeyBase}.code`;
+        const props: Record<string, unknown> = {
+          id: panelId,
+          module: 'applet.quickjs@0.1.0',
+          sourceKey,
+        };
+        const stateKey = coerceNonEmpty(install.stateKey);
+        if (stateKey) {
+          props.stateKey = stateKey;
+        }
+
+        if (deps.ensureWindowExists) {
+          try {
+            await deps.ensureWindowExists(windowId, { id: windowId, title: windowId });
+          } catch (ensureError) {
+            console.warn('needs.code install ensure window failed', ensureError);
+          }
+        }
+
+        if (deps.executeComponentRender) {
+          const renderResult = deps.executeComponentRender({
+            id: panelId,
+            windowId,
+            target,
+            type: 'script.panel',
+            props,
+          } as OperationParamMap["component.render"]);
+          if (renderResult && !renderResult.success) {
+            console.warn('needs.code auto install render failed', renderResult.error);
+          }
+        } else {
+          console.warn('needs.code install skipped: executeComponentRender dependency missing');
+        }
+      };
+
       void waitForComputeFinalEvent(jobId)
-        .then((final) => {
+        .then(async (final) => {
           if (final.ok) {
             const cached = final.metrics?.cacheHit ? ' (cache hit)' : '';
-            writeProgress(`Code ready${cached ? ' — cached result' : ''}`);
+            writeProgress(`Code ready${cached ? ' - cached result' : ''}`);
+            try {
+              await persistArtifactAndInstall(final);
+            } catch (postError) {
+              console.error('needs.code post-final handling failed', postError);
+            }
           } else {
             writeProgress(`Code generation failed: ${final.message ?? 'Unknown error'}`);
           }
@@ -527,3 +625,4 @@ export const dispatchCommand = async (
   
   return await executor.execute(command, ctx, deps);
 };
+

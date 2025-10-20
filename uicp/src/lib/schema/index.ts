@@ -146,6 +146,14 @@ const NeedsCodeParams = z
     progressWindowId: z.string().min(1).optional(),
     progressSelector: z.string().min(1).optional(),
     cachePolicy: z.enum(['readwrite', 'readOnly', 'bypass']).default('readwrite').optional(),
+    install: z
+      .object({
+        panelId: z.string().min(1),
+        windowId: z.string().min(1),
+        target: z.string().min(1),
+        stateKey: z.string().min(1).optional(),
+      })
+      .optional(),
   })
   .strict();
 
@@ -538,4 +546,3 @@ export function validatePlan(input: unknown, pointer = '/'): Plan {
 // Lightweight type guards for callers that only need a boolean check
 export const isBatch = (input: unknown): input is Batch => batchSchema.safeParse(input).success;
 export const isPlan = (input: unknown): input is Plan => planSchema.safeParse(input).success;
-
