@@ -9,7 +9,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { Buffer } from "node:buffer";
-import { sign } from "@noble/ed25519";
+import { createPrivateKey, sign as edSign } from "node:crypto";
 
 function parseArgs(argv) {
   const args = {};
@@ -44,6 +44,17 @@ function loadSigningSeed(args) {
     process.exit(2);
   }
   return seed;
+}
+
+function privateKeyFromSeed(seed) {
+  // RFC 8410 PKCS#8 wrapper for Ed25519 private key:
+  // 302e020100300506032b657004220420 || seed
+  const prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  return createPrivateKey({
+    key: Buffer.concat([prefix, seed]),
+    format: "der",
+    type: "pkcs8",
+  });
 }
 
 function canonicalMessage(task, version, digestHex) {
@@ -99,7 +110,8 @@ async function main() {
   }
 
   const message = canonicalMessage(task, version, entry.digest_sha256);
-  const signatureBytes = await sign(message, seed);
+  const key = privateKeyFromSeed(seed);
+  const signatureBytes = edSign(null, message, key);
   const signatureB64 = Buffer.from(signatureBytes).toString("base64");
 
   entry.signature = signatureB64;
