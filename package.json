@@ -3,10 +3,10 @@
     "private": true,
     "version": "0.1.0",
     "license": "Apache-2.0",
+    "packageManager": "pnpm@9.0.0",
     "scripts": {
-        "install": "cd uicp && npm install",
-        "dev": "cd uicp && npm run tauri:dev",
-        "build": "cd uicp && npm run tauri:build"
+        "dev": "cd uicp && pnpm run tauri:dev",
+        "build": "cd uicp && pnpm run tauri:build"
     },
     "dependencies": {
         "ollama": "^0.6.0",

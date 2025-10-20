@@ -148,7 +148,7 @@ const waitForComputeFinalEvent = (jobId: string, timeoutMs = 60_000): Promise<Co
       cleanup();
       if (!detail.ok) {
         const error = new Error(detail.message ?? 'Compute job failed');
-        (error as Record<string, unknown>).code = detail.code ?? 'Compute.Error';
+        Object.assign(error, { code: detail.code ?? 'Compute.Error' });
         reject(error);
         return;
       }
@@ -610,6 +610,10 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
         source,
         traceId: typeof context.traceId === 'string' ? context.traceId : undefined,
       });
+      if (!onEventFinal.ok) {
+        setScriptPanelViewState(stateKey, { status: 'error', error: { message: onEventFinal.message } });
+        return;
+      }
       const onEventSink = scriptSinkFromOutput(onEventFinal.output);
 
       if (onEventSink.status === 'error') {
@@ -674,6 +678,10 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
           traceId: typeof context.traceId === 'string' ? context.traceId : undefined,
         },
       );
+      if (!renderFinal.ok) {
+        setScriptPanelViewState(stateKey, { status: 'error', error: { message: renderFinal.message } });
+        return;
+      }
       setScriptPanelViewState(stateKey, scriptSinkFromOutput(renderFinal.output));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1332,6 +1340,9 @@ const routeOperation = async (
               source: inlineSource,
               traceId: envelope.traceId ?? envelope.id,
             });
+            if (!final.ok) {
+              return { status: 'error', error: { message: final.message } };
+            }
             return scriptSinkFromOutput(final.output);
           };
 

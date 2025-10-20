@@ -22,6 +22,7 @@ jobs:
     name: Detect relevant changes
     runs-on: ubuntu-latest
     outputs:
+      # yamllint disable-line rule:line-length
       compute: ${{ steps.filter.outputs.compute }}
     steps:
       - name: Checkout
