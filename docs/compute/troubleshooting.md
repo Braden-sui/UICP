@@ -4,7 +4,7 @@ Common terminal errors and likely causes
 
 - Task.NotFound
   - Module not registered in manifest or `task@version` mismatch.
-  - Module file missing or digest mismatch. Run `npm run modules:verify` or use the Agent Settings → Verify Modules button.
+  - Module file missing or digest mismatch. Run `pnpm run modules:verify` or use the Agent Settings → Verify Modules button.
 
 - CapabilityDenied
   - `timeoutMs` outside 1000–120000, or >30000 without `capabilities.longRun`.

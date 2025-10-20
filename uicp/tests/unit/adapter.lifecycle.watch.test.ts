@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { Mock } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { applyBatch, registerWorkspaceRoot, clearWorkspaceRoot } from '../../src/lib/uicp/adapters/lifecycle';
 import * as DomApplierModule from '../../src/lib/uicp/adapters/domApplier';
 
@@ -8,6 +8,8 @@ const isVisible = (el: HTMLElement | null): boolean => {
   if (!el) return false;
   return el.style.display !== 'none';
 };
+
+type DomApplyFn = ReturnType<typeof DomApplierModule.createDomApplier>['apply'];
 
 describe('adapter.lifecycle v2 — state.watch + slots + api.into', () => {
   let root: HTMLElement;
@@ -187,14 +189,18 @@ describe('adapter.lifecycle v2 — state.watch + slots + api.into', () => {
 
   it('state.patch updates nested values with a single watcher render', async () => {
     clearWorkspaceRoot();
-    let domApplySpy: Mock | null = null;
+    let domApplySpy: MockInstance<DomApplyFn> | null = null;
+    let applyInvocations = 0;
     const actualCreateDomApplier = DomApplierModule.createDomApplier;
     const createDomApplierSpy = vi
       .spyOn(DomApplierModule, 'createDomApplier')
       .mockImplementation((...args) => {
         const instance = actualCreateDomApplier(...(args as Parameters<typeof actualCreateDomApplier>));
         const originalApply = instance.apply.bind(instance);
-        const spy = vi.fn(async (params: Parameters<typeof instance.apply>[0]) => originalApply(params));
+        const spy = vi.fn<DomApplyFn>(async (params) => {
+          applyInvocations += 1;
+          return originalApply(params);
+        });
         (instance as typeof instance & { apply: typeof spy }).apply = spy;
         domApplySpy = spy;
         return instance;
@@ -218,7 +224,10 @@ describe('adapter.lifecycle v2 — state.watch + slots + api.into', () => {
         },
       ] as any);
 
-      domApplySpy?.mockClear();
+      if (!domApplySpy) {
+        throw new Error('domApplier spy was not initialized');
+      }
+      const initialCallCount = applyInvocations;
 
       await applyBatch([
         {
@@ -235,8 +244,7 @@ describe('adapter.lifecycle v2 — state.watch + slots + api.into', () => {
         },
       ] as any);
 
-      expect(domApplySpy).toBeTruthy();
-      expect(domApplySpy!.mock.calls.length).toBe(1);
+      expect(applyInvocations).toBe(initialCallCount + 1);
 
       const target = root.querySelector('#patch-target') as HTMLElement | null;
       expect(target).toBeTruthy();

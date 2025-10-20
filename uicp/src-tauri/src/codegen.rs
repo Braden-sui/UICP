@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use anyhow::{anyhow, Context};
 use once_cell::sync::Lazy;
@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::{async_runtime::spawn as tauri_spawn, AppHandle, Manager, Runtime, State};
 use tokio::sync::OwnedSemaphorePermit;
+use tree_sitter::{Node, Parser, Tree};
+use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
 
 use crate::{
     compute_cache, emit_or_log, remove_compute_job, AppState, ComputeFinalErr, ComputeFinalOk,
@@ -14,7 +16,8 @@ use crate::{
 };
 
 const TASK_PREFIX: &str = "codegen.run@";
-const VALIDATOR_VERSION: &str = "codegen-validator-v0";
+const VALIDATOR_VERSION: &str = "codegen-validator-v1";
+const LEGACY_VALIDATOR_V0: &str = "codegen-validator-v0";
 const ERR_INPUT_INVALID: &str = "E-UICP-1300";
 const ERR_CODE_UNSAFE: &str = "E-UICP-1301";
 const ERR_PROVIDER: &str = "E-UICP-1302";
@@ -218,6 +221,18 @@ async fn run_codegen<R: Runtime>(
 ) -> Result<CodegenRunOk, CodegenFailure> {
     let state: State<'_, AppState> = app.state();
     let plan = build_plan(spec)?;
+    if plan.validator_version != VALIDATOR_VERSION {
+        emit_or_log(
+            app,
+            "codegen.validator-version",
+            json!({
+                "jobId": spec.job_id,
+                "task": spec.task,
+                "requested": plan.validator_version,
+                "default": VALIDATOR_VERSION,
+            }),
+        );
+    }
     spec.golden_key = Some(plan.golden_key.clone());
     spec.expect_golden = true;
 
@@ -265,6 +280,7 @@ async fn run_codegen<R: Runtime>(
 
     validate_code(
         plan.language,
+        &plan.validator_version,
         normalized["code"].as_str().unwrap_or_default(),
     )
     .map_err(CodegenFailure::unsafe_code)?;
@@ -419,7 +435,7 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
     let canonical = compute_cache::canonicalize_input(&key_payload);
     let mut hasher = sha2::Sha256::new();
     use sha2::Digest as _;
-    hasher.update(b"codegen-golden-v0|");
+    hasher.update(b"codegen-golden-v1|");
     hasher.update(canonical.as_bytes());
     let golden_key = hex::encode(hasher.finalize());
 
@@ -594,11 +610,25 @@ fn normalize_response(plan: &CodegenPlan, value: Value) -> anyhow::Result<Value>
     }))
 }
 
-fn validate_code(language: CodeLanguage, code: &str) -> Result<(), String> {
+fn validate_code(
+    language: CodeLanguage,
+    validator_version: &str,
+    code: &str,
+) -> Result<(), String> {
     if code.trim().is_empty() {
         return Err(format!("{ERR_INPUT_INVALID}: generated code is empty"));
     }
 
+    run_common_guards(code)?;
+
+    match language {
+        CodeLanguage::Typescript => validate_typescript(code, validator_version),
+        CodeLanguage::Rust => validate_rust(code),
+        CodeLanguage::Python => validate_python(code),
+    }
+}
+
+fn run_common_guards(code: &str) -> Result<(), String> {
     let lowered = code.to_ascii_lowercase();
     if lowered.contains("eval(") {
         return Err(format!("{ERR_CODE_UNSAFE}: usage of eval is forbidden"));
@@ -639,47 +669,420 @@ fn validate_code(language: CodeLanguage, code: &str) -> Result<(), String> {
             "{ERR_CODE_UNSAFE}: assigning string literal to innerHTML is forbidden"
         ));
     }
+    Ok(())
+}
 
-    match language {
-        CodeLanguage::Typescript => {
-            if !TS_RENDER_EXPORT_RE.is_match(code) {
-                return Err(format!(
-                    "{ERR_INPUT_INVALID}: export render function missing (export function render)"
-                ));
-            }
-            if !TS_ON_EVENT_EXPORT_RE.is_match(code) {
-                return Err(format!(
-                    "{ERR_INPUT_INVALID}: export onEvent function missing"
-                ));
-            }
+fn validate_typescript(code: &str, validator_version: &str) -> Result<(), String> {
+    if validator_version == LEGACY_VALIDATOR_V0 {
+        return legacy_typescript_export_check(code);
+    }
+    validate_typescript_structural(code)
+}
+
+fn legacy_typescript_export_check(code: &str) -> Result<(), String> {
+    if !TS_RENDER_EXPORT_RE.is_match(code) {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: export render function missing (export function render)"
+        ));
+    }
+    if !TS_ON_EVENT_EXPORT_RE.is_match(code) {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: export onEvent function missing"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rust(code: &str) -> Result<(), String> {
+    if !RS_RENDER_FN_RE.is_match(code) {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: pub fn render signature missing in Rust artifact"
+        ));
+    }
+    if !RS_ON_EVENT_FN_RE.is_match(code) {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: pub fn on_event signature missing in Rust artifact"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_python(code: &str) -> Result<(), String> {
+    let lowered = code.to_ascii_lowercase();
+    if !PY_RENDER_DEF_RE.is_match(&lowered) {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: def render(...) missing in Python artifact"
+        ));
+    }
+    if !PY_ON_EVENT_DEF_RE.is_match(&lowered) {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: def on_event(...) missing in Python artifact"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_typescript_structural(code: &str) -> Result<(), String> {
+    let tree = parse_typescript_tree(code)?;
+    let metadata = gather_ts_metadata(&tree, code)?;
+
+    if metadata.has_imports {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: imports are not allowed in generated code"
+        ));
+    }
+    if metadata.has_reexports {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: re-exports are not allowed in generated code"
+        ));
+    }
+
+    for required in ["render", "onEvent"] {
+        if !metadata.exports.contains(required) {
+            return Err(format!(
+                "{ERR_INPUT_INVALID}: export {required} function missing"
+            ));
         }
-        CodeLanguage::Rust => {
-            if !RS_RENDER_FN_RE.is_match(code) {
-                return Err(format!(
-                    "{ERR_INPUT_INVALID}: pub fn render signature missing in Rust artifact"
-                ));
-            }
-            if !RS_ON_EVENT_FN_RE.is_match(code) {
-                return Err(format!(
-                    "{ERR_INPUT_INVALID}: pub fn on_event signature missing in Rust artifact"
-                ));
-            }
-        }
-        CodeLanguage::Python => {
-            if !PY_RENDER_DEF_RE.is_match(&lowered) {
-                return Err(format!(
-                    "{ERR_INPUT_INVALID}: def render(...) missing in Python artifact"
-                ));
-            }
-            if !PY_ON_EVENT_DEF_RE.is_match(&lowered) {
-                return Err(format!(
-                    "{ERR_INPUT_INVALID}: def on_event(...) missing in Python artifact"
-                ));
-            }
+        if !metadata.fn_like.contains(required) {
+            return Err(format!(
+                "{ERR_INPUT_INVALID}: export {required} must be a function"
+            ));
         }
     }
 
+    let violations = detect_ts_identifier_violations(&tree, code, &metadata.declared);
+    if !violations.is_empty() {
+        let mut names: Vec<_> = violations.into_iter().collect();
+        names.sort();
+        let joined = names
+            .into_iter()
+            .map(|name| format!("identifier '{name}' is not in the allowlist"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("{ERR_CODE_UNSAFE}: {joined}"));
+    }
+
     Ok(())
+}
+
+#[derive(Default)]
+struct TsMetadata {
+    exports: HashSet<String>,
+    fn_like: HashSet<String>,
+    declared: HashSet<String>,
+    has_imports: bool,
+    has_reexports: bool,
+}
+
+fn parse_typescript_tree(code: &str) -> Result<Tree, String> {
+    let mut parser = Parser::new();
+    let language = LANGUAGE_TYPESCRIPT;
+    parser.set_language(&language.into()).map_err(|err| {
+        format!("{ERR_INPUT_INVALID}: failed to initialize TypeScript parser: {err}")
+    })?;
+    let tree = parser
+        .parse(code, None)
+        .ok_or_else(|| format!("{ERR_INPUT_INVALID}: failed to parse TypeScript"))?;
+    if tree.root_node().has_error() {
+        return Err(format!(
+            "{ERR_INPUT_INVALID}: failed to parse TypeScript: syntax error"
+        ));
+    }
+    Ok(tree)
+}
+
+fn gather_ts_metadata(tree: &Tree, code: &str) -> Result<TsMetadata, String> {
+    let mut metadata = TsMetadata::default();
+    gather_ts_node(tree.root_node(), code, &mut metadata)?;
+    Ok(metadata)
+}
+
+fn gather_ts_node(node: Node, code: &str, meta: &mut TsMetadata) -> Result<(), String> {
+    match node.kind() {
+        "import_statement" => meta.has_imports = true,
+        "export_statement" => process_export_statement(node, code, meta)?,
+        "function_declaration" => process_function_declaration_node(node, code, meta),
+        "lexical_declaration" | "variable_declaration" | "variable_statement" => {
+            process_variable_declaration_node(node, code, meta, false)
+        }
+        "class_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                meta.declared.insert(node_text(name_node, code));
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        gather_ts_node(child, code, meta)?;
+    }
+    Ok(())
+}
+
+fn process_export_statement(node: Node, code: &str, meta: &mut TsMetadata) -> Result<(), String> {
+    if node.child_by_field_name("source").is_some() {
+        meta.has_reexports = true;
+    }
+
+    if let Some(decl) = node.child_by_field_name("declaration") {
+        match decl.kind() {
+            "function_declaration" => {
+                if let Some(name_node) = decl.child_by_field_name("name") {
+                    let name = node_text(name_node, code);
+                    meta.exports.insert(name.clone());
+                    meta.fn_like.insert(name.clone());
+                    meta.declared.insert(name.clone());
+                }
+                process_function_declaration_node(decl, code, meta);
+            }
+            "lexical_declaration" | "variable_declaration" | "variable_statement" => {
+                process_variable_declaration_node(decl, code, meta, true);
+            }
+            "class_declaration" => {
+                if let Some(name_node) = decl.child_by_field_name("name") {
+                    let name = node_text(name_node, code);
+                    meta.exports.insert(name.clone());
+                    meta.declared.insert(name);
+                }
+            }
+            _ => {}
+        }
+    } else if let Some(clause) = node.child_by_field_name("export_clause") {
+        collect_export_clause_names(clause, code, &mut meta.exports);
+    }
+
+    Ok(())
+}
+
+fn process_function_declaration_node(node: Node, code: &str, meta: &mut TsMetadata) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let name = node_text(name_node, code);
+        meta.declared.insert(name.clone());
+        meta.fn_like.insert(name);
+    }
+    if let Some(params) = node.child_by_field_name("parameters") {
+        let mut names = Vec::new();
+        collect_binding_names(params, code, &mut names);
+        for name in names {
+            meta.declared.insert(name);
+        }
+    }
+}
+
+fn process_variable_declaration_node(
+    node: Node,
+    code: &str,
+    meta: &mut TsMetadata,
+    mark_export: bool,
+) {
+    let kind = node.kind();
+    if kind == "variable_statement" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "variable_declaration" {
+                process_variable_declaration_node(child, code, meta, mark_export);
+            }
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "variable_declarator" {
+            process_variable_declarator(child, code, meta, mark_export);
+        }
+    }
+}
+
+fn process_variable_declarator(node: Node, code: &str, meta: &mut TsMetadata, mark_export: bool) {
+    let mut names = Vec::new();
+    if let Some(name_node) = node.child_by_field_name("name") {
+        collect_binding_names(name_node, code, &mut names);
+    }
+    for name in &names {
+        meta.declared.insert(name.clone());
+    }
+    if mark_export {
+        for name in &names {
+            meta.exports.insert(name.clone());
+        }
+    }
+    if let Some(value_node) = node.child_by_field_name("value") {
+        if is_function_like_node(&value_node) {
+            for name in &names {
+                meta.fn_like.insert(name.clone());
+            }
+            collect_function_like_params(&value_node, code, &mut meta.declared);
+        }
+    }
+}
+
+fn collect_binding_names(node: Node, code: &str, out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" | "private_property_identifier" => {
+            out.push(node_text(node, code));
+            return;
+        }
+        "rest_pattern"
+        | "array_pattern"
+        | "object_pattern"
+        | "assignment_pattern"
+        | "pair_pattern"
+        | "required_parameter"
+        | "optional_parameter"
+        | "rest_parameter"
+        | "parenthesized_parameter"
+        | "formal_parameters"
+        | "parameter"
+        | "tuple_pattern" => {}
+        _ => return,
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_binding_names(child, code, out);
+    }
+}
+
+fn collect_function_like_params(node: &Node, code: &str, declared: &mut HashSet<String>) {
+    if let Some(params) = node.child_by_field_name("parameters") {
+        let mut names = Vec::new();
+        collect_binding_names(params, code, &mut names);
+        for name in names {
+            declared.insert(name);
+        }
+    } else if let Some(param) = node.child_by_field_name("parameter") {
+        let mut names = Vec::new();
+        collect_binding_names(param, code, &mut names);
+        for name in names {
+            declared.insert(name);
+        }
+    }
+}
+
+fn is_function_like_node(node: &Node) -> bool {
+    matches!(node.kind(), "arrow_function" | "function_expression")
+}
+
+fn collect_export_clause_names(node: Node, code: &str, exports: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "export_specifier" => {
+                if let Some(alias) = child.child_by_field_name("alias") {
+                    exports.insert(node_text(alias, code));
+                } else if let Some(name_node) = child.child_by_field_name("name") {
+                    exports.insert(node_text(name_node, code));
+                } else if let Some(local) = child.child_by_field_name("local") {
+                    exports.insert(node_text(local, code));
+                }
+            }
+            "namespace_export" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    exports.insert(node_text(name_node, code));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn node_text(node: Node, code: &str) -> String {
+    node.utf8_text(code.as_bytes())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn detect_ts_identifier_violations(
+    tree: &Tree,
+    code: &str,
+    declared: &HashSet<String>,
+) -> HashSet<String> {
+    let mut violations = HashSet::new();
+    usage_traverse(tree.root_node(), code, declared, &mut violations, false);
+    violations
+}
+
+fn usage_traverse(
+    node: Node,
+    code: &str,
+    declared: &HashSet<String>,
+    violations: &mut HashSet<String>,
+    inside_type: bool,
+) {
+    let kind = node.kind();
+    let next_inside_type = inside_type || is_type_context_kind(kind);
+
+    if kind == "identifier" {
+        if !inside_type && !should_ignore_identifier(&node) {
+            let name = node_text(node, code);
+            if !declared.contains(&name)
+                && !TS_ALLOWED_GLOBALS.contains(name.as_str())
+                && !name.starts_with("__")
+                && name != "undefined"
+            {
+                violations.insert(name);
+            }
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        usage_traverse(child, code, declared, violations, next_inside_type);
+    }
+}
+
+fn is_type_context_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "type_annotation"
+            | "type_arguments"
+            | "type_parameters"
+            | "type_parameter"
+            | "type_alias_declaration"
+            | "interface_declaration"
+            | "type_identifier"
+            | "predefined_type"
+            | "object_type"
+            | "tuple_type"
+            | "union_type"
+            | "intersection_type"
+            | "conditional_type"
+            | "indexed_access_type"
+            | "implements_clause"
+            | "extends_clause"
+            | "infer_type"
+            | "type_predicate"
+    )
+}
+
+fn should_ignore_identifier(node: &Node) -> bool {
+    if let Some(parent) = node.parent() {
+        let parent_kind = parent.kind();
+        if matches!(
+            parent_kind,
+            "export_specifier"
+                | "namespace_export"
+                | "import_specifier"
+                | "named_imports"
+                | "namespace_import"
+                | "type_identifier"
+                | "predefined_type"
+                | "type_annotation"
+        ) {
+            return true;
+        }
+        if parent.child_by_field_name("property").map(|n| n.id()) == Some(node.id())
+            || parent.child_by_field_name("key").map(|n| n.id()) == Some(node.id())
+            || parent.child_by_field_name("label").map(|n| n.id()) == Some(node.id())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 static INNER_HTML_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
@@ -706,6 +1109,41 @@ static PY_RENDER_DEF_RE: Lazy<Regex> =
 static PY_ON_EVENT_DEF_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?m)^\s*def\s+on_event\b").expect("py on_event def regex"));
 
+static TS_ALLOWED_GLOBALS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "Array",
+        "ArrayBuffer",
+        "BigInt",
+        "Boolean",
+        "DataView",
+        "Date",
+        "Error",
+        "Infinity",
+        "JSON",
+        "Map",
+        "Math",
+        "NaN",
+        "Number",
+        "Object",
+        "Promise",
+        "RangeError",
+        "RegExp",
+        "Set",
+        "String",
+        "Symbol",
+        "TypeError",
+        "Uint8Array",
+        "WeakMap",
+        "WeakSet",
+        "decodeURIComponent",
+        "encodeURIComponent",
+        "parseFloat",
+        "parseInt",
+    ]
+    .into_iter()
+    .collect()
+});
+
 /// Whether the task should be handled by this module.
 pub fn is_codegen_task(task: &str) -> bool {
     task.starts_with(TASK_PREFIX)
@@ -714,6 +1152,7 @@ pub fn is_codegen_task(task: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec};
     use serde_json::json;
 
     #[test]
@@ -727,7 +1166,7 @@ mod tests {
                 return null;
             }
         "#;
-        assert!(validate_code(CodeLanguage::Typescript, code).is_ok());
+        assert!(validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).is_ok());
     }
 
     #[test]
@@ -737,10 +1176,67 @@ mod tests {
                 return eval("console.log('nope')");
             }
         "#;
-        let err = validate_code(CodeLanguage::Typescript, code).unwrap_err();
+        let err = validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).unwrap_err();
         assert!(
             err.contains("E-UICP-1301"),
             "expected unsafe eval rejection, got {err}"
+        );
+    }
+
+    #[test]
+    fn typescript_validator_v1_rejects_window_usage() {
+        let code = r#"
+            export function render() {
+                return { html: window.location.href };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        assert!(
+            validate_code(CodeLanguage::Typescript, LEGACY_VALIDATOR_V0, code).is_ok(),
+            "Legacy validator should continue to accept historical artifacts"
+        );
+        let err = validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).unwrap_err();
+        assert!(
+            err.contains("allowlist"),
+            "expected allowlist violation, got {err}"
+        );
+    }
+
+    #[test]
+    fn typescript_validator_v1_allows_json_and_math() {
+        let code = r#"
+            export const render = (state: string) => {
+                const model = JSON.parse(state || "{}");
+                const score = Math.max(0, model.count ?? 0);
+                return { html: `<div>${score}</div>` };
+            };
+
+            export const onEvent = (action: string, payload: string, state: string) => {
+                const current = JSON.parse(state || "{}");
+                const delta = action === "increment" ? 1 : -1;
+                const next = { ...current, count: (current.count ?? 0) + delta };
+                return { next_state: JSON.stringify(next) };
+            };
+        "#;
+        assert!(validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).is_ok());
+    }
+
+    #[test]
+    fn golden_key_changes_with_validator_version() {
+        let spec_v1 = make_codegen_spec(None);
+        let plan_v1 = build_plan(&spec_v1).expect("plan v1");
+        assert_eq!(plan_v1.validator_version, VALIDATOR_VERSION);
+
+        let spec_v0 = make_codegen_spec(Some(LEGACY_VALIDATOR_V0));
+        let plan_v0 = build_plan(&spec_v0).expect("plan v0");
+        assert_eq!(plan_v0.validator_version, LEGACY_VALIDATOR_V0);
+
+        assert_ne!(
+            plan_v1.golden_key, plan_v0.golden_key,
+            "golden keys must differ once validator version diverges"
         );
     }
 
@@ -750,7 +1246,7 @@ mod tests {
             spec_text: "spec".into(),
             language: CodeLanguage::Python,
             constraints: Value::Null,
-            validator_version: "v0".into(),
+            validator_version: VALIDATOR_VERSION.into(),
             model_id: "o4-mini".into(),
             temperature: 0.1,
             max_output_tokens: 128,
@@ -774,5 +1270,40 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         assert_eq!(model, "o4-mini");
+    }
+
+    fn make_codegen_spec(validator: Option<&str>) -> ComputeJobSpec {
+        let input = match validator {
+            Some(v) => json!({
+                "spec": "export const render = () => ({ html: '<div></div>' });\nexport const onEvent = () => ({ next_state: '{}' });",
+                "language": "ts",
+                "validatorVersion": v
+            }),
+            None => json!({
+                "spec": "export const render = () => ({ html: '<div></div>' });\nexport const onEvent = () => ({ next_state: '{}' });",
+                "language": "ts"
+            }),
+        };
+
+        ComputeJobSpec {
+            job_id: "00000000-0000-4000-8000-000000000002".into(),
+            task: "codegen.run@0.1.0".into(),
+            input,
+            timeout_ms: Some(30_000),
+            fuel: None,
+            mem_limit_mb: None,
+            bind: vec![],
+            cache: "readwrite".into(),
+            capabilities: ComputeCapabilitiesSpec::default(),
+            replayable: true,
+            workspace_id: "default".into(),
+            provenance: ComputeProvenanceSpec {
+                env_hash: "test-env".into(),
+                agent_trace_id: None,
+            },
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        }
     }
 }

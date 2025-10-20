@@ -9,5 +9,5 @@
 - Partial output contract: guests acquire an output stream through `control.open_partial_sink(job)` for CBOR frames; misuse results in `Compute.CapabilityDenied`.
 - **Identifier hygiene:** component and interface identifiers use kebab-case (lowercase words separated by single hyphens) to satisfy the v0.240+ WIT grammar. Future changes must avoid dash-separated labels in packages, types, functions, and fields.
 
-> Bump the package version(s) above and record the delta before shipping any interface change. Downstream bindings (`npm run gen:io`) must be regenerated in the same change.
+> Bump the package version(s) above and record the delta before shipping any interface change. Downstream bindings (`pnpm run gen:io`) must be regenerated in the same change.
 

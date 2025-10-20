@@ -34,10 +34,10 @@ Build a trustworthy, local‑first generative desktop where models describe inte
 
 ```bash
 cd uicp
-npm install
-npm run dev            # Vite dev server (web)
+pnpm install
+pnpm run dev            # Vite dev server (web)
 # or run the desktop shell with Tauri (recommended during integration)
-npm run tauri:dev
+pnpm run tauri:dev
 ```
 
 The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.ts`). When running standalone (without Tauri), open `http://127.0.0.1:1420`.
@@ -54,23 +54,23 @@ The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.t
 
 ## Commands
 
-- `npm run dev` – start Vite in development mode
-- `npm run tauri:dev` – start the Tauri desktop shell (proxies to Vite on port 1420)
-- `npm run build` – typecheck + bundle for production
-- `npm run tauri:build` – build the desktop app bundle
-- `npm run lint` – ESLint over `src`
-- `npm run format` – Prettier write
-- `npm run typecheck` – strict TS compile
-- `npm run test` – Vitest unit suite (`tests/unit`)
-- `npm run test:e2e` - Playwright smoke (`tests/e2e/specs`), builds then runs preview
+- `pnpm run dev` – start Vite in development mode
+- `pnpm run tauri:dev` – start the Tauri desktop shell (proxies to Vite on port 1420)
+- `pnpm run build` – typecheck + bundle for production
+- `pnpm run tauri:build` – build the desktop app bundle
+- `pnpm run lint` – ESLint over `src`
+- `pnpm run format` – Prettier write
+- `pnpm run typecheck` – strict TS compile
+- `pnpm run test` – Vitest unit suite (`tests/unit`)
+- `pnpm run test:e2e` - Playwright smoke (`tests/e2e/specs`), builds then runs preview
 
 ### Compute modules and runtime
 
-- `npm run dev:wasm` – Tauri dev with `UICP_MODULES_DIR` on PATH for faster inner loop
-- `npm run dev:wasm:runtime` – Tauri dev with compute host features (`wasm_compute,uicp_wasi_enable`)
-- `npm run modules:build` – build Wasm components under `uicp/components/*`
-- `npm run modules:publish` – copy built components into `uicp/src-tauri/modules` and update manifest
-- `npm run gen:io` – regenerate TypeScript bindings from WIT into `uicp/src/compute/types.gen.ts`
+- `pnpm run dev:wasm` – Tauri dev with `UICP_MODULES_DIR` on PATH for faster inner loop
+- `pnpm run dev:wasm:runtime` – Tauri dev with compute host features (`wasm_compute,uicp_wasi_enable`)
+- `pnpm run modules:build` – build Wasm components under `uicp/components/*`
+- `pnpm run modules:publish` – copy built components into `uicp/src-tauri/modules` and update manifest
+- `pnpm run gen:io` – regenerate TypeScript bindings from WIT into `uicp/src/compute/types.gen.ts`
 
 ## Documentation
 
@@ -170,8 +170,8 @@ These tools provide visibility into the system's operation and help with debuggi
 
 ## Testing
 
-1. `npm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation.
-2. `npm run test:e2e` drives flows end-to-end in Playwright. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
+1. `pnpm run test` executes the Vitest suite covering the reveal hook, DockChat behaviour, schema validation, queue semantics, aggregator/orchestrator parse, STOP, and stream cancellation.
+2. `pnpm run test:e2e` drives flows end-to-end in Playwright. Optional orchestrator E2E is gated by `E2E_ORCHESTRATOR=1` and requires a Tauri runtime + valid API key.
 
 Rust (compute host)
 
@@ -186,12 +186,12 @@ CI
 
 ### CI Troubleshooting: deps install
 
-- Use Node 20 and npm 10. The workflow sets `node-version: 20`; local failures like `npm ERR! code EBADENGINE` usually indicate a different Node version.
-- Installs run with `npm ci --ignore-scripts --no-optional` to avoid platform-specific native installs. If your jobs use plain `npm install`, switch to `npm ci` with the same flags.
+- Use Node 20 and pnpm 10. The workflow sets `node-version: 20`; local failures like `pnpm ERR! code EBADENGINE` usually indicate a different Node version.
+- Installs run with `pnpm ci --ignore-scripts --no-optional` to avoid platform-specific native installs. If your jobs use plain `pnpm install`, switch to `pnpm ci` with the same flags.
 - Postinstall is explicitly run after install, but our script is a no-op on Linux/macOS and only restores Rollup’s Windows binding on Windows (`uicp/scripts/postinstall.cjs`). Safe to keep.
 - Build/test commands are wrapped by `scripts/run-with-rollup-env.mjs`, which sets `ROLLUP_SKIP_NODE_NATIVE=true` to avoid native Rollup bindings; do not call `vite build` or `vitest` directly in CI.
-- If caching issues appear, clear Actions cache for `uicp/package-lock.json` and re-run. Lockfile drift will cause `npm ci` to fail; commit the updated `package-lock.json` when dependencies change.
-- Reproduce locally with: `cd uicp && npm ci --ignore-scripts --no-optional`.
+- If caching issues appear, clear Actions cache for `uicp/pnpm-lock.yaml` and re-run. Lockfile drift will cause `pnpm ci` to fail; commit the updated `pnpm-lock.yaml` when dependencies change.
+- Reproduce locally with: `cd uicp && pnpm ci --ignore-scripts --no-optional`.
 
 ## In Development
 
@@ -225,7 +225,7 @@ See also: `docs/INDEX.md` for onboarding and reading order.
 
 ## Requirements
 
-- Node 20, npm 10
+- Node 20, pnpm 10
 - Tauri CLI 2 (`@tauri-apps/cli`), Rust toolchain
 - For components: `cargo-component` and `wit-component` if building Wasm modules locally
 

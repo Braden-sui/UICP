@@ -236,7 +236,7 @@ Rollback: set `VITE_WIL_ONLY=true` and/or revert `supportsTools` to false in pro
 
 ## Quick Commands
 
-- Run unit tests: `cd uicp && npm run test`
+- Run unit tests: `cd uicp && pnpm run test`
 - Focused test (example): `./node_modules/.bin/vitest run tests/unit/ollama/error-propagation.test.ts`
 - Dev: set `FALLBACK_CLOUD_MODEL` and `VITE_WIL_ONLY=false` in `.env` (restart Vite/Tauri dev server).
 

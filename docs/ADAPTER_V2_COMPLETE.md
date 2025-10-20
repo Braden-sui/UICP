@@ -290,7 +290,7 @@ Debug and fix v2 directly. The comprehensive test suite will catch regressions e
 2. **Read `adapter.ts`**: Entry point that exports the public API
 3. **Read `lifecycle.ts`**: Main orchestrator showing how modules coordinate
 4. **Browse Module Files**: Each module in `adapters/` has clear responsibility
-5. **Run Tests**: `npm test` to see 267 tests covering all operations
+5. **Run Tests**: `pnpm test` to see 267 tests covering all operations
 
 **"What are the key modules?"**
 
@@ -317,11 +317,11 @@ Debug and fix v2 directly. The comprehensive test suite will catch regressions e
 - Core adapter: `uicp/tests/unit/adapter.test.ts` (8 tests)
 - Queue: `uicp/tests/unit/uicp.queue.test.ts` (5 tests)
 - Idempotency: `uicp/src/lib/uicp/__tests__/batch-idempotency.test.ts` (12 tests)
-- All tests: `npm test` (267 passing)
+- All tests: `pnpm test` (267 passing)
 
 **"What if something breaks?"**
 - Debug v2 directly (no rollback available)
-- Run `npm test` to identify failing tests
+- Run `pnpm test` to identify failing tests
 - Use telemetry with `adapter_version: 2` to track issues
 
 ---
@@ -365,7 +365,7 @@ Debug and fix v2 directly. The comprehensive test suite will catch regressions e
 For questions about:
 - **Architecture**: Read this file + module files (WHY annotations inline)
 - **Implementation**: Browse `uicp/src/lib/uicp/adapters/*.ts`
-- **Testing**: Run `npm test` (267 tests covering all operations)
+- **Testing**: Run `pnpm test` (267 tests covering all operations)
 - **Module Responsibilities**: See "V2 Architecture" section above
 
 ---

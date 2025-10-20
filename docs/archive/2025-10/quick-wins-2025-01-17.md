@@ -123,8 +123,8 @@ app.upsertTelemetry(traceId, {
 ## Testing
 
 All changes are backward compatible and do not break existing tests:
-- `npm test -- stream-cancel.test.ts` ✅ (12/12 passed)
-- `npm test -- tests/unit/adapter.autocreate.test.ts` ✅ (2/2 passed)
+- `pnpm test -- stream-cancel.test.ts` ✅ (12/12 passed)
+- `pnpm test -- tests/unit/adapter.autocreate.test.ts` ✅ (2/2 passed)
 - Full suite: 224 passed, 1 skipped, 1 pre-existing failure (unrelated)
 
 ---

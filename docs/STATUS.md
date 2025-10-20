@@ -32,7 +32,7 @@ Track E closed out with docs, tests, and example applet covering the QuickJS exe
 
 ## Next (Planned)
 
-- Automate WIT binding drift detection directly in CI (failing when `npm run gen:io` produces diffs).
+- Automate WIT binding drift detection directly in CI (failing when `pnpm run gen:io` produces diffs).
 - Add dashboards/alerts for compute success/error rates, cache hit ratio, throttle counters.
 - Expand negative guest modules (timeout, OOM) to validate policy end-to-end under Playwright harness.
 
@@ -49,7 +49,7 @@ Track E closed out with docs, tests, and example applet covering the QuickJS exe
 
 ## Test/CI Health
 
-- UI: lint, typecheck, unit, e2e, build all pass locally when Node 20/npm 10 are used.
+- UI: lint, typecheck, unit, e2e, build all pass locally when Node 20/pnpm 10 are used.
 - Compute: Rust tests plus compute harness smoke run in CI; local `cargo test --features wasm_compute` currently blocked by Wasmtime API drift (see Open Bugs).
 - Link checks: configured via `.lychee.toml`.
 

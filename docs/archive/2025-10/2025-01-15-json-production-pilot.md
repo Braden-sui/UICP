@@ -97,7 +97,7 @@ At ANY failure point:
 ### Manual Testing Required
 ```bash
 # 1. Start dev server
-cd uicp && npm run dev
+cd uicp && pnpm run dev
 
 # 2. Test basic intent
 "create a notepad window"

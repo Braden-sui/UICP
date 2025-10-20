@@ -310,7 +310,7 @@ Component-level tests in `uicp/components/applet.quickjs/src/lib.rs` validate:
 ### Enable Compute Logs
 
 ```bash
-UICP_WASI_DIAG=1 npm run dev:wasm
+UICP_WASI_DIAG=1 pnpm run dev:wasm
 ```
 
 This emits:

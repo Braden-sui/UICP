@@ -6,13 +6,13 @@ on:
       - 'uicp/src-tauri/modules/**'
       - 'uicp/scripts/verify-modules.mjs'
       - 'uicp/package.json'
-      - 'uicp/package-lock.json'
+      - 'uicp/pnpm-lock.yaml'
   pull_request:
     paths:
       - 'uicp/src-tauri/modules/**'
       - 'uicp/scripts/verify-modules.mjs'
       - 'uicp/package.json'
-      - 'uicp/package-lock.json'
+      - 'uicp/pnpm-lock.yaml'
 
 jobs:
   verify:

@@ -175,7 +175,7 @@ if (traceId) {
 ## Testing
 
 All telemetry tracking is automatically tested via existing test suite:
-- `npm test` runs 224+ tests
+- `pnpm test` runs 224+ tests
 - Telemetry assertions in integration tests verify ID presence
 - No new test files required (tracked within ApplyOutcome and orchestrator tests)
 

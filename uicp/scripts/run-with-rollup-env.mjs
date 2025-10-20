@@ -2,7 +2,7 @@
 /**
  * Cross-platform helper that ensures ROLLUP_SKIP_NODE_NATIVE is set before
  * delegating to the provided command. We spawn via the platform shell so that
- * regular npm/vitest binaries resolve the same way `npm run` does.
+ * regular pnpm/vitest binaries resolve the same way `pnpm run` does.
  */
 import { spawn } from 'node:child_process';
 

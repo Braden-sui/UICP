@@ -4,6 +4,7 @@ vi.mock('../../src/lib/telemetry', () => ({
   emitTelemetryEvent: vi.fn(),
 }));
 
+import type { CommandExecutorDeps } from '../../src/lib/uicp/adapters/adapter.commands';
 import { createCommandTable } from '../../src/lib/uicp/adapters/adapter.commands';
 import { emitTelemetryEvent } from '../../src/lib/telemetry';
 
@@ -18,10 +19,19 @@ describe('needs.code executor', () => {
     const executor = table['needs.code'];
     expect(executor).toBeDefined();
 
-    const setStateValue = vi.fn();
-    const executeDomSet = vi.fn(() => ({ success: true, value: 'status' }));
-    const executeComponentRender = vi.fn(() => ({ success: true, value: 'panel-123' }));
-    const ensureWindowExists = vi.fn(async () => ({ success: true, value: 'app-window' }));
+    const setStateValue = vi.fn<NonNullable<CommandExecutorDeps['setStateValue']>>(() => {});
+    const executeDomSet = vi.fn<NonNullable<CommandExecutorDeps['executeDomSet']>>(() => ({
+      success: true as const,
+      value: 'status',
+    }));
+    const executeComponentRender = vi.fn<NonNullable<CommandExecutorDeps['executeComponentRender']>>(() => ({
+      success: true as const,
+      value: 'panel-123',
+    }));
+    const ensureWindowExists = vi.fn<NonNullable<CommandExecutorDeps['ensureWindowExists']>>(async () => ({
+      success: true as const,
+      value: 'app-window',
+    }));
 
     let dispatchedJobId: string | undefined;
 
@@ -78,15 +88,13 @@ describe('needs.code executor', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
 
     expect(setStateValue).toHaveBeenCalled();
-    const stateKeys = setStateValue.mock.calls.map((call: [unknown]) => (call[0] as { key: string }).key);
+    const stateKeys = setStateValue.mock.calls.map(([callParams]) => callParams.key);
     expect(stateKeys).toContain('artifacts.demo-artifact');
     expect(stateKeys).toContain('artifacts.demo-artifact.code');
     expect(stateKeys).toContain('artifacts.demo-artifact.language');
     expect(stateKeys).toContain('artifacts.demo-artifact.meta');
 
-    const baseCall = setStateValue.mock.calls.find(
-      (call: [unknown]) => (call[0] as { key: string }).key === 'artifacts.demo-artifact',
-    );
+    const baseCall = setStateValue.mock.calls.find(([callParams]) => callParams.key === 'artifacts.demo-artifact');
     expect(baseCall?.[0]).toMatchObject({
       scope: 'workspace',
       value: {

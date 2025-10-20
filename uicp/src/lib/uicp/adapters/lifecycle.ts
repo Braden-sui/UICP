@@ -344,7 +344,6 @@ const cloneDeep = <T>(value: T): T => {
   }
   try {
     // structuredClone is available in modern browsers/node.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return structuredClone(value);
   } catch {
     if (Array.isArray(value)) {
@@ -390,7 +389,7 @@ const getChildValue = (value: unknown, segment: string): unknown => {
     if (isNumericKey(segment)) {
       return value[Number(segment)];
     }
-    return (value as Record<string, unknown>)[segment];
+    return (value as unknown as Record<string, unknown>)[segment];
   }
   if (isRecord(value)) {
     return value[segment];
@@ -413,7 +412,7 @@ const setChildValue = (container: unknown, segment: string, child: unknown): voi
     if (isNumericKey(segment)) {
       (container as unknown[])[Number(segment)] = child;
     } else {
-      (container as Record<string, unknown>)[segment] = child;
+      (container as unknown as Record<string, unknown>)[segment] = child;
     }
     return;
   }

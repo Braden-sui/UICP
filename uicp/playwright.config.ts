@@ -24,7 +24,7 @@ export default defineConfig({
   },
   webServer: {
     // Ensure a fresh build and start preview server for Playwright tests
-    command: 'npm run build && npm run preview -- --host --port 4173',
+    command: 'pnpm run build && pnpm run preview -- --host --port 4173',
     cwd: __dirname,
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,

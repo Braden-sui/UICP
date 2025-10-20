@@ -10,7 +10,7 @@ Legend
 
 Last updated: 2025-10-19
 
-- JS/TS: npm run test → 314/315 passing (1 pre-existing); npm run lint → clean
+- JS/TS: pnpm run test → 314/315 passing (1 pre-existing); pnpm run lint → clean
 - Rust: integration suites present; see sections below and testing.md
 - Track C (golden cache): Foundation complete; integration pending
 
@@ -169,7 +169,7 @@ Last updated: 2025-10-19
   - [x] E2E harness for compute
     - Implemented Playwright `compute` project that spawns the new `compute_harness` binary (Cargo `run --features compute_harness`). Exercises `window.uicpComputeCall`, asserts store bindings via exposed test hooks, verifies cancellation and cache replay against the real Tauri host.【F:uicp/src/lib/bridge/tauri.ts†L13-L195】【F:uicp/tests/e2e/compute.smoke.spec.ts†L1-L189】【F:uicp/playwright.config.ts†L26-L44】
     - Negative coverage presently covers cancellation and cache replay; timeout/OOM fixtures remain blocked pending a buildable stress module (see notes).
-    - CI step `npm run test:e2e -- --project compute` wired in `.github/workflows/compute-ci.yml` to run headless on Actions once modules bundle.【F:.github/workflows/compute-ci.yml†L63-L84】
+    - CI step `pnpm run test:e2e -- --project compute` wired in `.github/workflows/compute-ci.yml` to run headless on Actions once modules bundle.【F:.github/workflows/compute-ci.yml†L63-L84】
 
 - [x] Concurrency cap enforcement test
   - AC: With cap `N = 2`, tokio integration test drives real module execution, asserts queue wait metrics via `queueMs`, and proves third job queues while the first two run.【F:uicp/src-tauri/src/main.rs†L262-L286】【F:uicp/src-tauri/src/compute.rs†L920-L1816】【F:uicp/src-tauri/tests/integration_compute/concurrency_cap.rs†L1-L121】
@@ -219,7 +219,7 @@ Last updated: 2025-10-19
     - World: `task` exports the pure csv interface from `uicp/components/csv.parse/csv-parse/wit/world.wit`; `table.query` retains host-control imports as documented in `uicp/components/table.query/wit/world.wit`.
     - TODO: freeze the ABI by documenting request/response schemas, error semantics, and host imports in `docs/compute/README.md` and a dedicated WIT changelog.
     - TODO: ensure host shims match the WIT files (csv: no imports; table.query: `uicp:host/control`, `wasi:logging`, `wasi:io`, `wasi:clocks`) and add conformance tests using `wit-bindgen` generated bindings once the host exposes these imports.
-    - TODO: add regression tests that diff the checked-in WIT files versus generated TypeScript/Rust bindings (`npm run gen:io`) so drift is caught in CI.
+    - TODO: add regression tests that diff the checked-in WIT files versus generated TypeScript/Rust bindings (`pnpm run gen:io`) so drift is caught in CI.
 
 - [x] Float determinism guard
   - `compute_cache` canonicalization normalises float representations and rejects non-finite numbers (`serde_refuses_non_finite_numbers`), and `integration_compute/determinism.rs` asserts identical `outputHash` across repeated table.query runs with identical seeds.
@@ -232,7 +232,7 @@ Last updated: 2025-10-19
 
   - [x] Minimum viable component(s)
     - Build and check in the release WASM binaries for `csv.parse@1.2.0` and `table.query@0.1.0` under `uicp/src-tauri/modules/`, replacing the placeholder digest values in `manifest.json` with actual SHA-256 hashes signed by the build pipeline.【F:uicp/src-tauri/modules/manifest.json†L1-L12】
-    - Automate artifact production using `npm run modules:build` + `npm run modules:publish`, ensure outputs are reproducible (document rustc/wasm-opt versions), and store provenance in CHANGELOG or release notes.
+    - Automate artifact production using `pnpm run modules:build` + `pnpm run modules:publish`, ensure outputs are reproducible (document rustc/wasm-opt versions), and store provenance in CHANGELOG or release notes.
     - CI verifies manifests and signatures (`scripts/verify-modules.mjs`) and module smoke tests execute real jobs via the harness.
 
 - [~] Mandatory module signatures in release
@@ -293,12 +293,12 @@ Last updated: 2025-10-19
 
 - [x] Compute build jobs
   - `compute-ci` compiles the host with `wasm_compute,uicp_wasi_enable` and runs `cargo test` for Rust, plus TS unit tests (`.github/workflows/compute-ci.yml`).
-  - `Regenerate WIT bindings` runs `npm run gen:io` and fails when generated bindings drift from checked-in WIT definitions.
+  - `Regenerate WIT bindings` runs `pnpm run gen:io` and fails when generated bindings drift from checked-in WIT definitions.
   - Added metadata checks for `components/log.test` to guard interface drift. Next: integrate Wasm component build smoke.
   - JS/TS unit suite green locally (114 tests). Critical adapter/LLM/UI tests listed in section 11.
 
   - [x] E2E smoke for compute
-    - `uicp/tests/e2e/compute.smoke.spec.ts` drives the headless harness (CSV parse success, cache replay delta, cancellation). CI runs it via `npm run test:e2e -- --grep "compute harness"` in `.github/workflows/compute-ci.yml`.
+    - `uicp/tests/e2e/compute.smoke.spec.ts` drives the headless harness (CSV parse success, cache replay delta, cancellation). CI runs it via `pnpm run test:e2e -- --grep "compute harness"` in `.github/workflows/compute-ci.yml`.
 
 - [x] Host-only E2E smoke with `STRICT_MODULES_VERIFY`
   - CI step **Host harness smoke (strict verify)** runs `cargo run --bin compute_harness` against `csv.parse@1.2.0` with `STRICT_MODULES_VERIFY=1` and the published public key, ensuring signed modules execute under strict policy.

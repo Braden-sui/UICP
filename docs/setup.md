@@ -3,7 +3,7 @@
 ## Prerequisites
 - **Rust**: Stable toolchain via `rustup` (https://rustup.rs/)
 - **Node.js**: v20.x (see `uicp/package.json` engines)
-- **Tauri CLI**: ` npm install -g @tauri-apps/cli`
+- **Tauri CLI**: ` pnpm install -g @tauri-apps/cli`
 - **Visual C++ Build Tools** (MSVC)
 - **Ollama Cloud API key** from https://ollama.com
 
@@ -24,7 +24,7 @@ AI web-interface/
   - Install via rustup: https://rustup.rs/
   - Verify: `rustc --version`
 - Tauri CLI
-  - `npm install -g @tauri-apps/cli`
+  - `pnpm install -g @tauri-apps/cli`
 - Windows prerequisites
   - Microsoft Visual C++ Build Tools (MSVC)
   - WebView2 Runtime (usually preinstalled on Windows 11)
@@ -51,16 +51,16 @@ Development (webview only):
 
 ```bash
 cd uicp
-npm ci
-npm run dev
+pnpm ci
+pnpm run dev
 ```
 
 Tauri dev (desktop shell):
 
 ```bash
 cd uicp
-npm ci
-npm run tauri:dev
+pnpm ci
+pnpm run tauri:dev
 ```
 
 ### Ports
@@ -84,21 +84,21 @@ cargo install cargo-component --locked
 
 ```bash
 cd uicp
-npm run modules:build
+pnpm run modules:build
 ```
 
 3) Publish to the dev registry (copies `.wasm` to `src-tauri/modules` and updates digests)
 
 ```bash
 cd uicp
-npm run modules:publish
+pnpm run modules:publish
 ```
 
 4) Run Tauri with the compute runtime enabled (features) and the module directory set for dev
 
 ```bash
 cd uicp
-npm run dev:wasm:runtime
+pnpm run dev:wasm:runtime
 ```
 
 Notes
@@ -109,15 +109,15 @@ Notes
 
 ```bash
 cd uicp
-npm run lint
-npm run typecheck
-npm run test
-# optional: npm run test:e2e (requires Playwright browsers and dev server)
+pnpm run lint
+pnpm run typecheck
+pnpm run test
+# optional: pnpm run test:e2e (requires Playwright browsers and dev server)
 ```
 
 CI notes
-- On Linux CI, we install with `npm ci --ignore-scripts --no-optional` to avoid platform-specific optional binaries and postinstall hooks.
-- The `postinstall` script (`uicp/scripts/postinstall.cjs`) only adjusts Rollup's native binding on Windows; running `npm run postinstall` on Linux/macOS is a no-op and safe.
+- On Linux CI, we install with `pnpm ci --ignore-scripts --no-optional` to avoid platform-specific optional binaries and postinstall hooks.
+- The `postinstall` script (`uicp/scripts/postinstall.cjs`) only adjusts Rollup's native binding on Windows; running `pnpm run postinstall` on Linux/macOS is a no-op and safe.
 - Markdown link checks are currently disabled in CI (docs are living; no gating).
 
 ## Quick verification

@@ -78,9 +78,9 @@ UICP is a local-first desktop environment that you build through natural languag
 ### Running Tests
 ```bash
 cd uicp
-npm test               # All tests
-npm run typecheck      # Type checking
-npm run lint           # Linting
+pnpm test               # All tests
+pnpm run typecheck      # Type checking
+pnpm run lint           # Linting
 ```
 
 ### Project Structure

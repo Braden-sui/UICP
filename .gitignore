@@ -26,5 +26,6 @@ tmp/
 .vscode/
  
 # Repo-local temp artifacts
+npm-install.log
 temp_*.txt
 tmp_*.ps1

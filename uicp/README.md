@@ -1,4 +1,4 @@
-﻿# Generative Desktop Frontend
+# Generative Desktop Frontend
 
 React + Tailwind client for the UICP generative desktop. DockChat is the only user surface; the agent drives every UI change through validated UICP Core commands. Streaming is provided via Tauri events with a provider/orchestrator on the frontend.
 
@@ -6,22 +6,22 @@ React + Tailwind client for the UICP generative desktop. DockChat is the only us
 
 ```bash
 cd uicp
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
-The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Tauri uses the same build when running `npm run tauri:dev`.
+The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Tauri uses the same build when running `pnpm run tauri:dev`.
 
 ## Scripts
 
 | script              | purpose                                           |
 | ------------------- | ------------------------------------------------- |
-| `npm run dev`       | Start Vite dev server                             |
-| `npm run build`     | Typecheck + bundle for production                 |
-| `npm run lint`      | ESLint (flat config) over `src/`                  |
-| `npm run typecheck` | `tsc --noEmit`                                    |
-| `npm run test`      | Vitest unit suite                                 |
-| `npm run test:e2e`  | Playwright flow (builds + preview) |
+| `pnpm run dev`       | Start Vite dev server                             |
+| `pnpm run build`     | Typecheck + bundle for production                 |
+| `pnpm run lint`      | ESLint (flat config) over `src/`                  |
+| `pnpm run typecheck` | `tsc --noEmit`                                    |
+| `pnpm run test`      | Vitest unit suite                                 |
+| `pnpm run test:e2e`  | Playwright flow (builds + preview) |
 
 ## Environment
 
@@ -46,9 +46,9 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 
 ## Testing
 
-- Unit: `npm run test` (Vitest) covers dock reveal, DockChat, schemas, queue semantics, aggregator parse, orchestrator parse, STOP cancel, and stream cancellation.
-- E2E: `npm run test:e2e` (Playwright) builds and runs UI flows against the preview server.
-- Orchestrator E2E (optional): provide an Ollama Cloud API key in-app, then run with `E2E_ORCHESTRATOR=1 npm run test:e2e`. This spec is skipped by default.
+- Unit: `pnpm run test` (Vitest) covers dock reveal, DockChat, schemas, queue semantics, aggregator parse, orchestrator parse, STOP cancel, and stream cancellation.
+- E2E: `pnpm run test:e2e` (Playwright) builds and runs UI flows against the preview server.
+- Orchestrator E2E (optional): provide an Ollama Cloud API key in-app, then run with `E2E_ORCHESTRATOR=1 pnpm run test:e2e`. This spec is skipped by default.
 
 ## CI
 
