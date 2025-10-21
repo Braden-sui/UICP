@@ -78,14 +78,12 @@ mod with_runtime {
         Arc,
     };
     use tauri::{AppHandle, Runtime};
-    use tokio::sync::{
-        mpsc::{
-            self,
-            error::{TryRecvError, TrySendError},
-        },
-        Mutex,
+    use tokio::sync::mpsc::{
+        self,
+        error::{TryRecvError, TrySendError},
     };
     use tokio::time::{sleep, Duration as TokioDuration};
+    use parking_lot::Mutex;
     use wasmtime::{
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
@@ -289,7 +287,7 @@ mod with_runtime {
             loop {
                 let wait_for;
                 {
-                    let mut rl = self.logger_rate.blocking_lock();
+                    let mut rl = self.logger_rate.lock();
                     let avail = rl.available();
                     if avail >= total {
                         rl.consume(total);
@@ -470,7 +468,7 @@ mod with_runtime {
         async fn ready(&mut self) {
             loop {
                 let wait_for = {
-                    let mut rl = self.shared.partial_rate.lock().await;
+                    let mut rl = self.shared.partial_rate.lock();
                     if rl.try_take_event() {
                         return;
                     }
@@ -514,7 +512,7 @@ mod with_runtime {
         }
 
         fn check_write(&mut self) -> StreamResult<usize> {
-            if let Ok(mut rl) = self.shared.partial_rate.try_lock() {
+            if let Some(mut rl) = self.shared.partial_rate.try_lock() {
                 if rl.peek_tokens() >= 1.0 {
                     Ok(usize::MAX)
                 } else {
@@ -567,7 +565,7 @@ mod with_runtime {
             loop {
                 let wait_for;
                 {
-                    let mut rl = self.shared.log_rate.blocking_lock();
+                    let mut rl = self.shared.log_rate.lock();
                     let avail = rl.available();
                     if avail >= len {
                         rl.consume(len);
@@ -585,7 +583,7 @@ mod with_runtime {
                     std::thread::sleep(wait_for);
                 }
             }
-            let mut buf = self.shared.buf.blocking_lock();
+            let mut buf = self.shared.buf.lock();
             buf.extend_from_slice(bytes);
             // Emit one event per completed line
             loop {
@@ -1221,7 +1219,7 @@ mod with_runtime {
 
                         // stdout/stderr
                         {
-                            let mut rl = log_rate_c.lock().await;
+                            let mut rl = log_rate_c.lock();
                             let cur = rl.rate_per_sec();
                             if ewma_log >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
@@ -1233,7 +1231,7 @@ mod with_runtime {
                         }
                         // logger
                         {
-                            let mut rl = logger_rate_c.lock().await;
+                            let mut rl = logger_rate_c.lock();
                             let cur = rl.rate_per_sec();
                             if ewma_logger >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
@@ -1249,7 +1247,7 @@ mod with_runtime {
                         }
                         // partial events
                         {
-                            let mut rl = partial_rate_c.lock().await;
+                            let mut rl = partial_rate_c.lock();
                             let cur = rl.rate_per_sec();
                             if ewma_partial >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as u32;
@@ -2333,15 +2331,15 @@ mod with_runtime {
         let (stdout_burst, stdout_rate, logger_burst, logger_rate, partial_burst, partial_rate) = {
             let ctx = store.data();
             let (stdout_burst, stdout_rate) = {
-                let rl = ctx.log_rate.blocking_lock();
+                let rl = ctx.log_rate.lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             let (logger_burst, logger_rate) = {
-                let rl = ctx.logger_rate.blocking_lock();
+                let rl = ctx.logger_rate.lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             let (partial_burst, partial_rate) = {
-                let rl = ctx.partial_rate.blocking_lock();
+                let rl = ctx.partial_rate.lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             (
@@ -2724,11 +2722,11 @@ mod with_runtime {
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    self.debugs.blocking_lock().push(payload);
+                    self.debugs.lock().push(payload);
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, payload: serde_json::Value) {
-                    self.partials.blocking_lock().push(payload);
+                    self.partials.lock().push(payload);
                 }
             }
 
@@ -2779,7 +2777,7 @@ mod with_runtime {
 
             // Verify a partial event was captured with expected fields
             let part = captured_partials
-                .blocking_lock()
+                .lock()
                 .pop()
                 .expect("one partial emitted");
             assert_eq!(part.get("kind").and_then(|v| v.as_str()), Some("log"));
@@ -3117,7 +3115,7 @@ mod with_runtime {
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    self.debugs.blocking_lock().push(payload);
+                    self.debugs.lock().push(payload);
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
