@@ -36,10 +36,14 @@ Build a trustworthy, local‑first generative desktop where models describe inte
 # From repository root
 cd uicp
 pnpm install
-pnpm run dev            # Vite dev server (web)
-# or run the desktop shell with Tauri (recommended during integration)
+# Start the full desktop (recommended – enables provider auth, compute bridge, persistence, etc.)
 pnpm run tauri:dev
+
+# UI-only preview (no Tauri bridge, no CLI/provider functionality):
+pnpm run dev
 ```
+
+> **Heads-up:** `pnpm run dev` only serves the React UI through Vite. Without the Tauri runtime, DockChat can render but the agent cannot execute providers, invoke compute jobs, or access the keychain. Use `pnpm run tauri:dev` for any feature validation.
 
 The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.ts`). When running standalone (without Tauri), open `http://127.0.0.1:1420`.
 
@@ -55,8 +59,8 @@ The dev server is configured at `http://127.0.0.1:1420` (see `uicp/vite.config.t
 
 ## Commands
 
-- `pnpm run dev` – start Vite in development mode
-- `pnpm run tauri:dev` – start the Tauri desktop shell (proxies to Vite on port 1420)
+- `pnpm run dev` – start Vite in development mode (UI only; no Tauri bridge functionality)
+- `pnpm run tauri:dev` – start the Tauri desktop shell (proxies to Vite on port 1420; required for provider/compute features)
 - `pnpm run build` – typecheck + bundle for production
 - `pnpm run tauri:build` – build the desktop app bundle
 - `pnpm run lint` – ESLint over `src`
@@ -263,4 +267,3 @@ See also: `docs/README.md` for documentation overview and reading order.
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See the `LICENSE` file at the repository root for details.
-

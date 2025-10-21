@@ -7,8 +7,15 @@ React + Tailwind client for the UICP generative desktop. DockChat is the only us
 ```bash
 cd uicp
 pnpm install
+
+# Full desktop with Tauri (recommended)
+pnpm run tauri:dev
+
+# UI-only preview (no Tauri bridge functionality)
 pnpm run dev
 ```
+
+> `pnpm run dev` only launches the Vite server. Provider logins, compute bridge actions, keychain access, and other desktop features require `pnpm run tauri:dev`.
 
 The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Tauri uses the same build when running `pnpm run tauri:dev`.
 
@@ -16,7 +23,7 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 
 | script              | purpose                                           |
 | ------------------- | ------------------------------------------------- |
-| `pnpm run dev`       | Start Vite dev server                             |
+| `pnpm run dev`       | Start Vite dev server (UI only)                   |
 | `pnpm run build`     | Typecheck + bundle for production                 |
 | `pnpm run lint`      | ESLint (flat config) over `src/`                  |
 | `pnpm run typecheck` | `tsc --noEmit`                                    |
