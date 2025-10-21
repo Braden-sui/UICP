@@ -1,18 +1,32 @@
-# Model Integration
+// Conceptual interface definition (details may vary)
+interface ModelProvider {
+  id: string; // Unique identifier for the provider (e.g., 'openrouter', 'ollama')
+  name: string; // Display name (e.g., 'OpenRouter', 'Ollama Local')
+  icon?: string; // Optional icon for UI representation
+  isEnabled(): boolean; // Check if the provider is configured and active
+  getModels(): Promise<Array<{ id: string; name: string; capabilities: string[] }>>; // List available models
+  generate(options: GenerateOptions): Promise<Response>; // One-shot generation
+  streamGenerate(options: GenerateOptions): AsyncIterable<Chunk>; // Streaming generation
+  // ... other potential methods like embeddings, etc.
+}
 
-Last updated: 2025-01-19
+interface GenerateOptions {
+  model: string;
+  messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
+  tools?: any[]; // For tool calling
+  temperature?: number;
+  maxTokens?: number;
+  // ... other common LLM parameters
+}
 
-Purpose
-- Single place to capture model/provider integration notes and validation.
+interface Response {
+  content: string;
+  tool_calls?: any[];
+  // ... other response metadata
+}
 
-Tool Calling Verification (Ollama)
-- See consolidated guidance here; the detailed walkthrough previously lived under `docs/compute/OLLAMA_TOOL_CALLING_VERIFICATION.md`.
-- Checklist:
-  - Validate JSON/tool‑call shapes against `uicp/src/lib/llm/tools.ts` and `collectToolArgs.ts`
-  - Verify planner/actor profiles and fallbacks (`uicp/src/lib/llm/profiles.ts`, `collectWithFallback.ts`)
-  - Ensure error surfaces propagate to chat system messages with actionable codes
-  - Add or update tests under `uicp/tests/unit/ollama/*`
-
-Notes
-- Keep provider‑specific, deep dives in provider‑named sections here instead of scattering under compute.
-
+interface Chunk {
+  content?: string;
+  tool_calls_delta?: any[];
+  // ... other stream chunk metadata
+}
