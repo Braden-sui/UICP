@@ -9,8 +9,12 @@ Purpose
 
 Usage (CLI)
 - One-off run: `node ops/code/run-job.mjs --spec path/to/spec.json`
-- Dry run (no containers, validates only): `--dry`
+- Dry run (no provider exec): add `--dry`
+- Assemble only (bundle + validate, cache): add `--assemble-only`
+- Apply diffs from provider (after allowlist check): add `--apply`
+- Run inside container (docker/podman): add `--container`
 - Provider override: `--provider claude|codex`
+- Dual-shot (try both, small budget): add `--dual`
 
 Artifacts
 - providers/claude-cli.yaml — container, entry, defaults
@@ -23,3 +27,9 @@ Notes
 - Default network: off. httpjail (if present) further restricts egress to explicit hosts and GET/HEAD/OPTIONS.
 - On macOS, httpjail is best-effort; prefer Linux in CI/agents.
 - Error codes use E-UICP-####. Nonexistent tools or binaries raise typed errors.
+- Risk notes recorded when httpjail allowlist is configured but not enforced (e.g., binary missing on host).
+
+Diffs & Path Policy
+- Provider outputs are scanned for apply_patch blocks (`*** Begin Patch` … `*** End Patch`).
+- Changed files are validated against the job class `fsScope` allowlist before any apply.
+- Apply uses `git apply --check -` then `git apply -` to modify the working tree.

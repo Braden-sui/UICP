@@ -15,7 +15,7 @@ export async function detectRuntime() {
   throw err(Errors.ToolMissing, "container runtime not found (docker or podman)");
 }
 
-export async function buildContainerCmd(providerCfg, { env = process.env } = {}) {
+export async function buildContainerCmd(providerCfg, { env = process.env, name, memoryMb } = {}) {
   const runtime = await detectRuntime();
   const image = providerCfg.container?.image;
   if (!image) throw err(Errors.ConfigNotFound, "provider container.image missing");
@@ -39,7 +39,9 @@ export async function buildContainerCmd(providerCfg, { env = process.env } = {})
   // Always pass through workspace dir for templates
   envs.push("-e", `WORKSPACE_DIR=${wsHost}`);
 
-  const base = [runtime, "run", "--rm", ...net, ...mounts, "-w", workdir, ...envs, image];
+  const limits = [];
+  if (typeof memoryMb === "number" && memoryMb > 0) limits.push("--memory", `${Math.floor(memoryMb)}m`);
+  const base = [runtime, "run", "--rm", ...(name ? ["--name", name] : []), ...net, ...mounts, "-w", workdir, ...limits, ...envs, image];
   return { cmd: base[0], args: base.slice(1) };
 }
 
@@ -54,4 +56,3 @@ export function quote(s) {
   if (/^[A-Za-z0-9_\-\.\/:=,]+$/.test(s)) return s;
   return `'${String(s).replace(/'/g, `'"'"'`)}'`;
 }
-

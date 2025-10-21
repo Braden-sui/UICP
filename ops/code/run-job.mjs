@@ -11,9 +11,13 @@ import { assembleQuickJS, makeScriptManifest } from "./lib/assembler.mjs";
 import { loadProviderConfig } from "./lib/provider.mjs";
 import { runClaude } from "./lib/providers/claude-cli.mjs";
 import { runCodex } from "./lib/providers/codex-cli.mjs";
+import { extractApplyPatchBlocks, summarizeApplyPatch, applyWithGit } from "./lib/diff.mjs";
+import { parseStreamJson, extractPatchesFromEvents, usageFromEvents } from "./lib/providers/claude.parse.mjs";
+import { validateSpec } from "./lib/spec.mjs";
+import { summarizeMetrics } from "./lib/metrics.mjs";
 
 function parseArgs(argv) {
-  const out = { dry: false, assembleOnly: false, container: false };
+  const out = { dry: false, assembleOnly: false, container: false, apply: false, dual: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--spec") out.spec = argv[++i];
@@ -21,6 +25,8 @@ function parseArgs(argv) {
     else if (a === "--dry") out.dry = true;
     else if (a === "--assemble-only") out.assembleOnly = true;
     else if (a === "--container") out.container = true;
+    else if (a === "--apply") out.apply = true;
+    else if (a === "--dual" || a === "--dual-shot") out.dual = true;
   }
   return out;
 }
@@ -29,6 +35,7 @@ async function main() {
   const args = parseArgs(process.argv);
   if (!args.spec) throw err(Errors.ConfigNotFound, "--spec is required");
   const spec = await readJson(args.spec);
+  validateSpec(spec);
 
   // Policy and routing
   const policy = await loadPolicyMatrix();
@@ -45,6 +52,8 @@ async function main() {
   const cacheDir = makeTmpPath("codejobs", key);
   await fs.mkdir(cacheDir, { recursive: true });
   const artifactFile = path.join(cacheDir, "artifact.json");
+  const transcriptFile = path.join(cacheDir, "transcript.jsonl");
+  const providerRawFile = path.join(cacheDir, "provider.raw.txt");
 
   // Cache check
   try {
@@ -55,7 +64,7 @@ async function main() {
     // miss
   }
 
-  const transcript = [];
+  const transcript = []; const jobStarted = Date.now();
   const record = (ev) => transcript.push({ time: nowIso(), ...ev });
 
   if (args.dry) {
@@ -73,27 +82,141 @@ async function main() {
       methods: provCfg.hardening.httpjail.methods
     } : null;
 
+    // Dual-shot optional: run both providers with small timeout, prefer valid patches
     let providerResult;
-    if (provider === "claude") {
-      providerResult = await runClaude({
+    const containerMemory = classCfg.memoryMb || undefined;
+    const smallTimeout = Math.min(120000, Math.max(30000, (classCfg.timeBudgetMs || 180000) / 3));
+    if (args.dual) {
+      const claudeCfg = await loadProviderConfig("claude");
+      const codexCfg = await loadProviderConfig("codex");
+      const claudeP = runClaude({
         prompt: spec.prompt,
         tools: classCfg.allowedCommands,
         acceptEdits: true,
-        dangerSkipPerms: true, // safe only inside container
+        dangerSkipPerms: true,
         container: !!args.container,
-        provCfg,
-        allowlistCfg
-      });
-    } else {
-      providerResult = await runCodex({
+        provCfg: claudeCfg,
+        allowlistCfg: claudeCfg.hardening?.httpjail?.enabled ? {
+          policy_file: claudeCfg.hardening.httpjail.policy_file,
+          provider_key: claudeCfg.hardening.httpjail.provider_key,
+          methods: claudeCfg.hardening.httpjail.methods
+        } : null,
+        timeoutMs: smallTimeout
+      }).then(r => ({ name: "claude", r })).catch(e => ({ name: "claude", e }));
+      const codexP = runCodex({
         prompt: spec.prompt,
-        model: provCfg.defaults?.model,
+        model: codexCfg.defaults?.model,
         container: !!args.container,
-        provCfg,
-        allowlistCfg
-      });
+        provCfg: codexCfg,
+        allowlistCfg: codexCfg.hardening?.httpjail?.enabled ? {
+          policy_file: codexCfg.hardening.httpjail.policy_file,
+          provider_key: codexCfg.hardening.httpjail.provider_key,
+          methods: codexCfg.hardening.httpjail.methods
+        } : null,
+        timeoutMs: smallTimeout
+      }).then(r => ({ name: "codex", r })).catch(e => ({ name: "codex", e }));
+      const [a, b] = await Promise.all([claudeP, codexP]);
+      const evalResult = (x) => {
+        if (x.e) return { ok: false, patches: 0, err: x.e };
+        const stdout = x.r.stdout || "";
+        let patches = extractApplyPatchBlocks(stdout).length;
+        if (patches === 0 && x.name === "claude") {
+          const evts = parseStreamJson(stdout);
+          patches = extractPatchesFromEvents(evts).length;
+        }
+        return { ok: true, patches, r: x.r };
+      };
+      const ea = evalResult(a);
+      const eb = evalResult(b);
+      const winner = (ea.patches || 0) >= (eb.patches || 0) ? a : b;
+      if (winner.e) throw winner.e;
+      providerResult = winner.r;
+      record({ level: "info", msg: "dual_shot_selected", provider: winner.name, patches: Math.max(ea.patches, eb.patches) });
+    } else {
+      if (provider === "claude") {
+        providerResult = await runClaude({
+          prompt: spec.prompt,
+          tools: classCfg.allowedCommands,
+          acceptEdits: true,
+          dangerSkipPerms: true, // safe only inside container
+          container: !!args.container,
+          provCfg,
+          allowlistCfg,
+          timeoutMs: classCfg.timeBudgetMs
+        });
+      } else {
+        providerResult = await runCodex({
+          prompt: spec.prompt,
+          model: provCfg.defaults?.model,
+          container: !!args.container,
+          provCfg,
+          allowlistCfg,
+          timeoutMs: classCfg.timeBudgetMs
+        });
+      }
+      record({ level: "info", msg: "provider_completed", provider, exit: providerResult.code });
     }
-    record({ level: "info", msg: "provider_completed", provider, exit: providerResult.code });
+    // Persist run state for potential kill/inspect
+    const state = {
+      provider,
+      container: !!args.container,
+      containerName: providerResult.containerName || null,
+      startedAt: nowIso()
+    };
+    await fs.writeFile(path.join(cacheDir, "state.json"), JSON.stringify(state, null, 2));
+
+    // Persist raw stdout for debugging
+    await fs.writeFile(providerRawFile, providerResult.stdout || "");
+
+    // Build transcript
+    let transcriptEvents = [];
+    if (provider === "claude") {
+      transcriptEvents = parseStreamJson(providerResult.stdout || "");
+    } else if (provider === "codex" && providerResult.session) {
+      transcriptEvents = providerResult.session.lines.map((l) => { try { return JSON.parse(l); } catch { return { line: l }; } });
+    }
+    if (transcriptEvents.length) {
+      const fd = await fs.open(transcriptFile, "w");
+      try {
+        for (const ev of transcriptEvents) {
+          await fd.appendFile(JSON.stringify(ev) + "\n");
+        }
+      } finally { await fd.close(); }
+    }
+
+    // Extract and optionally apply diffs
+    let patches = extractApplyPatchBlocks(providerResult.stdout || "");
+    if (!patches.length && transcriptEvents.length) {
+      patches = extractPatchesFromEvents(transcriptEvents);
+    }
+    if (patches.length) {
+      record({ level: "info", msg: "diff_detected", blocks: patches.length });
+      for (const p of patches) {
+        const sum = summarizeApplyPatch(p);
+        // Path allowlist check
+        const allowed = classCfg.fsScope || [];
+        const forbidden = sum.files.filter((f) => !allowed.some(a => f.replace(/\\\\/g, '/').startsWith(a.replace(/\\\\/g, '/'))));
+        if (forbidden.length) throw err(Errors.ForbiddenPath, "patch touches forbidden paths", { forbidden, allowed });
+        if (args.apply) {
+          await applyWithGit(p);
+          record({ level: "info", msg: "patch_applied", files: sum.files });
+        } else {
+          record({ level: "info", msg: "patch_ready", files: sum.files });
+        }
+      }
+    } else {
+      record({ level: "info", msg: "no_patch_in_output" });
+    }
+    // Persist diffs summary if any patches were found
+    if (patches && patches.length) {
+      const allFiles = [];
+      for (const ptxt of patches) {
+        const s = summarizeApplyPatch(ptxt);
+        allFiles.push(...s.files);
+      }
+      const unique = Array.from(new Set(allFiles));
+      await fs.writeFile(path.join(cacheDir, 'diffs.json'), JSON.stringify({ files: unique }, null, 2));
+    }
   }
 
   // WHY: Using spec.entry for packaging until CLI diff streaming is integrated.
@@ -104,7 +227,20 @@ async function main() {
   validateJsSource({ code: bundle.code, filename: spec.entry });
   const manifest = makeScriptManifest({ id: spec.id || key.slice(0, 12), code: bundle.code });
 
-  const result = { ok: true, provider, manifest, transcript };
+  const result = { ok: true, provider, manifest, transcript }; const jobFinished = Date.now(); result.metrics = summarizeMetrics({ provider, transcriptEvents, startedAt: jobStarted, finishedAt: jobFinished });
+  // Attach lightweight metrics
+  result.metrics = result.metrics || {};
+  result.metrics.provider = provider;
+  if (provider === "claude" && transcriptEvents && transcriptEvents.length) {
+    const usage = usageFromEvents(transcriptEvents);
+    if (usage) result.metrics.usage = usage;
+  }
+  // Risk notes
+  result.risk = result.risk || {};
+  if (allowlistCfg) {
+    const applied = (providerResult && providerResult.httpjailApplied) ? true : false;
+    if (!applied) result.risk.httpjail_missed = true;
+  }
   await fs.writeFile(artifactFile, JSON.stringify(result, null, 2));
   return printResult(result);
 }
@@ -118,3 +254,6 @@ main().catch((e) => {
   process.stdout.write(JSON.stringify(out, null, 2) + "\n");
   process.exitCode = 1;
 });
+
+
+

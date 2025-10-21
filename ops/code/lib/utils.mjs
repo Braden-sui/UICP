@@ -13,13 +13,32 @@ export function sha256Hex(input) {
 
 export function spawnp(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+    const { input, ...rest } = opts;
+    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], ...rest });
     let stdout = ""; let stderr = "";
+    if (input != null) {
+      child.stdin.write(typeof input === "string" ? input : Buffer.from(input));
+      child.stdin.end();
+    } else {
+      child.stdin.end();
+    }
     child.stdout.on("data", d => stdout += d.toString());
     child.stderr.on("data", d => stderr += d.toString());
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+export function spawnManaged(cmd, args, opts = {}) {
+  const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], ...opts });
+  let stdout = ""; let stderr = "";
+  child.stdout.on("data", d => stdout += d.toString());
+  child.stderr.on("data", d => stderr += d.toString());
+  const wait = () => new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+  return { child, wait };
 }
 
 export async function readJson(file) {
@@ -59,4 +78,3 @@ export function makeTmpPath(...parts) {
   const base = path.join(process.cwd(), "tmp", ...parts);
   return base;
 }
-
