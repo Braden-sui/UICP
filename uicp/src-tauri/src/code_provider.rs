@@ -400,6 +400,7 @@ impl CodeProvider for ClaudeProvider {
 pub struct CodexProvider {
     runner: Arc<dyn CommandRunner>,
     pub allow_write: bool,
+    model: Option<String>,
 }
 
 impl CodexProvider {
@@ -407,6 +408,7 @@ impl CodexProvider {
         Self {
             runner: Arc::new(SystemCommandRunner),
             allow_write: true,
+            model: None,
         }
     }
 
@@ -414,7 +416,13 @@ impl CodexProvider {
         Self {
             runner,
             allow_write: true,
+            model: None,
         }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
     }
 
     fn codex_home() -> Result<PathBuf, CodeProviderError> {

@@ -18,7 +18,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
-    async_runtime::{spawn, spawn_blocking, JoinHandle},
+    async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
 };
 use tokio::{

@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 use crate::{
     code_provider::{
-        ClaudeProvider, CodeProviderError, CodeProviderJob, CodexProvider, ProviderArtifacts,
-        ProviderDiff,
+        ClaudeProvider, CodeProvider, CodeProviderError, CodeProviderJob, CodexProvider,
+        ProviderArtifacts, ProviderDiff,
     },
     compute_cache, emit_or_log, remove_compute_job, AppState, ComputeFinalErr, ComputeFinalOk,
     ComputeJobSpec,
@@ -61,7 +61,7 @@ impl ExecutionStrategy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ProviderKind {
     CodexCli,
     ClaudeCli,
@@ -405,7 +405,7 @@ async fn run_codegen<R: Runtime>(
     }
 
     let started = Instant::now();
-    let mut artifact = if let Some(mock) = plan.mock_response.clone() {
+    let artifact = if let Some(mock) = plan.mock_response.clone() {
         let mut normalized = normalize_response(&plan, ProviderKind::OpenAiApi, mock, Vec::new())
             .map_err(|err| CodegenFailure::invalid(err.to_string()))?;
         let attempt = ProviderAttemptLog {
