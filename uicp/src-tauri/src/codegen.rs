@@ -475,7 +475,11 @@ async fn emit_final_ok<R: Runtime>(app: &AppHandle<R>, spec: &ComputeJobSpec, ok
         output: ok.output.clone(),
         metrics: Some(metrics.clone()),
     };
-    emit_or_log(app, "compute.result.final", payload);
+    emit_or_log(
+        app,
+        crate::events::EVENT_COMPUTE_RESULT_FINAL,
+        payload,
+    );
 
     if spec.replayable && spec.cache == "readwrite" {
         let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
@@ -519,7 +523,11 @@ async fn emit_error<R: Runtime>(
             "queueMs": queue_wait_ms,
         })),
     };
-    emit_or_log(app, "compute.result.final", payload);
+    emit_or_log(
+        app,
+        crate::events::EVENT_COMPUTE_RESULT_FINAL,
+        payload,
+    );
 }
 
 fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {

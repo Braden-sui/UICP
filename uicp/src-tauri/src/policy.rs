@@ -396,4 +396,22 @@ mod tests {
         let deny = enforce_compute_policy(&spec).expect("expected rejection");
         assert_eq!(deny.code, "Compute.CapabilityDenied");
     }
+
+    #[test]
+    fn compute_final_err_serializes_with_camel_case_keys() {
+        let payload = ComputeFinalErr {
+            ok: false,
+            job_id: "00000000-0000-4000-8000-000000000099".into(),
+            task: "applet.quickjs@0.1.0".into(),
+            code: "Compute.Input.Invalid".into(),
+            message: "missing source".into(),
+            metrics: None,
+        };
+        let value = serde_json::to_value(&payload).expect("serialize final error");
+        assert_eq!(
+            value.get("jobId").and_then(|v| v.as_str()),
+            Some("00000000-0000-4000-8000-000000000099")
+        );
+        assert!(value.get("job_id").is_none());
+    }
 }

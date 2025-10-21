@@ -1146,10 +1146,18 @@ mod with_runtime {
                                 let _ = app_for_ui.emit("debug-log", v);
                             }
                             UiEvent::PartialEvent(e) => {
-                                crate::emit_or_log(&app_for_ui, "compute.result.partial", e);
+                                crate::emit_or_log(
+                                    &app_for_ui,
+                                    crate::events::EVENT_COMPUTE_RESULT_PARTIAL,
+                                    e,
+                                );
                             }
                             UiEvent::PartialJson(v) => {
-                                crate::emit_or_log(&app_for_ui, "compute.result.partial", v);
+                                crate::emit_or_log(
+                                    &app_for_ui,
+                                    crate::events::EVENT_COMPUTE_RESULT_PARTIAL,
+                                    v,
+                                );
                             }
                         }
                     }
@@ -1714,7 +1722,23 @@ mod with_runtime {
             .into_iter()
             .map(|s| s.to_string())
             .collect()),
-            "applet.quickjs" | "script.hello" => Ok(BTreeSet::new()),
+            "applet.quickjs" | "script.hello" => Ok([
+                "wasi:cli/environment@0.2.3",
+                "wasi:cli/exit@0.2.3",
+                "wasi:cli/stderr@0.2.3",
+                "wasi:cli/stdin@0.2.3",
+                "wasi:cli/stdout@0.2.3",
+                "wasi:clocks/monotonic-clock@0.2.3",
+                "wasi:clocks/wall-clock@0.2.3",
+                "wasi:filesystem/preopens@0.2.3",
+                "wasi:filesystem/types@0.2.3",
+                "wasi:io/error@0.2.3",
+                "wasi:io/streams@0.2.3",
+                "wasi:random/random@0.2.3",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()),
             other => anyhow::bail!(
                 "E-UICP-0229: no component import policy registered for task '{other}'"
             ),
@@ -1722,14 +1746,6 @@ mod with_runtime {
     }
 
     pub fn preflight_component_imports(path: &Path, task: &str) -> anyhow::Result<()> {
-        if std::env::var("UICP_SKIP_CONTRACT_VERIFY")
-            .ok()
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
-
         let actual = component_import_names(path)?;
         let allowed = allowed_imports_for(task)?;
 
@@ -2116,7 +2132,7 @@ mod with_runtime {
                 "ts": chrono::Utc::now().timestamp_millis(),
             }),
         );
-        crate::emit_or_log(&app, "compute-result-final", payload.clone());
+        crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload.clone());
         if spec.replayable && spec.cache == "readwrite" {
             let key = crate::compute_cache::compute_key(
                 &spec.task,
@@ -2251,7 +2267,7 @@ mod with_runtime {
         };
         #[cfg(feature = "otel_spans")]
         tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "compute job completed with metrics");
-        crate::emit_or_log(&app, "compute.result.final", payload);
+        crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
         if spec.replayable && spec.cache == "readwrite" {
             let key = crate::compute_cache::compute_key(
                 &spec.task,
@@ -3174,7 +3190,7 @@ mod no_runtime {
             tokio::select! {
                 _ = rx_cancel.changed() => {
                     let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: error_codes::CANCELLED.into(), message: "Job cancelled by user".into(), metrics: Some(serde_json::json!({"queueMs": queue_wait_ms})) };
-                    crate::emit_or_log(&app, "compute.result.final", payload);
+                    crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
                     #[cfg(feature = "otel_spans")]
@@ -3192,7 +3208,7 @@ mod no_runtime {
                         "jobId": spec.job_id,
                         "task": spec.task,
                     }));
-                    crate::emit_or_log(&app, "compute-result-final", payload.clone());
+                    crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
                         let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
                         let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));

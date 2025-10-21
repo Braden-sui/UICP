@@ -10,6 +10,11 @@ pub use policy::{
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
+// WHY: Keep compute event channel names consistent across host layers (commands, runtime, bridge).
+pub mod events;
+pub use events::EVENT_COMPUTE_RESULT_FINAL;
+#[cfg(any(test, feature = "wasm_compute", feature = "compute_harness"))]
+pub use events::EVENT_COMPUTE_RESULT_PARTIAL;
 pub mod code_provider;
 pub mod codegen;
 pub mod compute;

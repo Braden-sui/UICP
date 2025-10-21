@@ -747,6 +747,22 @@ pub fn canonicalize_task_input(spec: &ComputeJobSpec) -> Result<serde_json::Valu
             }
             Ok(obj)
         }
+        "applet.quickjs" => {
+            let script = extract_script_input(&spec.input)?;
+            let missing_source = script
+                .source
+                .as_ref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true);
+            if missing_source {
+                return Err(TaskInputError::new(
+                    error_codes::INPUT_INVALID,
+                    DETAIL_SCRIPT_INPUT,
+                    "E-UICP-0604: applet.quickjs requires bundled JS source",
+                ));
+            }
+            Ok(spec.input.clone())
+        }
         "codegen.run" => canonicalize_codegen_input(&spec.input),
         _ => Ok(spec.input.clone()),
     }
@@ -826,6 +842,21 @@ mod tests {
         assert_eq!(
             script.source.as_deref(),
             Some("export function render(state){ return state; }")
+        );
+    }
+
+    #[test]
+    fn canonicalize_quickjs_requires_source_for_init() {
+        let mut spec = base_spec();
+        spec.task = "applet.quickjs@0.1.0".into();
+        spec.input = serde_json::json!({
+            "mode": "init"
+        });
+        let err = canonicalize_task_input(&spec).expect_err("should reject missing source");
+        assert_eq!(err.code, crate::compute::error_codes::INPUT_INVALID);
+        assert!(
+            err.message.contains("E-UICP-0604"),
+            "expected host error code tag in message"
         );
     }
 

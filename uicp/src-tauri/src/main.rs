@@ -41,6 +41,7 @@ mod compute;
 mod compute_cache;
 mod compute_input;
 mod core;
+mod events;
 mod policy;
 mod registry;
 #[cfg(feature = "wasm_compute")]
@@ -174,7 +175,11 @@ async fn compute_call(
 
     // --- Policy enforcement (Non-negotiables v1) ---
     if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log(&app_handle, "compute-result-final", &deny);
+        emit_or_log(
+            &app_handle,
+            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            &deny,
+        );
         return Ok(());
     }
 
@@ -189,7 +194,11 @@ async fn compute_call(
                 message: err.message,
                 metrics: None,
             };
-            emit_or_log(&app_handle, "compute-result-final", &payload);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
             return Ok(());
         }
     };
@@ -217,7 +226,11 @@ async fn compute_call(
                     *metrics = serde_json::json!({ "cacheHit": true });
                 }
             }
-            emit_or_log(&app_handle, "compute.result.final", cached);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                cached,
+            );
             return Ok(());
         } else if cache_mode == "readonly" {
             let payload = ComputeFinalErr {
@@ -228,7 +241,11 @@ async fn compute_call(
                 message: "Cache miss under ReadOnly cache policy".into(),
                 metrics: None,
             };
-            emit_or_log(&app_handle, "compute.result.final", &payload);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
             return Ok(());
         }
     }

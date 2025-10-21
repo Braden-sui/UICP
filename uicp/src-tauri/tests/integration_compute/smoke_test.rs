@@ -29,7 +29,7 @@ mod wasm_tests {
         // 1. Module verification (ensure csv.parse@1.2.0 is available)
         // 2. Spawn Tauri app in headless mode
         // 3. Submit compute_call via IPC
-        // 4. Collect compute.result.final event
+        // 4. Collect compute-result-final event
         // 5. Assert: ok=true, outputHash present, metrics populated
         // 6. Submit identical job again
         // 7. Assert: cacheHit=true in metrics

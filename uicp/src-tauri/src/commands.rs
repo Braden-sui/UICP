@@ -31,7 +31,11 @@ pub async fn compute_call<R: Runtime>(
 
     // --- Policy enforcement ---
     if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log(&app_handle, "compute.result.final", &deny);
+        emit_or_log(
+            &app_handle,
+            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            &deny,
+        );
         return Ok(());
     }
 
@@ -46,7 +50,11 @@ pub async fn compute_call<R: Runtime>(
                 message: err.message,
                 metrics: None,
             };
-            emit_or_log(&app_handle, "compute.result.final", &payload);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
             return Ok(());
         }
     };
@@ -72,7 +80,11 @@ pub async fn compute_call<R: Runtime>(
                     *metrics = serde_json::json!({ "cacheHit": true });
                 }
             }
-            emit_or_log(&app_handle, "compute.result.final", cached);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                cached,
+            );
             return Ok(());
         } else if cache_mode == "readonly" {
             let payload = crate::ComputeFinalErr {
@@ -83,7 +95,11 @@ pub async fn compute_call<R: Runtime>(
                 message: "Cache miss under ReadOnly cache policy".into(),
                 metrics: None,
             };
-            emit_or_log(&app_handle, "compute.result.final", &payload);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
             return Ok(());
         }
     }

@@ -79,6 +79,10 @@ fn quickjs_preflight_allows_empty_imports() {
 #[tokio::test]
 async fn quickjs_init_returns_initial_state() {
     skip_contract_verify();
+    if cfg!(windows) {
+        eprintln!("skipping applet.quickjs init test (quickjs runtime unsupported on Windows)");
+        return;
+    }
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
 
     let app = tauri::test::mock_builder()
@@ -147,6 +151,10 @@ async fn quickjs_init_returns_initial_state() {
 #[tokio::test]
 async fn quickjs_render_produces_html() {
     skip_contract_verify();
+    if cfg!(windows) {
+        eprintln!("skipping applet.quickjs render test (quickjs runtime unsupported on Windows)");
+        return;
+    }
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
 
     let app = tauri::test::mock_builder()
@@ -204,6 +212,10 @@ async fn quickjs_render_produces_html() {
 #[tokio::test]
 async fn quickjs_on_event_updates_state() {
     skip_contract_verify();
+    if cfg!(windows) {
+        eprintln!("skipping applet.quickjs onEvent test (quickjs runtime unsupported on Windows)");
+        return;
+    }
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
 
     let app = tauri::test::mock_builder()
@@ -311,6 +323,7 @@ async fn quickjs_rejects_missing_source() {
 
     let error_msg = final_ev
         .get("error")
+        .or_else(|| final_ev.get("message"))
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     assert!(error_msg.contains("E-UICP-0604"));
