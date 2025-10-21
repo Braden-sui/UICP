@@ -216,13 +216,6 @@ struct ProviderAttemptLog {
     error: Option<String>,
 }
 
-#[derive(Debug)]
-struct ExecutionResult {
-    artifact: NormalizedArtifact,
-    plan: CodeProviderPlan,
-    attempts: Vec<ProviderAttemptLog>,
-}
-
 impl NormalizedArtifact {
     fn to_value(&self) -> Value {
         let mut map = Map::new();
@@ -422,9 +415,7 @@ async fn run_codegen<R: Runtime>(
         enrich_artifact_meta(&mut normalized, &plan_selected, &plan, &[attempt]);
         normalized
     } else {
-        let execution =
-            execute_with_strategy(app, spec, &plan, &provider_queue, &state.http).await?;
-        execution.artifact
+        execute_with_strategy(app, spec, &plan, &provider_queue, &state.http).await?
     };
 
     validate_code(plan.language, &plan.validator_version, &artifact.code)
@@ -776,7 +767,7 @@ async fn execute_with_strategy<R: Runtime>(
     plan: &CodegenPlan,
     queue: &[CodeProviderPlan],
     client: &reqwest::Client,
-) -> Result<ExecutionResult, CodegenFailure> {
+) -> Result<NormalizedArtifact, CodegenFailure> {
     let mut attempts: Vec<ProviderAttemptLog> = Vec::new();
 
     match plan.strategy {
@@ -797,11 +788,7 @@ async fn execute_with_strategy<R: Runtime>(
                         });
                         emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
                         enrich_artifact_meta(&mut artifact, provider_plan, plan, &attempts);
-                        return Ok(ExecutionResult {
-                            artifact,
-                            plan: provider_plan.clone(),
-                            attempts,
-                        });
+                        return Ok(artifact);
                     }
                     Err(err) => {
                         let message = err.message();
@@ -868,11 +855,7 @@ async fn execute_with_strategy<R: Runtime>(
 
             if let Some((mut chosen, chosen_plan, _dur)) = choose_best_artifact(successes) {
                 enrich_artifact_meta(&mut chosen, &chosen_plan, plan, &attempts);
-                return Ok(ExecutionResult {
-                    artifact: chosen,
-                    plan: chosen_plan,
-                    attempts,
-                });
+                return Ok(chosen);
             }
 
             for provider_plan in queue {
@@ -896,11 +879,7 @@ async fn execute_with_strategy<R: Runtime>(
                         });
                         emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
                         enrich_artifact_meta(&mut artifact, provider_plan, plan, &attempts);
-                        return Ok(ExecutionResult {
-                            artifact,
-                            plan: provider_plan.clone(),
-                            attempts,
-                        });
+                        return Ok(artifact);
                     }
                     Err(err) => {
                         let message = err.message();
@@ -1172,7 +1151,7 @@ async fn run_codex_cli<R: Runtime>(
             "language": plan.language.as_str(),
         }));
 
-    let mut provider = CodexProvider::new().with_model(plan.model_id.clone());
+    let provider = CodexProvider::new().with_model(plan.model_id.clone());
     let ctx = provider
         .prepare(&job)
         .await

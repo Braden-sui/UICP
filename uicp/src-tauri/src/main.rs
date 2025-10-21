@@ -21,6 +21,7 @@ use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
 };
+use tokio::task::spawn_blocking;
 use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, Semaphore},
