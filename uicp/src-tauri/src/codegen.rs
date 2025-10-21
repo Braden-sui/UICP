@@ -26,6 +26,34 @@ const ERR_API_KEY: &str = "E-UICP-1303";
 const PROVIDER_NAME: &str = "openai";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionStrategy {
+    SequentialFallback,
+    FirstOk,
+    BestOfBoth,
+}
+
+impl ExecutionStrategy {
+    fn parse(raw: Option<&str>) -> Result<Self, CodegenFailure> {
+        match raw.unwrap_or("sequential-fallback") {
+            "sequential-fallback" => Ok(ExecutionStrategy::SequentialFallback),
+            "first-ok" => Ok(ExecutionStrategy::FirstOk),
+            "best-of-both" => Ok(ExecutionStrategy::BestOfBoth),
+            other => Err(CodegenFailure::invalid(format!(
+                "{ERR_INPUT_INVALID}: strategy '{other}' unsupported"
+            ))),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            ExecutionStrategy::SequentialFallback => "sequential-fallback",
+            ExecutionStrategy::FirstOk => "first-ok",
+            ExecutionStrategy::BestOfBoth => "best-of-both",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodeLanguage {
     Typescript,
     Rust,
@@ -53,6 +81,15 @@ impl CodeLanguage {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug)]
+struct InstallPlan {
+    panel_id: String,
+    window_id: String,
+    target: String,
+    state_key: Option<String>,
+}
+
 #[derive(Debug)]
 struct CodegenPlan {
     spec_text: String,
@@ -65,6 +102,11 @@ struct CodegenPlan {
     mock_response: Option<Value>,
     mock_error: Option<String>,
     golden_key: String,
+    provider_label: String,
+    providers: Vec<String>,
+    strategy: ExecutionStrategy,
+    #[allow(dead_code)]
+    install: Option<InstallPlan>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +125,24 @@ struct CodegenJobInput {
     model: Option<String>,
     #[serde(default)]
     validator_version: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    providers: Option<Vec<String>>,
+    #[serde(default)]
+    strategy: Option<String>,
+    #[serde(default)]
+    install: Option<CodegenInstallInput>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CodegenInstallInput {
+    panel_id: String,
+    window_id: String,
+    target: String,
+    #[serde(default)]
+    state_key: Option<String>,
 }
 
 struct ProviderSettings {
@@ -221,6 +281,32 @@ async fn run_codegen<R: Runtime>(
 ) -> Result<CodegenRunOk, CodegenFailure> {
     let state: State<'_, AppState> = app.state();
     let plan = build_plan(spec)?;
+
+    if matches!(plan.strategy, ExecutionStrategy::BestOfBoth) {
+        return Err(CodegenFailure::provider(format!(
+            "{ERR_PROVIDER}: strategy '{}' not supported in this build",
+            plan.strategy.as_str()
+        )));
+    }
+
+    let mut cli_requests: Vec<String> = Vec::new();
+    if matches!(plan.provider_label.as_str(), "codex" | "claude") {
+        cli_requests.push(plan.provider_label.clone());
+    }
+    for item in &plan.providers {
+        if matches!(item.as_str(), "codex" | "claude")
+            && !cli_requests.iter().any(|existing| existing == item)
+        {
+            cli_requests.push(item.clone());
+        }
+    }
+    if !cli_requests.is_empty() {
+        let joined = cli_requests.join(", ");
+        return Err(CodegenFailure::provider(format!(
+            "{ERR_PROVIDER}: CLI providers not available in this build (requested: {joined})"
+        )));
+    }
+
     if plan.validator_version != VALIDATOR_VERSION {
         emit_or_log(
             app,
@@ -424,13 +510,56 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let strategy = ExecutionStrategy::parse(
+        input
+            .strategy
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty()),
+    )?;
+
+    let provider_label = input
+        .provider
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "auto".to_string());
+    if !matches!(provider_label.as_str(), "auto" | "codex" | "claude") {
+        return Err(CodegenFailure::invalid(format!(
+            "{ERR_INPUT_INVALID}: provider '{}' unsupported",
+            provider_label
+        )));
+    }
+
+    let mut providers: Vec<String> = Vec::new();
+    if let Some(list) = input.providers.as_ref() {
+        for item in list {
+            let candidate = item.trim().to_ascii_lowercase();
+            if matches!(candidate.as_str(), "codex" | "claude")
+                && !providers.iter().any(|existing| existing == &candidate)
+            {
+                providers.push(candidate);
+            }
+        }
+    }
+
+    let install = input.install.as_ref().map(|value| InstallPlan {
+        panel_id: value.panel_id.clone(),
+        window_id: value.window_id.clone(),
+        target: value.target.clone(),
+        state_key: value.state_key.clone(),
+    });
+
+    let providers_for_key = providers.clone();
     let key_payload = json!({
         "spec": input.spec,
         "language": language.as_str(),
         "constraints": constraints_for_key,
         "validatorVersion": validator_version,
         "modelId": model_id,
-        "provider": PROVIDER_NAME,
+        "provider": provider_label,
+        "providers": providers_for_key,
+        "strategy": strategy.as_str(),
     });
     let canonical = compute_cache::canonicalize_input(&key_payload);
     let mut hasher = sha2::Sha256::new();
@@ -450,6 +579,10 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
         mock_response,
         mock_error,
         golden_key,
+        provider_label,
+        providers,
+        strategy,
+        install,
     })
 }
 
@@ -1253,6 +1386,10 @@ mod tests {
             mock_response: None,
             mock_error: None,
             golden_key: "abc".into(),
+            provider_label: "auto".into(),
+            providers: vec![],
+            strategy: ExecutionStrategy::SequentialFallback,
+            install: None,
         };
         let raw = json!({
             "code": "def render():\n    return {}\n\ndef on_event():\n    return {}",

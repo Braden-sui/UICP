@@ -133,6 +133,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 };
 
+const CODE_PROVIDER_BASE_URLS: Record<'codex' | 'claude', readonly string[]> = {
+  codex: ['https://api.openai.com'],
+  claude: ['https://api.anthropic.com'],
+} as const;
+
 /**
  * Creates command executor for needs.code operations.
  * 
@@ -157,19 +162,75 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     const jobId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const task = `codegen.run@0.1.0`; // Track D code generation task
 
-    const netCaps =
-      params.caps &&
-      typeof params.caps === 'object' &&
-      Array.isArray((params.caps as Record<string, unknown>).net)
+    const providerParam = params.provider ?? 'auto';
+    const providerSet = new Set<'codex' | 'claude'>();
+    if (Array.isArray(params.providers)) {
+      for (const raw of params.providers) {
+        if (raw === 'codex' || raw === 'claude') {
+          providerSet.add(raw);
+        }
+      }
+    }
+    if (providerParam === 'codex' || providerParam === 'claude') {
+      providerSet.add(providerParam);
+    }
+    if (providerSet.size === 0) {
+      providerSet.add('codex');
+      providerSet.add('claude');
+    }
+    const allowedProviderHosts = new Set<string>();
+    for (const providerName of providerSet) {
+      const hosts = CODE_PROVIDER_BASE_URLS[providerName] ?? [];
+      for (const host of hosts) {
+        allowedProviderHosts.add(host);
+      }
+    }
+    const allowedProviderHostList = Array.from(allowedProviderHosts);
+
+    const candidateCaps =
+      params.caps && typeof params.caps === 'object' && Array.isArray((params.caps as Record<string, unknown>).net)
         ? (params.caps as { net: unknown }).net
         : undefined;
-    let netAllowlist: string[];
-    if (Array.isArray(netCaps)) {
-      const filtered = netCaps.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-      netAllowlist = filtered.length > 0 ? filtered : ['https://api.openai.com'];
-    } else {
-      netAllowlist = ['https://api.openai.com'];
-    }
+
+    const sanitizedCandidates = Array.isArray(candidateCaps)
+      ? candidateCaps.filter((value): value is string => {
+          if (typeof value !== 'string') return false;
+          const trimmed = value.trim();
+          if (!trimmed) return false;
+          return allowedProviderHostList.some(
+            (allowed) => trimmed.startsWith(allowed) || allowed.startsWith(trimmed),
+          );
+        })
+      : [];
+
+    const netAllowlist = (() => {
+      if (sanitizedCandidates.length > 0) {
+        const sanitizedSet = new Set<string>();
+        const sanitizedValues: string[] = [];
+        sanitizedCandidates.forEach((value) => {
+          if (!sanitizedSet.has(value)) {
+            sanitizedSet.add(value);
+            sanitizedValues.push(value);
+          }
+        });
+        for (const allowed of allowedProviderHostList) {
+          const alreadyRepresented = sanitizedValues.some(
+            (value) => value.startsWith(allowed) || allowed.startsWith(value),
+          );
+          if (!alreadyRepresented) {
+            sanitizedSet.add(allowed);
+            sanitizedValues.push(allowed);
+          }
+        }
+        return sanitizedValues;
+      }
+      if (allowedProviderHostList.length > 0) {
+        return allowedProviderHostList;
+      }
+      return ['https://api.openai.com'];
+    })();
+
+    const providersForInput = Array.isArray(params.providers) && params.providers.length > 0 ? params.providers : undefined;
     
     const jobSpec = {
       jobId,
@@ -179,6 +240,10 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         language: params.language || 'ts',
         constraints: params.constraints || {},
         caps: params.caps || {},
+        provider: providerParam,
+        strategy: params.strategy ?? 'sequential-fallback',
+        ...(providersForInput ? { providers: providersForInput } : {}),
+        ...(params.install ? { install: params.install } : {}),
       },
       timeoutMs: 60_000, // 1 minute for code generation
       bind: [],

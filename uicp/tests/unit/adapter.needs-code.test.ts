@@ -34,9 +34,11 @@ describe('needs.code executor', () => {
     }));
 
     let dispatchedJobId: string | undefined;
+    let dispatchedSpec: any;
 
     (window as any).uicpComputeCall = vi.fn(async (spec: any) => {
       dispatchedJobId = spec.jobId;
+      dispatchedSpec = spec;
       setTimeout(() => {
         window.dispatchEvent(
           new CustomEvent('uicp-compute-final', {
@@ -83,6 +85,18 @@ describe('needs.code executor', () => {
     expect(result.success).toBe(true);
     expect(window.uicpComputeCall).toHaveBeenCalledTimes(1);
     expect(dispatchedJobId).toBeDefined();
+    expect(dispatchedSpec.input.provider).toBe('auto');
+    expect(dispatchedSpec.input.strategy).toBe('sequential-fallback');
+    expect(dispatchedSpec.input.install).toEqual({
+      panelId: 'panel-demo',
+      windowId: 'app-window',
+      target: '#root',
+      stateKey: 'panels.panel-demo.view',
+    });
+    expect(dispatchedSpec.capabilities.net).toEqual([
+      'https://api.openai.com',
+      'https://api.anthropic.com',
+    ]);
 
     // Allow final handler to settle
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -131,5 +145,69 @@ describe('needs.code executor', () => {
         }),
       }),
     );
+  });
+
+  it('applies provider-specific network allowlists', async () => {
+    const table = createCommandTable();
+    const executor = table['needs.code'];
+    const baselineCommand = {
+      op: 'needs.code',
+      params: {
+        spec: 'Generate widget',
+        language: 'ts',
+      },
+    } as unknown as import('../../src/lib/schema').Envelope;
+
+    const dispatches: any[] = [];
+    (window as any).uicpComputeCall = vi.fn(async (spec: any) => {
+      dispatches.push(spec);
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('uicp-compute-final', {
+            detail: {
+              ok: false,
+              jobId: spec.jobId,
+              task: spec.task,
+              code: 'Compute.Cancelled',
+              message: 'cancelled for test',
+            },
+          }),
+        );
+      }, 0);
+    });
+
+    await executor.execute(
+      {
+        ...baselineCommand,
+        params: { ...baselineCommand.params, provider: 'codex' },
+      },
+      {},
+      {},
+    );
+    await executor.execute(
+      {
+        ...baselineCommand,
+        params: { ...baselineCommand.params, provider: 'claude', providers: ['claude'] },
+      },
+      {},
+      {},
+    );
+    await executor.execute(
+      {
+        ...baselineCommand,
+        params: {
+          ...baselineCommand.params,
+          providers: ['codex', 'claude'],
+          caps: { net: ['https://api.openai.com/v1/chat', 'https://malicious.example.com'] },
+        },
+      },
+      {},
+      {},
+    );
+
+    expect(dispatches).toHaveLength(3);
+    expect(dispatches[0].capabilities.net).toEqual(['https://api.openai.com']);
+    expect(dispatches[1].capabilities.net).toEqual(['https://api.anthropic.com']);
+    expect(dispatches[2].capabilities.net).toEqual(['https://api.openai.com/v1/chat', 'https://api.anthropic.com']);
   });
 });

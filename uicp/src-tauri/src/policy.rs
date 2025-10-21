@@ -110,12 +110,24 @@ fn default_workspace_id() -> String {
 
 const CODEGEN_TASK_PREFIX: &str = "codegen.run@";
 fn allowed_codegen_hosts() -> Vec<String> {
-    let mut hosts = vec!["https://api.openai.com".to_string()];
-    if let Ok(endpoint) = std::env::var("UICP_CODEGEN_OPENAI_ENDPOINT") {
-        let trimmed = endpoint.trim();
-        if !trimmed.is_empty() {
+    let mut hosts = vec![
+        "https://api.openai.com".to_string(),
+        "https://api.anthropic.com".to_string(),
+    ];
+    let mut push_unique = |value: &str| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if !hosts.iter().any(|existing| existing == trimmed) {
             hosts.push(trimmed.to_string());
         }
+    };
+    if let Ok(endpoint) = std::env::var("UICP_CODEGEN_OPENAI_ENDPOINT") {
+        push_unique(&endpoint);
+    }
+    if let Ok(endpoint) = std::env::var("UICP_CODEGEN_ANTHROPIC_ENDPOINT") {
+        push_unique(&endpoint);
     }
     hosts
 }
@@ -331,10 +343,18 @@ mod tests {
     #[test]
     fn codegen_requires_allowlisted_network() {
         std::env::remove_var("UICP_CODEGEN_OPENAI_ENDPOINT");
+        std::env::remove_var("UICP_CODEGEN_ANTHROPIC_ENDPOINT");
         let mut spec = base_spec();
         spec.task = "codegen.run@0.1.0".into();
         spec.capabilities.net = vec!["https://api.openai.com".into()];
         assert!(enforce_compute_policy(&spec).is_none());
+
+        let mut spec_claude = spec.clone();
+        spec_claude.capabilities.net = vec!["https://api.anthropic.com".into()];
+        assert!(
+            enforce_compute_policy(&spec_claude).is_none(),
+            "anthropic endpoint should be allowed"
+        );
 
         let mut spec_bad = spec.clone();
         spec_bad.capabilities.net = vec!["https://evil.example.com".into()];
@@ -355,7 +375,16 @@ mod tests {
             enforce_compute_policy(&spec_local).is_none(),
             "custom endpoint from env should be allowed"
         );
+        std::env::set_var("UICP_CODEGEN_ANTHROPIC_ENDPOINT", "http://localhost:2020");
+        let mut spec_claude_local = base_spec();
+        spec_claude_local.task = "codegen.run@0.1.0".into();
+        spec_claude_local.capabilities.net = vec!["http://localhost:2020".into()];
+        assert!(
+            enforce_compute_policy(&spec_claude_local).is_none(),
+            "anthropic override should be allowed"
+        );
         std::env::remove_var("UICP_CODEGEN_OPENAI_ENDPOINT");
+        std::env::remove_var("UICP_CODEGEN_ANTHROPIC_ENDPOINT");
     }
 
     #[test]

@@ -62,7 +62,7 @@ export const getToolRegistrySummary = (): string => {
     descriptor.name === 'api.call'
       ? `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk}, schemes=https://, mailto:, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile)`
       : descriptor.name === 'needs.code'
-        ? `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk}, purpose=request WASI applet generation; emits progress via watched state)`
+        ? `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk}, purpose=request WASI applet generation; supports provider/providers/strategy selection; emits progress via watched state)`
       : `- ${descriptor.name} (capabilities=${descriptor.capabilities.join(', ')}, risk=${descriptor.risk})`,
   );
 

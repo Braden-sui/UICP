@@ -16,6 +16,7 @@ use crate::ComputeJobSpec;
 const DETAIL_CSV_INPUT: &str = "E-UICP-0401";
 const DETAIL_TABLE_INPUT: &str = "E-UICP-0402";
 const DETAIL_SCRIPT_INPUT: &str = "E-UICP-0406";
+const DETAIL_CODEGEN_INPUT: &str = "E-UICP-0407";
 const DETAIL_WS_PATH: &str = "E-UICP-0403";
 const DETAIL_FS_CAP: &str = "E-UICP-0404";
 const DETAIL_IO: &str = "E-UICP-0405";
@@ -447,6 +448,255 @@ pub fn derive_job_seed(job_id: &str, env_hash: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn canonicalize_codegen_input(input: &serde_json::Value) -> Result<serde_json::Value, TaskInputError> {
+    let obj = input.as_object().ok_or_else(|| {
+        TaskInputError::new(
+            error_codes::INPUT_INVALID,
+            DETAIL_CODEGEN_INPUT,
+            "needs.code input must be an object",
+        )
+    })?;
+
+    let spec_text = obj
+        .get("spec")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                "needs.code spec must be a non-empty string",
+            )
+        })?
+        .to_string();
+
+    let language_raw = obj
+        .get("language")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("ts");
+    let language_normalized = match language_raw.to_ascii_lowercase().as_str() {
+        "ts" | "tsx" | "typescript" => "ts",
+        "rust" | "rs" => "rust",
+        "python" | "py" => "python",
+        other => {
+            return Err(TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                format!("needs.code language '{other}' unsupported"),
+            ))
+        }
+    };
+
+    let constraints_value = match obj.get("constraints") {
+        Some(serde_json::Value::Object(map)) => serde_json::Value::Object(map.clone()),
+        Some(serde_json::Value::Null) | None => serde_json::Value::Object(serde_json::Map::new()),
+        Some(_) => {
+            return Err(TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                "needs.code constraints must be an object",
+            ))
+        }
+    };
+
+    let caps_value = match obj.get("caps") {
+        Some(serde_json::Value::Object(map)) => serde_json::Value::Object(map.clone()),
+        Some(serde_json::Value::Null) | None => serde_json::Value::Object(serde_json::Map::new()),
+        Some(_) => {
+            return Err(TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                "needs.code caps must be an object",
+            ))
+        }
+    };
+
+    let provider_normalized = obj
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "auto".to_string());
+    let provider_value = match provider_normalized.as_str() {
+        "auto" | "" => "auto",
+        "codex" => "codex",
+        "claude" => "claude",
+        other => {
+            return Err(TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                format!("needs.code provider '{other}' unsupported"),
+            ))
+        }
+    };
+
+    let mut providers_list: Vec<String> = Vec::new();
+    if let Some(arr) = obj.get("providers").and_then(|v| v.as_array()) {
+        for entry in arr {
+            if let Some(raw) = entry.as_str() {
+                let candidate = raw.trim().to_ascii_lowercase();
+                let allowed = matches!(candidate.as_str(), "codex" | "claude");
+                if allowed && !providers_list.iter().any(|existing| existing == &candidate) {
+                    providers_list.push(candidate);
+                }
+            }
+        }
+    }
+    if providers_list.len() > 2 {
+        providers_list.truncate(2);
+    }
+
+    let strategy_value = obj
+        .get("strategy")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "sequential-fallback".to_string());
+    let strategy_normalized = match strategy_value.as_str() {
+        "sequential-fallback" => "sequential-fallback",
+        "first-ok" => "first-ok",
+        "best-of-both" => "best-of-both",
+        other => {
+            return Err(TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                format!("needs.code strategy '{other}' unsupported"),
+            ))
+        }
+    };
+
+    let coerce_string = |key: &str| -> Option<String> {
+        obj.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    let cache_policy = obj.get("cachePolicy").and_then(|v| v.as_str()).map(|s| s.trim());
+    let cache_policy_normalized = match cache_policy {
+        Some("readwrite") | Some("readOnly") | Some("bypass") => cache_policy.map(|s| s.to_string()),
+        Some(other) => {
+            return Err(TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                format!("needs.code cachePolicy '{other}' unsupported"),
+            ))
+        }
+        None => None,
+    };
+
+    let install_value = match obj.get("install") {
+        Some(serde_json::Value::Object(map)) => {
+            let panel_id = map
+                .get("panelId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_CODEGEN_INPUT,
+                        "needs.code install.panelId required when install is provided",
+                    )
+                })?;
+            let window_id = map
+                .get("windowId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_CODEGEN_INPUT,
+                        "needs.code install.windowId required when install is provided",
+                    )
+                })?;
+            let target = map
+                .get("target")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    TaskInputError::new(
+                        error_codes::INPUT_INVALID,
+                        DETAIL_CODEGEN_INPUT,
+                        "needs.code install.target required when install is provided",
+                    )
+                })?;
+            let state_key = map
+                .get("stateKey")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let mut install_map = serde_json::Map::new();
+            install_map.insert("panelId".into(), serde_json::Value::String(panel_id.to_string()));
+            install_map.insert("windowId".into(), serde_json::Value::String(window_id.to_string()));
+            install_map.insert("target".into(), serde_json::Value::String(target.to_string()));
+            if let Some(sk) = state_key {
+                install_map.insert("stateKey".into(), serde_json::Value::String(sk));
+            }
+            Some(serde_json::Value::Object(install_map))
+        }
+        Some(_) => {
+            return Err(TaskInputError::new(
+                error_codes::INPUT_INVALID,
+                DETAIL_CODEGEN_INPUT,
+                "needs.code install must be an object when present",
+            ))
+        }
+        None => None,
+    };
+
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("spec".into(), serde_json::Value::String(spec_text));
+    normalized.insert(
+        "language".into(),
+        serde_json::Value::String(language_normalized.to_string()),
+    );
+    normalized.insert("constraints".into(), constraints_value);
+    normalized.insert("caps".into(), caps_value);
+    normalized.insert("provider".into(), serde_json::Value::String(provider_value.to_string()));
+    if !providers_list.is_empty() {
+        normalized.insert(
+            "providers".into(),
+            serde_json::Value::Array(
+                providers_list
+                    .into_iter()
+                    .map(|p| serde_json::Value::String(p))
+                    .collect(),
+            ),
+        );
+    }
+    normalized.insert(
+        "strategy".into(),
+        serde_json::Value::String(strategy_normalized.to_string()),
+    );
+    if let Some(value) = coerce_string("artifactId") {
+        normalized.insert("artifactId".into(), serde_json::Value::String(value));
+    }
+    if let Some(value) = coerce_string("goldenKey") {
+        normalized.insert("goldenKey".into(), serde_json::Value::String(value));
+    }
+    if let Some(value) = coerce_string("progressWindowId") {
+        normalized.insert("progressWindowId".into(), serde_json::Value::String(value));
+    }
+    if let Some(value) = coerce_string("progressSelector") {
+        normalized.insert("progressSelector".into(), serde_json::Value::String(value));
+    }
+    if let Some(policy) = cache_policy_normalized {
+        normalized.insert("cachePolicy".into(), serde_json::Value::String(policy));
+    }
+    if let Some(install) = install_value {
+        normalized.insert("install".into(), install);
+    }
+
+    Ok(serde_json::Value::Object(normalized))
+}
+
 /// WHY: Normalize task input so caching + runtime share the same canonical payload.
 /// INVARIANT: Unknown tasks pass through unchanged.
 #[cfg_attr(not(any(test, feature = "compute_harness")), allow(dead_code))]
@@ -478,6 +728,7 @@ pub fn canonicalize_task_input(spec: &ComputeJobSpec) -> Result<serde_json::Valu
             }
             Ok(obj)
         }
+        "codegen.run" => canonicalize_codegen_input(&spec.input),
         _ => Ok(spec.input.clone()),
     }
 }
@@ -656,6 +907,80 @@ mod tests {
         assert!(
             err.message.contains("E-UICP-0404"),
             "expected capability error code detail"
+        );
+    }
+
+    #[test]
+    fn canonicalize_codegen_normalizes_provider_and_strategy() {
+        let mut spec = base_spec();
+        spec.task = "codegen.run@0.1.0".into();
+        spec.input = json!({
+            "spec": "export const demo = () => null;",
+            "language": "TS",
+            "provider": "claude",
+            "providers": ["codex", "claude", "codex"],
+            "strategy": "best-of-both",
+            "constraints": { "maxTokens": 256 },
+            "caps": { "net": ["https://api.anthropic.com"] },
+            "install": {
+                "panelId": "panel-demo",
+                "windowId": "demo-window",
+                "target": "#root",
+            },
+        });
+
+        let normalized = canonicalize_task_input(&spec).expect("normalize");
+        assert_eq!(
+            normalized
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            "ts"
+        );
+        assert_eq!(
+            normalized
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            "claude"
+        );
+        let providers = normalized
+            .get("providers")
+            .and_then(|v| v.as_array())
+            .expect("providers array");
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].as_str(), Some("codex"));
+        assert_eq!(providers[1].as_str(), Some("claude"));
+        assert_eq!(
+            normalized
+                .get("strategy")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            "best-of-both"
+        );
+        let install = normalized
+            .get("install")
+            .and_then(|v| v.as_object())
+            .expect("install present");
+        assert_eq!(install.get("panelId").and_then(|v| v.as_str()), Some("panel-demo"));
+        assert_eq!(install.get("windowId").and_then(|v| v.as_str()), Some("demo-window"));
+        assert_eq!(install.get("target").and_then(|v| v.as_str()), Some("#root"));
+    }
+
+    #[test]
+    fn canonicalize_codegen_rejects_invalid_provider() {
+        let mut spec = base_spec();
+        spec.task = "codegen.run@0.1.0".into();
+        spec.input = json!({
+            "spec": "export const demo = () => null;",
+            "language": "ts",
+            "provider": "watson",
+        });
+        let err = canonicalize_task_input(&spec).unwrap_err();
+        assert_eq!(err.code, crate::compute::error_codes::INPUT_INVALID);
+        assert!(
+            err.message.contains(DETAIL_CODEGEN_INPUT),
+            "expected codegen detail tag"
         );
     }
 }
