@@ -1,0 +1,33 @@
+version: 1
+name: claude-cli
+description: Anthropic Claude Code CLI inside hardened devcontainer
+container:
+  image: ${CLAUDE_IMAGE:-ghcr.io/anthropics/devcontainers/claude-code:latest}
+  runtime: auto  # docker|podman|auto
+  workdir: /workspace
+  mounts:
+    - source: ${WORKSPACE_DIR}
+      target: /workspace
+      type: bind
+  network: none  # default deny; httpjail may allowlist egress
+  env:
+    - name: ANTHROPIC_API_KEY
+      from_env: ANTHROPIC_API_KEY
+  entry: ["/usr/local/bin/claude"]
+defaults:
+  output_format: stream-json
+  permission_mode: acceptEdits
+  allowed_tools: ["Read", "Bash(npm test)"]
+hardening:
+  httpjail:
+    enabled: true
+    policy_file: ops/code/network/allowlist.json
+    provider_key: claude
+    methods: ["GET", "HEAD", "OPTIONS"]
+    block_post: true
+  flags:
+    - "--dangerously-skip-permissions"  # only safe inside this container with firewall
+notes:
+  - Only enable --dangerously-skip-permissions inside the devcontainer.
+  - The container’s firewall script should enforce default-deny with allowlisted domains.
+

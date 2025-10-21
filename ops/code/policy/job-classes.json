@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "classes": {
+    "read_explain_refactor": {
+      "description": "Read/explain/refactor tasks",
+      "fsScope": ["uicp/", "docs/", "examples/"],
+      "allowedCommands": ["git", "rg"],
+      "network": "none",
+      "maxEdits": 50,
+      "timeBudgetMs": 600000,
+      "memoryMb": 2048,
+      "testsRequired": false
+    },
+    "shell_heavy_test_loop": {
+      "description": "Shell-heavy or test-loop tasks",
+      "fsScope": ["uicp/", "docs/", "examples/"],
+      "allowedCommands": ["pnpm", "npm", "cargo", "git"],
+      "network": "allowlist",
+      "maxEdits": 120,
+      "timeBudgetMs": 1800000,
+      "memoryMb": 4096,
+      "testsRequired": true
+    },
+    "code_synthesis_js": {
+      "description": "Code synthesis in JS/TS/React",
+      "fsScope": ["uicp/", "examples/", "docs/"],
+      "allowedCommands": ["pnpm", "node"],
+      "network": "none",
+      "maxEdits": 200,
+      "timeBudgetMs": 1200000,
+      "memoryMb": 4096,
+      "testsRequired": true
+    }
+  }
+}
+

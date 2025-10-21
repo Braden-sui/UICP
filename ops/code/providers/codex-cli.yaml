@@ -1,0 +1,30 @@
+version: 1
+name: codex-cli
+description: OpenAI Codex CLI in minimal container (no network by default)
+container:
+  image: ${CODEX_IMAGE:-ghcr.io/openai/devcontainers/codex-cli:latest}
+  runtime: auto
+  workdir: /workspace
+  mounts:
+    - source: ${WORKSPACE_DIR}
+      target: /workspace
+      type: bind
+  network: none
+  env:
+    - name: OPENAI_API_KEY
+      from_env: OPENAI_API_KEY
+  entry: ["/usr/local/bin/codex"]
+defaults:
+  model: gpt-5-codex
+  non_interactive: true
+hardening:
+  httpjail:
+    enabled: true
+    policy_file: ops/code/network/allowlist.json
+    provider_key: codex
+    methods: ["GET", "HEAD", "OPTIONS"]
+    block_post: true
+notes:
+  - Default to no networking; opt-in allowlist only when needed for auth.
+  - Codex CLI writes JSONL sessions under ~/.codex/sessions; harvester consumes recent logs.
+

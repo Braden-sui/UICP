@@ -265,3 +265,8 @@ Safety and guardrails:
 
 - Wasmtime 37 notes and validation checklist: `docs/compute/WASMTIME_UPGRADE_STATUS.md`.
 
+
+## Code Provider Sandbox and Router
+
+Operational artifacts live under `ops/code/`: provider container configs, egress allowlist (for httpjail), policy matrix, a Node orchestrator (`ops/code/run-job.mjs`), a JS/TS validator, and an assembler that bundles to `applet.quickjs@0.1.0`. Default network is off; Linux runners recommended for httpjail.
+

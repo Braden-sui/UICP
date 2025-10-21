@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "hosts": [
+        "api.anthropic.com",
+        "claude.ai"
+      ],
+      "methods": ["GET", "HEAD", "OPTIONS"],
+      "blockPost": true
+    },
+    "codex": {
+      "hosts": [
+        "api.openai.com",
+        "auth.openai.com",
+        "login.microsoftonline.com"
+      ],
+      "methods": ["GET", "HEAD", "OPTIONS"],
+      "blockPost": true
+    }
+  }
+}
+

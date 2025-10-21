@@ -1,0 +1,10 @@
+{
+  "id": "demo-counter",
+  "class": "code_synthesis_js",
+  "task": "code synthesis in TypeScript for UI panel",
+  "language": "ts",
+  "provider": "codex",
+  "prompt": "Bundle the counter applet and prepare manifest",
+  "entry": "examples/counter-applet/counter.ts"
+}
+
