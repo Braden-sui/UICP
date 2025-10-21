@@ -156,7 +156,14 @@ pub mod uicp {
 #[allow(dead_code, clippy::all)]
 pub mod wasi {
     pub mod clocks {
-        /// Monotonic clocks
+        /// WASI Monotonic Clock is a clock API intended to let users measure elapsed
+        /// time.
+        ///
+        /// It is intended to be portable at least between Unix-family platforms and
+        /// Windows.
+        ///
+        /// A monotonic clock is a clock which has an unspecified initial value, and
+        /// successive reads of the clock will produce non-decreasing values.
         #[allow(dead_code, async_fn_in_trait, unused_imports, clippy::all)]
         pub mod monotonic_clock {
             #[used]
@@ -164,14 +171,21 @@ pub mod wasi {
             static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
             use super::super::super::_rt;
             pub type Pollable = super::super::super::wasi::io::poll::Pollable;
-            /// An instant in time, opaque u64 value
+            /// An instant in time, in nanoseconds. An instant is relative to an
+            /// unspecified initial value, and can only be compared to instances from
+            /// the same monotonic-clock.
             pub type Instant = u64;
+            /// A duration of time, in nanoseconds.
+            pub type Duration = u64;
             #[allow(unused_unsafe, clippy::all)]
-            /// Return the current time value of this clock.
+            /// Read the current value of the clock.
+            ///
+            /// The clock is monotonic, therefore calling this function repeatedly will
+            /// produce a sequence of non-decreasing values.
             pub fn now() -> Instant {
                 unsafe {
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "wasi:clocks/monotonic-clock@0.2.0")]
+                    #[link(wasm_import_module = "wasi:clocks/monotonic-clock@0.2.3")]
                     unsafe extern "C" {
                         #[link_name = "now"]
                         fn wit_import0() -> i64;
@@ -185,12 +199,56 @@ pub mod wasi {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Query the resolution of the clock. Returns the duration of time
+            /// corresponding to a clock tick.
+            pub fn resolution() -> Duration {
+                unsafe {
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "wasi:clocks/monotonic-clock@0.2.3")]
+                    unsafe extern "C" {
+                        #[link_name = "resolution"]
+                        fn wit_import0() -> i64;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import0() -> i64 {
+                        unreachable!()
+                    }
+                    let ret = unsafe { wit_import0() };
+                    ret as u64
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Create a `pollable` which will resolve once the specified instant
+            /// has occurred.
             pub fn subscribe_instant(when: Instant) -> Pollable {
                 unsafe {
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "wasi:clocks/monotonic-clock@0.2.0")]
+                    #[link(wasm_import_module = "wasi:clocks/monotonic-clock@0.2.3")]
                     unsafe extern "C" {
                         #[link_name = "subscribe-instant"]
+                        fn wit_import0(_: i64) -> i32;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import0(_: i64) -> i32 {
+                        unreachable!()
+                    }
+                    let ret = unsafe { wit_import0(_rt::as_i64(when)) };
+                    unsafe {
+                        super::super::super::wasi::io::poll::Pollable::from_handle(
+                            ret as u32,
+                        )
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Create a `pollable` that will resolve after the specified duration has
+            /// elapsed from the time this function is invoked.
+            pub fn subscribe_duration(when: Duration) -> Pollable {
+                unsafe {
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "wasi:clocks/monotonic-clock@0.2.3")]
+                    unsafe extern "C" {
+                        #[link_name = "subscribe-duration"]
                         fn wit_import0(_: i64) -> i32;
                     }
                     #[cfg(not(target_arch = "wasm32"))]
@@ -2038,8 +2096,8 @@ pub(crate) use __export_task_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1935] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x94\x0e\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2005] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xda\x0e\x01A\x02\x01\
 A\x14\x01B\x04\x04\0\x05error\x03\x01\x01h\0\x01@\x01\x04self\x01\0s\x04\0\x1d[m\
 ethod]error.to-debug-string\x01\x02\x03\0\x13wasi:io/error@0.2.8\x05\0\x01B\x0a\x04\
 \0\x08pollable\x03\x01\x01h\0\x01@\x01\x04self\x01\0\x7f\x04\0\x16[method]pollab\
@@ -2063,24 +2121,26 @@ utput-stream.subscribe\x01\x16\x01@\x02\x04self\x11\x03lenw\0\x13\x04\0\"[method
 ]output-stream.write-zeroes\x01\x17\x04\05[method]output-stream.blocking-write-z\
 eroes-and-flush\x01\x17\x01@\x03\x04self\x11\x03src\x09\x03lenw\0\x0d\x04\0\x1c[\
 method]output-stream.splice\x01\x18\x04\0%[method]output-stream.blocking-splice\x01\
-\x18\x03\0\x15wasi:io/streams@0.2.8\x05\x04\x01B\x09\x02\x03\x02\x01\x03\x04\0\x08\
-pollable\x03\0\0\x01w\x04\0\x07instant\x03\0\x02\x01@\0\0\x03\x04\0\x03now\x01\x04\
-\x01i\x01\x01@\x01\x04when\x03\0\x05\x04\0\x11subscribe-instant\x01\x06\x03\0!wa\
-si:clocks/monotonic-clock@0.2.0\x05\x05\x02\x03\0\x02\x0doutput-stream\x01B\x0a\x02\
-\x03\x02\x01\x06\x04\0\x0doutput-stream\x03\0\0\x01i\x01\x01@\x01\x03jobs\0\x02\x04\
-\0\x11open-partial-sink\x01\x03\x01@\x01\x03jobs\0\x7f\x04\0\x0dshould-cancel\x01\
-\x04\x01@\x01\x03jobs\0y\x04\0\x0bdeadline-ms\x01\x05\x04\0\x0cremaining-ms\x01\x05\
-\x03\0\x17uicp:host/control@1.0.0\x05\x07\x01B\x0a\x01r\x02\x03coly\x06needles\x04\
-\0\x06filter\x03\0\0\x01ps\x01p\x02\x01py\x01k\x01\x01r\x03\x04rows\x03\x06selec\
-t\x04\x0ewhere-contains\x05\x04\0\x05input\x03\0\x06\x01p\x02\x04\0\x06output\x03\
-\0\x08\x03\0!uicp:task-table-query/types@0.1.0\x05\x08\x02\x03\0\x05\x06filter\x02\
-\x03\0\x05\x05input\x02\x03\0\x05\x06output\x01B\x0b\x02\x03\x02\x01\x09\x04\0\x06\
-filter\x03\0\0\x02\x03\x02\x01\x0a\x04\0\x05input\x03\0\x02\x02\x03\x02\x01\x0b\x04\
-\0\x06output\x03\0\x04\x01m\x01\x09cancelled\x04\0\x05error\x03\0\x06\x01j\x01\x05\
-\x01\x07\x01@\x02\x06job-ids\x05input\x03\0\x08\x04\0\x03run\x01\x09\x04\0!uicp:\
-task-table-query/table@0.1.0\x05\x0c\x04\0\x20uicp:task-table-query/task@0.1.0\x04\
-\0\x0b\x0a\x01\0\x04task\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-\
-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+\x18\x03\0\x15wasi:io/streams@0.2.8\x05\x04\x01B\x0f\x02\x03\x02\x01\x03\x04\0\x08\
+pollable\x03\0\0\x01w\x04\0\x07instant\x03\0\x02\x01w\x04\0\x08duration\x03\0\x04\
+\x01@\0\0\x03\x04\0\x03now\x01\x06\x01@\0\0\x05\x04\0\x0aresolution\x01\x07\x01i\
+\x01\x01@\x01\x04when\x03\0\x08\x04\0\x11subscribe-instant\x01\x09\x01@\x01\x04w\
+hen\x05\0\x08\x04\0\x12subscribe-duration\x01\x0a\x03\0!wasi:clocks/monotonic-cl\
+ock@0.2.3\x05\x05\x02\x03\0\x02\x0doutput-stream\x01B\x0a\x02\x03\x02\x01\x06\x04\
+\0\x0doutput-stream\x03\0\0\x01i\x01\x01@\x01\x03jobs\0\x02\x04\0\x11open-partia\
+l-sink\x01\x03\x01@\x01\x03jobs\0\x7f\x04\0\x0dshould-cancel\x01\x04\x01@\x01\x03\
+jobs\0y\x04\0\x0bdeadline-ms\x01\x05\x04\0\x0cremaining-ms\x01\x05\x03\0\x17uicp\
+:host/control@1.0.0\x05\x07\x01B\x0a\x01r\x02\x03coly\x06needles\x04\0\x06filter\
+\x03\0\0\x01ps\x01p\x02\x01py\x01k\x01\x01r\x03\x04rows\x03\x06select\x04\x0ewhe\
+re-contains\x05\x04\0\x05input\x03\0\x06\x01p\x02\x04\0\x06output\x03\0\x08\x03\0\
+!uicp:task-table-query/types@0.1.0\x05\x08\x02\x03\0\x05\x06filter\x02\x03\0\x05\
+\x05input\x02\x03\0\x05\x06output\x01B\x0b\x02\x03\x02\x01\x09\x04\0\x06filter\x03\
+\0\0\x02\x03\x02\x01\x0a\x04\0\x05input\x03\0\x02\x02\x03\x02\x01\x0b\x04\0\x06o\
+utput\x03\0\x04\x01m\x01\x09cancelled\x04\0\x05error\x03\0\x06\x01j\x01\x05\x01\x07\
+\x01@\x02\x06job-ids\x05input\x03\0\x08\x04\0\x03run\x01\x09\x04\0!uicp:task-tab\
+le-query/table@0.1.0\x05\x0c\x04\0\x20uicp:task-table-query/task@0.1.0\x04\0\x0b\
+\x0a\x01\0\x04task\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compon\
+ent\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

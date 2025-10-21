@@ -21,7 +21,7 @@ interface table {
 
 world task {
   import wasi:io/streams@0.2.8;
-  import wasi:clocks/monotonic-clock@0.2.0;
+  import wasi:clocks/monotonic-clock@0.2.3;
   import uicp:host/control@1.0.0;
   export table;
 }
