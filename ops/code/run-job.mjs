@@ -13,13 +13,14 @@ import { runClaude } from "./lib/providers/claude-cli.mjs";
 import { runCodex } from "./lib/providers/codex-cli.mjs";
 
 function parseArgs(argv) {
-  const out = { dry: false, assembleOnly: false };
+  const out = { dry: false, assembleOnly: false, container: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--spec") out.spec = argv[++i];
     else if (a === "--provider") out.provider = argv[++i];
     else if (a === "--dry") out.dry = true;
     else if (a === "--assemble-only") out.assembleOnly = true;
+    else if (a === "--container") out.container = true;
   }
   return out;
 }
@@ -78,15 +79,17 @@ async function main() {
         prompt: spec.prompt,
         tools: classCfg.allowedCommands,
         acceptEdits: true,
-        dangerSkipPerms: true, // safe inside container per cfg
-        containerCmd: null, // runtime integration to be wired in CI
+        dangerSkipPerms: true, // safe only inside container
+        container: !!args.container,
+        provCfg,
         allowlistCfg
       });
     } else {
       providerResult = await runCodex({
         prompt: spec.prompt,
         model: provCfg.defaults?.model,
-        containerCmd: null, // runtime integration to be wired in CI
+        container: !!args.container,
+        provCfg,
         allowlistCfg
       });
     }

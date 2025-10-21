@@ -21,3 +21,11 @@ export async function findHttpJail() {
   throw err(Errors.ToolMissing, "httpjail not found on PATH");
 }
 
+export async function policyJsonForProvider({ policyFile, providerKey, methods }) {
+  const policy = await readJson(policyFile);
+  const prov = policy.providers?.[providerKey];
+  if (!prov) throw err(Errors.ConfigNotFound, `provider '${providerKey}' not in ${policyFile}`);
+  const allowed = prov.hosts || [];
+  const allowMethods = methods?.length ? methods : prov.methods || ["GET", "HEAD", "OPTIONS"];
+  return JSON.stringify({ hosts: allowed, methods: allowMethods, blockPost: prov.blockPost !== false });
+}
