@@ -22,12 +22,24 @@ Artifacts
 - network/allowlist.json — shared allowlist for httpjail + firewall
 - policy/job-classes.json — job routing/toolcaps
 - lib/*.mjs — orchestrator, providers, validator, assembler
+- images/claude-code/Dockerfile — Claude container (Ubuntu base)
+- images/codex-cli/Dockerfile — Codex container (Node base)
+- images/common/with-firewall.sh — default‑deny egress allowlist (iptables)
 
 Notes
 - Default network: off. httpjail (if present) further restricts egress to explicit hosts and GET/HEAD/OPTIONS.
 - On macOS, httpjail is best-effort; prefer Linux in CI/agents.
 - Error codes use E-UICP-####. Nonexistent tools or binaries raise typed errors.
 - Risk notes recorded when httpjail allowlist is configured but not enforced (e.g., binary missing on host).
+
+Building Images
+- Claude: `docker build -t uicp/claude-code:latest ops/code/images/claude-code`
+- Codex: `docker build -t uicp/codex-cli:latest ops/code/images/codex-cli`
+
+Firewall Behavior
+- ENTRYPOINT runs `with-firewall.sh`: sets OUTPUT default DROP, allows loopback and established flows, then allows TCP 80/443 only to allowlisted host IPs.
+- HTTP method filtering is handled by `httpjail` in the orchestrator/wrapper; the firewall cannot enforce HTTP verbs.
+- If iptables capabilities are unavailable, it logs and proceeds (httpjail remains the guard).
 
 Diffs & Path Policy
 - Provider outputs are scanned for apply_patch blocks (`*** Begin Patch` … `*** End Patch`).

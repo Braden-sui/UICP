@@ -101,7 +101,8 @@ async function main() {
           provider_key: claudeCfg.hardening.httpjail.provider_key,
           methods: claudeCfg.hardening.httpjail.methods
         } : null,
-        timeoutMs: smallTimeout
+        timeoutMs: smallTimeout,
+        memoryMb: classCfg.memoryMb
       }).then(r => ({ name: "claude", r })).catch(e => ({ name: "claude", e }));
       const codexP = runCodex({
         prompt: spec.prompt,
@@ -113,7 +114,8 @@ async function main() {
           provider_key: codexCfg.hardening.httpjail.provider_key,
           methods: codexCfg.hardening.httpjail.methods
         } : null,
-        timeoutMs: smallTimeout
+        timeoutMs: smallTimeout,
+        memoryMb: classCfg.memoryMb
       }).then(r => ({ name: "codex", r })).catch(e => ({ name: "codex", e }));
       const [a, b] = await Promise.all([claudeP, codexP]);
       const evalResult = (x) => {
@@ -142,7 +144,8 @@ async function main() {
           container: !!args.container,
           provCfg,
           allowlistCfg,
-          timeoutMs: classCfg.timeBudgetMs
+          timeoutMs: classCfg.timeBudgetMs,
+          memoryMb: classCfg.memoryMb
         });
       } else {
         providerResult = await runCodex({
@@ -151,7 +154,8 @@ async function main() {
           container: !!args.container,
           provCfg,
           allowlistCfg,
-          timeoutMs: classCfg.timeBudgetMs
+          timeoutMs: classCfg.timeBudgetMs,
+          memoryMb: classCfg.memoryMb
         });
       }
       record({ level: "info", msg: "provider_completed", provider, exit: providerResult.code });

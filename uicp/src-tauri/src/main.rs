@@ -2103,6 +2103,7 @@ fn main() {
             compute_call,
             compute_cancel,
             debug_circuits,
+            kill_container,
             frontend_ready
         ])
         .run(tauri::generate_context!())
@@ -2133,6 +2134,36 @@ async fn debug_circuits(
 ) -> Result<Vec<circuit::CircuitDebugInfo>, String> {
     let info = circuit::get_circuit_debug_info(&state.circuit_breakers).await;
     Ok(info)
+}
+
+/// Stop a running container by name using docker or podman.
+/// ERROR: E-UICP-9101 spawn failed; E-UICP-9102 runtime missing
+#[tauri::command]
+async fn kill_container(container_name: String) -> Result<(), String> {
+    fn try_stop(bin: &str, name: &str) -> Result<(), String> {
+        let out = std::process::Command::new(bin)
+            .arg("stop")
+            .arg(name)
+            .output()
+            .map_err(|e| format!("E-UICP-9101: spawn {bin} failed: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "E-UICP-9101: {bin} stop exited {}: {}",
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(())
+    }
+
+    // Try docker then podman
+    match try_stop("docker", &container_name) {
+        Ok(_) => Ok(()),
+        Err(_e1) => match try_stop("podman", &container_name) {
+            Ok(_) => Ok(()),
+            Err(e2) => Err(format!("E-UICP-9102: container runtime missing or stop failed: {e2}")),
+        },
+    }
 }
 
 /// Verify that all module entries listed in the manifest exist and match their digests.

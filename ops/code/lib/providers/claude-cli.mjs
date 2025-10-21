@@ -3,7 +3,7 @@ import { buildHttpJailArgs, policyJsonForProvider } from "../httpjail.mjs";
 import { err, Errors } from "../errors.mjs";
 import { buildContainerCmd, shellWrap, quote } from "../container.mjs";
 
-export async function runClaude({ prompt, tools, acceptEdits, dangerSkipPerms, container, provCfg, allowlistCfg, timeoutMs }) {
+export async function runClaude({ prompt, tools, acceptEdits, dangerSkipPerms, container, provCfg, allowlistCfg, timeoutMs, memoryMb }) {
   const baseArgs = ["-p", prompt, "--output-format", "stream-json"];
   if (tools?.length) baseArgs.push("--allowedTools", tools.join(","));
   if (acceptEdits) baseArgs.push("--permission-mode", "acceptEdits");
@@ -16,7 +16,7 @@ export async function runClaude({ prompt, tools, acceptEdits, dangerSkipPerms, c
   let httpjailApplied = false;
   if (container) {
     containerName = `codejob-${Date.now().toString(36)}`;
-    const containerCmd = await buildContainerCmd(provCfg, { name: containerName });
+    const containerCmd = await buildContainerCmd(provCfg, { name: containerName, memoryMb });
     // Build inner command, optionally wrapped with httpjail
     let inner = ["claude", ...baseArgs];
     if (allowlistCfg) {
