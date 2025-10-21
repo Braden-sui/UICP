@@ -26,7 +26,7 @@ jobs:
       compute: ${{ steps.filter.outputs.compute }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - name: Paths filter
         id: filter
         uses: dorny/paths-filter@v3
@@ -51,7 +51,7 @@ jobs:
       UICP_MODULES_PUBKEY: ih4HBWNN6fqiMx8ee5NICPwDUzu/4ORtUjo7OTVu4wg=
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
 
       - name: Install GTK dependencies
         run: |
@@ -66,22 +66,25 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c
+        with:
+          version: 9.0.0
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
         with:
           node-version: 20
           cache: 'pnpm'
           cache-dependency-path: uicp/pnpm-lock.yaml
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@5d458579430fc14a04a08a1e7d3694f545e91ce6
         with:
           toolchain: stable
-          profile: minimal
-          override: true
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@7939da402645ba29a2df566723491a2c856e8f8a
         with:
           workspaces: |
             uicp/src-tauri
@@ -92,10 +95,12 @@ jobs:
 
       - name: Install component tools
         run: |
-          cargo install cargo-component --locked || true
-          cargo install wit-component --locked || true
+          # WHY: Install wasm tooling if not already present. Fail loud if installation fails.
+          # INVARIANT: These tools must be available for WIT validation and component checks.
+          command -v cargo-component || cargo install cargo-component --locked
+          command -v wit-component || cargo install wit-component --locked
           # Install WebAssembly Compositions (wac) CLI to validate component targets
-          cargo install wac-cli --locked || true
+          command -v wac || cargo install wac-cli --locked
 
       - name: Rust check (compute host)
         working-directory: uicp/src-tauri
