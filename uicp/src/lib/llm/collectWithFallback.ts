@@ -22,107 +22,10 @@ const resolveSpan = (context?: CollectionContext): TraceSpan | undefined => {
   return undefined;
 };
 
-const looksLikeEnvelope = (value: unknown): boolean => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  const op = typeof record.op === 'string' ? record.op : typeof record.method === 'string' ? record.method : undefined;
-  return Boolean(op && op.trim().length > 0);
-};
-
-const detectToolPayload = (
-  value: unknown,
-  fallbackName: string,
-): { name: string; payload: Record<string, unknown> } | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const batch = record.batch;
-  if (!Array.isArray(batch)) return null;
-  const batchLooksValid = batch.length === 0 || batch.every((entry) => looksLikeEnvelope(entry));
-  if (!batchLooksValid) return null;
-  const hasPlanSignals =
-    typeof record.summary === 'string' ||
-    Array.isArray(record.actor_hints) ||
-    Array.isArray(record.actorHints) ||
-    record.risks !== undefined;
-  return { name: hasPlanSignals ? 'emit_plan' : fallbackName, payload: record };
-};
-
-const splitConcatenatedJson = (input: string): string[] => {
-  const out: string[] = [];
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let start = -1;
-  for (let i = 0; i < input.length; i += 1) {
-    const ch = input[i]!;
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (ch === '\\') {
-        escape = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      if (start === -1) start = i;
-      continue;
-    }
-    if (ch === '{') {
-      if (depth === 0) start = i;
-      depth += 1;
-      continue;
-    }
-    if (ch === '}') {
-      depth -= 1;
-      if (depth === 0 && start !== -1) {
-        out.push(input.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-  return out.length ? out : [input];
-};
-
-const ensureBatchPayload = (value: unknown): Record<string, unknown> => {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    if (Object.prototype.hasOwnProperty.call(value, 'batch')) {
-      return value as Record<string, unknown>;
-    }
-  }
-  return {
-    batch: value,
-  };
-};
-
-const extractToolFromText = (text: string, fallbackName: string): { name: string; payload: Record<string, unknown> } | null => {
-  const segments = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .flatMap(splitConcatenatedJson);
-  for (const segment of segments) {
-    const trimmed = segment.trim();
-    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue;
-    try {
-      const parsed = JSON.parse(trimmed);
-      const detected = detectToolPayload(parsed, fallbackName);
-      if (detected) {
-        return detected;
-      }
-    } catch {
-      // Ignore parse errors; fall back to next segment.
-    }
-  }
-  return null;
-};
-
 /**
- * Collects both tool call arguments AND text content from a single stream pass.
- * This solves the problem where trying tool collection first consumes the stream,
- * leaving nothing for text fallback.
+ * Collects tool call arguments and raw text from a single stream pass.
+ * This avoids double-iterating the stream while still capturing textual payloads
+ * for telemetry or debugging when the model malfunctions.
  *
  * @param stream - Async iterable of StreamEvent
  * @param targetToolName - Tool name to collect (e.g., 'emit_plan', 'emit_batch')
@@ -198,7 +101,7 @@ export async function collectWithFallback(
 
             accumulators.set(index, acc);
           } else if (event.type === 'content') {
-            // Accumulate text content for fallback
+            // WHY: keep original text for diagnostics when tooling fails
             textParts.push(event.text);
           } else if (event.type === 'return') {
             if (typeof event.result === 'string') {
@@ -281,27 +184,6 @@ export async function collectWithFallback(
         candidates: candidates.map(({ index, name }) => ({ index, name })),
       },
     });
-  }
-
-  if (!toolResult) {
-    const maybeTool = extractToolFromText(textContent, targetToolName);
-    if (maybeTool) {
-      const normalizedArgs =
-        targetToolName === 'emit_batch' ? ensureBatchPayload(maybeTool.payload) : maybeTool.payload;
-      toolResult = {
-        index: candidates[0]?.index ?? 0,
-        id: candidates[0]?.id,
-        name: maybeTool.name,
-        args: normalizedArgs,
-      };
-      emit('tool_args_parsed', {
-        data: {
-          index: toolResult.index,
-          name: toolResult.name ?? targetToolName,
-          source: 'text_fallback',
-        },
-      });
-    }
   }
 
   return { toolResult, textContent };

@@ -15,6 +15,7 @@ import { extractApplyPatchBlocks, summarizeApplyPatch, applyWithGit } from "./li
 import { parseStreamJson, extractPatchesFromEvents, usageFromEvents } from "./lib/providers/claude.parse.mjs";
 import { validateSpec } from "./lib/spec.mjs";
 import { summarizeMetrics } from "./lib/metrics.mjs";
+import { buildClaudeAllowedTools } from "./lib/claude-tools.mjs";
 
 function parseArgs(argv) {
   const out = { dry: false, assembleOnly: false, container: false, apply: false, dual: false };
@@ -79,8 +80,10 @@ async function main() {
     const allowlistCfg = provCfg.hardening?.httpjail?.enabled ? {
       policy_file: provCfg.hardening.httpjail.policy_file,
       provider_key: provCfg.hardening.httpjail.provider_key,
-      methods: provCfg.hardening.httpjail.methods
+      methods: provCfg.hardening.httpjail.methods,
+      block_post: provCfg.hardening.httpjail.block_post ?? provCfg.hardening.httpjail.blockPost
     } : null;
+    const claudeTools = buildClaudeAllowedTools(classCfg.allowedCommands);
 
     // Dual-shot optional: run both providers with small timeout, prefer valid patches
     let providerResult;
@@ -91,15 +94,16 @@ async function main() {
       const codexCfg = await loadProviderConfig("codex");
       const claudeP = runClaude({
         prompt: spec.prompt,
-        tools: classCfg.allowedCommands,
+        tools: claudeTools,
         acceptEdits: true,
-        dangerSkipPerms: true,
+        dangerSkipPerms: !!args.container,
         container: !!args.container,
         provCfg: claudeCfg,
         allowlistCfg: claudeCfg.hardening?.httpjail?.enabled ? {
           policy_file: claudeCfg.hardening.httpjail.policy_file,
           provider_key: claudeCfg.hardening.httpjail.provider_key,
-          methods: claudeCfg.hardening.httpjail.methods
+          methods: claudeCfg.hardening.httpjail.methods,
+          block_post: claudeCfg.hardening.httpjail.block_post ?? claudeCfg.hardening.httpjail.blockPost
         } : null,
         timeoutMs: smallTimeout,
         memoryMb: classCfg.memoryMb
@@ -112,7 +116,8 @@ async function main() {
         allowlistCfg: codexCfg.hardening?.httpjail?.enabled ? {
           policy_file: codexCfg.hardening.httpjail.policy_file,
           provider_key: codexCfg.hardening.httpjail.provider_key,
-          methods: codexCfg.hardening.httpjail.methods
+          methods: codexCfg.hardening.httpjail.methods,
+          block_post: codexCfg.hardening.httpjail.block_post ?? codexCfg.hardening.httpjail.blockPost
         } : null,
         timeoutMs: smallTimeout,
         memoryMb: classCfg.memoryMb
@@ -138,9 +143,9 @@ async function main() {
       if (provider === "claude") {
         providerResult = await runClaude({
           prompt: spec.prompt,
-          tools: classCfg.allowedCommands,
+          tools: claudeTools,
           acceptEdits: true,
-          dangerSkipPerms: true, // safe only inside container
+          dangerSkipPerms: !!args.container, // safe only inside container
           container: !!args.container,
           provCfg,
           allowlistCfg,

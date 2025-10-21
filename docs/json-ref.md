@@ -112,25 +112,21 @@ These prompts are treated as source of truth; any deviation is caught by orchest
 - File: `uicp/src/lib/llm/orchestrator.ts`
 - Planner (`planWithProfile`):
   1) When the selected profile supports tools, collect the `emit_plan` tool call and normalise via `normalizePlanJson()`.
-  2) If the model emits JSON content (no tool_call), reuse `normalizePlanJson()` to validate and coerce aliases.
-  3) As a last resort, parse the legacy outline sections (only used by the deterministic `wil` planner or older models).
-  4) On schema issues we retry once with a structured system message that reiterates the JSON contract.
+  2) Legacy outline parsing remains only for the deterministic `wil` planner (non-tool path).
+  3) On schema issues we retry once with a structured system message that reiterates the JSON contract.
 - Actor (`actWithProfile`):
-  1) For all tool-capable profiles, require a valid `emit_batch` call; plain text or WIL triggers an error and a structured retry message.
-  2) Tests can still enable WIL parsing via `MODE === 'test'`, but production ignores WIL text.
-  3) If the actor still returns nothing actionable, the orchestrator injects the spawn-guarantee window so the user is never left with a blank desktop.
+  1) For all tool-capable profiles, require a valid `emit_batch` call; missing or malformed payloads trigger an error and a structured retry message.
+  2) If the actor still returns nothing actionable, the orchestrator injects the spawn-guarantee window so the user is never left with a blank desktop.
 - Clarifier flow and metadata stamping remain unchanged.
 
 ---
 
 ## Streaming Aggregator (Apply path)
 
-- Current: `uicp/src/lib/uicp/stream.ts` aggregates text → WIL via `parseWILBatch()`.
-- JSON extension:
-  - Accumulate `json` channel text; on `flush()`, normalise via `normalizeBatchJson()` and enqueue.
-  - Accumulate `tool_call` deltas for `emit_batch`, then run `normalizeBatchJson()` on the merged payload.
-  - Gate by: `supportsTools && !cfg.wilOnly`.
-- Bridge integration: `uicp/src/lib/bridge/tauri.ts` chooses aggregator; keep WIL aggregator for fallback and tests.
+- Current: ``uicp/src/lib/uicp/stream.ts`` accumulates structured payloads only.
+  - Accumulate ``tool_call`` deltas for ``emit_batch``, merge segments, then normalise via ``normalizeBatchJson()``.
+  - Accumulate ``json`` channel text as a secondary structured path (no WIL fallback).
+- Bridge integration: ``uicp/src/lib/bridge/tauri.ts`` chooses aggregator; missing tool calls surface toaster errors, no fallback.
 
 ---
 

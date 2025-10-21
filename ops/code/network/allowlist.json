@@ -6,8 +6,8 @@
         "api.anthropic.com",
         "claude.ai"
       ],
-      "methods": ["GET", "HEAD", "OPTIONS"],
-      "blockPost": true
+      "methods": ["GET", "HEAD", "OPTIONS", "POST"],
+      "blockPost": false
     },
     "codex": {
       "hosts": [
@@ -15,9 +15,8 @@
         "auth.openai.com",
         "login.microsoftonline.com"
       ],
-      "methods": ["GET", "HEAD", "OPTIONS"],
-      "blockPost": true
+      "methods": ["GET", "HEAD", "OPTIONS", "POST"],
+      "blockPost": false
     }
   }
 }
-

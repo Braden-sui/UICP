@@ -88,8 +88,17 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
         const dir = await readDir('tmp/codejobs').catch(() => []);
         const entries = Array.isArray(dir) ? dir : [];
         const keys = entries
-          .filter((e: any) => e && typeof e.path === 'string' && e.isDirectory)
-          .map((e: any) => String(e.name ?? e.path.split(/[\\/]/).pop()))
+          .filter((e: unknown) => {
+            const rec = e as { path?: unknown; isDirectory?: unknown };
+            return typeof rec.path === 'string' && rec.isDirectory === true;
+          })
+          .map((e: unknown) => {
+            const rec = e as { name?: unknown; path?: unknown };
+            const name = typeof rec.name === 'string' ? rec.name : undefined;
+            const path = typeof rec.path === 'string' ? rec.path : '';
+            const baseName = path ? path.split(/[\\/]/).pop() : '';
+            return String(name ?? baseName);
+          })
           .sort()
           .reverse();
         const next: Array<{ key: string; provider?: string; durationMs?: number; tokens?: string; risk?: string; containerName?: string }> = [];
@@ -108,12 +117,14 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
               if (t && (typeof t.input === 'number' || typeof t.output === 'number')) {
                 tokensSummary = `${t.input ?? 0}/${t.output ?? 0}`;
               }
-            } catch {}
+            } catch (err) {
+              console.warn('devtools: parse artifact.json failed', err);
+            }
           }
           const stateTxt = await readTextFile(`${base}/state.json`).catch(() => '');
           let containerName: string | undefined;
           if (stateTxt) {
-            try { const s = JSON.parse(stateTxt); containerName = s?.containerName; } catch {}
+            try { const s = JSON.parse(stateTxt); containerName = s?.containerName; } catch (err) { console.warn('devtools: parse state.json failed', err); }
           }
           const riskTxt = await readTextFile(`${base}/provider.raw.txt`).catch(() => '');
           let risk: string | undefined;
@@ -121,8 +132,8 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
           next.push({ key, provider, durationMs, tokens: tokensSummary, risk, containerName });
         }
         if (!cancelled) setCodeJobs(next);
-      } catch (e) {
-        // ignore
+      } catch (err) {
+        console.warn('devtools: load code jobs failed', err);
       }
     };
     void load();
@@ -142,15 +153,15 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
         readTextFile(`${base}/transcript.jsonl`).catch(() => ''),
         readTextFile(`${base}/state.json`).catch(() => ''),
       ]);
-      const detail: any = {};
-      if (artifactTxt) try { detail.artifact = JSON.parse(artifactTxt); } catch {}
+      const detail: { artifact?: unknown; diffs?: { files: string[] } | null; transcript?: string; state?: { containerName?: string } | null } = {};
+      if (artifactTxt) try { detail.artifact = JSON.parse(artifactTxt); } catch (err) { console.warn('devtools: parse artifact.json failed', err); }
       if (diffsTxt) try { detail.diffs = JSON.parse(diffsTxt); } catch { detail.diffs = null; }
       if (transcriptTxt) detail.transcript = transcriptTxt.split('\n').slice(-200).join('\n');
       if (stateTxt) try { detail.state = JSON.parse(stateTxt); } catch { detail.state = null; }
       setSelectedJobKey(key);
       setSelectedJobDetail(detail);
-    } catch (e) {
-      // ignore
+    } catch (err) {
+      console.warn('devtools: load job detail failed', err);
     }
   };
 
@@ -344,7 +355,7 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
     >
       <div className="mb-2 flex items-center justify-between">
         <div id="compute-jobs-title" className="font-semibold">
-          Devtools
+          Compute Jobs
         </div>
         <button
           ref={closeBtnRef}
@@ -611,7 +622,7 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
               <div className="text-xs text-slate-500">Select a job to view details.</div>
             ) : (
               <div className="space-y-2">
-                {selectedJobDetail?.artifact && (
+                {selectedJobDetail?.artifact !== undefined && selectedJobDetail?.artifact !== null && (
                   <div className="rounded border border-slate-200 bg-slate-50 p-2">
                     <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">artifact.json</div>
                     <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] text-slate-800">{JSON.stringify(selectedJobDetail.artifact, null, 2)}</pre>

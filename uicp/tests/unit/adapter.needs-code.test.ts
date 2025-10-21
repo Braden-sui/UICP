@@ -73,7 +73,7 @@ describe('needs.code executor', () => {
           stateKey: 'panels.panel-demo.view',
         },
       },
-    } as unknown as import('../../src/lib/schema').Envelope;
+    } as unknown as import('../../src/lib/schema').Envelope<'needs.code'>;
 
     const result = await executor.execute(command, { runId: 'run-1' }, {
       executeDomSet,
@@ -156,7 +156,7 @@ describe('needs.code executor', () => {
         spec: 'Generate widget',
         language: 'ts',
       },
-    } as unknown as import('../../src/lib/schema').Envelope;
+    } as unknown as import('../../src/lib/schema').Envelope<'needs.code'>;
 
     const dispatches: any[] = [];
     (window as any).uicpComputeCall = vi.fn(async (spec: any) => {
@@ -177,30 +177,30 @@ describe('needs.code executor', () => {
     });
 
     await executor.execute(
-      {
+      ({
         ...baselineCommand,
         params: { ...baselineCommand.params, provider: 'codex' },
-      },
+      } as unknown) as import('../../src/lib/schema').Envelope<'needs.code'>,
       {},
       {},
     );
     await executor.execute(
-      {
+      ({
         ...baselineCommand,
         params: { ...baselineCommand.params, provider: 'claude', providers: ['claude'] },
-      },
+      } as unknown) as import('../../src/lib/schema').Envelope<'needs.code'>,
       {},
       {},
     );
     await executor.execute(
-      {
+      ({
         ...baselineCommand,
         params: {
           ...baselineCommand.params,
           providers: ['codex', 'claude'],
           caps: { net: ['https://api.openai.com/v1/chat', 'https://malicious.example.com'] },
         },
-      },
+      } as unknown) as import('../../src/lib/schema').Envelope<'needs.code'>,
       {},
       {},
     );

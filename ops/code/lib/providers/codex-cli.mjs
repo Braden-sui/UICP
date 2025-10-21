@@ -1,5 +1,5 @@
 import { spawnp, spawnManaged } from "../utils.mjs";
-import { buildHttpJailArgs, policyJsonForProvider } from "../httpjail.mjs";
+import { buildHttpJailArgs, policyPredicateForProvider } from "../httpjail.mjs";
 import { err, Errors } from "../errors.mjs";
 import { buildContainerCmd, shellWrap } from "../container.mjs";
 import { harvestCodexSession } from "../providers/codex.harvest.mjs";
@@ -19,12 +19,13 @@ export async function runCodex({ prompt, model, container, provCfg, allowlistCfg
     const containerCmd = await buildContainerCmd(provCfg, { name: containerName, memoryMb });
     let inner = ["codex", ...baseArgs];
     if (allowlistCfg) {
-      const policy = await policyJsonForProvider({
+      const predicate = await policyPredicateForProvider({
         policyFile: allowlistCfg.policy_file,
         providerKey: allowlistCfg.provider_key,
-        methods: allowlistCfg.methods
+        methods: allowlistCfg.methods,
+        block_post: allowlistCfg.block_post
       });
-      inner = ["httpjail", "--js", policy, "--", ...inner];
+      inner = ["httpjail", "--js", predicate, "--", ...inner];
       httpjailApplied = true;
     }
     const wrapped = shellWrap(inner);
@@ -60,6 +61,11 @@ export async function runCodex({ prompt, model, container, provCfg, allowlistCfg
 function wrapHttpJailArgs(cfg) { return []; }
 
 async function safeHttpJailArgs(cfg) {
-  const { exe, args } = await buildHttpJailArgs(cfg);
+  const { exe, args } = await buildHttpJailArgs({
+    policyFile: cfg.policy_file,
+    providerKey: cfg.provider_key,
+    methods: cfg.methods,
+    block_post: cfg.block_post
+  });
   return { exe, args };
 }

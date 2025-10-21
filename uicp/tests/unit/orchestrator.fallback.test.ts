@@ -22,7 +22,13 @@ describe('orchestrator fallbacks', () => {
         getActorClient: () => ({
           streamPlan: (_planJson: string) =>
             makeStream([
-              { type: 'content', channel: 'commentary', text: 'create window title "From Actor Only" width 520 height 320' },
+              {
+                type: 'tool_call',
+                index: 0,
+                name: 'emit_batch',
+                arguments: { batch: [{ op: 'window.create', params: { title: 'From Actor Only' } }] },
+                isDelta: false,
+              },
               { type: 'done' },
             ]),
         }),
@@ -76,7 +82,7 @@ describe('orchestrator fallbacks', () => {
       expect(typeof res.traceId).toBe('string');
       expect(res.timings.planMs).toBeGreaterThanOrEqual(0);
       expect(res.timings.actMs).toBeGreaterThanOrEqual(0);
-      expect(res.failures?.actor).toBeDefined();
+      expect(res.failures?.actor?.toLowerCase()).toContain('missing emit_batch');
     } finally {
       errorSpy.mockRestore();
     }

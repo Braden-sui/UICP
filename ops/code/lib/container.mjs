@@ -21,10 +21,14 @@ export async function buildContainerCmd(providerCfg, { env = process.env, name, 
   if (!image) throw err(Errors.ConfigNotFound, "provider container.image missing");
   const workdir = providerCfg.container?.workdir || "/workspace";
   const wsHost = process.cwd();
+  const env2 = { ...env, WORKSPACE_DIR: env?.WORKSPACE_DIR || wsHost };
   const net = providerCfg.container?.network === "none" ? ["--network", "none"] : [];
   const mounts = [];
   for (const m of providerCfg.container?.mounts || []) {
-    const src = resolveEnvTemplate(m.source || wsHost, env);
+    const raw = m.source || wsHost;
+    let src = resolveEnvTemplate(raw, env2).trim();
+    if (!src) src = wsHost;
+    if (!path.isAbsolute(src)) src = path.resolve(wsHost, src);
     const dst = m.target || workdir;
     const type = m.type || "bind";
     if (type === "bind") mounts.push("-v", `${src}:${dst}`);
@@ -32,12 +36,12 @@ export async function buildContainerCmd(providerCfg, { env = process.env, name, 
   const envs = [];
   for (const e of providerCfg.container?.env || []) {
     if (e.name) {
-      const val = env[e.from_env] ?? env[e.name] ?? "";
+      const val = env2[e.from_env] ?? env2[e.name] ?? "";
       envs.push("-e", `${e.name}=${val}`);
     }
   }
   // Always pass through workspace dir for templates
-  envs.push("-e", `WORKSPACE_DIR=${wsHost}`);
+  envs.push("-e", `WORKSPACE_DIR=${env2.WORKSPACE_DIR}`);
 
   const limits = [];
   if (typeof memoryMb === "number" && memoryMb > 0) limits.push("--memory", `${Math.floor(memoryMb)}m`);

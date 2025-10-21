@@ -1,20 +1,11 @@
 import { extractEventsFromChunk } from '../llm/ollama';
 import { enqueueBatch } from './adapters/queue';
-import { cfg } from '../config';
-import { validateBatch, type Batch, type ApplyOutcome } from './adapters/schemas';
-import { parseWILBatch } from '../orchestrator/parseWILBatch';
 import { normalizeBatchJson } from '../llm/jsonParsing';
+import { parseWilToBatch } from '../wil/batch';
+import type { Batch, ApplyOutcome } from './adapters/schemas';
 
 // Streaming aggregator for Ollama/OpenAI-like SSE chunks.
-// Supports JSON-first (tool calls + json channel) with WIL fallback.
-// Tracks per-channel content and tool call deltas, on flush applies the batch.
-
-const parseBatchFromText = (buffer: string): Batch | undefined => {
-  const items = parseWILBatch(buffer);
-  const ops = items.filter((i): i is { op: string; params: unknown } => 'op' in i);
-  if (ops.length === 0) return undefined;
-  return validateBatch(ops);
-};
+// Collects structured tool-call payloads (emit_batch) and applies them on flush.
 
 type ToolCallAccumulator = {
   index: number;
@@ -25,9 +16,8 @@ type ToolCallAccumulator = {
 };
 
 export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<ApplyOutcome | void> | ApplyOutcome | void) => {
-  let commentaryBuffer = '';
-  let finalBuffer = '';
   let jsonBuffer = '';
+  let wilBuffer = '';
   const toolCallAccumulators = new Map<number, ToolCallAccumulator>();
   let cancelled = false;
 
@@ -43,10 +33,6 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
       }
     }
     const events = extractEventsFromChunk(chunk);
-    if (events.length === 0 && typeof raw === 'string') {
-      commentaryBuffer += raw;
-      return;
-    }
 
     for (const event of events) {
       // Handle tool calls (JSON-first mode)
@@ -74,30 +60,18 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
 
       if (event.type !== 'content') continue;
       const channel = event.channel?.toLowerCase();
-      
-      if (!channel || channel === 'commentary' || channel === 'assistant' || channel === 'text') {
-        commentaryBuffer += event.text;
-        // Backpressure guard: trim commentary buffer to last N KB
-        const limit = Math.max(16, cfg.wilMaxBufferKb) * 1024;
-        if (commentaryBuffer.length > limit) {
-          commentaryBuffer = commentaryBuffer.slice(-limit);
-        }
-      } else if (channel === 'final') {
-        finalBuffer += event.text;
-      } else if (channel === 'json') {
+
+      if (channel === 'json') {
         // JSON channel for structured responses
         jsonBuffer += event.text;
-      } else if (channel === 'analysis' || channel === 'thought' || channel === 'reasoning') {
-        commentaryBuffer += event.text;
-        const limit = Math.max(16, cfg.wilMaxBufferKb) * 1024;
-        if (commentaryBuffer.length > limit) {
-          commentaryBuffer = commentaryBuffer.slice(-limit);
-        }
-      } else {
-        commentaryBuffer += event.text;
-        const limit = Math.max(16, cfg.wilMaxBufferKb) * 1024;
-        if (commentaryBuffer.length > limit) {
-          commentaryBuffer = commentaryBuffer.slice(-limit);
+        continue;
+      }
+
+      if (!channel || channel === 'commentary' || channel === 'text' || channel === 'default') {
+        // Commentary/plain text fallback for legacy WIL batches
+        wilBuffer += event.text;
+        if (!event.text.endsWith('\n')) {
+          wilBuffer += '\n';
         }
       }
     }
@@ -108,13 +82,11 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     if (cancelled) {
       return { cancelled: true };
     }
-    const finalText = finalBuffer.trim();
     const jsonText = jsonBuffer.trim();
-    const commentaryText = commentaryBuffer.trim();
-    
-    finalBuffer = '';
+    const wilText = wilBuffer.trim();
+
     jsonBuffer = '';
-    commentaryBuffer = '';
+    wilBuffer = '';
 
     let batch: Batch | undefined;
 
@@ -128,14 +100,14 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
             batch = normalizeBatchJson(payload);
             break; // Use first valid tool call
           } catch (err) {
-            console.warn('E-UICP-0421 tool call normalization failed, trying text fallback', err);
+            console.warn('E-UICP-0421 tool call normalization failed', err);
           }
         }
       }
       toolCallAccumulators.clear();
     }
 
-    // Priority 2: JSON channel content
+    // Priority 2: JSON channel content (structured payloads without tool_call wrapper)
     if (!batch && jsonText) {
       try {
         batch = normalizeBatchJson(jsonText);
@@ -144,14 +116,12 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
       }
     }
 
-    // Priority 3: Final channel (WIL)
-    if (!batch && finalText) {
-      batch = parseBatchFromText(finalText);
-    }
-
-    // Priority 4: Commentary fallback (WIL)
-    if (!batch && commentaryText) {
-      batch = parseBatchFromText(commentaryText);
+    // Priority 3: Plain-text WIL fallback
+    if (!batch && wilText) {
+      const wilBatch = parseWilToBatch(wilText);
+      if (wilBatch && wilBatch.length > 0) {
+        batch = wilBatch;
+      }
     }
 
     if (!batch || !Array.isArray(batch) || batch.length === 0) {
@@ -176,6 +146,9 @@ export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<Apply
     // WHY: Mark stream as cancelled to prevent further delta processing
     // INVARIANT: Once cancelled, processDelta and flush become no-ops
     cancelled = true;
+    jsonBuffer = '';
+    wilBuffer = '';
+    toolCallAccumulators.clear();
   };
 
   return { processDelta, flush, cancel, isCancelled: () => cancelled };
