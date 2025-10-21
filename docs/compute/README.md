@@ -43,8 +43,8 @@
 
 | Task | WIT package | Export | Imports | Notes |
 | ---- | ----------- | ------ | ------- | ----- |
-| `csv.parse@1.2.0` | `uicp:task-csv-parse@1.2.0` (`components/csv.parse/csv-parse/wit/world.wit`) | `func run(job-id: string, input: string, has-header: bool) -> result<list<list<string>>, string>` | _None_ | Pure parser. Input is a `data:` URI (CSV text). Returns rows or a string error. |
-| `table.query@0.1.0` | `uicp:task-table-query@0.1.0` (`components/table.query/wit/world.wit`) | `func run(job-id: string, rows: list<list<string>>, select: list<u32>, where?: record { col: u32, needle: string }) -> result<list<list<string>>, string>` | `uicp:host/control`, `wasi:io/streams`, `wasi:clocks/monotonic-clock` | Relies on host control for partial logging/cancel checks. No filesystem or network imports are linked. |
+| `csv.parse@1.2.0` | `uicp:task-csv-parse@1.2.0` (`components/csv.parse/csv-parse/wit/world.wit`) | `func run(job-id: string, input: string, has-header: bool) -> result<list<list<string>>, string>` | `wasi:cli/{environment,exit,stdin,stdout,stderr}@0.2.3`, `wasi:io/{error,streams}@0.2.3`, `wasi:clocks/wall-clock@0.2.3`, `wasi:filesystem/{preopens,types}@0.2.3` | Pure parser. Input is a `data:` URI (CSV text). Returns rows or a string error. |
+| `table.query@0.1.0` | `uicp:task-table-query@0.1.0` (`components/table.query/wit/world.wit`) | `func run(job-id: string, rows: list<list<string>>, select: list<u32>, where?: record { col: u32, needle: string }) -> result<list<list<string>>, string>` | csv.parse set + `uicp:host/control@1.0.0`, `uicp:task-table-query/types@0.1.0`, `wasi:clocks/monotonic-clock@0.2.3`, `wasi:io/error@0.2.8`, `wasi:io/streams@0.2.8` | Relies on host control for partial logging/cancel checks. Streams API is used for partial progress frames. |
 | `script.*@x.y.z` | `uicp:applet-script@0.1.0` (`src-tauri/wit/script.world.wit`) | `render(state) -> result<string,string>`, `on-event(action,payload,state) -> result<string,string>`, `init() -> result<string,string>` | _None_ | Backed by in-process JS runtime (`script.hello` stub or `applet.quickjs@0.1.0`). Bundled JS must assign exports to `globalThis.__uicpApplet` (use `pnpm run bundle:applet`). |
 
 
@@ -52,12 +52,13 @@ Host shims:
 
 - `uicp:host/control` exposes `should_cancel(job)`, `deadline_ms(job)`, `remaining_ms(job)`, and `open_partial_sink(job)` for structured log frames.
 - `wasi:logging/logging` is mapped to `compute-result-partial` events with rate limiting.
-- `wasi:io/streams` is limited to the stream returned by `open_partial_sink`; no other stdio is linked.
-- `wasi:clocks/monotonic-clock` provides a deterministic `now` view—exposed via the host deadline tracker.
+- `wasi:cli/*` is wired through `wasmtime-wasi`; stdio pipes default to empty handles and exit traps back into the host.
+- `wasi:io/streams` is limited to the partial sink handle opened via `uicp:host/control`; component stdio sees inert pipes unless the host binds sinks explicitly.
+- `wasi:clocks/monotonic-clock` provides a deterministic `now` view via the host deadline tracker.
 
 Capability guardrails:
 
-- No ambient filesystem (`wasi:filesystem`) or network (`wasi:http`) imports are linked in V1; granting those requires explicit policy updates and new component versions.
+- Filesystem imports are linked but no directories are preopened, so guests observe an empty namespace. Network (`wasi:http`) remains unavailable.
 - Modules must execute within 30 s by default (`timeoutMs` gate) and 256 MB of linear memory unless `capabilities.longRun` / `capabilities.memHigh` are set.
 - The host derives a stable RNG seed per `(jobId, envHash)` and reports it via `metrics.rngSeedHex`; repeated runs with identical inputs must yield identical `outputHash` values.
 

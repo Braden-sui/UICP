@@ -25,7 +25,7 @@ Last updated: 2025-10-19
 ## Identifier hygiene
 
 - WIT packages, interfaces, functions, and fields use kebab-case (lowercase words separated by single hyphens). Examples: `uicp:host@1.0.0`, `uicp:task-csv-parse@1.2.0`, `has-header`.
-- Pin WIT import versions explicitly (e.g., `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`).
+- Pin WIT import versions explicitly (e.g., `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.3`).
 - Cargo `package.metadata.component` sticks to cargo-component supported keys (`world`, `wit-path`).
 
 -------------------------------------------------------------------------------
@@ -242,7 +242,7 @@ Last updated: 2025-10-19
     - Next: wire CI release job with `STRICT_MODULES_VERIFY=1` and `UICP_MODULES_PUBKEY` so unsigned artifacts are rejected automatically.
 
 - [x] Component feature preflight
-  - `preflight_component_imports` inspects top-level component imports via Wasmtime and compares against per-task allowlists (csv.parse: none, table.query: `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`, `uicp:host/control@1.0.0`). Violations raise `E-UICP-0230` before instantiation. Tests in `module_smoke.rs` cover allowed and mismatched policies.
+- `preflight_component_imports` inspects top-level component imports via Wasmtime and compares against per-task allowlists. csv.parse permits the Preview 2 core set exposed by `wasmtime-wasi` (`wasi:cli/{environment,exit,stdin,stdout,stderr}@0.2.3`, `wasi:io/{error,streams}@0.2.3`, `wasi:clocks/wall-clock@0.2.3`, `wasi:filesystem/{preopens,types}@0.2.3`). table.query extends that set with `uicp:host/control@1.0.0`, `uicp:task-table-query/types@0.1.0`, `wasi:clocks/monotonic-clock@0.2.3`, and `wasi:io/error@0.2.8` / `wasi:io/streams@0.2.8`. Violations raise `E-UICP-0230` before instantiation. Tests in `module_smoke.rs` cover allowed and mismatched policies.
 
 -------------------------------------------------------------------------------
 

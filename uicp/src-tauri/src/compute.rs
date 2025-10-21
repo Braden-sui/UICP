@@ -1713,11 +1713,35 @@ mod with_runtime {
     fn allowed_imports_for(task: &str) -> anyhow::Result<BTreeSet<String>> {
         let prefix = task.split('@').next().unwrap_or(task);
         match prefix {
-            "csv.parse" => Ok(BTreeSet::new()),
+            "csv.parse" => Ok([
+                "wasi:cli/environment@0.2.3",
+                "wasi:cli/exit@0.2.3",
+                "wasi:cli/stderr@0.2.3",
+                "wasi:cli/stdin@0.2.3",
+                "wasi:cli/stdout@0.2.3",
+                "wasi:clocks/wall-clock@0.2.3",
+                "wasi:filesystem/preopens@0.2.3",
+                "wasi:filesystem/types@0.2.3",
+                "wasi:io/error@0.2.3",
+                "wasi:io/streams@0.2.3",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()),
             "table.query" => Ok([
-                "wasi:io/streams@0.2.8",
-                "wasi:clocks/monotonic-clock@0.2.0",
                 "uicp:host/control@1.0.0",
+                "uicp:task-table-query/types@0.1.0",
+                "wasi:cli/environment@0.2.3",
+                "wasi:cli/exit@0.2.3",
+                "wasi:cli/stderr@0.2.3",
+                "wasi:cli/stdin@0.2.3",
+                "wasi:cli/stdout@0.2.3",
+                "wasi:clocks/monotonic-clock@0.2.3",
+                "wasi:clocks/wall-clock@0.2.3",
+                "wasi:filesystem/preopens@0.2.3",
+                "wasi:filesystem/types@0.2.3",
+                "wasi:io/error@0.2.8",
+                "wasi:io/streams@0.2.8",
             ]
             .into_iter()
             .map(|s| s.to_string())
