@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager, Runtime, State};
 
 use crate::{
     codegen, compute, compute_cache, compute_input::canonicalize_task_input, emit_or_log,
-    enforce_compute_policy, registry, AppState, ComputeFinalErr, ComputeJobSpec,
+    enforce_compute_policy, provider_cli, registry, AppState, ComputeFinalErr, ComputeJobSpec,
 };
 use std::time::Instant;
 
@@ -302,4 +302,20 @@ pub async fn clear_compute_cache<R: Runtime>(
         })
         .await
         .map_err(|e| format!("{e:?}"))
+}
+
+pub async fn provider_login<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+    provider: String,
+) -> Result<provider_cli::ProviderLoginResult, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    provider_cli::login(&normalized).await
+}
+
+pub async fn provider_health<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+    provider: String,
+) -> Result<provider_cli::ProviderHealthResult, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    provider_cli::health(&normalized).await
 }

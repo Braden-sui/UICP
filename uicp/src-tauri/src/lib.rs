@@ -23,6 +23,9 @@ pub mod compute_input;
 pub mod core;
 pub mod registry;
 
+#[cfg(any(test, feature = "compute_harness"))]
+pub mod provider_cli;
+
 #[cfg(feature = "wasm_compute")]
 pub mod wasi_logging;
 

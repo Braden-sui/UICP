@@ -66,6 +66,7 @@ mod with_runtime {
     use ciborium::value::Value;
     use dashmap::DashMap;
     use once_cell::sync::Lazy;
+    use parking_lot::Mutex;
     use pollster::block_on;
     use serde_json;
     use sha2::{Digest, Sha256};
@@ -83,7 +84,6 @@ mod with_runtime {
         error::{TryRecvError, TrySendError},
     };
     use tokio::time::{sleep, Duration as TokioDuration};
-    use parking_lot::Mutex;
     use wasmtime::{
         component::{Component, Linker, Resource, ResourceTable},
         Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder,
@@ -2154,7 +2154,11 @@ mod with_runtime {
                 "ts": chrono::Utc::now().timestamp_millis(),
             }),
         );
-        crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload.clone());
+        crate::emit_or_log(
+            &app,
+            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            payload.clone(),
+        );
         if spec.replayable && spec.cache == "readwrite" {
             let key = crate::compute_cache::compute_key(
                 &spec.task,
@@ -2776,10 +2780,7 @@ mod with_runtime {
             }
 
             // Verify a partial event was captured with expected fields
-            let part = captured_partials
-                .lock()
-                .pop()
-                .expect("one partial emitted");
+            let part = captured_partials.lock().pop().expect("one partial emitted");
             assert_eq!(part.get("kind").and_then(|v| v.as_str()), Some("log"));
             assert_eq!(
                 part.get("stream").and_then(|v| v.as_str()),

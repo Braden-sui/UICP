@@ -7,11 +7,16 @@ vi.mock('../../src/lib/telemetry', () => ({
 import type { CommandExecutorDeps } from '../../src/lib/uicp/adapters/adapter.commands';
 import { createCommandTable } from '../../src/lib/uicp/adapters/adapter.commands';
 import { emitTelemetryEvent } from '../../src/lib/telemetry';
+import { useProviderStore } from '../../src/state/providers';
 
 describe('needs.code executor', () => {
   afterEach(() => {
     delete (window as unknown as { uicpComputeCall?: unknown }).uicpComputeCall;
     vi.clearAllMocks();
+    const store = useProviderStore.getState();
+    store.setEnableBoth(true);
+    store.setDefaultProvider('auto');
+    store.resetAll();
   });
 
   it('persists artifact state and renders install panel on success', async () => {
@@ -210,4 +215,45 @@ describe('needs.code executor', () => {
     expect(dispatches[1].capabilities.net).toEqual(['https://api.anthropic.com']);
     expect(dispatches[2].capabilities.net).toEqual(['https://api.openai.com/v1/chat', 'https://api.anthropic.com']);
   });
+  it('respects provider store defaults when planner leaves provider unset', async () => {
+    const table = createCommandTable();
+    const executor = table['needs.code'];
+    const baselineCommand = {
+      op: 'needs.code',
+      params: {
+        spec: 'Generate widget',
+        language: 'ts',
+      },
+    } as unknown as import('../../src/lib/schema').Envelope<'needs.code'>;
+
+    const store = useProviderStore.getState();
+    store.setEnableBoth(false);
+    store.setDefaultProvider('claude');
+    store.resetAll();
+
+    const dispatches: any[] = [];
+    (window as any).uicpComputeCall = vi.fn(async (spec: any) => {
+      dispatches.push(spec);
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('uicp-compute-final', {
+            detail: {
+              ok: false,
+              jobId: spec.jobId,
+              task: spec.task,
+              code: 'Compute.Cancelled',
+              message: 'cancelled for test',
+            },
+          }),
+        );
+      }, 0);
+    });
+
+    await executor.execute(baselineCommand, {}, {});
+
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].input.provider).toBe('claude');
+    expect(dispatches[0].capabilities.net).toEqual(['https://api.anthropic.com']);
+  });
 });
+

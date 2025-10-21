@@ -11,6 +11,7 @@ import { routeApiCall } from "./adapter.api";
 import type { StructuredClarifierBody } from "./adapter.clarifier";
 import type { ComputeFinalEvent } from "../../../compute/types";
 import { emitTelemetryEvent } from "../../telemetry";
+import { getProviderSettingsSnapshot } from "../../../state/providers";
 
 export type CommandResult<T = unknown> =
   | { success: true; value: T }
@@ -162,7 +163,12 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     const jobId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const task = `codegen.run@0.1.0`; // Track D code generation task
 
-    const providerParam = params.provider ?? 'auto';
+    const providerRequestRaw = typeof params.provider === 'string' ? params.provider : 'auto';
+    const providerRequest = providerRequestRaw.trim().toLowerCase();
+    let providerLabel: 'auto' | 'codex' | 'claude' =
+      providerRequest === 'codex' || providerRequest === 'claude'
+        ? (providerRequest as 'codex' | 'claude')
+        : 'auto';
     const providerSet = new Set<'codex' | 'claude'>();
     if (Array.isArray(params.providers)) {
       for (const raw of params.providers) {
@@ -171,12 +177,27 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         }
       }
     }
-    if (providerParam === 'codex' || providerParam === 'claude') {
-      providerSet.add(providerParam);
+    if (providerLabel === 'codex' || providerLabel === 'claude') {
+      providerSet.add(providerLabel);
     }
+    const providerSettings = getProviderSettingsSnapshot();
     if (providerSet.size === 0) {
-      providerSet.add('codex');
-      providerSet.add('claude');
+      if (providerSettings.enableBoth) {
+        providerSet.add('codex');
+        providerSet.add('claude');
+        providerLabel = providerLabel === 'auto' ? 'auto' : providerLabel;
+      } else {
+        const preferred =
+          providerSettings.defaultProvider === 'claude'
+            ? 'claude'
+            : providerSettings.defaultProvider === 'codex'
+              ? 'codex'
+              : 'codex';
+        providerSet.add(preferred);
+        providerLabel = preferred;
+      }
+    } else if (!providerSettings.enableBoth && providerLabel === 'auto' && providerSet.size === 1) {
+      providerLabel = Array.from(providerSet)[0];
     }
     const allowedProviderHosts = new Set<string>();
     for (const providerName of providerSet) {
@@ -230,7 +251,12 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
       return ['https://api.openai.com'];
     })();
 
-    const providersForInput = Array.isArray(params.providers) && params.providers.length > 0 ? params.providers : undefined;
+    const providersForInput =
+      Array.isArray(params.providers) && params.providers.length > 0
+        ? params.providers
+        : providerSet.size > 0
+          ? Array.from(providerSet)
+          : undefined;
     
     const jobSpec = {
       jobId,
@@ -240,7 +266,7 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         language: params.language || 'ts',
         constraints: params.constraints || {},
         caps: params.caps || {},
-        provider: providerParam,
+        provider: providerLabel,
         strategy: params.strategy ?? 'sequential-fallback',
         ...(providersForInput ? { providers: providersForInput } : {}),
         ...(params.install ? { install: params.install } : {}),

@@ -11,6 +11,14 @@ import {
 } from '../lib/llm/profiles';
 import type { PlannerProfileKey, ActorProfileKey, ReasoningEffort } from '../lib/llm/profiles';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
+import {
+  useProviderSelector,
+  type ProviderHealthPayload,
+  type ProviderLoginPayload,
+  type ProviderName,
+  type ProviderPreference,
+  type ProviderStatus,
+} from '../state/providers';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -19,6 +27,48 @@ const REASONING_OPTIONS: ReadonlyArray<{ value: ReasoningEffort; label: string; 
   { value: 'medium', label: 'Medium', helper: 'Balanced reasoning depth and latency.' },
   { value: 'high', label: 'High', helper: 'Deepest reasoning (default).' },
 ];
+
+const PROVIDER_INFO: Record<
+  ProviderName,
+  { label: string; description: string; connectLabel: string; healthLabel: string }
+> = {
+  codex: {
+    label: 'OpenAI Codex CLI',
+    description: 'Uses codex CLI login or OPENAI_API_KEY when available.',
+    connectLabel: 'Connect Codex',
+    healthLabel: 'Check Codex',
+  },
+  claude: {
+    label: 'Anthropic Claude CLI',
+    description: 'Relies on claude CLI with keychain login when no API key is set.',
+    connectLabel: 'Connect Claude',
+    healthLabel: 'Check Claude',
+  },
+};
+
+const describeStatus = (
+  status: ProviderStatus,
+): { label: string; className: string } => {
+  switch (status.state) {
+    case 'connected':
+      return { label: 'Connected', className: 'text-emerald-600' };
+    case 'connecting':
+      return { label: 'Connecting...', className: 'text-slate-600' };
+    case 'checking':
+      return { label: 'Checking...', className: 'text-slate-600' };
+    case 'error':
+      return { label: 'Not connected', className: 'text-rose-600' };
+    default:
+      return { label: 'Not checked', className: 'text-slate-500' };
+  }
+};
+
+const normalizeDetail = (detail?: string): string | undefined => {
+  if (!detail) return undefined;
+  const trimmed = detail.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > 220 ? `${trimmed.slice(0, 217)}...` : trimmed;
+};
 
 const AgentSettingsWindow = () => {
   const agentSettingsOpen = useAppSelector((state) => state.agentSettingsOpen);
@@ -35,6 +85,18 @@ const AgentSettingsWindow = () => {
   const setPlannerTwoPhaseEnabled = useAppSelector((state) => state.setPlannerTwoPhaseEnabled);
   const safeMode = useAppSelector(selectSafeMode);
   const setSafeMode = useAppSelector((state) => state.setSafeMode);
+  const defaultProviderPreference = useProviderSelector((state) => state.settings.defaultProvider);
+  const enableBothProviders = useProviderSelector((state) => state.settings.enableBoth);
+  const setDefaultProviderPreference = useProviderSelector((state) => state.setDefaultProvider);
+  const setEnableBothProviders = useProviderSelector((state) => state.setEnableBoth);
+  const codexStatus = useProviderSelector((state) => state.statuses.codex);
+  const claudeStatus = useProviderSelector((state) => state.statuses.claude);
+  const beginConnect = useProviderSelector((state) => state.beginConnect);
+  const completeConnect = useProviderSelector((state) => state.completeConnect);
+  const beginHealthCheck = useProviderSelector((state) => state.beginHealthCheck);
+  const completeHealthCheck = useProviderSelector((state) => state.completeHealthCheck);
+  const failProvider = useProviderSelector((state) => state.fail);
+  const bridgeAvailable = hasTauriBridge();
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
@@ -72,6 +134,107 @@ const AgentSettingsWindow = () => {
     [setActorReasoningEffort],
   );
 
+  const handleEnableBothChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setEnableBothProviders(event.target.checked);
+    },
+    [setEnableBothProviders],
+  );
+
+  const handleDefaultProviderChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      setDefaultProviderPreference(event.target.value as ProviderPreference);
+    },
+    [setDefaultProviderPreference],
+  );
+
+  const handleProviderConnect = useCallback(
+    async (provider: ProviderName) => {
+      const info = PROVIDER_INFO[provider];
+      if (!hasTauriBridge()) {
+        failProvider(provider, 'Desktop bridge unavailable');
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} login requires the desktop runtime` });
+        return;
+      }
+      beginConnect(provider);
+      try {
+        const raw = (await tauriInvoke('provider_login', { provider })) as ProviderLoginPayload | undefined;
+        const payload: ProviderLoginPayload = {
+          ok: !!raw?.ok,
+          detail: typeof raw?.detail === 'string' ? raw.detail : undefined,
+        };
+        completeConnect(provider, payload);
+        useAppStore.getState().pushToast(
+          payload.ok
+            ? { variant: 'success', message: `${info.label} login completed` }
+            : {
+                variant: 'error',
+                message:
+                  payload.detail && payload.detail.trim().length > 0
+                    ? `${info.label} login reported: ${payload.detail}`
+                    : `${info.label} login reported an error`,
+              },
+        );
+      } catch (error) {
+        const message = (error as Error)?.message ?? String(error);
+        failProvider(provider, message);
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} login failed: ${message}` });
+      }
+    },
+    [beginConnect, completeConnect, failProvider],
+  );
+
+  const handleProviderHealth = useCallback(
+    async (provider: ProviderName) => {
+      const info = PROVIDER_INFO[provider];
+      if (!hasTauriBridge()) {
+        failProvider(provider, 'Desktop bridge unavailable');
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} health check requires the desktop runtime` });
+        return;
+      }
+      beginHealthCheck(provider);
+      try {
+        const raw = (await tauriInvoke('provider_health', { provider })) as ProviderHealthPayload | undefined;
+        const payload: ProviderHealthPayload = {
+          ok: !!raw?.ok,
+          version:
+            typeof raw?.version === 'string' && raw.version.trim().length > 0
+              ? raw.version.trim()
+              : undefined,
+          detail: typeof raw?.detail === 'string' ? raw.detail : undefined,
+        };
+        completeHealthCheck(provider, payload);
+        useAppStore.getState().pushToast(
+          payload.ok
+            ? {
+                variant: 'success',
+                message: `${info.label} health check succeeded${payload.version ? ` (${payload.version})` : ''}`,
+              }
+            : {
+                variant: 'error',
+                message:
+                  payload.detail && payload.detail.trim().length > 0
+                    ? `${info.label} health check failed: ${payload.detail}`
+                    : `${info.label} health check failed`,
+              },
+        );
+      } catch (error) {
+        const message = (error as Error)?.message ?? String(error);
+        failProvider(provider, message);
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} health check failed: ${message}` });
+      }
+    },
+    [beginHealthCheck, completeHealthCheck, failProvider],
+  );
+
   const handleSafeModeToggle = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const enabled = event.target.checked;
@@ -94,6 +257,15 @@ const AgentSettingsWindow = () => {
   );
 
   const handleClose = useCallback(() => setAgentSettingsOpen(false), [setAgentSettingsOpen]);
+
+  const providerEntries = useMemo(
+    () =>
+      (['codex', 'claude'] as ProviderName[]).map((provider) => ({
+        provider,
+        status: provider === 'codex' ? codexStatus : claudeStatus,
+      })),
+    [codexStatus, claudeStatus],
+  );
 
   // Modules directory info (Wasm compute)
   const [modulesDir, setModulesDir] = useState<string>('');
@@ -282,6 +454,89 @@ const AgentSettingsWindow = () => {
           </label>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Code Providers</div>
+          <div className="flex flex-col gap-3">
+            {providerEntries.map(({ provider, status }) => {
+              const info = PROVIDER_INFO[provider];
+              const meta = describeStatus(status);
+              const detail = normalizeDetail(status.detail);
+              const connecting = status.state === 'connecting';
+              const checking = status.state === 'checking';
+              return (
+                <div key={provider} className="rounded border border-slate-200 bg-white/80 p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-semibold text-slate-700">{info.label}</span>
+                      <span className="text-xs text-slate-500">{info.description}</span>
+                    </div>
+                    <span className={`text-[11px] font-semibold uppercase tracking-wide ${meta.className}`}>
+                      {meta.label}
+                    </span>
+                  </div>
+                  {status.version && (
+                    <div className="mt-2 text-xs text-slate-500">
+                      Version: <span className="font-mono">{status.version}</span>
+                    </div>
+                  )}
+                  {detail && <div className="mt-1 text-xs text-slate-500">{detail}</div>}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleProviderConnect(provider)}
+                      disabled={connecting || !bridgeAvailable}
+                      className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {info.connectLabel}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleProviderHealth(provider)}
+                      disabled={checking || !bridgeAvailable}
+                      className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {info.healthLabel}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex flex-col gap-2 text-xs text-slate-600">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={enableBothProviders}
+                onChange={handleEnableBothChange}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span>Allow needs.code to try both providers before falling back</span>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="font-semibold uppercase tracking-wide text-slate-500">Default provider</span>
+              <select
+                value={defaultProviderPreference}
+                onChange={handleDefaultProviderChange}
+                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={enableBothProviders}
+              >
+                <option value="auto">Auto (planner preference)</option>
+                <option value="codex">OpenAI Codex</option>
+                <option value="claude">Anthropic Claude</option>
+              </select>
+              <span>
+                {enableBothProviders
+                  ? 'Auto mode is active while both providers are allowed.'
+                  : 'When a single provider is enabled, needs.code will request this provider.'}
+              </span>
+            </label>
+            {!bridgeAvailable && (
+              <span className="text-slate-500">
+                Provider commands require the desktop runtime. Buttons stay disabled in browser preview.
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <label className="flex items-center gap-3 text-sm">
             <input
               type="checkbox"
@@ -347,3 +602,4 @@ const AgentSettingsWindow = () => {
 };
 
 export default AgentSettingsWindow;
+

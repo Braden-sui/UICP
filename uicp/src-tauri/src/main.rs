@@ -43,6 +43,7 @@ mod compute_input;
 mod core;
 mod events;
 mod policy;
+mod provider_cli;
 mod registry;
 #[cfg(feature = "wasm_compute")]
 mod wasi_logging;
@@ -57,6 +58,7 @@ pub use policy::{
 
 use compute_input::canonicalize_task_input;
 use core::CircuitBreakerConfig;
+use provider_cli::{ProviderHealthResult, ProviderLoginResult};
 
 // Re-export shared core items so crate::... references in submodules remain valid
 pub use core::{
@@ -2122,6 +2124,8 @@ fn main() {
             compute_cancel,
             debug_circuits,
             kill_container,
+            provider_login,
+            provider_health,
             frontend_ready
         ])
         .run(tauri::generate_context!())
@@ -2184,6 +2188,18 @@ async fn kill_container(container_name: String) -> Result<(), String> {
             )),
         },
     }
+}
+
+#[tauri::command]
+async fn provider_login(provider: String) -> Result<ProviderLoginResult, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    provider_cli::login(&normalized).await
+}
+
+#[tauri::command]
+async fn provider_health(provider: String) -> Result<ProviderHealthResult, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    provider_cli::health(&normalized).await
 }
 
 /// Verify that all module entries listed in the manifest exist and match their digests.

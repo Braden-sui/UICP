@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -6,6 +6,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs;
 use tokio::io::AsyncWriteExt as _;
@@ -17,9 +18,13 @@ const ERR_PROVIDER_IO: &str = "E-UICP-1402";
 const ERR_PROVIDER_EXIT: &str = "E-UICP-1403";
 const ERR_PROVIDER_PARSE: &str = "E-UICP-1404";
 const ERR_PROVIDER_SESSION: &str = "E-UICP-1405";
+const WARN_HTTPJAIL_DISABLED: &str = "E-UICP-1406";
 
 static PROVIDER_TMP_ROOT: Lazy<PathBuf> =
     Lazy::new(|| std::env::temp_dir().join("uicp-code-providers"));
+
+const HTTPJAIL_ENV_FLAG: &str = "UICP_HTTPJAIL";
+const DEFAULT_HTTP_METHODS: &[&str] = &["GET", "HEAD", "OPTIONS"];
 
 const CODEX_OUTPUT_SCHEMA: &str = r#"{
   "type": "object",
@@ -197,6 +202,231 @@ impl CommandRunner for SystemCommandRunner {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct HttpjailPolicy {
+    providers: HashMap<String, HttpjailProviderPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HttpjailProviderPolicy {
+    #[serde(default)]
+    hosts: Vec<String>,
+    #[serde(default)]
+    methods: Vec<String>,
+    #[serde(default, alias = "blockPost", alias = "block_post")]
+    block_post: Option<bool>,
+}
+
+struct HttpjailGuard {
+    exe: String,
+    predicate: String,
+}
+
+impl HttpjailGuard {
+    async fn new(provider: &str) -> Result<Self, String> {
+        let exe = find_httpjail_binary()?;
+        let predicate = load_httpjail_predicate(provider).await?;
+        Ok(Self { exe, predicate })
+    }
+
+    fn wrap(&self, base_program: String, base_args: Vec<String>) -> (String, Vec<String>) {
+        let mut args = Vec::with_capacity(base_args.len() + 4);
+        args.push("--js".to_string());
+        args.push(self.predicate.clone());
+        args.push("--".to_string());
+        args.push(base_program);
+        args.extend(base_args);
+        (self.exe.clone(), args)
+    }
+}
+
+async fn maybe_wrap_with_httpjail(
+    provider_key: &str,
+    base_program: &str,
+    base_args: Vec<String>,
+    env: &HashMap<String, String>,
+) -> (String, Vec<String>) {
+    if !httpjail_requested(env) {
+        return (base_program.to_string(), base_args);
+    }
+
+    match HttpjailGuard::new(provider_key).await {
+        Ok(guard) => {
+            log_httpjail_applied(provider_key);
+            guard.wrap(base_program.to_string(), base_args)
+        }
+        Err(reason) => {
+            log_httpjail_skipped(provider_key, &reason);
+            (base_program.to_string(), base_args)
+        }
+    }
+}
+
+fn httpjail_requested(env: &HashMap<String, String>) -> bool {
+    env.get(HTTPJAIL_ENV_FLAG)
+        .map(|value| parse_env_flag(value))
+        .or_else(|| {
+            std::env::var(HTTPJAIL_ENV_FLAG)
+                .ok()
+                .map(|value| parse_env_flag(&value))
+        })
+        .unwrap_or(false)
+}
+
+fn parse_env_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn find_httpjail_binary() -> Result<String, String> {
+    let path_var = std::env::var_os("PATH").ok_or_else(|| "PATH not set".to_string())?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join("httpjail");
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+        let candidate_exe = dir.join("httpjail.exe");
+        if candidate_exe.is_file() {
+            return Ok(candidate_exe.to_string_lossy().into_owned());
+        }
+    }
+    Err("httpjail binary not found on PATH".to_string())
+}
+
+async fn load_httpjail_predicate(provider: &str) -> Result<String, String> {
+    let policy_path = httpjail_policy_path();
+    let content = fs::read_to_string(&policy_path)
+        .await
+        .map_err(|err| format!("failed to read {}: {err}", policy_path.display()))?;
+    let policy: HttpjailPolicy = serde_json::from_str(&content)
+        .map_err(|err| format!("failed to parse {}: {err}", policy_path.display()))?;
+    let entry = policy.providers.get(provider).ok_or_else(|| {
+        format!(
+            "provider '{provider}' not present in {}",
+            policy_path.display()
+        )
+    })?;
+
+    let hosts = normalize_hosts(&entry.hosts);
+    let methods_source = if entry.methods.is_empty() {
+        DEFAULT_HTTP_METHODS
+            .iter()
+            .map(|method| method.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        entry.methods.clone()
+    };
+    let methods = normalize_methods(&methods_source);
+    let block_post = entry.block_post.unwrap_or(true);
+    Ok(build_httpjail_predicate(&hosts, &methods, block_post))
+}
+
+fn httpjail_policy_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("ops")
+        .join("code")
+        .join("network")
+        .join("allowlist.json")
+}
+
+fn normalize_hosts(hosts: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for host in hosts {
+        let trimmed = host.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.clone()) {
+            normalized.push(trimmed);
+        }
+    }
+    normalized
+}
+
+fn normalize_methods(methods: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for method in methods {
+        let upper = method.trim().to_ascii_uppercase();
+        if upper.is_empty() {
+            continue;
+        }
+        if seen.insert(upper.clone()) {
+            normalized.push(upper);
+        }
+    }
+    normalized
+}
+
+fn build_httpjail_predicate(hosts: &[String], methods: &[String], block_post: bool) -> String {
+    let hosts_json = serde_json::to_string(hosts).unwrap_or_else(|_| "[]".to_string());
+    let methods_json = serde_json::to_string(methods).unwrap_or_else(|_| "[]".to_string());
+    let block_literal = if block_post { "true" } else { "false" };
+
+    let mut predicate = String::from("(()=>{");
+    predicate.push_str(&format!("const hosts={hosts_json};"));
+    predicate.push_str(&format!("const methods={methods_json};"));
+    predicate.push_str(&format!("const blockPost={block_literal};"));
+    predicate.push_str("const reqHost=(r.host||\"\").toLowerCase();");
+    predicate.push_str("const reqMethod=(r.method||\"\").toUpperCase();");
+    predicate.push_str(
+        "const hostAllowed=hosts.length===0||hosts.some((pattern)=>{\
+         if(pattern===\"*\") return true;\
+         if(pattern.startsWith(\"*.\")){\
+           const suffix=pattern.slice(1);\
+           const bare=pattern.slice(2);\
+           if(bare && reqHost===bare) return true;\
+           return reqHost.endsWith(suffix);\
+         }\
+         return reqHost===pattern;\
+        });",
+    );
+    predicate.push_str("if(!hostAllowed) return false;");
+    predicate.push_str("if(blockPost && reqMethod===\"POST\") return false;");
+    predicate.push_str("if(methods.length && !methods.includes(reqMethod)) return false;");
+    predicate.push_str("return true;");
+    predicate.push_str("})()");
+    predicate
+}
+
+fn log_httpjail_applied(provider: &str) {
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(
+        target = "uicp",
+        provider = provider,
+        "httpjail allowlist enforced"
+    );
+    #[cfg(not(feature = "otel_spans"))]
+    {
+        eprintln!("[uicp] httpjail allowlist enforced for provider {provider}");
+    }
+}
+
+fn log_httpjail_skipped(provider: &str, reason: &str) {
+    #[cfg(feature = "otel_spans")]
+    tracing::warn!(
+        target = "uicp",
+        provider = provider,
+        code = WARN_HTTPJAIL_DISABLED,
+        error = %reason,
+        "httpjail requested but not enforced"
+    );
+    #[cfg(not(feature = "otel_spans"))]
+    {
+        eprintln!(
+            "[uicp:{}] httpjail requested but not enforced for provider {provider}: {reason}",
+            WARN_HTTPJAIL_DISABLED
+        );
+    }
+}
+
 #[async_trait]
 pub trait CodeProvider: Send + Sync {
     fn name(&self) -> &'static str;
@@ -253,17 +483,16 @@ impl CodeProvider for ClaudeProvider {
             )
         })?;
 
-        let api_key = job
+        let mut env = job.extra_env.clone();
+        if let Some(api_key) = job
             .extra_env
             .get("ANTHROPIC_API_KEY")
             .cloned()
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-            .ok_or_else(|| {
-                CodeProviderError::new(ERR_PROVIDER_CONFIG, "ANTHROPIC_API_KEY is not set")
-            })?;
-
-        let mut env = job.extra_env.clone();
-        env.entry("ANTHROPIC_API_KEY".into()).or_insert(api_key);
+            .filter(|value| !value.trim().is_empty())
+        {
+            env.entry("ANTHROPIC_API_KEY".into()).or_insert(api_key);
+        }
         env.entry("CLAUDE_TELEMETRY_OPTOUT".into())
             .or_insert_with(|| String::from("1"));
         env.entry("CLAUDE_HEADLESS".into())
@@ -300,11 +529,14 @@ impl CodeProvider for ClaudeProvider {
             args.push(model.clone());
         }
 
+        let (program, final_args) =
+            maybe_wrap_with_httpjail(self.name(), "claude", args, &ctx.env).await;
+
         let exec = self
             .runner
             .run(
-                "claude",
-                &args,
+                &program,
+                &final_args,
                 &ctx.working_dir,
                 &ctx.env,
                 Some(job.prompt.as_str()),
@@ -500,9 +732,12 @@ impl CodeProvider for CodexProvider {
 
         args.push(job.prompt.clone());
 
+        let (program, final_args) =
+            maybe_wrap_with_httpjail(self.name(), "codex", args, &ctx.env).await;
+
         let exec = self
             .runner
-            .run("codex", &args, &ctx.working_dir, &ctx.env, None)
+            .run(&program, &final_args, &ctx.working_dir, &ctx.env, None)
             .await?;
 
         if !exec.status.success() {
@@ -779,6 +1014,8 @@ mod tests {
     use parking_lot::Mutex;
     use std::io::Write;
     #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
     use std::os::windows::process::ExitStatusExt;
@@ -883,6 +1120,122 @@ mod tests {
             );
         });
         std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn claude_provider_wraps_with_httpjail_when_available() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let httpjail_path = if cfg!(windows) {
+            temp_dir.path().join("httpjail.exe")
+        } else {
+            temp_dir.path().join("httpjail")
+        };
+        std::fs::write(&httpjail_path, b"stub").expect("httpjail stub");
+        #[cfg(unix)]
+        {
+            let mut perms = std::fs::metadata(&httpjail_path)
+                .expect("httpjail metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&httpjail_path, perms).expect("set permissions");
+        }
+
+        let previous_path = std::env::var_os("PATH");
+        let mut segments = vec![temp_dir.path().to_path_buf()];
+        if let Some(existing) = previous_path.clone() {
+            segments.extend(std::env::split_paths(&existing));
+        }
+        let joined = std::env::join_paths(segments).expect("join paths");
+        std::env::set_var("PATH", &joined);
+
+        let stream = r#"
+{"type":"message_start","message":{"id":"msg_1","model":"claude-3.5"}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"code\":\"console.log(1)\", "}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\"language\":\"ts\"}"}}
+{"type":"message_stop"}
+"#;
+        let runner = Arc::new(StubRunner::new(&httpjail_path.to_string_lossy(), stream));
+        let provider = ClaudeProvider::with_runner(runner.clone());
+        let rt = Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let mut job = CodeProviderJob::new(
+                "job-httpjail-claude",
+                "Generate code",
+                std::env::current_dir().unwrap(),
+            );
+            job.extra_env
+                .insert(HTTPJAIL_ENV_FLAG.to_string(), "1".to_string());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            let _ = provider.run(&job, &ctx).await.expect("run");
+        });
+
+        let observed = runner.observed_args.lock().clone();
+
+        if let Some(existing) = previous_path {
+            std::env::set_var("PATH", existing);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
+        assert!(
+            observed.len() >= 4,
+            "expected httpjail wrapper arguments to be present"
+        );
+        assert_eq!(observed[0], "--js");
+        assert!(
+            observed[1].contains("api.anthropic.com"),
+            "predicate should include Anthropics hosts"
+        );
+        assert_eq!(observed[2], "--");
+        assert_eq!(observed[3], "claude");
+    }
+
+    #[test]
+    fn codex_provider_degrades_without_httpjail() {
+        let _guard = TEST_MUTEX.lock();
+
+        let previous_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", "");
+
+        let temp_workspace = tempfile::tempdir().expect("tempdir");
+        let runner = Arc::new(StubRunner::new(
+            "codex",
+            r#"{"type":"message","text":"done"}"#,
+        ));
+        let provider = CodexProvider::with_runner(runner.clone());
+        let rt = Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let mut job = CodeProviderJob::new(
+                "job-httpjail-codex",
+                "Inspect changes",
+                temp_workspace.path(),
+            );
+            job.extra_env
+                .insert(HTTPJAIL_ENV_FLAG.to_string(), "1".to_string());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            let _ = provider.run(&job, &ctx).await.expect("run");
+        });
+
+        let observed = runner.observed_args.lock().clone();
+
+        if let Some(existing) = previous_path {
+            std::env::set_var("PATH", existing);
+        } else {
+            std::env::remove_var("PATH");
+        }
+
+        assert!(
+            !observed.is_empty(),
+            "expected codex arguments to be captured"
+        );
+        assert_eq!(
+            observed[0], "exec",
+            "command should execute without httpjail wrapper when binary missing"
+        );
     }
 
     #[test]

@@ -193,25 +193,25 @@ impl ComputeTestHarness {
         let handler_job_id = job_id.clone();
         let handler_tx = Arc::clone(&tx_arc);
 
-        let listener_id = self
-            .app
-            .listen(crate::events::EVENT_COMPUTE_RESULT_FINAL, move |event| {
-                if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
-                    let job_matches = value
-                        .get("jobId")
-                        .or_else(|| value.get("job_id"))
-                        .and_then(|v| v.as_str())
-                        .map(|id| id == handler_job_id)
-                        .unwrap_or(false);
-                    if job_matches {
-                        if let Some(sender) =
-                            handler_tx.lock().ok().and_then(|mut guard| guard.take())
-                        {
-                            let _ = sender.send(value);
+        let listener_id =
+            self.app
+                .listen(crate::events::EVENT_COMPUTE_RESULT_FINAL, move |event| {
+                    if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
+                        let job_matches = value
+                            .get("jobId")
+                            .or_else(|| value.get("job_id"))
+                            .and_then(|v| v.as_str())
+                            .map(|id| id == handler_job_id)
+                            .unwrap_or(false);
+                        if job_matches {
+                            if let Some(sender) =
+                                handler_tx.lock().ok().and_then(|mut guard| guard.take())
+                            {
+                                let _ = sender.send(value);
+                            }
                         }
                     }
-                }
-            });
+                });
 
         let state: tauri::State<'_, AppState> = self.app.state();
         if let Err(err) =
