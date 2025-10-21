@@ -85,6 +85,7 @@ pub struct ProviderContext {
 pub struct ProviderRun {
     pub stdout: String,
     pub stderr: String,
+    #[allow(dead_code)]
     pub exit_status: ExitStatus,
     pub events: Vec<Value>,
     pub aggregated_output: Option<String>,
@@ -234,11 +235,6 @@ impl ClaudeProvider {
             runner,
             model: None,
         }
-    }
-
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
-        self
     }
 }
 

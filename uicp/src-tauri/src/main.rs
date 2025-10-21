@@ -18,10 +18,9 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
-    async_runtime::{spawn, JoinHandle},
+    async_runtime::{spawn, spawn_blocking, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
 };
-use tokio::task::spawn_blocking;
 use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, Semaphore},
