@@ -1,4 +1,9 @@
-use std::{collections::HashSet, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use anyhow::{anyhow, Context};
 use once_cell::sync::Lazy;
@@ -9,8 +14,13 @@ use tauri::{async_runtime::spawn as tauri_spawn, AppHandle, Manager, Runtime, St
 use tokio::sync::OwnedSemaphorePermit;
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
+use uuid::Uuid;
 
 use crate::{
+    code_provider::{
+        ClaudeProvider, CodeProviderError, CodeProviderJob, CodexProvider, ProviderArtifacts,
+        ProviderDiff,
+    },
     compute_cache, emit_or_log, remove_compute_job, AppState, ComputeFinalErr, ComputeFinalOk,
     ComputeJobSpec,
 };
@@ -22,8 +32,6 @@ const ERR_INPUT_INVALID: &str = "E-UICP-1300";
 const ERR_CODE_UNSAFE: &str = "E-UICP-1301";
 const ERR_PROVIDER: &str = "E-UICP-1302";
 const ERR_API_KEY: &str = "E-UICP-1303";
-
-const PROVIDER_NAME: &str = "openai";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionStrategy {
@@ -51,6 +59,37 @@ impl ExecutionStrategy {
             ExecutionStrategy::BestOfBoth => "best-of-both",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderKind {
+    CodexCli,
+    ClaudeCli,
+    OpenAiApi,
+}
+
+impl ProviderKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ProviderKind::CodexCli => "codex",
+            ProviderKind::ClaudeCli => "claude",
+            ProviderKind::OpenAiApi => "openai",
+        }
+    }
+
+    fn runner_label(&self) -> &'static str {
+        match self {
+            ProviderKind::CodexCli => "codex-cli",
+            ProviderKind::ClaudeCli => "claude-cli",
+            ProviderKind::OpenAiApi => "openai-api",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CodeProviderPlan {
+    kind: ProviderKind,
+    requested_label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +197,53 @@ struct CodegenRunOk {
     cache_hit: bool,
     duration_ms: u64,
     queue_wait_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedArtifact {
+    code: String,
+    language: String,
+    meta: Value,
+    diffs: Vec<ProviderDiff>,
+}
+
+#[derive(Debug)]
+struct ProviderAttemptLog {
+    provider: ProviderKind,
+    requested_label: String,
+    success: bool,
+    duration_ms: u64,
+    error: Option<String>,
+}
+
+#[derive(Debug)]
+struct ExecutionResult {
+    artifact: NormalizedArtifact,
+    plan: CodeProviderPlan,
+    attempts: Vec<ProviderAttemptLog>,
+}
+
+impl NormalizedArtifact {
+    fn to_value(&self) -> Value {
+        let mut map = Map::new();
+        map.insert("code".into(), Value::String(self.code.clone()));
+        map.insert("language".into(), Value::String(self.language.clone()));
+        map.insert("meta".into(), self.meta.clone());
+        if !self.diffs.is_empty() {
+            let diffs = self
+                .diffs
+                .iter()
+                .map(|diff| {
+                    json!({
+                        "path": diff.path.to_string_lossy(),
+                        "patch": diff.patch,
+                    })
+                })
+                .collect::<Vec<_>>();
+            map.insert("diffs".into(), Value::Array(diffs));
+        }
+        Value::Object(map)
+    }
 }
 
 #[derive(Debug)]
@@ -281,31 +367,7 @@ async fn run_codegen<R: Runtime>(
 ) -> Result<CodegenRunOk, CodegenFailure> {
     let state: State<'_, AppState> = app.state();
     let plan = build_plan(spec)?;
-
-    if matches!(plan.strategy, ExecutionStrategy::BestOfBoth) {
-        return Err(CodegenFailure::provider(format!(
-            "{ERR_PROVIDER}: strategy '{}' not supported in this build",
-            plan.strategy.as_str()
-        )));
-    }
-
-    let mut cli_requests: Vec<String> = Vec::new();
-    if matches!(plan.provider_label.as_str(), "codex" | "claude") {
-        cli_requests.push(plan.provider_label.clone());
-    }
-    for item in &plan.providers {
-        if matches!(item.as_str(), "codex" | "claude")
-            && !cli_requests.iter().any(|existing| existing == item)
-        {
-            cli_requests.push(item.clone());
-        }
-    }
-    if !cli_requests.is_empty() {
-        let joined = cli_requests.join(", ");
-        return Err(CodegenFailure::provider(format!(
-            "{ERR_PROVIDER}: CLI providers not available in this build (requested: {joined})"
-        )));
-    }
+    let provider_queue = resolve_provider_queue(&plan);
 
     if plan.validator_version != VALIDATOR_VERSION {
         emit_or_log(
@@ -342,43 +404,48 @@ async fn run_codegen<R: Runtime>(
         return Err(CodegenFailure::provider(message.clone()));
     }
 
-    let client = state.http.clone();
-    let provider_settings = if plan.mock_response.is_some() {
-        None
-    } else {
-        Some(resolve_provider_settings(&plan)?)
-    };
-
     let started = Instant::now();
-    let raw_output = if let Some(mock) = plan.mock_response.clone() {
-        mock
+    let mut artifact = if let Some(mock) = plan.mock_response.clone() {
+        let mut normalized = normalize_response(&plan, ProviderKind::OpenAiApi, mock, Vec::new())
+            .map_err(|err| CodegenFailure::invalid(err.to_string()))?;
+        let attempt = ProviderAttemptLog {
+            provider: ProviderKind::OpenAiApi,
+            requested_label: ProviderKind::OpenAiApi.as_str().to_string(),
+            success: true,
+            duration_ms: 0,
+            error: None,
+        };
+        let plan_selected = CodeProviderPlan {
+            kind: ProviderKind::OpenAiApi,
+            requested_label: ProviderKind::OpenAiApi.as_str().to_string(),
+        };
+        enrich_artifact_meta(&mut normalized, &plan_selected, &plan, &[attempt]);
+        normalized
     } else {
-        let settings = provider_settings
-            .as_ref()
-            .expect("provider settings required when no mock response");
-        call_openai(&client, &plan, settings).await.map_err(|err| {
-            CodegenFailure::provider(format!("{ERR_PROVIDER}: openai call failed: {err}"))
-        })?
+        let execution =
+            execute_with_strategy(app, spec, &plan, &provider_queue, &state.http).await?;
+        execution.artifact
     };
 
-    let normalized = normalize_response(&plan, raw_output)
-        .map_err(|err| CodegenFailure::invalid(err.to_string()))?;
+    validate_code(plan.language, &plan.validator_version, &artifact.code)
+        .map_err(CodegenFailure::unsafe_code)?;
 
-    validate_code(
-        plan.language,
-        &plan.validator_version,
-        normalized["code"].as_str().unwrap_or_default(),
-    )
-    .map_err(CodegenFailure::unsafe_code)?;
+    let mut output_value = artifact.to_value();
+    if let Value::Object(ref mut obj) = output_value {
+        if let Some(id) = spec.artifact_id.clone() {
+            obj.insert("artifactId".into(), Value::String(id));
+        }
+        obj.insert("goldenKey".into(), Value::String(plan.golden_key.clone()));
+    }
 
-    let output_hash = compute_cache::compute_output_hash(&normalized);
+    let output_hash = compute_cache::compute_output_hash(&output_value);
     compute_cache::store_golden(
         app,
         &spec.workspace_id,
         &plan.golden_key,
         &output_hash,
         &spec.task,
-        &normalized,
+        &output_value,
     )
     .await
     .map_err(|err| {
@@ -386,7 +453,7 @@ async fn run_codegen<R: Runtime>(
     })?;
 
     Ok(CodegenRunOk {
-        output: normalized,
+        output: output_value,
         output_hash: output_hash.clone(),
         golden_hash: output_hash,
         cache_hit: false,
@@ -586,6 +653,576 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
     })
 }
 
+fn command_available(program: &str) -> bool {
+    fn candidate_paths<'a>(dir: &'a Path, program: &'a str) -> Vec<PathBuf> {
+        #[cfg(windows)]
+        {
+            let mut out = Vec::new();
+            if program.contains('.') {
+                out.push(dir.join(program));
+            } else {
+                const DEFAULT_EXTS: [&str; 4] = [".EXE", ".CMD", ".BAT", ".COM"];
+                let exts = env::var_os("PATHEXT")
+                    .map(|v| {
+                        v.to_string_lossy()
+                            .split(';')
+                            .filter(|s| !s.is_empty())
+                            .map(|s| {
+                                if s.starts_with('.') {
+                                    s.to_string()
+                                } else {
+                                    format!(".{}", s)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|| DEFAULT_EXTS.iter().map(|s| s.to_string()).collect());
+                for ext in exts {
+                    out.push(dir.join(format!("{program}{ext}")));
+                }
+            }
+            out
+        }
+        #[cfg(not(windows))]
+        {
+            vec![dir.join(program)]
+        }
+    }
+
+    let path_var = match env::var_os("PATH") {
+        Some(val) => val,
+        None => return false,
+    };
+    for dir in env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for candidate in candidate_paths(&dir, program) {
+            if candidate.exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn detect_auto_provider() -> ProviderKind {
+    if command_available("codex") {
+        ProviderKind::CodexCli
+    } else if command_available("claude") {
+        ProviderKind::ClaudeCli
+    } else {
+        ProviderKind::OpenAiApi
+    }
+}
+
+fn provider_kind_from_label(label: &str, auto_kind: ProviderKind) -> ProviderKind {
+    match label {
+        "codex" => ProviderKind::CodexCli,
+        "claude" => ProviderKind::ClaudeCli,
+        "openai" => ProviderKind::OpenAiApi,
+        "auto" | "" => auto_kind,
+        _ => auto_kind,
+    }
+}
+
+fn resolve_provider_queue(plan: &CodegenPlan) -> Vec<CodeProviderPlan> {
+    let auto_kind = detect_auto_provider();
+
+    let mut requested_labels: Vec<String> = if plan.providers.is_empty() {
+        vec![plan.provider_label.clone()]
+    } else {
+        plan.providers.clone()
+    };
+
+    if requested_labels.is_empty() {
+        requested_labels.push("auto".to_string());
+    }
+
+    let mut seen: HashSet<ProviderKind> = HashSet::new();
+    let mut queue: Vec<CodeProviderPlan> = Vec::new();
+
+    for label in requested_labels {
+        let kind = provider_kind_from_label(label.as_str(), auto_kind);
+        if seen.insert(kind) {
+            let resolved_label = if label == "auto" || label.is_empty() {
+                kind.as_str().to_string()
+            } else {
+                label
+            };
+            queue.push(CodeProviderPlan {
+                kind,
+                requested_label: resolved_label,
+            });
+        }
+    }
+
+    if !queue
+        .iter()
+        .any(|p| matches!(p.kind, ProviderKind::OpenAiApi))
+    {
+        queue.push(CodeProviderPlan {
+            kind: ProviderKind::OpenAiApi,
+            requested_label: ProviderKind::OpenAiApi.as_str().to_string(),
+        });
+    }
+
+    queue
+}
+
+async fn execute_with_strategy<R: Runtime>(
+    app: &AppHandle<R>,
+    spec: &ComputeJobSpec,
+    plan: &CodegenPlan,
+    queue: &[CodeProviderPlan],
+    client: &reqwest::Client,
+) -> Result<ExecutionResult, CodegenFailure> {
+    let mut attempts: Vec<ProviderAttemptLog> = Vec::new();
+
+    match plan.strategy {
+        ExecutionStrategy::SequentialFallback | ExecutionStrategy::FirstOk => {
+            let mut last_err: Option<CodegenFailure> = None;
+            for provider_plan in queue {
+                let started = Instant::now();
+                let result = run_provider(app, spec, plan, provider_plan, client).await;
+                let duration_ms = started.elapsed().as_millis() as u64;
+                match result {
+                    Ok(mut artifact) => {
+                        attempts.push(ProviderAttemptLog {
+                            provider: provider_plan.kind,
+                            requested_label: provider_plan.requested_label.clone(),
+                            success: true,
+                            duration_ms,
+                            error: None,
+                        });
+                        emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
+                        enrich_artifact_meta(&mut artifact, provider_plan, plan, &attempts);
+                        return Ok(ExecutionResult {
+                            artifact,
+                            plan: provider_plan.clone(),
+                            attempts,
+                        });
+                    }
+                    Err(err) => {
+                        let message = err.message();
+                        attempts.push(ProviderAttemptLog {
+                            provider: provider_plan.kind,
+                            requested_label: provider_plan.requested_label.clone(),
+                            success: false,
+                            duration_ms,
+                            error: Some(message.clone()),
+                        });
+                        emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
+                        last_err = Some(err);
+                        if matches!(plan.strategy, ExecutionStrategy::FirstOk) {
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(last_err.unwrap_or_else(|| {
+                CodegenFailure::provider(format!("{ERR_PROVIDER}: all providers failed"))
+            }))
+        }
+        ExecutionStrategy::BestOfBoth => {
+            let mut successes: Vec<(NormalizedArtifact, CodeProviderPlan, u64)> = Vec::new();
+            let mut last_err: Option<CodegenFailure> = None;
+
+            for provider_plan in queue {
+                let is_cli = matches!(
+                    provider_plan.kind,
+                    ProviderKind::CodexCli | ProviderKind::ClaudeCli
+                );
+                if !is_cli {
+                    continue;
+                }
+                let started = Instant::now();
+                let result = run_provider(app, spec, plan, provider_plan, client).await;
+                let duration_ms = started.elapsed().as_millis() as u64;
+                match result {
+                    Ok(artifact) => {
+                        attempts.push(ProviderAttemptLog {
+                            provider: provider_plan.kind,
+                            requested_label: provider_plan.requested_label.clone(),
+                            success: true,
+                            duration_ms,
+                            error: None,
+                        });
+                        emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
+                        successes.push((artifact, provider_plan.clone(), duration_ms));
+                    }
+                    Err(err) => {
+                        let message = err.message();
+                        attempts.push(ProviderAttemptLog {
+                            provider: provider_plan.kind,
+                            requested_label: provider_plan.requested_label.clone(),
+                            success: false,
+                            duration_ms,
+                            error: Some(message.clone()),
+                        });
+                        emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
+                        last_err = Some(err);
+                    }
+                }
+            }
+
+            if let Some((mut chosen, chosen_plan, _dur)) = choose_best_artifact(successes) {
+                enrich_artifact_meta(&mut chosen, &chosen_plan, plan, &attempts);
+                return Ok(ExecutionResult {
+                    artifact: chosen,
+                    plan: chosen_plan,
+                    attempts,
+                });
+            }
+
+            for provider_plan in queue {
+                if matches!(
+                    provider_plan.kind,
+                    ProviderKind::CodexCli | ProviderKind::ClaudeCli
+                ) {
+                    continue;
+                }
+                let started = Instant::now();
+                let result = run_provider(app, spec, plan, provider_plan, client).await;
+                let duration_ms = started.elapsed().as_millis() as u64;
+                match result {
+                    Ok(mut artifact) => {
+                        attempts.push(ProviderAttemptLog {
+                            provider: provider_plan.kind,
+                            requested_label: provider_plan.requested_label.clone(),
+                            success: true,
+                            duration_ms,
+                            error: None,
+                        });
+                        emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
+                        enrich_artifact_meta(&mut artifact, provider_plan, plan, &attempts);
+                        return Ok(ExecutionResult {
+                            artifact,
+                            plan: provider_plan.clone(),
+                            attempts,
+                        });
+                    }
+                    Err(err) => {
+                        let message = err.message();
+                        attempts.push(ProviderAttemptLog {
+                            provider: provider_plan.kind,
+                            requested_label: provider_plan.requested_label.clone(),
+                            success: false,
+                            duration_ms,
+                            error: Some(message.clone()),
+                        });
+                        emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
+                        last_err = Some(err);
+                    }
+                }
+            }
+
+            Err(last_err.unwrap_or_else(|| {
+                CodegenFailure::provider(format!("{ERR_PROVIDER}: all providers failed"))
+            }))
+        }
+    }
+}
+
+async fn run_provider<R: Runtime>(
+    app: &AppHandle<R>,
+    spec: &ComputeJobSpec,
+    plan: &CodegenPlan,
+    provider_plan: &CodeProviderPlan,
+    client: &reqwest::Client,
+) -> Result<NormalizedArtifact, CodegenFailure> {
+    match provider_plan.kind {
+        ProviderKind::OpenAiApi => run_openai_api(client, plan).await,
+        ProviderKind::CodexCli => run_codex_cli(app, spec, plan).await,
+        ProviderKind::ClaudeCli => run_claude_cli(app, spec, plan).await,
+    }
+}
+
+fn emit_provider_attempt<R: Runtime>(
+    app: &AppHandle<R>,
+    spec: &ComputeJobSpec,
+    plan: &CodegenPlan,
+    attempt: &ProviderAttemptLog,
+) {
+    let mut payload = json!({
+        "jobId": spec.job_id,
+        "task": spec.task,
+        "provider": attempt.provider.as_str(),
+        "requested": attempt.requested_label,
+        "strategy": plan.strategy.as_str(),
+        "success": attempt.success,
+        "durationMs": attempt.duration_ms,
+    });
+    if let Some(err) = attempt.error.as_ref() {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("error".into(), Value::String(err.clone()));
+        }
+    }
+    emit_or_log(app, "codegen.provider.attempt", payload);
+}
+
+fn enrich_artifact_meta(
+    artifact: &mut NormalizedArtifact,
+    selected_plan: &CodeProviderPlan,
+    plan: &CodegenPlan,
+    attempts: &[ProviderAttemptLog],
+) {
+    if let Value::Object(ref mut meta) = artifact.meta {
+        meta.insert(
+            "providerSelected".into(),
+            Value::String(selected_plan.kind.as_str().into()),
+        );
+        meta.insert(
+            "providerRequested".into(),
+            Value::String(selected_plan.requested_label.clone()),
+        );
+        meta.insert(
+            "providerRunner".into(),
+            Value::String(selected_plan.kind.runner_label().into()),
+        );
+        meta.insert(
+            "strategy".into(),
+            Value::String(plan.strategy.as_str().into()),
+        );
+        let attempt_values = attempts
+            .iter()
+            .map(|attempt| {
+                json!({
+                    "provider": attempt.provider.as_str(),
+                    "requested": attempt.requested_label,
+                    "success": attempt.success,
+                    "durationMs": attempt.duration_ms,
+                    "error": attempt.error,
+                })
+            })
+            .collect::<Vec<_>>();
+        meta.insert("attempts".into(), Value::Array(attempt_values));
+        let queue = attempts
+            .iter()
+            .map(|attempt| Value::String(attempt.requested_label.clone()))
+            .collect::<Vec<_>>();
+        if !queue.is_empty() {
+            meta.insert("providerQueue".into(), Value::Array(queue));
+        }
+    }
+}
+
+fn choose_best_artifact(
+    mut successes: Vec<(NormalizedArtifact, CodeProviderPlan, u64)>,
+) -> Option<(NormalizedArtifact, CodeProviderPlan, u64)> {
+    if successes.is_empty() {
+        return None;
+    }
+    let mut best_index: Option<usize> = None;
+    let mut best_score: i32 = i32::MIN;
+    for (idx, (_, plan, _)) in successes.iter().enumerate() {
+        let score = match plan.kind {
+            ProviderKind::CodexCli => 100,
+            ProviderKind::ClaudeCli => 80,
+            ProviderKind::OpenAiApi => 10,
+        };
+        if score > best_score {
+            best_score = score;
+            best_index = Some(idx);
+        }
+    }
+    best_index.map(|idx| successes.swap_remove(idx))
+}
+
+async fn run_openai_api(
+    client: &reqwest::Client,
+    plan: &CodegenPlan,
+) -> Result<NormalizedArtifact, CodegenFailure> {
+    let settings = resolve_provider_settings(plan)?;
+    let value = call_openai(client, plan, &settings).await.map_err(|err| {
+        CodegenFailure::provider(format!("{ERR_PROVIDER}: openai call failed: {err}"))
+    })?;
+    normalize_response(plan, ProviderKind::OpenAiApi, value, Vec::new())
+        .map_err(|err| CodegenFailure::invalid(err.to_string()))
+}
+
+async fn create_job_workspace(
+    job_id: &str,
+    provider_label: &str,
+) -> Result<PathBuf, CodegenFailure> {
+    let base = env::temp_dir().join("uicp-code-providers").join(job_id);
+    let workspace = base.join(format!("{}-{}", provider_label, Uuid::new_v4()));
+    tokio::fs::create_dir_all(&workspace).await.map_err(|err| {
+        CodegenFailure::provider(format!(
+            "{ERR_PROVIDER}: create provider workspace failed: {err}"
+        ))
+    })?;
+    Ok(workspace)
+}
+
+fn map_code_provider_error(err: CodeProviderError) -> CodegenFailure {
+    CodegenFailure::provider(format!("{}: {}", err.code, err.message))
+}
+
+fn extract_allowed_tools(plan: &CodegenPlan) -> Vec<String> {
+    let mut tools = Vec::new();
+    if let Value::Object(map) = &plan.constraints {
+        if let Some(Value::Array(arr)) = map.get("allowedTools") {
+            for item in arr {
+                if let Some(name) = item.as_str() {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        tools.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+    tools
+}
+
+fn extract_usage(events: &[Value]) -> Option<Value> {
+    for event in events.iter().rev() {
+        if let Some(obj) = event.get("usage") {
+            if obj.is_object() {
+                return Some(obj.clone());
+            }
+        }
+    }
+    None
+}
+
+fn compose_normalized_from_artifacts(
+    plan: &CodegenPlan,
+    provider_kind: ProviderKind,
+    artifacts: ProviderArtifacts,
+) -> Result<NormalizedArtifact, CodegenFailure> {
+    let ProviderArtifacts {
+        run,
+        session_path,
+        session_events,
+        diffs,
+    } = artifacts;
+    let parsed = run
+        .parsed_output
+        .clone()
+        .or_else(|| {
+            run.aggregated_output
+                .as_ref()
+                .and_then(|raw| serde_json::from_str(raw.trim()).ok())
+        })
+        .ok_or_else(|| {
+            CodegenFailure::provider(format!(
+                "{ERR_PROVIDER}: provider produced no structured artifact"
+            ))
+        })?;
+
+    let mut normalized = normalize_response(plan, provider_kind, parsed, diffs)
+        .map_err(|err| CodegenFailure::invalid(err.to_string()))?;
+
+    if let Value::Object(ref mut meta) = normalized.meta {
+        if let Some(usage) = extract_usage(&run.events) {
+            meta.insert("usage".into(), usage);
+        }
+        meta.insert(
+            "providerRunner".into(),
+            Value::String(provider_kind.runner_label().into()),
+        );
+        if let Some(path) = session_path {
+            meta.insert(
+                "providerSessionPath".into(),
+                Value::String(path.to_string_lossy().into()),
+            );
+            meta.insert(
+                "providerSessionEvents".into(),
+                Value::Number((session_events.len() as u64).into()),
+            );
+        }
+        if !run.stdout.is_empty() {
+            let preview = run.stdout.chars().take(2048).collect::<String>();
+            meta.entry("stdoutPreview")
+                .or_insert_with(|| Value::String(preview));
+        }
+        if !run.stderr.trim().is_empty() {
+            let preview = run.stderr.trim().chars().take(512).collect::<String>();
+            meta.insert("stderrPreview".into(), Value::String(preview));
+        }
+        meta.insert(
+            "providerEventCount".into(),
+            Value::Number((run.events.len() as u64).into()),
+        );
+    }
+
+    Ok(normalized)
+}
+
+async fn run_codex_cli<R: Runtime>(
+    _app: &AppHandle<R>,
+    spec: &ComputeJobSpec,
+    plan: &CodegenPlan,
+) -> Result<NormalizedArtifact, CodegenFailure> {
+    let workspace = create_job_workspace(&spec.job_id, "codex").await?;
+    let mut extra_env: HashMap<String, String> = HashMap::new();
+    if let Ok(key) = env::var("OPENAI_API_KEY") {
+        extra_env.insert("OPENAI_API_KEY".into(), key);
+    }
+    if let Ok(key) = env::var("CODEX_API_KEY") {
+        extra_env.insert("CODEX_API_KEY".into(), key);
+    }
+
+    let job = CodeProviderJob::new(&spec.job_id, plan.spec_text.clone(), workspace)
+        .with_allowed_tools(extract_allowed_tools(plan))
+        .with_extra_env(extra_env)
+        .with_metadata(json!({
+            "language": plan.language.as_str(),
+        }));
+
+    let mut provider = CodexProvider::new().with_model(plan.model_id.clone());
+    let ctx = provider
+        .prepare(&job)
+        .await
+        .map_err(map_code_provider_error)?;
+    let run = provider
+        .run(&job, &ctx)
+        .await
+        .map_err(map_code_provider_error)?;
+    let artifacts = provider
+        .finalize(&job, ctx, run)
+        .await
+        .map_err(map_code_provider_error)?;
+
+    compose_normalized_from_artifacts(plan, ProviderKind::CodexCli, artifacts)
+}
+
+async fn run_claude_cli<R: Runtime>(
+    _app: &AppHandle<R>,
+    spec: &ComputeJobSpec,
+    plan: &CodegenPlan,
+) -> Result<NormalizedArtifact, CodegenFailure> {
+    let workspace = create_job_workspace(&spec.job_id, "claude").await?;
+    let mut extra_env: HashMap<String, String> = HashMap::new();
+    if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
+        extra_env.insert("ANTHROPIC_API_KEY".into(), key);
+    }
+
+    let job = CodeProviderJob::new(&spec.job_id, plan.spec_text.clone(), workspace)
+        .with_allowed_tools(extract_allowed_tools(plan))
+        .with_extra_env(extra_env)
+        .with_metadata(json!({
+            "language": plan.language.as_str(),
+        }));
+
+    let provider = ClaudeProvider::new();
+    let ctx = provider
+        .prepare(&job)
+        .await
+        .map_err(map_code_provider_error)?;
+    let run = provider
+        .run(&job, &ctx)
+        .await
+        .map_err(map_code_provider_error)?;
+    let artifacts = provider
+        .finalize(&job, ctx, run)
+        .await
+        .map_err(map_code_provider_error)?;
+
+    compose_normalized_from_artifacts(plan, ProviderKind::ClaudeCli, artifacts)
+}
 fn sanitize_constraints(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -710,7 +1347,12 @@ Language must be {lang}. Include meta.modelId and meta.provider. Do not wrap out
     anyhow::bail!("unexpected OpenAI content format");
 }
 
-fn normalize_response(plan: &CodegenPlan, value: Value) -> anyhow::Result<Value> {
+fn normalize_response(
+    plan: &CodegenPlan,
+    provider_kind: ProviderKind,
+    value: Value,
+    diffs: Vec<ProviderDiff>,
+) -> anyhow::Result<NormalizedArtifact> {
     if !value.is_object() {
         anyhow::bail!("{ERR_INPUT_INVALID}: provider response must be JSON object");
     }
@@ -722,7 +1364,7 @@ fn normalize_response(plan: &CodegenPlan, value: Value) -> anyhow::Result<Value>
         .remove("code")
         .and_then(|v| v.as_str().map(String::from))
         .ok_or_else(|| anyhow!("{ERR_INPUT_INVALID}: response missing code string"))?;
-    let language = plan.language.as_str();
+    let language = plan.language.as_str().to_string();
     let meta_value = map
         .remove("meta")
         .unwrap_or_else(|| Value::Object(Map::new()));
@@ -730,17 +1372,19 @@ fn normalize_response(plan: &CodegenPlan, value: Value) -> anyhow::Result<Value>
     meta.entry("modelId")
         .or_insert_with(|| Value::String(plan.model_id.clone()));
     meta.entry("provider")
-        .or_insert_with(|| Value::String(PROVIDER_NAME.into()));
+        .and_modify(|val| *val = Value::String(provider_kind.as_str().into()))
+        .or_insert_with(|| Value::String(provider_kind.as_str().into()));
     meta.insert(
         "validatorVersion".into(),
         Value::String(plan.validator_version.clone()),
     );
 
-    Ok(json!({
-        "code": code,
-        "language": language,
-        "meta": meta,
-    }))
+    Ok(NormalizedArtifact {
+        code,
+        language,
+        meta: Value::Object(meta),
+        diffs,
+    })
 }
 
 fn validate_code(
@@ -1396,16 +2040,17 @@ mod tests {
             "language": "python",
             "meta": {}
         });
-        let normalized = normalize_response(&plan, raw).expect("normalize");
-        let provider = normalized
-            .pointer("/meta/provider")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        assert_eq!(provider, PROVIDER_NAME);
-        let model = normalized
-            .pointer("/meta/modelId")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+        let normalized =
+            normalize_response(&plan, ProviderKind::OpenAiApi, raw, Vec::new()).expect("normalize");
+        let provider = match &normalized.meta {
+            Value::Object(map) => map.get("provider").and_then(|v| v.as_str()).unwrap_or(""),
+            _ => "",
+        };
+        assert_eq!(provider, "openai");
+        let model = match &normalized.meta {
+            Value::Object(map) => map.get("modelId").and_then(|v| v.as_str()).unwrap_or(""),
+            _ => "",
+        };
         assert_eq!(model, "o4-mini");
     }
 

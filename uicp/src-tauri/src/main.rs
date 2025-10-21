@@ -2161,7 +2161,9 @@ async fn kill_container(container_name: String) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(_e1) => match try_stop("podman", &container_name) {
             Ok(_) => Ok(()),
-            Err(e2) => Err(format!("E-UICP-9102: container runtime missing or stop failed: {e2}")),
+            Err(e2) => Err(format!(
+                "E-UICP-9102: container runtime missing or stop failed: {e2}"
+            )),
         },
     }
 }

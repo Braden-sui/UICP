@@ -21,6 +21,17 @@ const ERR_PROVIDER_SESSION: &str = "E-UICP-1405";
 static PROVIDER_TMP_ROOT: Lazy<PathBuf> =
     Lazy::new(|| std::env::temp_dir().join("uicp-code-providers"));
 
+const CODEX_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "required": ["code", "language"],
+  "additionalProperties": true,
+  "properties": {
+    "code": { "type": "string" },
+    "language": { "type": "string" },
+    "meta": { "type": "object" }
+  }
+}"#;
+
 #[derive(Debug, Clone)]
 pub struct CodeProviderJob {
     pub job_id: String,
@@ -433,6 +444,13 @@ impl CodeProvider for CodexProvider {
 
     async fn prepare(&self, job: &CodeProviderJob) -> Result<ProviderContext, CodeProviderError> {
         let workdir = job.workspace_root.clone();
+        fs::create_dir_all(&workdir).await.map_err(|err| {
+            CodeProviderError::new(
+                ERR_PROVIDER_IO,
+                format!("create Codex workspace failed: {err}"),
+            )
+        })?;
+
         let env = job.extra_env.clone();
 
         if env.contains_key("CODEX_API_KEY") || std::env::var("CODEX_API_KEY").is_ok() {
@@ -451,7 +469,27 @@ impl CodeProvider for CodexProvider {
         job: &CodeProviderJob,
         ctx: &ProviderContext,
     ) -> Result<ProviderRun, CodeProviderError> {
-        let mut args = vec!["exec".to_string()];
+        let schema_path = ctx.working_dir.join("schema.json");
+        tokio::fs::write(&schema_path, CODEX_OUTPUT_SCHEMA)
+            .await
+            .map_err(|err| {
+                CodeProviderError::new(
+                    ERR_PROVIDER_IO,
+                    format!("write Codex output schema failed: {err}"),
+                )
+            })?;
+
+        let mut args = vec![
+            "exec".to_string(),
+            "--json".to_string(),
+            "--output-schema".to_string(),
+            schema_path.to_string_lossy().to_string(),
+        ];
+
+        if let Some(model) = &self.model {
+            args.push("--model".to_string());
+            args.push(model.clone());
+        }
         if self.allow_write {
             args.push("--full-auto".to_string());
         }
@@ -475,13 +513,52 @@ impl CodeProvider for CodexProvider {
             ));
         }
 
+        let mut events = Vec::new();
+        let mut aggregated = String::new();
+        let mut parsed: Option<Value> = None;
+
+        for raw_line in exec.stdout.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Value>(line) {
+                Ok(value) => {
+                    collect_codex_text(&value, &mut aggregated);
+                    if parsed.is_none() {
+                        parsed = extract_codex_json(&value);
+                    }
+                    events.push(value);
+                }
+                Err(_) => {
+                    aggregated.push_str(line);
+                    aggregated.push('\n');
+                }
+            }
+        }
+
+        if parsed.is_none() {
+            let trimmed = aggregated.trim();
+            if !trimmed.is_empty() {
+                if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                    parsed = Some(val);
+                }
+            }
+        }
+
+        let aggregated_output = if aggregated.trim().is_empty() {
+            None
+        } else {
+            Some(aggregated)
+        };
+
         Ok(ProviderRun {
             stdout: exec.stdout.clone(),
             stderr: exec.stderr,
             exit_status: exec.status,
-            events: Vec::new(),
-            aggregated_output: None,
-            parsed_output: None,
+            events,
+            aggregated_output,
+            parsed_output: parsed,
             summary: Some(exec.stdout),
         })
     }
@@ -615,6 +692,81 @@ fn extract_codex_diff(event: &Value) -> Option<ProviderDiff> {
         path: PathBuf::from(path),
         patch: patch.to_string(),
     })
+}
+
+fn collect_codex_text(value: &Value, out: &mut String) {
+    if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+        out.push_str(text);
+    }
+    if let Some(delta) = value.get("delta") {
+        if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+            out.push_str(text);
+        }
+        if let Some(json_str) = delta.get("json").and_then(|v| v.as_str()) {
+            out.push_str(json_str);
+        }
+    }
+    if let Some(payload) = value.get("payload") {
+        if let Some(content) = payload.get("content").and_then(|v| v.as_array()) {
+            for item in content {
+                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                    out.push_str(text);
+                }
+                if let Some(json_str) = item.get("json").and_then(|v| v.as_str()) {
+                    out.push_str(json_str);
+                }
+            }
+        }
+    }
+}
+
+fn extract_codex_json(value: &Value) -> Option<Value> {
+    if let Some(payload) = value.get("payload") {
+        if let Some(content) = payload.get("content").and_then(|v| v.as_array()) {
+            for item in content {
+                if let Some(kind) = item.get("type").and_then(|v| v.as_str()) {
+                    match kind {
+                        "output_json" => {
+                            if let Some(obj) = item.get("object") {
+                                return Some(obj.clone());
+                            }
+                            if let Some(json_str) = item.get("json").and_then(|v| v.as_str()) {
+                                if let Ok(parsed) = serde_json::from_str(json_str) {
+                                    return Some(parsed);
+                                }
+                            }
+                        }
+                        "output_text" | "text" => {
+                            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                                if let Ok(parsed) = serde_json::from_str(text) {
+                                    return Some(parsed);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if let Some(delta) = value.get("delta") {
+        if let Some(json_str) = delta.get("json").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = serde_json::from_str(json_str) {
+                return Some(parsed);
+            }
+        }
+        if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = serde_json::from_str(text) {
+                return Some(parsed);
+            }
+        }
+    }
+    if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+        if let Ok(parsed) = serde_json::from_str(text) {
+            return Some(parsed);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -448,7 +448,9 @@ pub fn derive_job_seed(job_id: &str, env_hash: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn canonicalize_codegen_input(input: &serde_json::Value) -> Result<serde_json::Value, TaskInputError> {
+fn canonicalize_codegen_input(
+    input: &serde_json::Value,
+) -> Result<serde_json::Value, TaskInputError> {
     let obj = input.as_object().ok_or_else(|| {
         TaskInputError::new(
             error_codes::INPUT_INVALID,
@@ -575,9 +577,14 @@ fn canonicalize_codegen_input(input: &serde_json::Value) -> Result<serde_json::V
             .map(|s| s.to_string())
     };
 
-    let cache_policy = obj.get("cachePolicy").and_then(|v| v.as_str()).map(|s| s.trim());
+    let cache_policy = obj
+        .get("cachePolicy")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim());
     let cache_policy_normalized = match cache_policy {
-        Some("readwrite") | Some("readOnly") | Some("bypass") => cache_policy.map(|s| s.to_string()),
+        Some("readwrite") | Some("readOnly") | Some("bypass") => {
+            cache_policy.map(|s| s.to_string())
+        }
         Some(other) => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
@@ -633,9 +640,18 @@ fn canonicalize_codegen_input(input: &serde_json::Value) -> Result<serde_json::V
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
             let mut install_map = serde_json::Map::new();
-            install_map.insert("panelId".into(), serde_json::Value::String(panel_id.to_string()));
-            install_map.insert("windowId".into(), serde_json::Value::String(window_id.to_string()));
-            install_map.insert("target".into(), serde_json::Value::String(target.to_string()));
+            install_map.insert(
+                "panelId".into(),
+                serde_json::Value::String(panel_id.to_string()),
+            );
+            install_map.insert(
+                "windowId".into(),
+                serde_json::Value::String(window_id.to_string()),
+            );
+            install_map.insert(
+                "target".into(),
+                serde_json::Value::String(target.to_string()),
+            );
             if let Some(sk) = state_key {
                 install_map.insert("stateKey".into(), serde_json::Value::String(sk));
             }
@@ -659,7 +675,10 @@ fn canonicalize_codegen_input(input: &serde_json::Value) -> Result<serde_json::V
     );
     normalized.insert("constraints".into(), constraints_value);
     normalized.insert("caps".into(), caps_value);
-    normalized.insert("provider".into(), serde_json::Value::String(provider_value.to_string()));
+    normalized.insert(
+        "provider".into(),
+        serde_json::Value::String(provider_value.to_string()),
+    );
     if !providers_list.is_empty() {
         normalized.insert(
             "providers".into(),
@@ -962,9 +981,18 @@ mod tests {
             .get("install")
             .and_then(|v| v.as_object())
             .expect("install present");
-        assert_eq!(install.get("panelId").and_then(|v| v.as_str()), Some("panel-demo"));
-        assert_eq!(install.get("windowId").and_then(|v| v.as_str()), Some("demo-window"));
-        assert_eq!(install.get("target").and_then(|v| v.as_str()), Some("#root"));
+        assert_eq!(
+            install.get("panelId").and_then(|v| v.as_str()),
+            Some("panel-demo")
+        );
+        assert_eq!(
+            install.get("windowId").and_then(|v| v.as_str()),
+            Some("demo-window")
+        );
+        assert_eq!(
+            install.get("target").and_then(|v| v.as_str()),
+            Some("#root")
+        );
     }
 
     #[test]
