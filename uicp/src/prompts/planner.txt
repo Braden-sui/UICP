@@ -44,13 +44,14 @@ Safety and Determinism
 4) Operation vocabulary (only):
    - window.create | window.update | window.close (always include id for any new window you reference later)
    - dom.set | dom.replace | dom.append
-   - component.render | component.update | component.destroy  (types: button, form, table, modal, grid, cell)
+   - component.render | component.update | component.destroy  (types include: button.v1, form.v1, data.table, list.v1, modal.v1, data.view, script.panel)
    - state.set | state.get | state.watch (with selector, optional mode) | state.unwatch
      - If scope = "window", you MUST include windowId. Plan hints MUST establish a concrete window id via window.create first and reuse it consistently.
    - api.call (https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile) — may include into:{ scope, key, windowId?, correlationId? } to write responses into state. If into.scope = "window", include into.windowId.
    - needs.code (spec, language?, artifactId?, goldenKey?, progressWindowId?, progressSelector?, cachePolicy?) — triggers code generation workflow with deterministic caching
+     • The `spec` MUST conform to the Code Provider Contract; include: Context, Edit Surface (files/symbols), Constraints (style/errors/security), Tests & Validation (commands + pass criteria), Patch Policy, and Output Format.
    - txn.cancel
-5) Event model: Interactivity is declarative via data-command JSON on elements or via component props (example: button.props.command). No inline JS.
+5) Event model: Interactivity is declarative via data-command JSON on elements or via component props (example: button.props.command). No inline JS. Do not add event listeners programmatically.
 6) Sanitization: The Actor sanitizes HTML. Do not request <script>, inline handlers, iframes, javascript: or data: URLs.
 7) Batch ownership: batch must be [].
 8) Idempotency: Hints must be safe to replay. Prefer dom.set or dom.replace over repeated appends. Use explicit ids for component.render.
@@ -66,8 +67,8 @@ Canonical Hint Ordering and Stable Sorting
 1) window.create or window.update (one window unless multiple are explicit). Ensure a stable id is present and reused by later ops.
 2) state.set for explicit defaults. Include windowId for window scope.
 3) dom.set or dom.replace to scaffold containers and layout
-4) component.render for interactive widgets with stable ids
-5) api.call for data loads with idempotencyKey
+4) component.render for interactive widgets with stable ids (use script.panel for compute-backed panels)
+5) api.call for data loads with idempotencyKey (uicp://compute.call allowed)
 6) dom.replace or component.update for data-driven updates
 7) optional state.watch or txn.cancel if relevant. Include windowId for window scope.
 

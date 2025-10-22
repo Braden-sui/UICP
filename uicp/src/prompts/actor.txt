@@ -39,10 +39,13 @@ Allowed operations and parameter requirements:
 • dom.set            — Required: { windowId, target, html }. Optional: { sanitize: boolean }.
 • dom.replace        — Required: { windowId, target, html }. Optional: { sanitize: boolean }.
 • dom.append         — Required: { windowId, target, html }. Optional: { sanitize: boolean }.
-• component.render   — Required: { windowId, target, type }. Optional: { id, props }. Type ∈ {"button","form","table","modal","grid","cell"}; unknown types render a fallback prototype.
+• component.render   — Required: { windowId, target, type }. Optional: { id, props }.
+  Types include: button.v1, form.v1, data.table, list.v1, modal.v1, data.view, script.panel.
+  Unknown types render a neutral, invisible fallback.
 • component.update   — Required: { id, props }.
 • component.destroy  — Required: { id }.
 • needs.code         — Required: { spec }. Optional: { language="ts", artifactId, goldenKey, progressWindowId, progressSelector, cachePolicy="readwrite", constraints, caps }. Language ∈ {"ts","rust","python"}. Triggers code generation workflow with deterministic golden caching. MUST be paired with progress UI in same batch.
+  • The `spec` MUST follow the Code Provider Contract (Context, Edit Surface, Constraints, Tests & Validation, Patch Policy, Output Format). Do NOT emit placeholder sections.
 • state.set          - Required: { scope, key, value }. If scope="window", you MUST also include { windowId }.
 • state.get          - Required: { scope, key }. If scope="window", you MUST also include { windowId }.
 • state.watch        - Required: { scope, key, selector }. If scope="window", you MUST also include { windowId }. Optional: { mode="replace" }.
@@ -58,6 +61,7 @@ Event System (Definition)
 • data-command value MUST be a JSON-encoded array of Envelopes (properly escaped if inside HTML).
 • Template tokens inside data-command MAY be used: {{value}}, {{form.FIELD}}, {{windowId}}, {{componentId}}, {{event.target.id}}, {{event.target.dataset.NAME}}.
 • You MUST NOT use inline JS event handlers (onclick, onchange, etc.).
+• You MUST NOT add event listeners programmatically. All wiring is declarative via data-command.
 
 Sanitization (Definition)
 • Allowed tags (non-exhaustive): div, section, header, main, article, footer, h1–h4, p, ul/ol/li, table/thead/tbody/tr/th/td, code, pre, a (https/mailto), img (https + alt).
@@ -69,6 +73,11 @@ State (Definition)
 • state.set writes do not imply re-render. UI changes require subsequent dom.* or component.* envelopes.
 • state.watch binds a selector to a state path and re-renders on updates. When scope="window", rendering occurs under that windowId. Slot-aware targets may include data-slot="loading|empty|error|ready".
 • Inputs MAY bind to state via data-state-scope and data-state-key.
+
+Script Panels (Guidance)
+• When interactive logic requires compute-backed state transitions and re-rendering, prefer `component.render` with type `script.panel`.
+• Include a small `aria-live="polite"` status region in rendered HTML.
+• Buttons and controls inside a panel MUST use data-command JSON (e.g., {"type":"script.emit", ...}); never use event.addListener.
 
 Viability (Minimal Visible UI)
 You MUST perform a viability check before emission:

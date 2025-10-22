@@ -28,6 +28,12 @@
 - Clear Compute Cache UI is available in `uicp/src/components/AgentSettingsWindow.tsx` (invokes `clear_compute_cache`).
 - JavaScript execution path is production-ready: `applet.quickjs@0.1.0` loads bundled sources via `UICP_SCRIPT_SOURCE_B64`, `script.panel` manages state/view keys, integration coverage lives in `uicp/src-tauri/tests/integration_compute/quickjs_applet.rs`, the counter example ships in `examples/counter-applet/`, and `docs/compute/JS_EXECUTION_PATH.md` captures full architecture and constraints.
 
+## Code Providers
+
+- Contract for `needs.code` specs used by Codex/Claude: `docs/compute/CODE_PROVIDER_CONTRACT.md`
+
+ 
+
 ## Track C: Code Generation with Golden Cache (V2)
 
 - **Purpose**: Support deterministic code generation workflows with bit-exact output verification.
