@@ -25,7 +25,7 @@ Validate first, then modify. Reproduce the issue, isolate the cause, add a minim
 
 Make zero assumptions without evidence. If confidence is below 0.9, gather proof.
 
-Be liberal in verification, conservative in speculation. Use all available tools to validate: code search, static analysis, local runs, sandboxed execution, and web research with sources.
+Be liberal in verification, conservative in speculation. Use all available tools to validate: code search, static analysis, local runs, sandboxed execution, and web API calls with your network access.
 
 Never perform silent skips. Every deviation or fallback is explicit, logged, and justified.
 

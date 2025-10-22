@@ -16,6 +16,26 @@ Last updated: 2025-10-19
 
 -------------------------------------------------------------------------------
 
+## Provider CLI Test Matrix (fast, simulated)
+
+- Fresh machine (no PATH):
+  - `health('claude')` with bogus `UICP_CLAUDE_PATH` returns ProgramNotFound and lists search paths.
+  - `health('codex')` with PATH pointing at a stub prints version and succeeds.
+- Jail ON (httpjail):
+  - Login denied surfaces `E-UICP-1504 NetworkDenied`; broadening allowlist (simulated via stub) allows login to succeed.
+- macOS keychain locked (simulated):
+  - Claude health captures `E-UICP-1503 KeychainLocked` and adds unlock hint text.
+- Env override:
+  - Setting `UICP_CLAUDE_PATH` to a bogus path produces `ProgramNotFound` and shows all candidate paths tried.
+- Install/Update flow:
+  - Agent Settings → Code Providers → `Install / Update` (per provider) calls `provider_install` under the hood and re-runs health.
+
+Implementation: unit tests in `uicp/src-tauri/src/provider_cli.rs` create Unix shell stubs and manipulate `PATH`/env to avoid real network/OS dependencies. No external installs run; tests are fast and deterministic.
+
+Run (Rust only): `cargo test -p uicp --lib` (CI runs on Linux). On Windows/macOS, ensure a C toolchain is available for Rust.
+
+-------------------------------------------------------------------------------
+
 ## Execution cadence and time expectations
 
 - The agent works iteratively until each checklist item is delivered or explicitly descoped; there is no fixed "timebox" after which execution stops automatically.

@@ -288,6 +288,24 @@ fn parse_env_flag(value: &str) -> bool {
     )
 }
 
+fn is_executable_candidate(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            return meta.permissions().mode() & 0o111 != 0;
+        }
+        return false;
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn find_httpjail_binary() -> Result<String, String> {
     let path_var = std::env::var_os("PATH").ok_or_else(|| "PATH not set".to_string())?;
     for dir in std::env::split_paths(&path_var) {
@@ -295,11 +313,11 @@ fn find_httpjail_binary() -> Result<String, String> {
             continue;
         }
         let candidate = dir.join("httpjail");
-        if candidate.is_file() {
+        if is_executable_candidate(&candidate) {
             return Ok(candidate.to_string_lossy().into_owned());
         }
         let candidate_exe = dir.join("httpjail.exe");
-        if candidate_exe.is_file() {
+        if is_executable_candidate(&candidate_exe) {
             return Ok(candidate_exe.to_string_lossy().into_owned());
         }
     }
@@ -335,6 +353,12 @@ async fn load_httpjail_predicate(provider: &str) -> Result<String, String> {
 }
 
 fn httpjail_policy_path() -> PathBuf {
+    if let Some(override_os) = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST") {
+        let override_path = PathBuf::from(&override_os);
+        if !override_path.as_os_str().is_empty() {
+            return override_path;
+        }
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("ops")
@@ -464,7 +488,6 @@ fn resolve_provider_exe(
     provider_key: &str,
     env: &HashMap<String, String>,
 ) -> String {
-    use std::path::{Path, PathBuf};
     // 1) Env override (process env or job env)
     let override_keys: &[&str] = match provider_key {
         "claude" => &["UICP_CLAUDE_PATH", "UICP_CLAUDE_BIN"],
@@ -473,23 +496,34 @@ fn resolve_provider_exe(
     };
     for key in override_keys {
         if let Some(val) = env.get(*key).cloned().or_else(|| std::env::var(key).ok()) {
-            let p = PathBuf::from(val.trim());
-            if p.is_file() {
-                log_provider_bin(provider_key, &p, "env");
-                return p.to_string_lossy().into_owned();
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                if is_executable_candidate(&p) {
+                    log_provider_bin(provider_key, &p, "env");
+                    return p.to_string_lossy().into_owned();
+                }
             }
         }
     }
 
-    // 2) PATH search (respect PATHEXT on Windows)
+    // 2) Managed install locations
+    for cand in managed_install_candidates(default_prog) {
+        if is_executable_candidate(&cand) {
+            log_provider_bin(provider_key, &cand, "managed");
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+
+    // 3) PATH search (respect PATHEXT on Windows)
     if let Some(found) = search_in_path(default_prog) {
         log_provider_bin(provider_key, &found, "PATH");
         return found.to_string_lossy().into_owned();
     }
 
-    // 3) Common install locations
+    // 4) Common install locations
     for cand in common_install_candidates(default_prog) {
-        if cand.is_file() {
+        if is_executable_candidate(&cand) {
             log_provider_bin(provider_key, &cand, "common");
             return cand.to_string_lossy().into_owned();
         }
@@ -499,45 +533,63 @@ fn resolve_provider_exe(
 }
 
 fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var_os("PATHEXT")
-            .map(|v| v.to_string_lossy().split(';').map(|s| s.to_string()).collect())
+            .map(|v| {
+                v.to_string_lossy()
+                    .split(';')
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_else(|| vec![".EXE".into(), ".CMD".into(), ".BAT".into(), ".COM".into()])
     } else {
         Vec::new()
     };
-    let path_var = match std::env::var_os("PATH") { Some(v) => v, None => return None };
+    let path_var = match std::env::var_os("PATH") {
+        Some(v) => v,
+        None => return None,
+    };
     for dir in std::env::split_paths(&path_var) {
-        if dir.as_os_str().is_empty() { continue; }
-        if let Some(p) = candidate_in_dir(&dir, program, &exts) { return Some(p); }
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        if let Some(p) = candidate_in_dir(&dir, program, &exts) {
+            return Some(p);
+        }
     }
     None
 }
 
-fn candidate_in_dir(dir: &std::path::Path, program: &str, exts: &[String]) -> Option<std::path::PathBuf> {
+fn candidate_in_dir(
+    dir: &std::path::Path,
+    program: &str,
+    exts: &[String],
+) -> Option<std::path::PathBuf> {
     if cfg!(windows) {
         if program.contains('.') {
             let p = dir.join(program);
-            if p.is_file() { return Some(p); }
+            if is_executable_candidate(&p) {
+                return Some(p);
+            }
         } else {
             for ext in exts {
                 let p = dir.join(format!("{program}{ext}"));
-                if p.is_file() { return Some(p); }
+                if is_executable_candidate(&p) {
+                    return Some(p);
+                }
             }
         }
     } else {
         let p = dir.join(program);
-        if p.is_file() { return Some(p); }
+        if is_executable_candidate(&p) {
+            return Some(p);
+        }
     }
     None
 }
 
 fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
-    use std::path::PathBuf;
     let mut out = Vec::new();
-    // Managed app dir candidates first
-    out.extend(managed_install_candidates(program));
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
         out.push(PathBuf::from("/opt/homebrew/bin").join(program));
@@ -558,8 +610,14 @@ fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     } else if cfg!(target_os = "windows") {
         if let Ok(userprofile) = std::env::var("USERPROFILE") {
             let up = PathBuf::from(userprofile);
-            out.push(up.join("AppData/Roaming/npm").join(format!("{program}.cmd")));
-            out.push(up.join("AppData/Roaming/npm").join(format!("{program}.exe")));
+            out.push(
+                up.join("AppData/Roaming/npm")
+                    .join(format!("{program}.cmd")),
+            );
+            out.push(
+                up.join("AppData/Roaming/npm")
+                    .join(format!("{program}.exe")),
+            );
             out.push(up.join("nodejs").join(program));
             out.push(up.join("nodejs").join(format!("{program}.cmd")));
             out.push(up.join("nodejs").join(format!("{program}.exe")));
@@ -572,7 +630,6 @@ fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
 }
 
 fn managed_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
-    use std::path::PathBuf;
     let mut out = Vec::new();
     let base = managed_bin_base();
     let os = if cfg!(target_os = "windows") {
@@ -612,7 +669,12 @@ fn managed_bin_base() -> Option<std::path::PathBuf> {
         None
     } else if cfg!(target_os = "macos") {
         let home = std::env::var_os("HOME").map(PathBuf::from)?;
-        Some(home.join("Library").join("Application Support").join("UICP").join("bin"))
+        Some(
+            home.join("Library")
+                .join("Application Support")
+                .join("UICP")
+                .join("bin"),
+        )
     } else {
         let home = std::env::var_os("HOME").map(PathBuf::from)?;
         Some(home.join(".local").join("share").join("UICP").join("bin"))
@@ -1204,6 +1266,7 @@ fn extract_codex_json(value: &Value) -> Option<Value> {
 mod tests {
     use super::*;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -1214,6 +1277,132 @@ mod tests {
     use tokio::runtime::Runtime;
 
     static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_exec(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().expect("exec parent")).expect("create dirs");
+        std::fs::write(path, content).expect("write stub");
+        #[cfg(unix)]
+        {
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn httpjail_policy_path_honors_env_override() {
+        let _guard = TEST_MUTEX.lock();
+        let temp = tempfile::NamedTempFile::new().expect("temp allowlist");
+        let prev = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST");
+        std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", temp.path());
+        let resolved = httpjail_policy_path();
+        if let Some(v) = prev {
+            std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", v);
+        } else {
+            std::env::remove_var("UICP_HTTPJAIL_ALLOWLIST");
+        }
+        assert_eq!(resolved, temp.path());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn resolve_prefers_managed_over_path() {
+        let _guard = TEST_MUTEX.lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+        let prev_path = std::env::var_os("PATH");
+        let prev_override = std::env::var_os("UICP_CLAUDE_PATH");
+        let prev_bin = std::env::var_os("UICP_CLAUDE_BIN");
+        std::env::remove_var("UICP_CLAUDE_PATH");
+        std::env::remove_var("UICP_CLAUDE_BIN");
+
+        let managed_base = managed_bin_base().expect("managed base");
+        let managed_stub = managed_base.join("claude");
+        write_exec(&managed_stub, "#!/usr/bin/env bash\necho managed\n");
+
+        let path_dir = temp.path().join("pathbin");
+        write_exec(&path_dir.join("claude"), "#!/usr/bin/env bash\necho path\n");
+        std::env::set_var("PATH", path_dir.as_os_str());
+
+        let env = HashMap::new();
+        let resolved = resolve_provider_exe("claude", "claude", &env);
+
+        if let Some(v) = prev_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(v) = prev_path {
+            std::env::set_var("PATH", v);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        if let Some(v) = prev_override {
+            std::env::set_var("UICP_CLAUDE_PATH", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_PATH");
+        }
+        if let Some(v) = prev_bin {
+            std::env::set_var("UICP_CLAUDE_BIN", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_BIN");
+        }
+
+        assert_eq!(std::path::PathBuf::from(&resolved), managed_stub);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn resolve_skips_non_executable_candidates() {
+        let _guard = TEST_MUTEX.lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+        let prev_path = std::env::var_os("PATH");
+        let prev_override = std::env::var_os("UICP_CLAUDE_PATH");
+        let prev_bin = std::env::var_os("UICP_CLAUDE_BIN");
+        std::env::remove_var("UICP_CLAUDE_PATH");
+        std::env::remove_var("UICP_CLAUDE_BIN");
+
+        let path_dir = temp.path().join("pathbin");
+        std::fs::create_dir_all(&path_dir).expect("path dir");
+        let path_stub = path_dir.join("claude");
+        std::fs::write(&path_stub, "#!/usr/bin/env bash\necho path\n").expect("write stub");
+        let mut perms = std::fs::metadata(&path_stub).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path_stub, perms).unwrap();
+        std::env::set_var("PATH", path_dir.as_os_str());
+
+        let env = HashMap::new();
+        let resolved = resolve_provider_exe("claude", "claude", &env);
+
+        if let Some(v) = prev_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(v) = prev_path {
+            std::env::set_var("PATH", v);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        if let Some(v) = prev_override {
+            std::env::set_var("UICP_CLAUDE_PATH", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_PATH");
+        }
+        if let Some(v) = prev_bin {
+            std::env::set_var("UICP_CLAUDE_BIN", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_BIN");
+        }
+
+        assert_eq!(resolved, "claude");
+    }
 
     fn success_status() -> ExitStatus {
         #[cfg(unix)]
@@ -1353,8 +1542,11 @@ mod tests {
         let provider = ClaudeProvider::with_runner(runner);
         let rt = Runtime::new().expect("runtime");
         rt.block_on(async {
-            let job =
-                CodeProviderJob::new("job-claude-loginless", "Generate code", std::env::current_dir().unwrap());
+            let job = CodeProviderJob::new(
+                "job-claude-loginless",
+                "Generate code",
+                std::env::current_dir().unwrap(),
+            );
             let ctx = provider.prepare(&job).await.expect("prepare");
             assert!(
                 ctx.env.get("ANTHROPIC_API_KEY").is_none(),
@@ -1374,6 +1566,17 @@ mod tests {
         std::env::set_var("ANTHROPIC_API_KEY", "test-key");
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
+        let temp_home = tempfile::tempdir().expect("temp home");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("USERPROFILE", temp_home.path());
+        let prev_allowlist = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST");
+        let allowlist = tempfile::NamedTempFile::new().expect("allowlist");
+        std::fs::write(
+            allowlist.path(),
+            r#"{"providers":{"claude":{"hosts":["api.anthropic.com"],"methods":["GET","POST"]}}}"#,
+        )
+        .expect("write allowlist");
+        std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", allowlist.path());
         let httpjail_path = if cfg!(windows) {
             temp_dir.path().join("httpjail.exe")
         } else {
@@ -1426,6 +1629,16 @@ mod tests {
             std::env::remove_var("PATH");
         }
         std::env::remove_var("ANTHROPIC_API_KEY");
+        if let Some(v) = prev_userprofile {
+            std::env::set_var("USERPROFILE", v);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+        if let Some(v) = prev_allowlist {
+            std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", v);
+        } else {
+            std::env::remove_var("UICP_HTTPJAIL_ALLOWLIST");
+        }
 
         assert!(
             observed.len() >= 4,
@@ -1491,15 +1704,36 @@ mod tests {
         std::env::remove_var("CODEX_API_KEY");
 
         let temp_workspace = tempfile::tempdir().expect("tempdir");
-        let runner = Arc::new(StubRunner::new(
-            "codex",
-            r#"{"code":"export const render = () => ({ html: '<div></div>' });","language":"ts"}"#,
-        ));
+        let temp_bin = tempfile::tempdir().expect("temp bin");
+        let codex_exe = if cfg!(windows) {
+            temp_bin.path().join("codex.cmd")
+        } else {
+            temp_bin.path().join("codex")
+        };
+        std::fs::write(&codex_exe, b"stub").expect("codex stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&codex_exe)
+                .expect("codex metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&codex_exe, perms).expect("set permissions");
+        }
+
+        let prev_override = std::env::var_os("UICP_CODEX_PATH");
+        std::env::set_var("UICP_CODEX_PATH", codex_exe.as_os_str());
+
+        let stream = r#"
+{"type":"message","payload":{"content":[{"type":"output_json","json":"{\"code\":\"export const render = () => ({ html: '<div></div>' });\",\"language\":\"ts\"}"}]}}
+"#;
+        let runner = Arc::new(StubRunner::new("codex", stream));
         let provider = CodexProvider::with_runner(runner);
         let rt = Runtime::new().expect("runtime");
 
         rt.block_on(async {
-            let job = CodeProviderJob::new("job-codex-login", "Inspect changes", temp_workspace.path());
+            let job =
+                CodeProviderJob::new("job-codex-login", "Inspect changes", temp_workspace.path());
             let ctx = provider.prepare(&job).await.expect("prepare");
             assert!(
                 ctx.env.get("CODEX_API_KEY").is_none(),
@@ -1511,6 +1745,11 @@ mod tests {
                 "parsed output should surface CLI data without explicit API key"
             );
         });
+        if let Some(v) = prev_override {
+            std::env::set_var("UICP_CODEX_PATH", v);
+        } else {
+            std::env::remove_var("UICP_CODEX_PATH");
+        }
     }
 
     #[test]
@@ -1529,7 +1768,8 @@ mod tests {
         let rt = Runtime::new().expect("runtime");
 
         rt.block_on(async {
-            let job = CodeProviderJob::new("job-codex-error", "Inspect changes", temp_workspace.path());
+            let job =
+                CodeProviderJob::new("job-codex-error", "Inspect changes", temp_workspace.path());
             let ctx = provider.prepare(&job).await.expect("prepare");
             let err = provider.run(&job, &ctx).await.expect_err("run should fail");
             assert_eq!(err.code, ERR_PROVIDER_EXIT);

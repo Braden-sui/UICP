@@ -101,6 +101,7 @@ const AgentSettingsWindow = () => {
   const failProvider = useProviderSelector((state) => state.fail);
   const bridgeAvailable = hasTauriBridge();
   const devMode = import.meta.env.DEV === true;
+  const [installingProvider, setInstallingProvider] = useState<ProviderName | null>(null);
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
@@ -282,6 +283,51 @@ const AgentSettingsWindow = () => {
       }
     },
     [beginHealthCheck, completeHealthCheck, failProvider],
+  );
+
+  const handleProviderInstall = useCallback(
+    async (provider: ProviderName) => {
+      const info = PROVIDER_INFO[provider];
+      if (!hasTauriBridge()) {
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} install requires the desktop runtime` });
+        return;
+      }
+      setInstallingProvider(provider);
+      try {
+        const res = (await tauriInvoke('provider_install', { provider })) as
+          | { ok?: boolean; exe?: string; via?: string; detail?: string }
+          | undefined;
+        if (res?.ok) {
+          const via = res?.via ? ` via ${res.via}` : '';
+          const exe = res?.exe ? ` (${res.exe})` : '';
+          useAppStore
+            .getState()
+            .pushToast({ variant: 'success', message: `${info.label} updated${via}${exe}` });
+          void handleProviderHealth(provider);
+          if (devMode) {
+            void refreshResolved(provider);
+          }
+        } else {
+          const detail = res?.detail?.trim();
+          useAppStore
+            .getState()
+            .pushToast({
+              variant: 'error',
+              message: detail && detail.length > 0 ? `${info.label} install failed: ${detail}` : `${info.label} install failed`,
+            });
+        }
+      } catch (err) {
+        const message = (err as Error)?.message ?? String(err);
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} install failed: ${message}` });
+      } finally {
+        setInstallingProvider((current) => (current === provider ? null : current));
+      }
+    },
+    [devMode, handleProviderHealth, refreshResolved],
   );
 
   const handleSafeModeToggle = useCallback(
@@ -509,8 +555,9 @@ const AgentSettingsWindow = () => {
               const info = PROVIDER_INFO[provider];
               const meta = describeStatus(status);
               const detail = normalizeDetail(status.detail);
-              const connecting = status.state === 'connecting';
-              const checking = status.state === 'checking';
+              const installing = installingProvider === provider;
+              const connecting = status.state === 'connecting' || installing;
+              const checking = status.state === 'checking' || installing;
               return (
                 <div key={provider} className="rounded border border-slate-200 bg-white/80 p-3 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
@@ -531,6 +578,14 @@ const AgentSettingsWindow = () => {
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button
                       type="button"
+                      onClick={() => handleProviderInstall(provider)}
+                      disabled={installing || !bridgeAvailable}
+                      className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Install / Update
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleProviderConnect(provider)}
                       disabled={connecting || !bridgeAvailable}
                       className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -549,7 +604,7 @@ const AgentSettingsWindow = () => {
                       <button
                         type="button"
                         onClick={() => refreshResolved(provider)}
-                        disabled={!bridgeAvailable}
+                        disabled={!bridgeAvailable || installing}
                         className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         Show Resolved Path

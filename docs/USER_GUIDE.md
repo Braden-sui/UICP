@@ -2,7 +2,7 @@
 
 ## What is UICP
 
-UICP is a local‑first desktop you build by describing what you want. The AI plans the work, then applies safe building blocks called commands. This is not a toy: it's a usable desktop for day‑to‑day flows.
+UICP is a local‑first desktop you build by describing what you want. The AI plans the work, then applies safe building blocks called commands.
 
 ## Core Concepts
 

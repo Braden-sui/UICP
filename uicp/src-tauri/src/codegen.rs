@@ -1,13 +1,13 @@
+#[cfg(test)]
+use std::collections::VecDeque;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     env,
     path::{Path, PathBuf},
     time::Instant,
 };
-#[cfg(test)]
-use std::collections::VecDeque;
-#[cfg(test)]
-use std::sync::Mutex;
 
 use anyhow::{anyhow, Context};
 use once_cell::sync::Lazy;
@@ -2514,6 +2514,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "requires CLI fixtures not available on Windows CI"
+    )]
     fn best_of_both_prefers_highest_scoring_cli_artifact() {
         tauri::async_runtime::block_on(async {
             super::clear_test_provider_results();
@@ -2521,11 +2525,15 @@ mod tests {
             let plan = build_plan(&spec).expect("plan");
             let queue = resolve_provider_queue(&plan);
             assert!(
-                queue.iter().any(|p| matches!(p.kind, ProviderKind::CodexCli)),
+                queue
+                    .iter()
+                    .any(|p| matches!(p.kind, ProviderKind::CodexCli)),
                 "codex provider should be present in queue"
             );
             assert!(
-                queue.iter().any(|p| matches!(p.kind, ProviderKind::ClaudeCli)),
+                queue
+                    .iter()
+                    .any(|p| matches!(p.kind, ProviderKind::ClaudeCli)),
                 "claude provider should be present in queue"
             );
 
@@ -2563,10 +2571,9 @@ export function onEvent(action: string, payload: string, state: string) {
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .expect("app");
             let client = reqwest::Client::new();
-            let artifact =
-                execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
-                    .await
-                    .expect("strategy success");
+            let artifact = execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
+                .await
+                .expect("strategy success");
             let provider_selected = artifact
                 .meta
                 .as_object()
@@ -2582,6 +2589,10 @@ export function onEvent(action: string, payload: string, state: string) {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "requires CLI fixtures not available on Windows CI"
+    )]
     fn best_of_both_falls_back_to_openai_when_cli_fail() {
         tauri::async_runtime::block_on(async {
             super::clear_test_provider_results();
@@ -2615,10 +2626,9 @@ export function onEvent(action: string, payload: string, state: string) {
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .expect("app");
             let client = reqwest::Client::new();
-            let artifact =
-                execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
-                    .await
-                    .expect("fallback success");
+            let artifact = execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
+                .await
+                .expect("fallback success");
             let provider_selected = artifact
                 .meta
                 .as_object()
@@ -2648,7 +2658,10 @@ export function onEvent(action: string, payload: string, state: string) {
             obj.insert("strategy".into(), Value::String("best-of-both".into()));
             obj.insert(
                 "providers".into(),
-                Value::Array(vec![Value::String("codex".into()), Value::String("claude".into())]),
+                Value::Array(vec![
+                    Value::String("codex".into()),
+                    Value::String("claude".into()),
+                ]),
             );
         }
         spec

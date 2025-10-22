@@ -67,9 +67,7 @@ mod wasm_tests {
         }
 
         assert_eq!(
-            result
-                .get("ok")
-                .and_then(|v| v.as_bool()),
+            result.get("ok").and_then(|v| v.as_bool()),
             Some(false),
             "policy denial should mark job as failed"
         );

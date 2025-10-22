@@ -66,3 +66,138 @@ pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
 // or when the compute_harness feature is enabled. It is excluded from release builds.
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod test_support;
+
+// WHY: Windows test/harness binaries require comctl32.dll for SetWindowSubclass/TaskDialogIndirect but
+// some hosts ship only the v5 assembly. Delay-load the DLL and provide a fallback hook so startup does
+// not fail before Rust code runs. Application binaries still resolve the real exports via the manifest.
+#[cfg(all(target_os = "windows", any(test, feature = "compute_harness")))]
+mod windows_taskdialog_delayload {
+    use std::ffi::{c_char, c_void, CStr};
+    use std::mem;
+    use std::sync::OnceLock;
+
+    const DLI_FAIL_GETPROC: u32 = 4;
+    const S_OK: i32 = 0;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    pub(crate) struct DelayLoadInfo {
+        cb: u32,
+        pidd: *const c_void,
+        ppfn: *mut *mut c_void,
+        szDll: *const c_char,
+        dlp: DelayLoadProc,
+        hmodCur: *mut c_void,
+        pfnCur: *mut c_void,
+        dwLastError: u32,
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    union DelayLoadNameOrOrdinal {
+        szProcName: *const c_char,
+        dwOrdinal: u32,
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    #[repr(C)]
+    struct DelayLoadProc {
+        fImportByName: i32,
+        name_or_ordinal: DelayLoadNameOrOrdinal,
+    }
+
+    extern "C" {
+        fn uicp_force_comctl32_delayload();
+    }
+
+    #[used]
+    #[allow(non_upper_case_globals)]
+    static FORCE_DELAYLOAD_LINK: unsafe extern "C" fn() = uicp_force_comctl32_delayload;
+
+    type TaskDialogProc =
+        unsafe extern "system" fn(*const c_void, *mut i32, *mut i32, *mut i32) -> i32;
+
+    static TASK_DIALOG: OnceLock<TaskDialogProc> = OnceLock::new();
+
+    #[allow(non_snake_case, unused_mut)]
+    unsafe extern "system" fn task_dialog_stub(
+        _config: *const c_void,
+        pnButton: *mut i32,
+        pnRadioButton: *mut i32,
+        pfVerificationFlagChecked: *mut i32,
+    ) -> i32 {
+        if let Some(slot) = pnButton.as_mut() {
+            *slot = 0;
+        }
+        if let Some(slot) = pnRadioButton.as_mut() {
+            *slot = 0;
+        }
+        if let Some(slot) = pfVerificationFlagChecked.as_mut() {
+            *slot = 0;
+        }
+        S_OK
+    }
+
+    unsafe fn resolve_task_dialog() -> TaskDialogProc {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+
+        const DLL_NAME: &[u8] = b"comctl32.dll\0";
+        const PROC_NAME: &[u8] = b"TaskDialogIndirect\0";
+
+        let module = LoadLibraryA(DLL_NAME.as_ptr() as _);
+        if !module.is_null() {
+            if let Some(proc) = GetProcAddress(module, PROC_NAME.as_ptr() as _) {
+                return mem::transmute(proc);
+            }
+        }
+        task_dialog_stub
+    }
+
+    unsafe extern "system" fn task_dialog_loader(
+        config: *const c_void,
+        pn_button: *mut i32,
+        pn_radio: *mut i32,
+        pf_verified: *mut i32,
+    ) -> i32 {
+        let proc = *TASK_DIALOG.get_or_init(|| unsafe { resolve_task_dialog() });
+        proc(config, pn_button, pn_radio, pf_verified)
+    }
+
+    #[no_mangle]
+    pub static mut __imp_TaskDialogIndirect: TaskDialogProc = task_dialog_loader;
+
+    #[allow(non_snake_case)]
+    #[no_mangle]
+    pub unsafe extern "system" fn __pfnDliFailureHook2(
+        notification: u32,
+        data: *mut DelayLoadInfo,
+    ) -> *mut c_void {
+        if notification != DLI_FAIL_GETPROC || data.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let info = &*data;
+        let module = CStr::from_ptr(info.szDll);
+        if !module.to_bytes().eq_ignore_ascii_case(b"comctl32.dll") {
+            return std::ptr::null_mut();
+        }
+
+        if info.dlp.fImportByName == 0 {
+            return std::ptr::null_mut();
+        }
+        let name_ptr = unsafe { info.dlp.name_or_ordinal.szProcName };
+        if name_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        let proc_name = CStr::from_ptr(name_ptr);
+        if proc_name
+            .to_bytes()
+            .eq_ignore_ascii_case(b"TaskDialogIndirect")
+        {
+            return task_dialog_stub as *mut c_void;
+        }
+
+        std::ptr::null_mut()
+    }
+}
