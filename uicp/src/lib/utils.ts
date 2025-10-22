@@ -8,6 +8,21 @@ export const createId = (prefix = 'id') => {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
+// Generate a RFC 4122 version 4 UUID string.
+// Uses crypto.randomUUID when available; falls back to a Math.random-based v4 generator.
+export const newUuid = (): string => {
+  if (typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function') {
+    return (crypto as any).randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  // Set version (4) and variant (10xx)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0'));
+  return `${hex[0]}${hex[1]}${hex[2]}${hex[3]}-${hex[4]}${hex[5]}-${hex[6]}${hex[7]}-${hex[8]}${hex[9]}-${hex[10]}${hex[11]}${hex[12]}${hex[13]}${hex[14]}${hex[15]}`;
+};
+
 export const nextFrame = () =>
   new Promise<number>((resolve) => {
     requestAnimationFrame((ts) => resolve(ts));

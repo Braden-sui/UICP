@@ -19,6 +19,21 @@ pnpm run dev
 
 The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Tauri uses the same build when running `pnpm run tauri:dev`.
 
+## Connect Providers (optional)
+
+You can connect provider CLIs and verify access from the desktop.
+
+- Open Agent Settings:
+  - Click the gear shortcut on the Desktop, or
+  - Use the menu bar: Desktop → Agent Settings.
+- For each provider you want to use:
+  - Click "Connect Codex" or "Connect Claude" to run the provider CLI login flow.
+  - Click "Check Codex" or "Check Claude" to run a health check (CLI on PATH and usable account). Success shows a green toast; failures include detail text when available.
+- Notes
+  - Buttons are disabled without the desktop runtime. Run `pnpm run tauri:dev`.
+  - Codex: uses the `codex` CLI when present, or `OPENAI_API_KEY` if set.
+  - Claude: uses the `claude` CLI; when no API key is set it relies on the CLI’s login and OS keychain.
+
 ## Scripts
 
 | script              | purpose                                           |

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppSelector } from '../state/app';
-import { createId } from '../lib/utils';
+import { createId, newUuid } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
 import { getComputeBridge } from '../lib/bridge/globals';
@@ -59,7 +59,7 @@ const ComputeDemoWindow = () => {
         return;
       }
       const csv = 'name,qty\nalpha,1\nbravo,2\ncharlie,3\n';
-      const jobId = createId('job');
+      const jobId = newUuid();
       setLastJobId(jobId);
       const spec: JobSpec = {
         jobId,
@@ -99,7 +99,7 @@ const ComputeDemoWindow = () => {
         ['bob', 'boston'],
         ['carol', 'chicago'],
       ];
-      const jobId = createId('job');
+      const jobId = newUuid();
       setLastJobId(jobId);
       const spec: JobSpec = {
         jobId,
@@ -133,7 +133,7 @@ const ComputeDemoWindow = () => {
         setLast({ ok: false, message: 'Bridge unavailable' });
         return;
       }
-      const jobId = createId('job');
+      const jobId = newUuid();
       setLastJobId(jobId);
       const spec: JobSpec = {
         jobId,

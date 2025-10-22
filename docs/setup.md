@@ -69,9 +69,9 @@ pnpm run tauri:dev
 - Tauri dev: proxies to the same dev server on port `1420`.
 - Preview (Playwright e2e): `http://127.0.0.1:4173` (see `uicp/playwright.config.ts`).
 
-### Wasm compute (optional)
+### Wasm compute (dev default)
 
-When you enable the `wasm_compute` feature, build and publish task components and point the app at the module directory during development:
+Dev runs enable the Wasm compute runtime by default. Build and publish task components and point the app at the module directory during development:
 
 1) Install toolchain for components
 
@@ -94,11 +94,11 @@ cd uicp
 pnpm run modules:publish
 ```
 
-4) Run Tauri with the compute runtime enabled (features) and the module directory set for dev
+4) Run Tauri (compute runtime enabled, modules path set in dev)
 
 ```bash
 cd uicp
-pnpm run dev:wasm:runtime
+pnpm run tauri:dev
 ```
 
 Notes

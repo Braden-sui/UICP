@@ -32,7 +32,8 @@ Envelope Schema (Definition)
 An Envelope is: { "op": string, "params": object }
 
 Allowed operations and parameter requirements:
-• window.create      — Required params: { title: string }. Optional: { id, size, width, height, x, y, zIndex }.
+• window.create      - Required params: { id: string, title: string }. Optional: { size, width, height, x, y, zIndex }.
+  Always include an explicit id. If the plan provides an id, reuse it exactly; otherwise derive a deterministic id like "win-{slug}".
 • window.update      — Required: { id }. Optional: { title, width, height, x, y, zIndex }.
 • window.close       — Required: { id }.
 • dom.set            — Required: { windowId, target, html }. Optional: { sanitize: boolean }.
@@ -42,11 +43,13 @@ Allowed operations and parameter requirements:
 • component.update   — Required: { id, props }.
 • component.destroy  — Required: { id }.
 • needs.code         — Required: { spec }. Optional: { language="ts", artifactId, goldenKey, progressWindowId, progressSelector, cachePolicy="readwrite", constraints, caps }. Language ∈ {"ts","rust","python"}. Triggers code generation workflow with deterministic golden caching. MUST be paired with progress UI in same batch.
-• state.set          — Required: { scope, key, value }. Optional: { windowId, ttlMs }. Scope ∈ {"window","workspace","global"}.
-• state.get          — Required: { scope, key }. Optional: { windowId }.
-• state.watch        — Required: { scope, key, selector }. Optional: { windowId, mode="replace" }.
-• state.unwatch      — Required: { scope, key, selector }. Optional: { windowId }.
-• api.call           — Required: { url }. Optional: { method="GET", headers, body, idempotencyKey, into:{ scope, key, windowId?, correlationId? } }. URL scheme MUST be one of https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile.
+• state.set          - Required: { scope, key, value }. If scope="window", you MUST also include { windowId }.
+• state.get          - Required: { scope, key }. If scope="window", you MUST also include { windowId }.
+• state.watch        - Required: { scope, key, selector }. If scope="window", you MUST also include { windowId }. Optional: { mode="replace" }.
+• state.unwatch      - Required: { scope, key, selector }. If scope="window", you MUST also include { windowId }.
+• api.call           - Required: { url }. Optional: { method="GET", headers, body, idempotencyKey, into:{ scope, key, windowId?, correlationId? } }.
+  URL scheme MUST be one of https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile.
+  If into.scope="window", you MUST include into.windowId.
 • txn.cancel         — Optional: { id }.
 
 Event System (Definition)
@@ -62,8 +65,9 @@ Sanitization (Definition)
 • If sanitization removes essential meaning such that no meaningful content can be rendered, treat as critically under‑specified (see Viability).
 
 State (Definition)
+• Window scope invariant: when scope="window" you MUST supply a concrete windowId for state.set, state.get, state.watch, state.unwatch, and any api.call.into sink.
 • state.set writes do not imply re-render. UI changes require subsequent dom.* or component.* envelopes.
-• state.watch binds a selector to a state path and re-renders on updates. Slot-aware targets may include data-slot="loading|empty|error|ready".
+• state.watch binds a selector to a state path and re-renders on updates. When scope="window", rendering occurs under that windowId. Slot-aware targets may include data-slot="loading|empty|error|ready".
 • Inputs MAY bind to state via data-state-scope and data-state-key.
 
 Viability (Minimal Visible UI)

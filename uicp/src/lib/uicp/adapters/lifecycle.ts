@@ -214,10 +214,8 @@ const resolveScriptSource = (
 };
 
 const nextJobId = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return createId('job');
+  // INVARIANT: jobId must be a bare UUID to satisfy zod schemas (no prefix)
+  return newUuid();
 };
 
 const waitForComputeFinalEvent = (jobId: string, timeoutMs = 60_000): Promise<ComputeFinalEvent> => {

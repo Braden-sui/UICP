@@ -12,6 +12,7 @@ import type { StructuredClarifierBody } from "./adapter.clarifier";
 import type { ComputeFinalEvent } from "../../../compute/types";
 import { emitTelemetryEvent } from "../../telemetry";
 import { getProviderSettingsSnapshot } from "../../../state/providers";
+import { newUuid } from "../../utils";
 
 type NeedsCodeParams = OperationParamMap["needs.code"] & {
   providers?: ("codex" | "claude")[];
@@ -164,7 +165,8 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     }
     
     // Build compute job spec for code generation
-    const jobId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    // INVARIANT: jobId must be a RFC4122 UUID (frontend schemas enforce z.string().uuid())
+    const jobId = newUuid();
     const task = `codegen.run@0.1.0`; // Track D code generation task
 
     const providerRequestRaw = typeof params.provider === 'string' ? params.provider : 'auto';

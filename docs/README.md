@@ -31,6 +31,7 @@
 - **[PROPOSALS.md](PROPOSALS.md)** - Potential future work (non-committal)
 - **[MODEL_INTEGRATION.md](MODEL_INTEGRATION.md)** - Provider integration and verification
 - **[MODEL_CHOICES.md](MODEL_CHOICES.md)** - LLM model selection
+- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** - Current known issues and workarounds
 - This page serves as the docs index
 
 ---
