@@ -16,9 +16,12 @@ import {
   type ProviderHealthPayload,
   type ProviderLoginPayload,
   type ProviderName,
-  type ProviderPreference,
   type ProviderStatus,
 } from '../state/providers';
+import {
+  usePreferencesStore,
+  type CodegenDefaultProvider,
+} from '../state/preferences';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -85,10 +88,10 @@ const AgentSettingsWindow = () => {
   const setPlannerTwoPhaseEnabled = useAppSelector((state) => state.setPlannerTwoPhaseEnabled);
   const safeMode = useAppSelector(selectSafeMode);
   const setSafeMode = useAppSelector((state) => state.setSafeMode);
-  const defaultProviderPreference = useProviderSelector((state) => state.settings.defaultProvider);
-  const enableBothProviders = useProviderSelector((state) => state.settings.enableBoth);
-  const setDefaultProviderPreference = useProviderSelector((state) => state.setDefaultProvider);
-  const setEnableBothProviders = useProviderSelector((state) => state.setEnableBoth);
+  const defaultProviderPreference = usePreferencesStore((state) => state.defaultProvider);
+  const setDefaultProviderPreference = usePreferencesStore((state) => state.setDefaultProvider);
+  const runBothByDefault = usePreferencesStore((state) => state.runBothByDefault);
+  const setRunBothByDefault = usePreferencesStore((state) => state.setRunBothByDefault);
   const codexStatus = useProviderSelector((state) => state.statuses.codex);
   const claudeStatus = useProviderSelector((state) => state.statuses.claude);
   const beginConnect = useProviderSelector((state) => state.beginConnect);
@@ -136,14 +139,14 @@ const AgentSettingsWindow = () => {
 
   const handleEnableBothChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
-      setEnableBothProviders(event.target.checked);
+      setRunBothByDefault(event.target.checked);
     },
-    [setEnableBothProviders],
+    [setRunBothByDefault],
   );
 
   const handleDefaultProviderChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
-      setDefaultProviderPreference(event.target.value as ProviderPreference);
+      setDefaultProviderPreference(event.target.value as CodegenDefaultProvider);
     },
     [setDefaultProviderPreference],
   );
@@ -505,7 +508,7 @@ const AgentSettingsWindow = () => {
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"
-                checked={enableBothProviders}
+                checked={runBothByDefault}
                 onChange={handleEnableBothChange}
                 className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
               />
@@ -517,14 +520,14 @@ const AgentSettingsWindow = () => {
                 value={defaultProviderPreference}
                 onChange={handleDefaultProviderChange}
                 className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={enableBothProviders}
+                disabled={runBothByDefault}
               >
                 <option value="auto">Auto (planner preference)</option>
                 <option value="codex">OpenAI Codex</option>
                 <option value="claude">Anthropic Claude</option>
               </select>
               <span>
-                {enableBothProviders
+                {runBothByDefault
                   ? 'Auto mode is active while both providers are allowed.'
                   : 'When a single provider is enabled, needs.code will request this provider.'}
               </span>

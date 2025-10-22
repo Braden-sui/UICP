@@ -4,6 +4,10 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
+#[cfg(test)]
+use std::collections::VecDeque;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use anyhow::{anyhow, Context};
 use once_cell::sync::Lazy;
@@ -207,6 +211,17 @@ struct NormalizedArtifact {
     diffs: Vec<ProviderDiff>,
 }
 
+#[derive(Default, Clone, Debug)]
+struct ValidationReport {
+    warnings: Vec<String>,
+}
+
+impl ValidationReport {
+    fn warning_count(&self) -> usize {
+        self.warnings.len()
+    }
+}
+
 #[derive(Debug)]
 struct ProviderAttemptLog {
     provider: ProviderKind,
@@ -397,8 +412,10 @@ async fn run_codegen<R: Runtime>(
         return Err(CodegenFailure::provider(message.clone()));
     }
 
-    let started = Instant::now();
-    let artifact = if let Some(mock) = plan.mock_response.clone() {
+    let mut total_queue_ms = queue_wait_ms;
+    let mut run_timer: Option<Instant> = None;
+    let mut _codegen_permit: Option<OwnedSemaphorePermit> = None;
+    let mut artifact = if let Some(mock) = plan.mock_response.clone() {
         let mut normalized = normalize_response(&plan, ProviderKind::OpenAiApi, mock, Vec::new())
             .map_err(|err| CodegenFailure::invalid(err.to_string()))?;
         let attempt = ProviderAttemptLog {
@@ -415,11 +432,27 @@ async fn run_codegen<R: Runtime>(
         enrich_artifact_meta(&mut normalized, &plan_selected, &plan, &[attempt]);
         normalized
     } else {
+        let timer = Instant::now();
+        let permit = state
+            .codegen_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|err| {
+                CodegenFailure::provider(format!(
+                    "{ERR_PROVIDER}: codegen concurrency guard failed: {err}"
+                ))
+            })?;
+        let wait_ms = timer.elapsed().as_millis() as u64;
+        total_queue_ms = total_queue_ms.saturating_add(wait_ms);
+        run_timer = Some(timer);
+        _codegen_permit = Some(permit);
         execute_with_strategy(app, spec, &plan, &provider_queue, &state.http).await?
     };
 
-    validate_code(plan.language, &plan.validator_version, &artifact.code)
+    let validation = validate_code(plan.language, &plan.validator_version, &artifact.code)
         .map_err(CodegenFailure::unsafe_code)?;
+    annotate_validation_meta(&mut artifact, &validation);
 
     let mut output_value = artifact.to_value();
     if let Value::Object(ref mut obj) = output_value {
@@ -443,13 +476,17 @@ async fn run_codegen<R: Runtime>(
         CodegenFailure::provider(format!("{ERR_PROVIDER}: golden store failed: {err}"))
     })?;
 
+    let duration_ms = run_timer
+        .map(|timer| timer.elapsed().as_millis() as u64)
+        .unwrap_or(0);
+
     Ok(CodegenRunOk {
         output: output_value,
         output_hash: output_hash.clone(),
         golden_hash: output_hash,
         cache_hit: false,
-        duration_ms: started.elapsed().as_millis() as u64,
-        queue_wait_ms,
+        duration_ms,
+        queue_wait_ms: total_queue_ms,
     })
 }
 
@@ -457,6 +494,7 @@ async fn emit_final_ok<R: Runtime>(app: &AppHandle<R>, spec: &ComputeJobSpec, ok
     let mut metrics = json!({
         "durationMs": ok.duration_ms,
         "queueMs": ok.queue_wait_ms,
+        "queueWaitMs": ok.queue_wait_ms,
         "outputHash": ok.output_hash,
         "goldenHash": ok.golden_hash,
         "goldenMatched": true,
@@ -517,6 +555,7 @@ async fn emit_error<R: Runtime>(
         metrics: Some(json!({
             "durationMs": duration_ms,
             "queueMs": queue_wait_ms,
+            "queueWaitMs": queue_wait_ms,
         })),
     };
     emit_or_log(app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
@@ -761,6 +800,21 @@ fn resolve_provider_queue(plan: &CodegenPlan) -> Vec<CodeProviderPlan> {
     queue
 }
 
+fn annotate_validation_meta(artifact: &mut NormalizedArtifact, report: &ValidationReport) {
+    if let Value::Object(ref mut meta) = artifact.meta {
+        meta.insert(
+            "validatorWarningCount".into(),
+            Value::Number((report.warning_count() as u64).into()),
+        );
+        let warnings = if report.warnings.is_empty() {
+            Value::Array(Vec::new())
+        } else {
+            Value::Array(report.warnings.iter().cloned().map(Value::String).collect())
+        };
+        meta.insert("validatorWarnings".into(), warnings);
+    }
+}
+
 async fn execute_with_strategy<R: Runtime>(
     app: &AppHandle<R>,
     spec: &ComputeJobSpec,
@@ -812,7 +866,7 @@ async fn execute_with_strategy<R: Runtime>(
             }))
         }
         ExecutionStrategy::BestOfBoth => {
-            let mut successes: Vec<(NormalizedArtifact, CodeProviderPlan, u64)> = Vec::new();
+            let mut successes: Vec<ScoredArtifact> = Vec::new();
             let mut last_err: Option<CodegenFailure> = None;
 
             for provider_plan in queue {
@@ -827,7 +881,36 @@ async fn execute_with_strategy<R: Runtime>(
                 let result = run_provider(app, spec, plan, provider_plan, client).await;
                 let duration_ms = started.elapsed().as_millis() as u64;
                 match result {
-                    Ok(artifact) => {
+                    Ok(mut artifact) => {
+                        let validation = match validate_code(
+                            plan.language,
+                            &plan.validator_version,
+                            &artifact.code,
+                        ) {
+                            Ok(report) => report,
+                            Err(message) => {
+                                let failure = CodegenFailure::unsafe_code(message.clone());
+                                attempts.push(ProviderAttemptLog {
+                                    provider: provider_plan.kind,
+                                    requested_label: provider_plan.requested_label.clone(),
+                                    success: false,
+                                    duration_ms,
+                                    error: Some(message.clone()),
+                                });
+                                emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
+                                last_err = Some(failure);
+                                continue;
+                            }
+                        };
+
+                        annotate_validation_meta(&mut artifact, &validation);
+                        let scored = build_scored_artifact(
+                            artifact,
+                            provider_plan.clone(),
+                            duration_ms,
+                            &validation,
+                        );
+
                         attempts.push(ProviderAttemptLog {
                             provider: provider_plan.kind,
                             requested_label: provider_plan.requested_label.clone(),
@@ -836,7 +919,7 @@ async fn execute_with_strategy<R: Runtime>(
                             error: None,
                         });
                         emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
-                        successes.push((artifact, provider_plan.clone(), duration_ms));
+                        successes.push(scored);
                     }
                     Err(err) => {
                         let message = err.message();
@@ -853,7 +936,26 @@ async fn execute_with_strategy<R: Runtime>(
                 }
             }
 
-            if let Some((mut chosen, chosen_plan, _dur)) = choose_best_artifact(successes) {
+            let score_rows: Vec<Value> = successes
+                .iter()
+                .map(|candidate| {
+                    json!({
+                        "provider": candidate.plan.kind.as_str(),
+                        "requested": candidate.plan.requested_label.clone(),
+                        "score": candidate.score,
+                        "components": Value::Object(candidate.components.clone()),
+                        "durationMs": candidate.duration_ms,
+                        "warningCount": candidate.warning_count,
+                        "warnings": candidate.warnings.clone(),
+                        "codeSize": candidate.code_size,
+                    })
+                })
+                .collect();
+
+            if let Some(winner) = choose_best_artifact(successes) {
+                emit_selection_scorecard(app, spec, plan, &score_rows, &winner);
+                let chosen_plan = winner.plan.clone();
+                let mut chosen = winner.artifact;
                 enrich_artifact_meta(&mut chosen, &chosen_plan, plan, &attempts);
                 return Ok(chosen);
             }
@@ -903,6 +1005,42 @@ async fn execute_with_strategy<R: Runtime>(
     }
 }
 
+#[cfg(test)]
+static TEST_PROVIDER_RESULTS: Lazy<
+    Mutex<HashMap<ProviderKind, VecDeque<Result<NormalizedArtifact, CodegenFailure>>>>,
+> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+fn take_test_provider_result(
+    kind: ProviderKind,
+) -> Option<Result<NormalizedArtifact, CodegenFailure>> {
+    let mut guard = TEST_PROVIDER_RESULTS
+        .lock()
+        .expect("lock test provider results");
+    guard.get_mut(&kind).and_then(|queue| queue.pop_front())
+}
+
+#[cfg(test)]
+#[allow(private_interfaces)]
+pub(super) fn push_test_provider_result(
+    kind: ProviderKind,
+    result: Result<NormalizedArtifact, CodegenFailure>,
+) {
+    let mut guard = TEST_PROVIDER_RESULTS
+        .lock()
+        .expect("lock test provider results");
+    guard.entry(kind).or_default().push_back(result);
+}
+
+#[cfg(test)]
+#[allow(private_interfaces)]
+pub(super) fn clear_test_provider_results() {
+    TEST_PROVIDER_RESULTS
+        .lock()
+        .expect("lock test provider results")
+        .clear();
+}
+
 async fn run_provider<R: Runtime>(
     app: &AppHandle<R>,
     spec: &ComputeJobSpec,
@@ -910,6 +1048,10 @@ async fn run_provider<R: Runtime>(
     provider_plan: &CodeProviderPlan,
     client: &reqwest::Client,
 ) -> Result<NormalizedArtifact, CodegenFailure> {
+    #[cfg(test)]
+    if let Some(result) = take_test_provider_result(provider_plan.kind) {
+        return result;
+    }
     match provider_plan.kind {
         ProviderKind::OpenAiApi => run_openai_api(client, plan).await,
         ProviderKind::CodexCli => run_codex_cli(app, spec, plan).await,
@@ -986,26 +1128,129 @@ fn enrich_artifact_meta(
     }
 }
 
-fn choose_best_artifact(
-    mut successes: Vec<(NormalizedArtifact, CodeProviderPlan, u64)>,
-) -> Option<(NormalizedArtifact, CodeProviderPlan, u64)> {
+fn compute_score_components(
+    provider: ProviderKind,
+    code_size: usize,
+    duration_ms: u64,
+    warning_count: usize,
+) -> (i64, Map<String, Value>) {
+    let base: i64 = 1_000;
+    let warning_penalty: i64 = (warning_count as i64) * 150;
+    let size_penalty: i64 = (code_size as i64) / 8;
+    let runtime_penalty: i64 = (duration_ms as i64) / 5;
+    let provider_bias: i64 = match provider {
+        ProviderKind::CodexCli => 1,
+        ProviderKind::ClaudeCli => 0,
+        ProviderKind::OpenAiApi => -5,
+    };
+    let score = base - warning_penalty - size_penalty - runtime_penalty + provider_bias;
+
+    let mut components = Map::new();
+    components.insert("base".into(), Value::Number(base.into()));
+    components.insert(
+        "warningPenalty".into(),
+        Value::Number(warning_penalty.into()),
+    );
+    components.insert("sizePenalty".into(), Value::Number(size_penalty.into()));
+    components.insert(
+        "runtimePenalty".into(),
+        Value::Number(runtime_penalty.into()),
+    );
+    components.insert("providerBias".into(), Value::Number(provider_bias.into()));
+    components.insert(
+        "score".into(),
+        Value::Number(serde_json::Number::from(score)),
+    );
+
+    (score, components)
+}
+
+struct ScoredArtifact {
+    artifact: NormalizedArtifact,
+    plan: CodeProviderPlan,
+    duration_ms: u64,
+    code_size: usize,
+    warning_count: usize,
+    warnings: Vec<String>,
+    score: i64,
+    components: Map<String, Value>,
+}
+
+fn build_scored_artifact(
+    mut artifact: NormalizedArtifact,
+    plan: CodeProviderPlan,
+    duration_ms: u64,
+    report: &ValidationReport,
+) -> ScoredArtifact {
+    let code_size = artifact.code.len();
+    let warning_count = report.warning_count();
+    let warnings = report.warnings.clone();
+    let (score, components) =
+        compute_score_components(plan.kind, code_size, duration_ms, warning_count);
+
+    if let Value::Object(ref mut meta) = artifact.meta {
+        meta.insert(
+            "runDurationMs".into(),
+            Value::Number(serde_json::Number::from(duration_ms)),
+        );
+        meta.insert(
+            "codeSize".into(),
+            Value::Number(serde_json::Number::from(code_size as u64)),
+        );
+        meta.insert(
+            "score".into(),
+            Value::Number(serde_json::Number::from(score)),
+        );
+        meta.insert("scoreComponents".into(), Value::Object(components.clone()));
+    }
+
+    ScoredArtifact {
+        artifact,
+        plan,
+        duration_ms,
+        code_size,
+        warning_count,
+        warnings,
+        score,
+        components,
+    }
+}
+
+fn choose_best_artifact(mut successes: Vec<ScoredArtifact>) -> Option<ScoredArtifact> {
     if successes.is_empty() {
         return None;
     }
     let mut best_index: Option<usize> = None;
-    let mut best_score: i32 = i32::MIN;
-    for (idx, (_, plan, _)) in successes.iter().enumerate() {
-        let score = match plan.kind {
-            ProviderKind::CodexCli => 100,
-            ProviderKind::ClaudeCli => 80,
-            ProviderKind::OpenAiApi => 10,
-        };
+    let mut best_score: i64 = i64::MIN;
+    for (idx, candidate) in successes.iter().enumerate() {
+        let score = candidate.score;
         if score > best_score {
             best_score = score;
             best_index = Some(idx);
         }
     }
     best_index.map(|idx| successes.swap_remove(idx))
+}
+
+fn emit_selection_scorecard<R: Runtime>(
+    app: &AppHandle<R>,
+    spec: &ComputeJobSpec,
+    plan: &CodegenPlan,
+    rows: &[Value],
+    winner: &ScoredArtifact,
+) {
+    let payload = json!({
+        "jobId": spec.job_id,
+        "task": spec.task,
+        "strategy": plan.strategy.as_str(),
+        "selected": {
+            "provider": winner.plan.kind.as_str(),
+            "requested": winner.plan.requested_label,
+            "score": winner.score,
+        },
+        "scorecard": rows,
+    });
+    emit_or_log(app, "codegen.provider.selection", payload);
 }
 
 async fn run_openai_api(
@@ -1370,7 +1615,7 @@ fn validate_code(
     language: CodeLanguage,
     validator_version: &str,
     code: &str,
-) -> Result<(), String> {
+) -> Result<ValidationReport, String> {
     if code.trim().is_empty() {
         return Err(format!("{ERR_INPUT_INVALID}: generated code is empty"));
     }
@@ -1389,10 +1634,23 @@ fn run_common_guards(code: &str) -> Result<(), String> {
     if lowered.contains("eval(") {
         return Err(format!("{ERR_CODE_UNSAFE}: usage of eval is forbidden"));
     }
+    if lowered.contains("(0, eval)") {
+        return Err(format!(
+            "{ERR_CODE_UNSAFE}: indirect eval is forbidden (e.g. (0, eval)(..))"
+        ));
+    }
     if lowered.contains("new function(") {
         return Err(format!(
             "{ERR_CODE_UNSAFE}: usage of new Function is forbidden"
         ));
+    }
+    if FUNCTION_CONSTRUCTOR_RE.is_match(code) {
+        return Err(format!(
+            "{ERR_CODE_UNSAFE}: Function constructor is forbidden"
+        ));
+    }
+    if IMPORT_CALL_RE.is_match(code) {
+        return Err(format!("{ERR_CODE_UNSAFE}: dynamic import() is forbidden"));
     }
     if lowered.contains("xmlhttprequest")
         || lowered.contains("fetch(")
@@ -1401,6 +1659,9 @@ fn run_common_guards(code: &str) -> Result<(), String> {
         return Err(format!(
             "{ERR_CODE_UNSAFE}: network primitives (fetch/XMLHttpRequest/WebSocket) are forbidden"
         ));
+    }
+    if lowered.contains("new worker(") {
+        return Err(format!("{ERR_CODE_UNSAFE}: spawning Worker is forbidden"));
     }
     if lowered.contains("document.write") {
         return Err(format!("{ERR_CODE_UNSAFE}: document.write is forbidden"));
@@ -1413,6 +1674,11 @@ fn run_common_guards(code: &str) -> Result<(), String> {
     if lowered.contains("constructor.constructor") {
         return Err(format!(
             "{ERR_CODE_UNSAFE}: constructor.constructor is forbidden"
+        ));
+    }
+    if POSTMESSAGE_EXTERNAL_RE.is_match(&lowered) {
+        return Err(format!(
+            "{ERR_CODE_UNSAFE}: postMessage to external origins is forbidden"
         ));
     }
     if SET_TIMEOUT_STRING_RE.is_match(code) {
@@ -1428,9 +1694,10 @@ fn run_common_guards(code: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_typescript(code: &str, validator_version: &str) -> Result<(), String> {
+fn validate_typescript(code: &str, validator_version: &str) -> Result<ValidationReport, String> {
     if validator_version == LEGACY_VALIDATOR_V0 {
-        return legacy_typescript_export_check(code);
+        legacy_typescript_export_check(code)?;
+        return Ok(ValidationReport::default());
     }
     validate_typescript_structural(code)
 }
@@ -1449,7 +1716,7 @@ fn legacy_typescript_export_check(code: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_rust(code: &str) -> Result<(), String> {
+fn validate_rust(code: &str) -> Result<ValidationReport, String> {
     if !RS_RENDER_FN_RE.is_match(code) {
         return Err(format!(
             "{ERR_INPUT_INVALID}: pub fn render signature missing in Rust artifact"
@@ -1460,10 +1727,10 @@ fn validate_rust(code: &str) -> Result<(), String> {
             "{ERR_INPUT_INVALID}: pub fn on_event signature missing in Rust artifact"
         ));
     }
-    Ok(())
+    Ok(ValidationReport::default())
 }
 
-fn validate_python(code: &str) -> Result<(), String> {
+fn validate_python(code: &str) -> Result<ValidationReport, String> {
     let lowered = code.to_ascii_lowercase();
     if !PY_RENDER_DEF_RE.is_match(&lowered) {
         return Err(format!(
@@ -1475,35 +1742,17 @@ fn validate_python(code: &str) -> Result<(), String> {
             "{ERR_INPUT_INVALID}: def on_event(...) missing in Python artifact"
         ));
     }
-    Ok(())
+    Ok(ValidationReport::default())
 }
 
-fn validate_typescript_structural(code: &str) -> Result<(), String> {
+fn validate_typescript_structural(code: &str) -> Result<ValidationReport, String> {
     let tree = parse_typescript_tree(code)?;
     let metadata = gather_ts_metadata(&tree, code)?;
 
-    if metadata.has_imports {
-        return Err(format!(
-            "{ERR_INPUT_INVALID}: imports are not allowed in generated code"
-        ));
-    }
     if metadata.has_reexports {
         return Err(format!(
             "{ERR_INPUT_INVALID}: re-exports are not allowed in generated code"
         ));
-    }
-
-    for required in ["render", "onEvent"] {
-        if !metadata.exports.contains(required) {
-            return Err(format!(
-                "{ERR_INPUT_INVALID}: export {required} function missing"
-            ));
-        }
-        if !metadata.fn_like.contains(required) {
-            return Err(format!(
-                "{ERR_INPUT_INVALID}: export {required} must be a function"
-            ));
-        }
     }
 
     let violations = detect_ts_identifier_violations(&tree, code, &metadata.declared);
@@ -1518,7 +1767,40 @@ fn validate_typescript_structural(code: &str) -> Result<(), String> {
         return Err(format!("{ERR_CODE_UNSAFE}: {joined}"));
     }
 
-    Ok(())
+    let mut warnings: Vec<String> = Vec::new();
+    if metadata.has_imports {
+        warnings.push("imports increase sandbox risk; prefer inline helpers".into());
+    }
+    for required in ["render", "onEvent"] {
+        if !metadata.exports.contains(required) {
+            warnings.push(format!(
+                "missing export {required}; generated stubs expect this function"
+            ));
+            continue;
+        }
+        if !metadata.fn_like.contains(required) {
+            warnings.push(format!("export {required} should be a function"));
+        }
+    }
+    if !metadata.exports.contains("init") {
+        warnings.push("missing export init; runtime will synthesize defaults soon".into());
+    } else if !metadata.fn_like.contains("init") {
+        warnings.push("export init should be a function".into());
+    }
+    let allowed_exports: HashSet<&'static str> =
+        ["render", "onEvent", "init"].into_iter().collect();
+    let mut extras: Vec<String> = metadata
+        .exports
+        .iter()
+        .filter(|name| !allowed_exports.contains(name.as_str()))
+        .cloned()
+        .collect();
+    if !extras.is_empty() {
+        extras.sort();
+        warnings.push(format!("unused exports: {}", extras.join(", ")));
+    }
+
+    Ok(ValidationReport { warnings })
 }
 
 #[derive(Default)]
@@ -1844,6 +2126,14 @@ fn should_ignore_identifier(node: &Node) -> bool {
 static INNER_HTML_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)innerhtml\s*=\s*(?:'[^']*'|"[^"]*")"#).expect("inner html literal regex")
 });
+static FUNCTION_CONSTRUCTOR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?s)(^|[^A-Za-z0-9_$])Function\s*\(").expect("Function constructor regex")
+});
+static IMPORT_CALL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)(^|[^A-Za-z0-9_$])import\s*\(").expect("import() regex"));
+static POSTMESSAGE_EXTERNAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)postmessage\s*\([^,]+,\s*['"]https?:"#).expect("postMessage external regex")
+});
 static SET_TIMEOUT_STRING_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"setTimeout\s*\(\s*(['"])"#).expect("setTimeout string regex"));
 static TS_RENDER_EXPORT_RE: Lazy<Regex> = Lazy::new(|| {
@@ -1909,7 +2199,7 @@ pub fn is_codegen_task(task: &str) -> bool {
 mod tests {
     use super::*;
     use crate::policy::{ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec};
-    use serde_json::json;
+    use serde_json::{json, Map, Value};
 
     #[test]
     fn typescript_validator_accepts_minimal_exports() {
@@ -1981,6 +2271,196 @@ mod tests {
     }
 
     #[test]
+    fn typescript_validator_reports_warnings_for_imports_and_extras() {
+        let code = r#"
+            import { something } from "./deps";
+
+            export function render() {
+                return { html: "<div>ok</div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+
+            export const unusedHelper = () => 1;
+        "#;
+        let report =
+            validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).expect("report");
+        assert!(
+            report.warning_count() >= 3,
+            "expected at least three warnings, warnings={:?}",
+            report.warnings
+        );
+        let mut has_import_warning = false;
+        let mut has_export_warning = false;
+        let mut has_init_warning = false;
+        for warning in &report.warnings {
+            if warning.contains("imports") {
+                has_import_warning = true;
+            }
+            if warning.contains("unused exports") {
+                has_export_warning = true;
+            }
+            if warning.contains("missing export init") {
+                has_init_warning = true;
+            }
+        }
+        assert!(
+            has_import_warning,
+            "expected import warning, warnings={:?}",
+            report.warnings
+        );
+        assert!(
+            has_export_warning,
+            "expected unused export warning, warnings={:?}",
+            report.warnings
+        );
+        assert!(
+            has_init_warning,
+            "expected init warning, warnings={:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn typescript_validator_warns_when_render_missing() {
+        let code = r#"
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        let report =
+            validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).expect("report");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("missing export render")),
+            "expected render warning, warnings={:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn typescript_validator_warns_when_init_missing() {
+        let code = r#"
+            export function render() {
+                return { html: "<div></div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        let report =
+            validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).expect("report");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("missing export init")),
+            "expected init warning, warnings={:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn typescript_validator_rejects_dynamic_import_call() {
+        let code = r#"
+            export async function render() {
+                await import("./module.js");
+                return { html: "<div></div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        let err = validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).unwrap_err();
+        assert!(
+            err.contains("import()"),
+            "expected import() rejection, got {err}"
+        );
+    }
+
+    #[test]
+    fn typescript_validator_rejects_function_constructor() {
+        let code = r#"
+            export function render() {
+                const fn = Function("return 1");
+                return { html: "<div></div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        let err = validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).unwrap_err();
+        assert!(
+            err.contains("Function constructor"),
+            "expected Function constructor rejection, got {err}"
+        );
+    }
+
+    #[test]
+    fn typescript_validator_rejects_indirect_eval() {
+        let code = r#"
+            export function render() {
+                (0, eval)("console.log('nope')");
+                return { html: "<div></div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        let err = validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).unwrap_err();
+        assert!(
+            err.contains("indirect eval"),
+            "expected indirect eval rejection, got {err}"
+        );
+    }
+
+    #[test]
+    fn typescript_validator_rejects_worker_spawn() {
+        let code = r#"
+            export function render() {
+                const worker = new Worker("worker.js");
+                return { html: "<div></div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        let err = validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).unwrap_err();
+        assert!(
+            err.contains("Worker"),
+            "expected Worker rejection, got {err}"
+        );
+    }
+
+    #[test]
+    fn typescript_validator_rejects_external_postmessage() {
+        let code = r#"
+            export function render() {
+                window.postMessage("hi", "https://evil.example");
+                return { html: "<div></div>" };
+            }
+
+            export function onEvent() {
+                return null;
+            }
+        "#;
+        let err = validate_code(CodeLanguage::Typescript, VALIDATOR_VERSION, code).unwrap_err();
+        assert!(
+            err.contains("postMessage"),
+            "expected postMessage rejection, got {err}"
+        );
+    }
+
+    #[test]
     fn golden_key_changes_with_validator_version() {
         let spec_v1 = make_codegen_spec(None);
         let plan_v1 = build_plan(&spec_v1).expect("plan v1");
@@ -2031,6 +2511,147 @@ mod tests {
             _ => "",
         };
         assert_eq!(model, "o4-mini");
+    }
+
+    #[test]
+    fn best_of_both_prefers_highest_scoring_cli_artifact() {
+        tauri::async_runtime::block_on(async {
+            super::clear_test_provider_results();
+            let spec = make_best_of_both_spec();
+            let plan = build_plan(&spec).expect("plan");
+            let queue = resolve_provider_queue(&plan);
+            assert!(
+                queue.iter().any(|p| matches!(p.kind, ProviderKind::CodexCli)),
+                "codex provider should be present in queue"
+            );
+            assert!(
+                queue.iter().any(|p| matches!(p.kind, ProviderKind::ClaudeCli)),
+                "claude provider should be present in queue"
+            );
+
+            const CODEX_CODE: &str = r#"
+export function render() {
+  return { html: "<div>codex</div>" };
+}
+
+export function onEvent(action: string, payload: string, state: string) {
+  return { next_state: state || "{}" };
+}
+"#;
+            const CLAUDE_CODE: &str = r#"
+export function render() {
+  const body = "<div>claude</div>";
+  return { html: body };
+}
+
+export function onEvent(action: string, payload: string, state: string) {
+  const next = state || "{}";
+  return { next_state: next };
+}
+"#;
+
+            super::push_test_provider_result(
+                ProviderKind::CodexCli,
+                Ok(make_test_artifact(CODEX_CODE)),
+            );
+            super::push_test_provider_result(
+                ProviderKind::ClaudeCli,
+                Ok(make_test_artifact(CLAUDE_CODE)),
+            );
+
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("app");
+            let client = reqwest::Client::new();
+            let artifact =
+                execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
+                    .await
+                    .expect("strategy success");
+            let provider_selected = artifact
+                .meta
+                .as_object()
+                .and_then(|meta| meta.get("providerSelected"))
+                .and_then(|v| v.as_str());
+            assert_eq!(
+                provider_selected,
+                Some("codex"),
+                "codex should win deterministic tie"
+            );
+            super::clear_test_provider_results();
+        });
+    }
+
+    #[test]
+    fn best_of_both_falls_back_to_openai_when_cli_fail() {
+        tauri::async_runtime::block_on(async {
+            super::clear_test_provider_results();
+            let spec = make_best_of_both_spec();
+            let plan = build_plan(&spec).expect("plan");
+            let queue = resolve_provider_queue(&plan);
+
+            super::push_test_provider_result(
+                ProviderKind::CodexCli,
+                Err(CodegenFailure::provider("codex unavailable".into())),
+            );
+            super::push_test_provider_result(
+                ProviderKind::ClaudeCli,
+                Err(CodegenFailure::provider("claude unavailable".into())),
+            );
+            const OPENAI_CODE: &str = r#"
+export function render() {
+  return { html: "<div>openai</div>" };
+}
+
+export function onEvent(action: string, payload: string, state: string) {
+  return { next_state: state || "{}" };
+}
+"#;
+            super::push_test_provider_result(
+                ProviderKind::OpenAiApi,
+                Ok(make_test_artifact(OPENAI_CODE)),
+            );
+
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("app");
+            let client = reqwest::Client::new();
+            let artifact =
+                execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
+                    .await
+                    .expect("fallback success");
+            let provider_selected = artifact
+                .meta
+                .as_object()
+                .and_then(|meta| meta.get("providerSelected"))
+                .and_then(|v| v.as_str());
+            assert_eq!(
+                provider_selected,
+                Some("openai"),
+                "openai fallback should run when CLI providers fail"
+            );
+            super::clear_test_provider_results();
+        });
+    }
+
+    fn make_test_artifact(code: &str) -> NormalizedArtifact {
+        NormalizedArtifact {
+            code: code.to_string(),
+            language: "ts".into(),
+            meta: Value::Object(Map::new()),
+            diffs: Vec::new(),
+        }
+    }
+
+    fn make_best_of_both_spec() -> ComputeJobSpec {
+        let mut spec = make_codegen_spec(None);
+        if let Value::Object(ref mut obj) = spec.input {
+            obj.insert("strategy".into(), Value::String("best-of-both".into()));
+            obj.insert(
+                "providers".into(),
+                Value::Array(vec![Value::String("codex".into()), Value::String("claude".into())]),
+            );
+        }
+        spec
     }
 
     fn make_codegen_spec(validator: Option<&str>) -> ComputeJobSpec {

@@ -977,6 +977,19 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
     }
   });
 
+  registerCommandHandler('ui.agent-settings.open', async () => {
+    try {
+      const win = typeof window === 'undefined' ? undefined : window;
+      const appStore = win?.__UICP_APP_STORE__;
+      const setter = appStore?.getState?.().setAgentSettingsOpen;
+      if (typeof setter === 'function') {
+        setter(true);
+      }
+    } catch (err) {
+      console.warn('[uicp] ui.agent-settings.open handler failed', err);
+    }
+  });
+
   // Register compute.cancel bridge (kill running compute job by id)
   registerCommandHandler('compute.cancel', async (cmd, _ctx) => {
     try {

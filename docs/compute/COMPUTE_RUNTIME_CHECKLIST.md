@@ -25,7 +25,7 @@ Last updated: 2025-10-19
 ## Identifier hygiene
 
 - WIT packages, interfaces, functions, and fields use kebab-case (lowercase words separated by single hyphens). Examples: `uicp:host@1.0.0`, `uicp:task-csv-parse@1.2.0`, `has-header`.
-- Pin WIT import versions explicitly (e.g., `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.3`).
+- WIT import version policy: compare on major.minor only to avoid upstream patch drift breaking contracts (e.g., allow any `0.2.x`; encode as `@0.2`).
 - Cargo `package.metadata.component` sticks to cargo-component supported keys (`world`, `wit-path`).
 
 -------------------------------------------------------------------------------

@@ -1708,58 +1708,80 @@ mod with_runtime {
             .collect())
     }
 
+    fn normalize_import_name(raw: &str) -> String {
+        // WHY: Upstream WASI WIT packages regularly bump patch versions (e.g., 0.2.3 -> 0.2.4)
+        // without semantic changes. We normalize import identifiers to ignore patch drift
+        // by collapsing versions like `name@X.Y.Z` to `name@X.Y`. Unversioned names are
+        // returned as-is.
+        if let Some((name, ver)) = raw.rsplit_once('@') {
+            if let Ok(v) = semver::Version::parse(ver) {
+                return format!("{}@{}.{}", name, v.major, v.minor);
+            }
+        }
+        raw.to_string()
+    }
+
     fn allowed_imports_for(task: &str) -> anyhow::Result<BTreeSet<String>> {
         let prefix = task.split('@').next().unwrap_or(task);
         match prefix {
+            // NOTE: Allow any 0.2.x patch for core WASI packages by comparing on X.Y only.
             "csv.parse" => Ok([
-                "wasi:cli/environment@0.2.3",
-                "wasi:cli/exit@0.2.3",
-                "wasi:cli/stderr@0.2.3",
-                "wasi:cli/stdin@0.2.3",
-                "wasi:cli/stdout@0.2.3",
-                "wasi:clocks/wall-clock@0.2.3",
-                "wasi:filesystem/preopens@0.2.3",
-                "wasi:filesystem/types@0.2.3",
-                "wasi:io/error@0.2.3",
-                "wasi:io/streams@0.2.3",
+                "wasi:cli/environment@0.2",
+                "wasi:cli/exit@0.2",
+                "wasi:cli/stderr@0.2",
+                "wasi:cli/stdin@0.2",
+                "wasi:cli/stdout@0.2",
+                "wasi:clocks/wall-clock@0.2",
+                "wasi:filesystem/preopens@0.2",
+                "wasi:filesystem/types@0.2",
+                "wasi:io/error@0.2",
+                "wasi:io/streams@0.2",
             ]
             .into_iter()
-            .map(|s| s.to_string())
+            .map(|s| normalize_import_name(s))
             .collect()),
             "table.query" => Ok([
+                // Host control (accept versioned and unversioned names)
                 "uicp:host/control@1.0.0",
+                "uicp:host/control",
+                // Guest package types and core WASI packages
                 "uicp:task-table-query/types@0.1.0",
-                "wasi:cli/environment@0.2.3",
-                "wasi:cli/exit@0.2.3",
-                "wasi:cli/stderr@0.2.3",
-                "wasi:cli/stdin@0.2.3",
-                "wasi:cli/stdout@0.2.3",
-                "wasi:clocks/monotonic-clock@0.2.3",
-                "wasi:clocks/wall-clock@0.2.3",
-                "wasi:filesystem/preopens@0.2.3",
-                "wasi:filesystem/types@0.2.3",
-                "wasi:io/error@0.2.8",
-                "wasi:io/streams@0.2.8",
+                "wasi:cli/environment@0.2",
+                "wasi:cli/exit@0.2",
+                "wasi:cli/stderr@0.2",
+                "wasi:cli/stdin@0.2",
+                "wasi:cli/stdout@0.2",
+                "wasi:clocks/monotonic-clock@0.2",
+                "wasi:clocks/wall-clock@0.2",
+                "wasi:filesystem/preopens@0.2",
+                "wasi:filesystem/types@0.2",
+                "wasi:io/error@0.2",
+                "wasi:io/streams@0.2",
+                // Some builds import wasi:logging; allow both versioned and unversioned forms
+                "wasi:logging/logging@0.2",
+                "wasi:logging/logging",
             ]
             .into_iter()
-            .map(|s| s.to_string())
+            .map(|s| normalize_import_name(s))
             .collect()),
-            "applet.quickjs" | "script.hello" => Ok([
-                "wasi:cli/environment@0.2.3",
-                "wasi:cli/exit@0.2.3",
-                "wasi:cli/stderr@0.2.3",
-                "wasi:cli/stdin@0.2.3",
-                "wasi:cli/stdout@0.2.3",
-                "wasi:clocks/monotonic-clock@0.2.3",
-                "wasi:clocks/wall-clock@0.2.3",
-                "wasi:filesystem/preopens@0.2.3",
-                "wasi:filesystem/types@0.2.3",
-                "wasi:io/error@0.2.3",
-                "wasi:io/streams@0.2.3",
-                "wasi:random/random@0.2.3",
+            // Script demo component is permitted to have zero WASI imports.
+            "script.hello" => Ok(BTreeSet::new()),
+            "applet.quickjs" => Ok([
+                "wasi:cli/environment@0.2",
+                "wasi:cli/exit@0.2",
+                "wasi:cli/stderr@0.2",
+                "wasi:cli/stdin@0.2",
+                "wasi:cli/stdout@0.2",
+                "wasi:clocks/monotonic-clock@0.2",
+                "wasi:clocks/wall-clock@0.2",
+                "wasi:filesystem/preopens@0.2",
+                "wasi:filesystem/types@0.2",
+                "wasi:io/error@0.2",
+                "wasi:io/streams@0.2",
+                "wasi:random/random@0.2",
             ]
             .into_iter()
-            .map(|s| s.to_string())
+            .map(|s| normalize_import_name(s))
             .collect()),
             other => anyhow::bail!(
                 "E-UICP-0229: no component import policy registered for task '{other}'"
@@ -1768,8 +1790,18 @@ mod with_runtime {
     }
 
     pub fn preflight_component_imports(path: &Path, task: &str) -> anyhow::Result<()> {
-        let actual = component_import_names(path)?;
-        let allowed = allowed_imports_for(task)?;
+        let actual_raw = component_import_names(path)?;
+        let allowed_raw = allowed_imports_for(task)?;
+
+        // Normalize both sides to collapse patch versions (X.Y.Z -> X.Y)
+        let actual: BTreeSet<String> = actual_raw
+            .into_iter()
+            .map(|s| normalize_import_name(&s))
+            .collect();
+        let allowed: BTreeSet<String> = allowed_raw
+            .into_iter()
+            .map(|s| normalize_import_name(&s))
+            .collect();
 
         let unexpected: Vec<String> = actual.difference(&allowed).cloned().collect();
         let missing: Vec<String> = allowed.difference(&actual).cloned().collect();

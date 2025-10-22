@@ -13,6 +13,7 @@ export type ComputeJob = {
   fuelUsed?: number;
   deadlineMs?: number;
   remainingMsAtFinish?: number;
+  queueWaitMs?: number;
   logCount?: number;
   emittedLogBytes?: number;
   partialFrames?: number;

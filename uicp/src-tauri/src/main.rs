@@ -1939,6 +1939,7 @@ fn main() {
         ongoing: RwLock::new(HashMap::new()),
         compute_ongoing: RwLock::new(HashMap::new()),
         compute_sem: Arc::new(Semaphore::new(2)),
+        codegen_sem: Arc::new(Semaphore::new(2)),
         compute_cancel: RwLock::new(HashMap::new()),
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),

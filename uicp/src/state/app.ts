@@ -12,6 +12,7 @@ import {
 } from '../lib/llm/profiles';
 import { createId } from '../lib/utils';
 import { readBooleanEnv } from '../lib/env/values';
+import { getAppMode, getModeDefaults } from '../lib/mode';
 import type { TraceEvent } from '../lib/telemetry/types';
 import {
   type OrchestratorContext,
@@ -268,7 +269,7 @@ export const useAppStore = create<AppState>()(
   persist(
     immer((set, get) => ({
       connectionStatus: 'disconnected',
-      devMode: readBooleanEnv('VITE_DEV_MODE', true),
+      devMode: readBooleanEnv('VITE_DEV_MODE', getModeDefaults(getAppMode()).devMode),
       fullControl: false,
       fullControlLocked: false,
       chatOpen: false,
@@ -298,7 +299,7 @@ export const useAppStore = create<AppState>()(
       actorProfileKey: getDefaultActorProfileKey(),
       plannerReasoningEffort: 'high',
       actorReasoningEffort: 'high',
-      plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', !readBooleanEnv('VITE_TEST_MODE', false)),
+      plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', getModeDefaults(getAppMode()).plannerTwoPhase),
       desktopShortcuts: {},
       pinnedWindows: {},
       workspaceWindows: {},

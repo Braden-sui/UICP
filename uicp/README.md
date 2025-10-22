@@ -32,12 +32,17 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 
 ## Environment
 
-| variable                  | default  | description                                                        |
-| ------------------------- | -------- | ------------------------------------------------------------------ |
-| `VITE_DEV_MODE`           | `true`   | Enables dev-only UX touches                                        |
-| `E2E_ORCHESTRATOR`        | unset    | When `1`, opt-in E2E spec for orchestrator (requires real backend) |
-| `VITE_PLANNER_TIMEOUT_MS` | `120000` | Planner stream timeout (ms); early-stop parses sooner              |
-| `VITE_ACTOR_TIMEOUT_MS`   | `180000` | Actor stream timeout (ms); early-stop parses sooner                |
+| variable                  | default                      | description                                                                                     |
+| ------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `VITE_UICP_MODE`          | derived (`dev`/`test`/`prod`) | One of `dev`, `test`, `pilot`, `prod`. Selects one of four default configurations only.          |
+| `VITE_DEV_MODE`           | mode-based                   | Overrides dev-only UX toggles from `VITE_UICP_MODE` (true in `dev`, false otherwise by default) |
+| `E2E_ORCHESTRATOR`        | unset                        | When `1`, opt-in E2E spec for orchestrator (requires real backend)                              |
+| `VITE_PLANNER_TIMEOUT_MS` | mode-based (180000)          | Planner stream timeout (ms); env overrides mode defaults                                        |
+| `VITE_ACTOR_TIMEOUT_MS`   | mode-based (180000)          | Actor stream timeout (ms); env overrides mode defaults                                          |
+
+Notes
+- Only four default configurations exist via `VITE_UICP_MODE`: `dev`, `test`, `pilot`, `prod`.
+- Individual env vars still override these defaults on the user’s machine.
 
 ## Architecture Highlights
 

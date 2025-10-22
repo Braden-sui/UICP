@@ -442,6 +442,7 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
               const loggerWaits = j.loggerThrottleWaits ?? 0;
               const partialWaits = j.partialThrottleWaits ?? 0;
               const durationLabel = formatMs(j.durationMs);
+              const queueWaitLabel = formatMs(j.queueWaitMs);
               const deadlineLabel = formatMs(j.deadlineMs);
               const remainingLabel = formatMs(j.remainingMsAtFinish);
               // INVARIANT: Wait counters default to zero so the panel never hides an overloaded channel.
@@ -505,8 +506,9 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
                           <div className="font-mono text-[10px] text-slate-700">partial: {partialWaits}</div>
                         </div>
                         <div className="rounded border border-amber-200 bg-amber-50/70 p-1">
-                          <div className="text-[9px] uppercase tracking-wide text-amber-600">Deadline</div>
+                          <div className="text-[9px] uppercase tracking-wide text-amber-600">Timing</div>
                           <div className="font-mono text-[10px] text-amber-700">target: {deadlineLabel}</div>
+                          <div className="font-mono text-[10px] text-amber-700">queue: {queueWaitLabel}</div>
                           <div className="font-mono text-[10px] text-amber-700">ran: {durationLabel}</div>
                           <div className="font-mono text-[10px] text-amber-700">remaining: {remainingLabel}</div>
                         </div>

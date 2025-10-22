@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { useProviderStore, type ProviderPreference } from './providers';
 
 // Theme is now fixed to light mode only
 export type ThemeMode = 'light';
@@ -14,6 +15,8 @@ export type AnimationSpeed = 'normal' | 'reduced' | 'none';
 // Font size scaling
 export type FontSize = 'small' | 'medium' | 'large' | 'x-large';
 
+export type CodegenDefaultProvider = ProviderPreference;
+
 export type PreferencesState = {
   // Dock behavior
   dockBehavior: DockBehavior;
@@ -26,6 +29,12 @@ export type PreferencesState = {
   // Font size scaling
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
+
+  // Code generation defaults
+  defaultProvider: CodegenDefaultProvider;
+  setDefaultProvider: (provider: CodegenDefaultProvider) => void;
+  runBothByDefault: boolean;
+  setRunBothByDefault: (value: boolean) => void;
 };
 
 // Font size scale mapping
@@ -50,12 +59,62 @@ export const usePreferencesStore = create<PreferencesState>()(
       // Default to medium font size
       fontSize: 'medium',
       setFontSize: (fontSize) => set({ fontSize }),
+
+      // Code generation defaults
+      defaultProvider: 'auto',
+      setDefaultProvider: (defaultProvider) => {
+        set({ defaultProvider });
+        try {
+          const store = useProviderStore.getState();
+          store.setDefaultProvider(defaultProvider);
+        } catch (error) {
+          console.warn('[preferences] setDefaultProvider sync failed', error);
+        }
+      },
+      runBothByDefault: true,
+      setRunBothByDefault: (runBothByDefault) => {
+        set({ runBothByDefault });
+        try {
+          const store = useProviderStore.getState();
+          store.setEnableBoth(runBothByDefault);
+        } catch (error) {
+          console.warn('[preferences] setRunBothByDefault sync failed', error);
+        }
+      },
     }),
     {
       name: 'uicp-preferences',
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          console.warn('[preferences] rehydrate failed', error);
+          return;
+        }
+        const snapshot = state ?? null;
+        const providerStore = useProviderStore.getState();
+        const defaultProvider = snapshot?.defaultProvider ?? 'auto';
+        const runBoth = snapshot?.runBothByDefault ?? true;
+        providerStore.setDefaultProvider(defaultProvider);
+        providerStore.setEnableBoth(runBoth);
+      },
     }
   )
 );
+
+// Keep provider store and preferences in sync when provider settings mutate elsewhere.
+useProviderStore.subscribe((providerState) => {
+  const { defaultProvider, enableBoth } = providerState.settings;
+  const prefState = usePreferencesStore.getState();
+  const updates: Partial<PreferencesState> = {};
+  if (prefState.defaultProvider !== defaultProvider) {
+    updates.defaultProvider = defaultProvider;
+  }
+  if (prefState.runBothByDefault !== enableBoth) {
+    updates.runBothByDefault = enableBoth;
+  }
+  if (Object.keys(updates).length > 0) {
+    usePreferencesStore.setState(updates, false);
+  }
+});
 
 /**
  * Hook to apply theme preferences to the DOM.

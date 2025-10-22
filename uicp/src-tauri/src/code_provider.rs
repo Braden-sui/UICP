@@ -1026,11 +1026,24 @@ mod tests {
     fn success_status() -> ExitStatus {
         #[cfg(unix)]
         {
+            use std::os::unix::process::ExitStatusExt;
             ExitStatus::from_raw(0)
         }
         #[cfg(windows)]
         {
             ExitStatus::from_raw(0)
+        }
+    }
+
+    fn exit_status(code: i32) -> ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            ExitStatus::from_raw((code as i32) << 8)
+        }
+        #[cfg(windows)]
+        {
+            ExitStatus::from_raw(code as u32)
         }
     }
 
@@ -1053,6 +1066,16 @@ mod tests {
                 observed_args: Mutex::new(Vec::new()),
                 observed_input: Mutex::new(None),
             }
+        }
+
+        fn with_stderr(mut self, stderr: &str) -> Self {
+            self.stderr = stderr.to_string();
+            self
+        }
+
+        fn with_exit_code(mut self, code: i32) -> Self {
+            self.status = exit_status(code);
+            self
         }
     }
 
@@ -1120,6 +1143,37 @@ mod tests {
             );
         });
         std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn claude_provider_runs_without_api_key_when_cli_logged_in() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
+        let stream = r#"
+{"type":"message_start","message":{"id":"msg_2","model":"claude-3.5"}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"code\":\"console.log(2)\", "}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\"language\":\"ts\"}"}}
+{"type":"message_stop"}
+"#;
+
+        let runner = Arc::new(StubRunner::new("claude", stream));
+        let provider = ClaudeProvider::with_runner(runner);
+        let rt = Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let job =
+                CodeProviderJob::new("job-claude-loginless", "Generate code", std::env::current_dir().unwrap());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            assert!(
+                ctx.env.get("ANTHROPIC_API_KEY").is_none(),
+                "prepare should not inject API key when absent"
+            );
+            let run = provider.run(&job, &ctx).await.expect("run");
+            assert!(
+                run.parsed_output.is_some(),
+                "parsed output should be available without API key when CLI session exists"
+            );
+        });
     }
 
     #[test]
@@ -1236,6 +1290,66 @@ mod tests {
             observed[0], "exec",
             "command should execute without httpjail wrapper when binary missing"
         );
+    }
+
+    #[test]
+    fn codex_provider_runs_without_api_key_when_cli_logged_in() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("CODEX_API_KEY");
+
+        let temp_workspace = tempfile::tempdir().expect("tempdir");
+        let runner = Arc::new(StubRunner::new(
+            "codex",
+            r#"{"code":"export const render = () => ({ html: '<div></div>' });","language":"ts"}"#,
+        ));
+        let provider = CodexProvider::with_runner(runner);
+        let rt = Runtime::new().expect("runtime");
+
+        rt.block_on(async {
+            let job = CodeProviderJob::new("job-codex-login", "Inspect changes", temp_workspace.path());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            assert!(
+                ctx.env.get("CODEX_API_KEY").is_none(),
+                "prepare should not inject CODEX_API_KEY when unset"
+            );
+            let run = provider.run(&job, &ctx).await.expect("run");
+            assert!(
+                run.parsed_output.is_some(),
+                "parsed output should surface CLI data without explicit API key"
+            );
+        });
+    }
+
+    #[test]
+    fn codex_provider_surfaces_login_errors_without_key() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("CODEX_API_KEY");
+
+        let temp_workspace = tempfile::tempdir().expect("tempdir");
+        let runner = Arc::new(
+            StubRunner::new("codex", "")
+                .with_exit_code(1)
+                .with_stderr("Please run `codex login`"),
+        );
+        let provider = CodexProvider::with_runner(runner);
+        let rt = Runtime::new().expect("runtime");
+
+        rt.block_on(async {
+            let job = CodeProviderJob::new("job-codex-error", "Inspect changes", temp_workspace.path());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            let err = provider.run(&job, &ctx).await.expect_err("run should fail");
+            assert_eq!(err.code, ERR_PROVIDER_EXIT);
+            assert!(
+                err.message.contains("codex exited with"),
+                "failure should report CLI exit status"
+            );
+            assert!(
+                err.message.contains("codex login"),
+                "CLI guidance should be surfaced to the caller"
+            );
+        });
     }
 
     #[test]

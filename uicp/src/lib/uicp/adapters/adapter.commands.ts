@@ -13,6 +13,10 @@ import type { ComputeFinalEvent } from "../../../compute/types";
 import { emitTelemetryEvent } from "../../telemetry";
 import { getProviderSettingsSnapshot } from "../../../state/providers";
 
+type NeedsCodeParams = OperationParamMap["needs.code"] & {
+  providers?: ("codex" | "claude")[];
+};
+
 export type CommandResult<T = unknown> =
   | { success: true; value: T }
   | { success: false; error: string };
@@ -147,7 +151,7 @@ const CODE_PROVIDER_BASE_URLS: Record<'codex' | 'claude', readonly string[]> = {
  */
 const createNeedsCodeExecutor = (): CommandExecutor => ({
   async execute(command: Envelope, ctx: ApplyContext, deps: CommandExecutorDeps): Promise<CommandResult> {
-    const params = command.params as OperationParamMap["needs.code"];
+    const params = command.params as NeedsCodeParams;
     const traceId = ctx.runId ?? command.traceId;
     
     if (!params.spec) {
@@ -317,8 +321,17 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         const appStore = w?.__UICP_APP_STORE__;
         const disabled = Boolean(appStore?.getState?.().safeMode);
         if (disabled) {
-          writeProgress('Code generation disabled (Safe Mode)');
-          return { success: false, error: 'Code generation disabled (Safe Mode)' };
+          const openAgentSettingsCmd = 'ui.agent-settings.open';
+          const openAgentSettingsBtn = buildActionButton(
+            'Turn Off Safe Mode',
+            openAgentSettingsCmd,
+            'Open Agent Settings to toggle Safe Mode',
+          );
+          writeProgress('Safe Mode is on — code generation is disabled.', openAgentSettingsBtn);
+          return {
+            success: false,
+            error: 'Safe Mode is enabled. Open Agent Settings to allow code generation.',
+          };
         }
       } catch (safeModeError) {
         console.warn('needs.code safe mode check failed', safeModeError);

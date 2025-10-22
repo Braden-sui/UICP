@@ -7,6 +7,7 @@ import { collectTextFromChannels } from '../orchestrator/collectTextFromChannels
 import { composeClarifier } from '../orchestrator/clarifier';
 import { enforcePlannerCap } from '../orchestrator/plannerCap';
 import { readNumberEnv } from '../env/values';
+import { getAppMode, getModeDefaults } from '../mode';
 import { collectWithFallback } from './collectWithFallback';
 import { normalizeBatchJson } from './jsonParsing';
 import { parseWilToBatch } from '../wil/batch';
@@ -16,8 +17,10 @@ import { getComponentCatalogSummary as getAdapterComponentCatalogSummary } from 
 import { type TaskSpec } from './schemas';
 import { generateTaskSpec } from './generateTaskSpec';
 
-const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', 180_000, { min: 1_000 });
-const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', 180_000, { min: 1_000 });
+// Derive sane defaults from mode, allow env override
+const __modeDefaults = getModeDefaults(getAppMode());
+const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', __modeDefaults.plannerTimeoutMs ?? 180_000, { min: 1_000 });
+const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', __modeDefaults.actorTimeoutMs ?? 180_000, { min: 1_000 });
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const toError = (input: unknown): Error => (input instanceof Error ? input : new Error(String(input)));
