@@ -1,22 +1,59 @@
-{
-  "version": 1,
-  "providers": {
-    "claude": {
-      "hosts": [
-        "api.anthropic.com",
-        "claude.ai"
-      ],
-      "methods": ["GET", "HEAD", "OPTIONS", "POST"],
-      "blockPost": false
-    },
-    "codex": {
-      "hosts": [
-        "api.openai.com",
-        "auth.openai.com",
-        "login.microsoftonline.com"
-      ],
-      "methods": ["GET", "HEAD", "OPTIONS", "POST"],
-      "blockPost": false
-    }
-  }
+﻿{
+    "version":  1,
+    "providers":  {
+                      "claude":  {
+                                     "hosts":  [
+                                                   "api.anthropic.com",
+                                                   "claude.ai"
+                                               ],
+                                     "methods":  [
+                                                     "GET",
+                                                     "HEAD",
+                                                     "OPTIONS",
+                                                     "POST"
+                                                 ],
+                                     "blockPost":  false
+                                 },
+                      "codex":  {
+                                    "hosts":  [
+                                                  "api.openai.com",
+                                                  "auth.openai.com",
+                                                  "login.microsoftonline.com"
+                                              ],
+                                    "methods":  [
+                                                    "GET",
+                                                    "HEAD",
+                                                    "OPTIONS",
+                                                    "POST"
+                                                ],
+                                    "blockPost":  false
+                                },
+                      "claude-login":  {
+                                           "blockPost":  false,
+                                           "methods":  [
+                                                           "GET",
+                                                           "HEAD",
+                                                           "OPTIONS",
+                                                           "POST"
+                                                       ],
+                                           "hosts":  [
+                                                         "*.anthropic.com",
+                                                         "claude.ai"
+                                                     ]
+                                       },
+                      "codex-login":  {
+                                          "blockPost":  false,
+                                          "methods":  [
+                                                          "GET",
+                                                          "HEAD",
+                                                          "OPTIONS",
+                                                          "POST"
+                                                      ],
+                                          "hosts":  [
+                                                        "*.openai.com",
+                                                        "openai.com",
+                                                        "login.microsoftonline.com"
+                                                    ]
+                                      }
+                  }
 }

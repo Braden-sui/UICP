@@ -246,18 +246,26 @@ async fn maybe_wrap_with_httpjail(
     base_args: Vec<String>,
     env: &HashMap<String, String>,
 ) -> (String, Vec<String>) {
+    // Resolve provider executable to an absolute path when possible.
+    #[allow(unused_mut)]
+    let mut resolved_program = resolve_provider_exe(base_program, provider_key, env);
+    #[cfg(test)]
+    {
+        // Preserve plain program name in tests for StubRunner expectations.
+        resolved_program = base_program.to_string();
+    }
     if !httpjail_requested(env) {
-        return (base_program.to_string(), base_args);
+        return (resolved_program, base_args);
     }
 
     match HttpjailGuard::new(provider_key).await {
         Ok(guard) => {
             log_httpjail_applied(provider_key);
-            guard.wrap(base_program.to_string(), base_args)
+            guard.wrap(resolved_program, base_args)
         }
         Err(reason) => {
             log_httpjail_skipped(provider_key, &reason);
-            (base_program.to_string(), base_args)
+            (resolved_program, base_args)
         }
     }
 }
@@ -424,6 +432,190 @@ fn log_httpjail_skipped(provider: &str, reason: &str) {
             "[uicp:{}] httpjail requested but not enforced for provider {provider}: {reason}",
             WARN_HTTPJAIL_DISABLED
         );
+    }
+}
+
+fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
+    if cfg!(debug_assertions) {
+        #[cfg(feature = "otel_spans")]
+        tracing::info!(
+            target = "uicp",
+            provider = provider,
+            exe = %path.display(),
+            source = source,
+            os = %std::env::consts::OS,
+            arch = %std::env::consts::ARCH,
+            "provider executable resolved"
+        );
+        #[cfg(not(feature = "otel_spans"))]
+        {
+            eprintln!(
+                "[uicp] provider {provider} executable resolved via {source}: {} (os={}, arch={})",
+                path.display(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+        }
+    }
+}
+
+fn resolve_provider_exe(
+    default_prog: &str,
+    provider_key: &str,
+    env: &HashMap<String, String>,
+) -> String {
+    use std::path::{Path, PathBuf};
+    // 1) Env override (process env or job env)
+    let override_keys: &[&str] = match provider_key {
+        "claude" => &["UICP_CLAUDE_PATH", "UICP_CLAUDE_BIN"],
+        "codex" => &["UICP_CODEX_PATH", "UICP_CODEX_BIN"],
+        _ => &[],
+    };
+    for key in override_keys {
+        if let Some(val) = env.get(*key).cloned().or_else(|| std::env::var(key).ok()) {
+            let p = PathBuf::from(val.trim());
+            if p.is_file() {
+                log_provider_bin(provider_key, &p, "env");
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    // 2) PATH search (respect PATHEXT on Windows)
+    if let Some(found) = search_in_path(default_prog) {
+        log_provider_bin(provider_key, &found, "PATH");
+        return found.to_string_lossy().into_owned();
+    }
+
+    // 3) Common install locations
+    for cand in common_install_candidates(default_prog) {
+        if cand.is_file() {
+            log_provider_bin(provider_key, &cand, "common");
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+
+    default_prog.to_string()
+}
+
+fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var_os("PATHEXT")
+            .map(|v| v.to_string_lossy().split(';').map(|s| s.to_string()).collect())
+            .unwrap_or_else(|| vec![".EXE".into(), ".CMD".into(), ".BAT".into(), ".COM".into()])
+    } else {
+        Vec::new()
+    };
+    let path_var = match std::env::var_os("PATH") { Some(v) => v, None => return None };
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() { continue; }
+        if let Some(p) = candidate_in_dir(&dir, program, &exts) { return Some(p); }
+    }
+    None
+}
+
+fn candidate_in_dir(dir: &std::path::Path, program: &str, exts: &[String]) -> Option<std::path::PathBuf> {
+    if cfg!(windows) {
+        if program.contains('.') {
+            let p = dir.join(program);
+            if p.is_file() { return Some(p); }
+        } else {
+            for ext in exts {
+                let p = dir.join(format!("{program}{ext}"));
+                if p.is_file() { return Some(p); }
+            }
+        }
+    } else {
+        let p = dir.join(program);
+        if p.is_file() { return Some(p); }
+    }
+    None
+}
+
+fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut out = Vec::new();
+    // Managed app dir candidates first
+    out.extend(managed_install_candidates(program));
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        out.push(PathBuf::from("/opt/homebrew/bin").join(program));
+        out.push(PathBuf::from("/usr/local/bin").join(program));
+        if let Some(h) = home.as_ref() {
+            out.push(h.join(".local/bin").join(program));
+            out.push(h.join("Library/pnpm").join(program));
+            out.push(h.join(".npm-global/bin").join(program));
+        }
+    } else if cfg!(target_os = "linux") {
+        out.push(PathBuf::from("/usr/local/bin").join(program));
+        out.push(PathBuf::from("/usr/bin").join(program));
+        if let Some(h) = home.as_ref() {
+            out.push(h.join(".local/bin").join(program));
+            out.push(h.join(".npm-global/bin").join(program));
+            out.push(h.join(".local/share/pnpm").join(program));
+        }
+    } else if cfg!(target_os = "windows") {
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            let up = PathBuf::from(userprofile);
+            out.push(up.join("AppData/Roaming/npm").join(format!("{program}.cmd")));
+            out.push(up.join("AppData/Roaming/npm").join(format!("{program}.exe")));
+            out.push(up.join("nodejs").join(program));
+            out.push(up.join("nodejs").join(format!("{program}.cmd")));
+            out.push(up.join("nodejs").join(format!("{program}.exe")));
+        }
+        out.push(PathBuf::from("C:/Program Files/nodejs").join(program));
+        out.push(PathBuf::from("C:/Program Files/nodejs").join(format!("{program}.cmd")));
+        out.push(PathBuf::from("C:/Program Files/nodejs").join(format!("{program}.exe")));
+    }
+    out
+}
+
+fn managed_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut out = Vec::new();
+    let base = managed_bin_base();
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "unknown"
+    };
+    if let Some(base) = base {
+        out.push(base.join(program));
+        out.push(base.join(os).join(arch).join(program));
+        if cfg!(windows) {
+            out.push(base.join(format!("{program}.exe")));
+            out.push(base.join(format!("{program}.cmd")));
+            out.push(base.join(os).join(arch).join(format!("{program}.exe")));
+            out.push(base.join(os).join(arch).join(format!("{program}.cmd")));
+        }
+    }
+    out
+}
+
+fn managed_bin_base() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if cfg!(target_os = "windows") {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let base = PathBuf::from(appdata).join("UICP").join("bin");
+            return Some(base);
+        }
+        None
+    } else if cfg!(target_os = "macos") {
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        Some(home.join("Library").join("Application Support").join("UICP").join("bin"))
+    } else {
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        Some(home.join(".local").join("share").join("UICP").join("bin"))
     }
 }
 

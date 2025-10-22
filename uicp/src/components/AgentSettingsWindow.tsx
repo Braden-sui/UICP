@@ -100,9 +100,55 @@ const AgentSettingsWindow = () => {
   const completeHealthCheck = useProviderSelector((state) => state.completeHealthCheck);
   const failProvider = useProviderSelector((state) => state.fail);
   const bridgeAvailable = hasTauriBridge();
+  const devMode = import.meta.env.DEV === true;
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
+
+  // Proxy settings
+  const [proxyHttps, setProxyHttps] = useState<string>('');
+  const [proxyNoProxy, setProxyNoProxy] = useState<string>('');
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    (async () => {
+      try {
+        const res = (await tauriInvoke('get_proxy_env')) as { https?: string; http?: string; noProxy?: string };
+        setProxyHttps(res?.https ?? '');
+        setProxyNoProxy(res?.noProxy ?? '');
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+  const handleApplyProxy = useCallback(async () => {
+    if (!hasTauriBridge()) {
+      useAppStore.getState().pushToast({ variant: 'error', message: 'Proxy apply requires the desktop runtime' });
+      return;
+    }
+    try {
+      await tauriInvoke('set_proxy_env', { https: proxyHttps, no_proxy: proxyNoProxy });
+      useAppStore.getState().pushToast({ variant: 'success', message: 'Proxy settings applied' });
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Apply failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [proxyHttps, proxyNoProxy]);
+
+  // Resolved paths (dev-only UI)
+  const [resolvedPaths, setResolvedPaths] = useState<Record<ProviderName, { exe?: string; via?: string }>>({} as Record<ProviderName, { exe?: string; via?: string }>);
+  const refreshResolved = useCallback(async (provider: ProviderName) => {
+    if (!hasTauriBridge()) return;
+    try {
+      const res = (await tauriInvoke('provider_resolve', { provider })) as { exe?: string; via?: string };
+      setResolvedPaths((prev) => ({ ...prev, [provider]: { exe: res?.exe, via: res?.via } }));
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Resolve failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, []);
+  useEffect(() => {
+    if (!devMode || !hasTauriBridge()) return;
+    void refreshResolved('codex');
+    void refreshResolved('claude');
+  }, [devMode]);
 
   const handlePlannerChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
@@ -499,7 +545,25 @@ const AgentSettingsWindow = () => {
                     >
                       {info.healthLabel}
                     </button>
+                    {devMode && (
+                      <button
+                        type="button"
+                        onClick={() => refreshResolved(provider)}
+                        disabled={!bridgeAvailable}
+                        className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Show Resolved Path
+                      </button>
+                    )}
                   </div>
+                  {devMode && resolvedPaths?.[provider]?.exe && (
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Path: <span className="font-mono">{resolvedPaths[provider]?.exe}</span>
+                      {resolvedPaths[provider]?.via ? (
+                        <span> (via {resolvedPaths[provider]?.via})</span>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -537,6 +601,42 @@ const AgentSettingsWindow = () => {
                 Provider commands require the desktop runtime. Buttons stay disabled in browser preview.
               </span>
             )}
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-white/60 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Network (Proxy)</div>
+          <div className="flex flex-col gap-2 text-xs text-slate-600">
+            <label className="flex flex-col gap-1">
+              <span className="font-semibold uppercase tracking-wide text-slate-500">HTTPS Proxy</span>
+              <input
+                type="text"
+                value={proxyHttps}
+                onChange={(e) => setProxyHttps(e.target.value)}
+                placeholder="http://host:port"
+                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="font-semibold uppercase tracking-wide text-slate-500">No Proxy</span>
+              <input
+                type="text"
+                value={proxyNoProxy}
+                onChange={(e) => setProxyNoProxy(e.target.value)}
+                placeholder="localhost,127.0.0.1"
+                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+              />
+            </label>
+            <div>
+              <button
+                type="button"
+                onClick={handleApplyProxy}
+                disabled={!bridgeAvailable}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Apply Proxy
+              </button>
+              <span className="ml-2 text-slate-500">Affects new CLI runs (login/health/jobs)</span>
+            </div>
           </div>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">

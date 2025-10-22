@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use std::{
     collections::HashMap,
@@ -19,6 +19,28 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
     async_runtime::{spawn, spawn_blocking, JoinHandle},
+
+/// Read current proxy environment variables used by provider CLIs.
+#[tauri::command]
+async fn get_proxy_env() -> Result<serde_json::Value, String> {
+    let https = std::env::var("HTTPS_PROXY").ok();
+    let http = std::env::var("HTTP_PROXY").ok();
+    let no_proxy = std::env::var("NO_PROXY").ok();
+    Ok(serde_json::json!({
+        "https": https,
+        "http": http,
+        "noProxy": no_proxy,
+    }))
+}
+
+/// Set/unset proxy environment variables for this process (affects subsequent provider spawns).
+#[tauri::command]
+async fn set_proxy_env(https: Option<String>, http: Option<String>, no_proxy: Option<String>) -> Result<(), String> {
+    if let Some(val) = https { if val.trim().is_empty() { std::env::remove_var("HTTPS_PROXY"); } else { std::env::set_var("HTTPS_PROXY", val); } }
+    if let Some(val) = http { if val.trim().is_empty() { std::env::remove_var("HTTP_PROXY"); } else { std::env::set_var("HTTP_PROXY", val); } }
+    if let Some(val) = no_proxy { if val.trim().is_empty() { std::env::remove_var("NO_PROXY"); } else { std::env::set_var("NO_PROXY", val); } }
+    Ok(())
+}
     Emitter, Manager, State, WebviewUrl,
 };
 use tokio::{
@@ -2127,6 +2149,8 @@ fn main() {
             kill_container,
             provider_login,
             provider_health,
+            provider_resolve,
+            provider_install,
             frontend_ready
         ])
         .run(tauri::generate_context!())
@@ -2202,6 +2226,50 @@ async fn provider_health(provider: String) -> Result<ProviderHealthResult, Strin
     let normalized = provider.trim().to_ascii_lowercase();
     provider_cli::health(&normalized).await
 }
+
+#[tauri::command]
+async fn provider_resolve(provider: String) -> Result<serde_json::Value, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    let res = provider_cli::resolve(&normalized)?;
+    Ok(serde_json::json!({ "exe": res.exe, "via": res.via }))
+}
+
+#[tauri::command]
+async fn provider_install(provider: String, version: Option<String>) -> Result<serde_json::Value, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    match provider_cli::install(&normalized, version.as_deref()).await {
+        Ok(r) => Ok(serde_json::json!({
+            "ok": r.ok,
+            "provider": r.provider,
+            "exe": r.exe,
+            "via": r.via,
+            "detail": r.detail,
+        })),
+        Err(e) => Err(e),
+    }
+}
+
+/// Read current proxy environment variables used by provider CLIs.
+#[tauri::command]
+async fn get_proxy_env() -> Result<serde_json::Value, String> {
+    let https = std::env::var("HTTPS_PROXY").ok();
+    let http = std::env::var("HTTP_PROXY").ok();
+    let no_proxy = std::env::var("NO_PROXY").ok();
+    Ok(serde_json::json!({
+        "https": https,
+        "http": http,
+        "noProxy": no_proxy,
+    }))
+}
+
+/// Set/unset proxy environment variables for this process (affects subsequent provider spawns).
+#[tauri::command]
+async fn set_proxy_env(https: Option<String>, http: Option<String>, no_proxy: Option<String>) -> Result<(), String> {
+    if let Some(val) = https { if val.trim().is_empty() { std::env::remove_var("HTTPS_PROXY"); } else { std::env::set_var("HTTPS_PROXY", val); } }
+    if let Some(val) = http { if val.trim().is_empty() { std::env::remove_var("HTTP_PROXY"); } else { std::env::set_var("HTTP_PROXY", val); } }
+    if let Some(val) = no_proxy { if val.trim().is_empty() { std::env::remove_var("NO_PROXY"); } else { std::env::set_var("NO_PROXY", val); } }
+    Ok(())
+}}
 
 /// Verify that all module entries listed in the manifest exist and match their digests.
 #[tauri::command]
@@ -2953,3 +3021,4 @@ async fn emit_replay_telemetry(
         }),
     );
 }
+
