@@ -108,6 +108,7 @@ pub struct AppState {
     pub compute_ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
     pub compute_sem: Arc<Semaphore>,
     pub codegen_sem: Arc<Semaphore>,
+    pub wasm_sem: Arc<Semaphore>,
     pub compute_cancel: RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>,
     pub safe_mode: RwLock<bool>,
     pub safe_reason: RwLock<Option<String>>, 

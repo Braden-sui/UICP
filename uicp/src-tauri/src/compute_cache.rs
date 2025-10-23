@@ -162,6 +162,28 @@ pub fn compute_key_v2(spec: &ComputeJobSpec, input: &Value) -> String {
     hex::encode(digest)
 }
 
+pub fn compute_key_v2_plus(spec: &ComputeJobSpec, input: &Value, invariants: &str) -> String {
+    let canonical = canonicalize_input(input);
+    let manifest = build_ws_manifest(spec, input);
+    let mut hasher = Sha256::new();
+    hasher.update(b"v2|");
+    hasher.update(spec.task.as_bytes());
+    hasher.update(b"|env|");
+    hasher.update(spec.provenance.env_hash.as_bytes());
+    hasher.update(b"|input|");
+    hasher.update(canonical.as_bytes());
+    if !invariants.is_empty() {
+        hasher.update(b"|inv|");
+        hasher.update(invariants.as_bytes());
+    }
+    if !manifest.is_empty() {
+        hasher.update(b"|manifest|");
+        hasher.update(manifest.as_bytes());
+    }
+    let digest = hasher.finalize();
+    hex::encode(digest)
+}
+
 
 /// Golden artifact lookup result.
 #[derive(Debug, Clone, PartialEq)]

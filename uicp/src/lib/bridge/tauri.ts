@@ -628,6 +628,17 @@ export async function initializeTauriBridge() {
     }),
   );
 
+  // Registry warnings (e.g., unsigned modules in non-strict mode)
+  unsubs.push(
+    await listen('registry-warning', (event) => {
+      const payload = event.payload as { reason?: string; task?: string; version?: string } | undefined;
+      if (!payload) return;
+      const reason = payload.reason ?? 'warning';
+      const mod = payload.task && payload.version ? `${payload.task}@${payload.version}` : 'module';
+      useAppStore.getState().pushToast({ variant: 'error', message: `Registry ${reason}: ${mod}` });
+    }),
+  );
+
   // Health and Safe Mode
   unsubs.push(
     await listen('replay-issue', (event) => {

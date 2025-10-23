@@ -789,6 +789,8 @@ mod tests {
                 net: vec![],
                 long_run: false,
                 mem_high: false,
+                time: false,
+                random: false,
             },
             replayable: true,
             workspace_id: "default".into(),

@@ -59,6 +59,33 @@ const MetricsPanel = () => {
         title: 'Completed jobs served from compute cache',
       },
     ];
+    if (computeSummary.determinismRatio > 0) {
+      chips.push({
+        key: 'determinism',
+        label: 'Determinism',
+        value: `${computeSummary.determinismRatio}%`,
+        className: 'bg-emerald-50 text-emerald-700',
+        title: 'Golden-verified results ratio (verified / verified+mismatched)',
+      });
+    }
+    if (computeSummary.goldenMismatched > 0 || computeSummary.goldenVerified > 0) {
+      chips.push({
+        key: 'golden',
+        label: 'Golden',
+        value: `${computeSummary.goldenVerified}✓ / ${computeSummary.goldenMismatched}✗`,
+        className: computeSummary.goldenMismatched > 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-50 text-emerald-700',
+        title: 'Golden verifications (matched / mismatched)',
+      });
+    }
+    if (computeSummary.backpressureWaits > 0) {
+      chips.push({
+        key: 'backpressure',
+        label: 'Backpressure',
+        value: String(computeSummary.backpressureWaits),
+        className: 'bg-rose-50 text-rose-700',
+        title: 'Total stdout/stderr/logger/partial backpressure waits across jobs',
+      });
+    }
     if (computeSummary.partialsSeen > 0) {
       chips.push({
         key: 'partials',
@@ -174,6 +201,11 @@ const MetricsPanel = () => {
       minHeight={280}
     >
       <div className="flex flex-col gap-3 text-xs text-slate-600">
+        {computeSummary.backpressureWaits > 0 && (
+          <div className="rounded border border-rose-300 bg-rose-50 p-2 text-rose-700">
+            Backpressure active: {computeSummary.backpressureWaits} waits observed across recent jobs
+          </div>
+        )}
         <section className="rounded border border-emerald-200 bg-emerald-50 p-3 text-emerald-800">
           <header className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide">
             <span>Compute health</span>

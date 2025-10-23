@@ -182,7 +182,13 @@ Golden cache:
 ## Registry enforcement
 
 * Signatures required in non-dev. Trust store with key ids and rotation.
-* Dev mode can allow unsigned with a visible banner and metric increment.
+* Dev mode can allow unsigned; host emits a `registry-warning` event that is surfaced as a toast.
+* Env flags:
+  * `STRICT_MODULES_VERIFY=1` — require Verified signature for all modules.
+  * `UICP_MODULES_PUBKEY` — single Ed25519 pubkey (base64 or hex) for signature verification.
+  * `UICP_TRUST_STORE` — path to JSON object of `{ keyid: pubkey }` (base64 or hex).
+  * `UICP_TRUST_STORE_JSON` — inline JSON object for trust store (overrides file).
+* When `keyid` is present in manifest entry, trust store is used; otherwise fallback to `UICP_MODULES_PUBKEY`.
 
 ## WIT world for compute jobs
 
@@ -205,7 +211,8 @@ world job {
 ```
 
 * Minimal surface. JSON in, JSON out.
-* Capability tokens gate host calls. Default denies net, time, write.
+* Capability tokens gate host calls (future v2). Default denies net and write; time-of-day and unseeded random are not exposed.
+* RNG host is deterministic (seeded from job+env) and considered safe; true random/time APIs remain absent until explicitly introduced and gated.
 
 ## UI updates
 

@@ -14,6 +14,10 @@ pub struct ComputeCapabilitiesSpec {
     pub long_run: bool,
     #[serde(default)]
     pub mem_high: bool,
+    #[serde(default)]
+    pub time: bool,
+    #[serde(default)]
+    pub random: bool,
 }
 
 /// Provenance metadata supplied with each compute job.
@@ -232,6 +236,27 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
             task: spec.task.clone(),
             code: "Compute.CapabilityDenied".into(),
             message: "Network is disabled by policy (cap.net required)".into(),
+            metrics: None,
+        });
+    }
+
+    if spec.capabilities.time {
+        return Some(ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "Compute.CapabilityDenied".into(),
+            message: "Time is disabled by policy (cap.time denied)".into(),
+            metrics: None,
+        });
+    }
+    if spec.capabilities.random {
+        return Some(ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "Compute.CapabilityDenied".into(),
+            message: "Random is disabled by policy (cap.random denied)".into(),
             metrics: None,
         });
     }

@@ -275,8 +275,14 @@ async fn compute_call(
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
             .unwrap_or(false);
+        let module_meta = crate::registry::find_module(&app_handle, &spec.task).ok().flatten();
+        let invariants = if let Some(m) = &module_meta {
+            format!("modsha={}|modver={}", m.entry.digest_sha256, m.entry.version)
+        } else {
+            String::new()
+        };
         let key = if use_v2 {
-            compute_cache::compute_key_v2(&spec, &normalized_input)
+            compute_cache::compute_key_v2_plus(&spec, &normalized_input, &invariants)
         } else {
             compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash)
         };
@@ -322,14 +328,27 @@ async fn compute_call(
         }
     }
 
-    // Spawn the job via compute host (feature-gated implementation), respecting concurrency cap.
+    // Spawn the job via compute host (feature-gated implementation), respecting concurrency caps per provider.
     let queued_at = Instant::now();
-    let permit = state
-        .compute_sem
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| e.to_string())?;
+    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+        .ok()
+        .flatten()
+        .is_some();
+    let permit = if is_module_task {
+        state
+            .wasm_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        state
+            .compute_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?
+    };
     let queue_wait_ms = queued_at
         .elapsed()
         .as_millis()
@@ -2034,6 +2053,7 @@ fn main() {
         compute_ongoing: RwLock::new(HashMap::new()),
         compute_sem: Arc::new(Semaphore::new(2)),
         codegen_sem: Arc::new(Semaphore::new(2)),
+        wasm_sem: Arc::new(Semaphore::new(2)),
         compute_cancel: RwLock::new(HashMap::new()),
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),
