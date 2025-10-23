@@ -62,7 +62,7 @@ export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>
   if (!hasTauriBridge()) {
     return { ok: false, error: createBridgeUnavailableError(command) };
   }
-  
+ 
   try {
     const value = await invoke<T>(command, args as never);
     return { ok: true, value };
@@ -71,12 +71,22 @@ export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>
   }
 };
 
-type InvOverride = <T>(command: string, args?: unknown) => Promise<Result<T>>;
-
 export const setInvOverride = (impl: InvOverride | null): void => {
   const store = globalThis as Record<string, unknown>;
   store[INV_OVERRIDE_KEY] = impl ?? null;
 };
+
+type InvOverride = <T>(command: string, args?: unknown) => Promise<Result<T>>;
+
+// Open a native browser window (WebView) to an external URL inside the app shell.
+// Returns { ok, label, url, safe } or a typed UICP error via Result.
+export async function openBrowserWindow(url: string, opts?: { label?: string; safe?: boolean }) {
+  return inv<{ ok: true; label: string; url: string; safe: boolean }>('open_browser_window', {
+    url,
+    label: opts?.label,
+    safe: opts?.safe,
+  });
+}
 
 type OllamaEvent = {
   done?: boolean;
@@ -105,6 +115,7 @@ export async function initializeTauriBridge() {
           detail: { ts: Date.now(), event, ...(extra || {}) },
         }),
       );
+
     } catch (error) {
       console.error(`Failed to emit ui-debug-log event ${event}:`, error instanceof Error ? error.message : String(error));
     }
@@ -114,6 +125,7 @@ export async function initializeTauriBridge() {
   const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
   let lastPendingPrune = 0;
   const pendingBinds = new Map<string, { task: string; binds: { toStatePath: string }[]; ts: number }>();
+  const jobTraceIds = new Map<string, string>();
   const prunePending = () => {
     const now = Date.now();
     // Avoid frequent scans
@@ -137,7 +149,9 @@ export async function initializeTauriBridge() {
     } catch (error) {
       console.error('Failed to dispatch uicp-compute-final event', error);
     }
-  };
+};
+
+// (removed) openBrowserWindow helper; external browser integration deferred.
 
   function applyFinalEvent(final: ComputeFinalEvent) {
     const entry = pendingBinds.get(final.jobId);
@@ -171,6 +185,7 @@ export async function initializeTauriBridge() {
         final.code,
       );
       pendingBinds.delete(final.jobId);
+      jobTraceIds.delete(final.jobId);
       dispatchComputeFinal(final);
       return;
     }
@@ -294,6 +309,9 @@ export async function initializeTauriBridge() {
           typeof finalSpec.provenance?.agentTraceId === 'string'
             ? finalSpec.provenance.agentTraceId
             : null;
+        if (traceId) {
+          jobTraceIds.set(finalSpec.jobId, traceId);
+        }
         const op = String(finalSpec.task ?? '').split('@')[0];
         const params =
           finalSpec.input && typeof finalSpec.input === 'object' && !Array.isArray(finalSpec.input)
@@ -619,17 +637,6 @@ export async function initializeTauriBridge() {
   unsubs.push(offApplied);
 
   unsubs.push(
-    await listen('save-indicator', (event) => {
-      const payload = event.payload as { ok?: boolean; timestamp?: number } | undefined;
-      if (!payload) return;
-      if (payload.ok === false) {
-        useAppStore.getState().pushToast({ variant: 'error', message: 'Autosave failed. Changes may not persist.' });
-      }
-    }),
-  );
-
-  // Registry warnings (e.g., unsigned modules in non-strict mode)
-  unsubs.push(
     await listen('registry-warning', (event) => {
       const payload = event.payload as { reason?: string; task?: string; version?: string } | undefined;
       if (!payload) return;
@@ -793,6 +800,30 @@ export async function initializeTauriBridge() {
         return;
       }
       await applyFinalEvent(parsed.data);
+    }),
+  );
+
+  // Provider decisions emitted by backend (JSON payload)
+  unsubs.push(
+    await listen('provider-decision', (event) => {
+      try {
+        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        let traceId = typeof payload['traceId'] === 'string' ? (payload['traceId'] as string) : undefined;
+        if (!traceId) {
+          const jobId = typeof payload['jobId'] === 'string' ? (payload['jobId'] as string) : undefined;
+          if (jobId && jobTraceIds.has(jobId)) {
+            traceId = jobTraceIds.get(jobId)!;
+          }
+        }
+        const provider = typeof payload['provider'] === 'string' ? (payload['provider'] as string) : undefined;
+        if (!traceId || !provider) return;
+        const setTraceProvider = useAppStore.getState().setTraceProvider;
+        if (typeof setTraceProvider === 'function') {
+          setTraceProvider(traceId, provider);
+        }
+      } catch (error) {
+        console.error('Failed to process provider-decision payload', error);
+      }
     }),
   );
 

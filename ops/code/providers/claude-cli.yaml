@@ -35,3 +35,5 @@ notes:
   - Only enable --dangerously-skip-permissions inside this container with firewall.
   - Build image with: docker build -t uicp/claude-code:latest ops/code/images/claude-code
   - Firewall: ENTRYPOINT runs with-firewall.sh; method filtering is enforced by httpjail wrapper.
+  - Runtime hardening: containers run as non-root user 'app' with read-only rootfs and tmpfs mounts for /tmp, /var/tmp, /run, /home/app.
+  - Container flags enforced by runner: --memory, --memory-swap, --cpus, --pids-limit 256, --read-only, --cap-drop ALL, --security-opt no-new-privileges, --cap-add NET_ADMIN --cap-add NET_RAW (for iptables).

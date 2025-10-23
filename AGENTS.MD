@@ -191,6 +191,12 @@ For T3 and T4, verify secret age and rotation. Do not print secret values.
 
 Generate or update SBOM when dependencies change. Run SAST and dependency scans.
 
+Network policy scope (repo-wide)
+
+- UI process: in-app Network Guard enforces process-level egress policy (default-deny for sensitive endpoints; configurable via `VITE_NET_GUARD_*`). Supports monitor-only mode for diagnostics.
+- Providers: outbound network is disabled unless `UICP_ALLOW_NET=1`; when enabled, provider requests remain constrained by httpjail allowlists (override path via `UICP_HTTPJAIL_ALLOWLIST`).
+- Host firewall: any scripts/configs under `ops/code/network/` are ops-only (operators/CI). The desktop app does not execute host OS firewall changes by default.
+
 10) Performance budgets
 
 If a path is hot, set a target and measure. Example: p95 latency delta less than or equal to 5 percent against baseline under representative load.

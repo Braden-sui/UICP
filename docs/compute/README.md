@@ -272,8 +272,47 @@ Safety and guardrails:
 
 - Wasmtime 37 notes and validation checklist: `docs/compute/WASMTIME_UPGRADE_STATUS.md`.
 
-
 ## Code Provider Sandbox and Router
 
 Operational artifacts live under `ops/code/`: provider container configs, egress allowlist (for httpjail), policy matrix, a Node orchestrator (`ops/code/run-job.mjs`), a JS/TS validator, and an assembler that bundles to `applet.quickjs@0.1.0`. Default network is off; Linux runners recommended for httpjail.
 
+### Container hardening (baseline)
+
+- Runtime flags enforced by the orchestrator (`buildContainerCmd`): `--memory`, `--memory-swap`, `--cpus`, `--pids-limit 256`, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`.
+- Minimal capabilities are only added when the firewall is active: `--cap-add NET_ADMIN --cap-add NET_RAW` (iptables needs both).
+- Writable tmpfs mounts injected by default for read-only rootfs operation: `/tmp` (mode 1777), `/var/tmp` (mode 1777), `/run` (xtables lock), `/home/app` (uid/gid 10001, mode 0700).
+- Images run as non-root user `app` (uid/gid 10001); HOME is `/home/app`.
+
+### Firewall toggle + strict capability mode
+
+- Desktop Agent Settings → **Container Security** exposes two persisted preferences (Zustand store):
+  - **Disable container firewall (iptables)** → sets `UICP_DISABLE_FIREWALL=1`, propagates to orchestrator and injects `DISABLE_FIREWALL=1` into the container entrypoint. Result: iptables skip + no `--cap-add`.
+  - **Strict capability minimization** → sets `UICP_STRICT_CAPS=1`, ensuring NET_ADMIN/NET_RAW are never added even if firewall is enabled (for external egress control or alternate network policies).
+- CLI/CI overrides use the same env vars (`UICP_DISABLE_FIREWALL`, `UICP_STRICT_CAPS`).
+- Entry script `with-firewall.sh` logs whenever the firewall is skipped (env toggle or missing permissions) so operators can confirm enforcement.
+
+### httpjail + allowlists
+
+- httpjail remains the application-layer allowlist guard. When the firewall is disabled, httpjail still constrains outbound requests to the authorized hosts + methods defined in provider configs.
+- Providers without httpjail still run under read-only rootfs and capability drops; use the firewall toggle judiciously.
+
+### UI in-app egress guard (process-level)
+
+- The desktop UI enforces an in-app network guard for egress originating from the application itself (fetch/XMLHttpRequest/WebSocket/EventSource/sendBeacon).
+- Defaults: blocks metadata IPs (e.g., 169.254.169.254), common DoH domains (dns.google, cloudflare-dns.com, etc.), IPv6 fd00:ec2::254, and port 853 (DoT/QUIC).
+- Environment (Vite, read at build/runtime):
+  - `VITE_NET_GUARD_ENABLED` (default 1) — enable/disable guard.
+  - `VITE_NET_GUARD_MONITOR` (default 0) — monitor-only; logs and toasts but does not block.
+  - `VITE_GUARD_VERBOSE` (default 0) — verbose logging of blocks.
+  - `VITE_GUARD_ALLOW_DOMAINS`, `VITE_GUARD_BLOCK_DOMAINS` — CSV of domains.
+  - `VITE_GUARD_ALLOW_IPS`, `VITE_GUARD_BLOCK_IPS` — CSV of IPs.
+- Observability: emits `ui-debug-log` events with `net_guard_block` details and pushes a rate-limited toast per unique block key.
+
+### Provider network gating
+
+- Provider egress is disabled unless `UICP_ALLOW_NET=1` (truthy forms accepted). When enabled, provider traffic remains constrained by httpjail allowlists.
+- Allowlist location override: `UICP_HTTPJAIL_ALLOWLIST`.
+
+### Ops-only firewall scripts (clarification)
+
+- Any host-level firewall scripts and configs under `ops/code/network/` are for operators/CI only and are not executed by the desktop app by default.

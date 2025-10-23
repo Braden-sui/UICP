@@ -9,7 +9,8 @@
         "build": "cd uicp && pnpm run tauri:build",
         "code:job": "node ops/code/run-job.mjs --spec",
         "code:test": "node ops/code/tests/validator.test.mjs && node ops/code/tests/diff.test.mjs && node ops/code/tests/claude.parse.test.mjs",
-        "code:kill": "node ops/code/kill-job.mjs --key"
+        "code:kill": "node ops/code/kill-job.mjs --key",
+        "net:update": "node ops/code/network/update-lists.mjs"
     },
     "dependencies": {
         "ollama": "^0.6.0",

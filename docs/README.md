@@ -15,7 +15,7 @@
 ### Implementation
 
 - **[IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)** - Major milestones and changes
-- **[USER_GUIDE.md#setup](USER_GUIDE.md#setup)** - Development environment setup
+- **[setup.md](setup.md)** - Development environment setup
 
 ### Technical
 

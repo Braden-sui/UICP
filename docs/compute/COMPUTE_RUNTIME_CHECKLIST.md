@@ -274,6 +274,11 @@ Run (Rust only): `cargo test -p uicp --lib` (CI runs on Linux). On Windows/macOS
 - [x] Symlink and traversal protection for workspace files
   - Canonicalization and base-dir prefix assertion
 
+  - [x] Container firewall + caps controls (provider sandbox)
+    - Runtime flags enforced: `--memory`, `--memory-swap`, `--cpus`, `--pids-limit 256`, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`; tmpfs for `/tmp`, `/var/tmp`, `/run`, `/home/app`.
+    - Preferences store exposes toggles: **Disable container firewall** (`UICP_DISABLE_FIREWALL=1`, removes iptables + cap-add) and **Strict capability minimization** (`UICP_STRICT_CAPS=1`, omits `--cap-add` regardless of firewall).
+    - `with-firewall.sh` honors `DISABLE_FIREWALL=1` and logs when iptables is skipped; httpjail remains the secondary guard.
+
   - [x] WASI surface hardening
     - Host builds the component linker without inheriting stdio/args/env, only attaches deterministic shims (`uicp:host/control`, RNG, logging). Import-surface tests assert the linked capabilities, and network/filesystem access remains default-deny.
     - Gate any future capability expansion (e.g., net allowlists) behind `ComputeCapabilitiesSpec` checks in `compute_call()` and document policy expectations.

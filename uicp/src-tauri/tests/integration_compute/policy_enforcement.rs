@@ -39,15 +39,16 @@ mod wasm_tests {
             },
             replayable: false,
             workspace_id: "default".into(),
-            provenance: ComputeProvenanceSpec {
-                env_hash: "policy-enforcement".into(),
-                agent_trace_id: None,
-            },
-            golden_key: None,
-            artifact_id: None,
-            expect_golden: false,
-        }
+        provenance: ComputeProvenanceSpec {
+            env_hash: "policy-enforcement".into(),
+            agent_trace_id: None,
+        },
+        token: None,
+        golden_key: None,
+        artifact_id: None,
+        expect_golden: false,
     }
+}
 
     #[tokio::test]
     async fn httpjail_denies_disallowed_network_targets() {

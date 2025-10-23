@@ -20,7 +20,7 @@ Required sections in `spec` (strict)
 3) Constraints (must-haves)
    - Languages and style: TypeScript strict, no implicit any; Rust typed errors (anyhow or enums); Python typing if used.
    - Error codes: use `E-UICP-####` format with clear messages; no TODO/FIXME.
-   - Security: no secrets, sanitize logs, respect httpjail.
+   - Security: no secrets, sanitize logs, respect httpjail. The app does not perform host OS firewall modifications; any firewall scripts are ops‑only.
 4) Tests and Validation
    - Which tests to add/update; what they prove (positive/negative).
    - Commands to validate: e.g. `pnpm -w -C uicp test`, `cargo test -p uicp` (adjust to the touched area).
@@ -36,7 +36,7 @@ Required sections in `spec` (strict)
    - Do not emit placeholders; provide complete code for the declared edit surface.
 
 Permissions & Limits
-- Network: default‑deny via httpjail; only allowlisted hosts may be reachable.
+- Network: default‑deny via httpjail; only allowlisted hosts may be reachable. Provider egress is disabled unless `UICP_ALLOW_NET=1`; when enabled, httpjail allowlists still constrain outbound requests.
 - Filesystem: write changes inside the workspace only; no vendored/build artifacts.
 - Execution: may run local tools (tests, formatters) when available; do not introduce new global deps in the spec.
 

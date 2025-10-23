@@ -11,6 +11,7 @@ const ERR_PROGRAM_NOT_FOUND: &str = "E-UICP-1501"; // ProgramNotFound
 const ERR_NOT_AUTHENTICATED: &str = "E-UICP-1502"; // NotAuthenticated
 const ERR_KEYCHAIN_LOCKED: &str = "E-UICP-1503"; // KeychainLocked (macOS)
 const ERR_NETWORK_DENIED: &str = "E-UICP-1504"; // NetworkDenied (jail)
+#[cfg(any(test, feature = "compute_harness"))]
 const ERR_VERSION_MISMATCH: &str = "E-UICP-1505"; // VersionMismatch
 const ERR_TIMEOUT: &str = "E-UICP-1506"; // Timeout
 const ERR_SPAWN: &str = "E-UICP-1507"; // Spawn/exec failure
@@ -538,6 +539,7 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
     })
 }
 
+#[cfg(any(test, feature = "compute_harness"))]
 fn extract_host_from_error(detail: &Option<String>) -> Option<String> {
     if let Some(d) = detail {
         let lower = d.to_ascii_lowercase();
@@ -1013,8 +1015,7 @@ mod tests {
     use std::io::Write as _;
     #[cfg(not(target_os = "windows"))]
     use tempfile::tempdir;
-    #[cfg(target_os = "windows")]
-    use tempfile::tempdir as _; // silence unused warning when tests are disabled
+    // Windows tests don't require tempdir; no-op import on Windows.
 
     static TEST_MUTEX: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 

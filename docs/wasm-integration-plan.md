@@ -32,11 +32,11 @@ In scope:
 - [x] Phase 0: Recon and anchors
 - [x] Phase 1: Provider router and policy (TS)
 - [x] Phase 2: Capability tokens (Rust+TS)
-- [~] Phase 3: Cache v2 + determinism (groundwork landed; see details)
-- [ ] Phase 4: WIT world finalize + hostcall gating
-- [ ] Phase 5: Registry enforcement + trust store
-- [ ] Phase 6: Observability (failure taxonomy, SLOs) + Backpressure UI
-- [ ] Phase 7: Fair scheduling
+- [x] Phase 3: Cache v2 + determinism (v2_plus with modsha/modver/world/abi/policy invariants wired; wasmtime_major pending)
+- [~] Phase 4: WIT world finalize + hostcall gating (time/random denied by policy; RNG deterministic; net not exposed; preflight import policy enforced)
+- [~] Phase 5: Registry enforcement + trust store (trust store + keyid support; strict mode + UI surfacing done)
+- [~] Phase 6: Observability (failure taxonomy, SLOs) + Backpressure UI (banner + determinism/backpressure chips in place)
+- [~] Phase 7: Fair scheduling (wasm_sem separate from compute_sem; UICP_WASM_CONCURRENCY env cap)
 - [ ] Phase 8: DX CLI
 - [ ] Phase 9: Migrate modules (patch-tools, metrics-agg)
 - [ ] Phase 10: CI gating + rollout
@@ -142,9 +142,14 @@ Implemented (initial v2):
 * Cache key: `v2|task|env|input_json_canonical|manifest(ws:/files blake3)`.
 * Env flag: `UICP_CACHE_V2=1` toggles both lookup and store to v2 keys.
 
+Implemented extensions (current):
+
+* Cache key now uses `compute_key_v2_plus(spec, input, invariants)` where invariants = `modsha=<digest>|modver=<version>` when task resolves to a module.
+* Lookup and store paths consistent (main.rs + compute.rs).
+
 Planned extensions (future):
 
-* Add `module_sha`, `module_ver`, `policy_ver`, `host_abi`, `wit_world`, `wasmtime_major` into v2 key.
+* Add `policy_ver`, `host_abi`, `wit_world`, `wasmtime_major` into invariants string.
 
 Determinism rules:
 
@@ -161,7 +166,8 @@ Golden cache:
 
 * `UICP_REQUIRE_TOKENS=1` — enforce job token verification.
 * `UICP_JOB_TOKEN_KEY_HEX=<64 hex>` — fixed 32-byte HMAC key; random if unset.
-* `UICP_CACHE_V2=1` — use v2 cache key for lookup and store.
+* `UICP_CACHE_V2=1` — use v2 cache key (with invariants) for lookup and store.
+* `UICP_WASM_CONCURRENCY=<1..64>` — WASM provider concurrency cap (default 2); separate from generic compute_sem.
 
 ## Backpressure and log quotas
 
@@ -178,6 +184,7 @@ Golden cache:
 
 * Weighted fair queue per provider and per tenant.
 * Concurrency caps per provider. Prevents head of line blocking.
+* Implemented: `wasm_sem` separate from `compute_sem`; module tasks route to `wasm_sem` (env: `UICP_WASM_CONCURRENCY`, default 2).
 
 ## Registry enforcement
 
@@ -189,6 +196,7 @@ Golden cache:
   * `UICP_TRUST_STORE` — path to JSON object of `{ keyid: pubkey }` (base64 or hex).
   * `UICP_TRUST_STORE_JSON` — inline JSON object for trust store (overrides file).
 * When `keyid` is present in manifest entry, trust store is used; otherwise fallback to `UICP_MODULES_PUBKEY`.
+* UI: ModuleRegistryWindow displays strict mode and trust store source (inline/file/single_key/none) as header chips.
 
 ## WIT world for compute jobs
 
@@ -295,7 +303,8 @@ Day 2 - Cache v2 and determinism (in progress)
 
 * Input manifests and file hashing implemented in v2 key (env-gated).
 * Determinism tracking (outputHash + golden verification) implemented.
-* Key extensions (host_abi, wit_world, wasmtime_major) — pending.
+* Key extensions: modsha/modver wired in compute_key_v2_plus; host_abi, wit_world, wasmtime_major — pending.
+* UI: Determinism ratio, golden verification, and backpressure chips in MetricsPanel.
 
 Day 3 - First module
 

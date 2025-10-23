@@ -75,3 +75,15 @@
 
 - Fail loud; typed errors; structured logs; no silent drops.
 - SQLite in WAL; foreign keys enabled.
+
+### Network Guard (process-level)
+
+- In-app egress guard wraps `fetch`, XHR, WebSocket, EventSource, Beacon, WebRTC, WebTransport, and Worker APIs.
+- Defaults:
+  - Loopback allowed: `localhost`, `127.0.0.1`, `::1`.
+  - LAN/private ranges blocked unless allow-listed (IPv4 CIDR supported).
+  - DoH/DoT providers and metadata endpoints blocked.
+  - Workers/SharedWorkers monitor-only; ServiceWorkers blocked by default (override via env).
+  - WebRTC/WebTransport monitor-only; optional strict block via env.
+- CSP in `index.html` restricts passive subresources and allows blob workers; connect-src includes loopback for dev.
+- A prelude installs the guard before the main bundle; `fetch` is locked (non-configurable, non-writable) in non-test builds.

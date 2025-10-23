@@ -45,6 +45,58 @@ Notes
 - Local offload uses `http://127.0.0.1:11434/v1/chat/completions` and requires a local daemon.
  - Preferred storage for `OLLAMA_API_KEY` is the OS keyring. If you place it in `.env` for convenience, the app will read it on startup and migrate it into the keyring automatically.
 
+### Network Guard (in-app egress)
+
+The desktop enforces a process-level network guard that intercepts `fetch`, XHR, WebSocket, EventSource, Beacon, WebRTC, WebTransport, and Worker APIs. Defaults prioritize safety but are dev-friendly.
+
+Defaults
+
+- Dev builds default to monitor-only (no hard blocks) unless you override: `VITE_NET_GUARD_MONITOR=1`.
+- Loopback allowed by default: `localhost`, `127.0.0.1`, `::1`.
+- LAN/private ranges (RFC1918/CGNAT/link-local) are blocked unless you explicitly allow-list.
+- DoH/DoT providers and metadata endpoints are blocked.
+- Workers/SharedWorkers: monitor-only by default. Service Workers: blocked by default.
+- WebRTC/WebTransport: monitor-only by default (log attempts; allow).
+
+Environment (put in `uicp/.env` and rebuild):
+
+```
+VITE_NET_GUARD_ENABLED=1
+VITE_NET_GUARD_MONITOR=1
+VITE_GUARD_VERBOSE=0
+
+# Allowlists (loopback is allowed by default; these are explicit)
+VITE_GUARD_ALLOW_DOMAINS=localhost
+VITE_GUARD_ALLOW_IPS=127.0.0.1,::1
+# IPv4 CIDR ranges for labs (example)
+VITE_GUARD_ALLOW_IP_RANGES=192.168.0.0/16
+
+# Optional hard blocks (off by default except service workers)
+VITE_GUARD_BLOCK_WORKERS=0
+VITE_GUARD_BLOCK_SERVICE_WORKER=1
+VITE_GUARD_BLOCK_WEBRTC=0
+VITE_GUARD_BLOCK_WEBTRANSPORT=0
+```
+
+CSP
+
+- `index.html` ships a CSP that restricts passive subresources and allows blob workers. Loopback is included for dev convenience:
+
+```
+default-src 'self';
+connect-src 'self' https: wss: http://127.0.0.1:* http://[::1]:*;
+img-src 'self' https: data: blob:;
+script-src 'self';
+style-src 'self' 'unsafe-inline';
+font-src 'self' https: data:;
+frame-src 'self';
+worker-src 'self' blob:;
+```
+
+Notes
+
+- A tiny prelude module installs the guard before the app bundle; `fetch` is locked (non-configurable, non-writable) in non-test builds to prevent unhooking by third-party scripts.
+
 ## Run
 
 Development (webview only):

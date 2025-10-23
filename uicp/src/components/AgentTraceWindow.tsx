@@ -23,22 +23,7 @@ const TraceSection = ({ traceId, summary, events }: TraceSectionProps) => {
     return Array.from(spans.entries());
   }, [events]);
 
-  const provider = useMemo(() => {
-    let kind: string | null = null;
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const ev = events[i];
-      if (ev.name === 'provider_decision') {
-        const data = (ev.data ?? {}) as Record<string, unknown>;
-        const decision = data['decision'] as Record<string, unknown> | undefined;
-        const k = decision && typeof decision['kind'] === 'string' ? (decision['kind'] as string) : undefined;
-        if (k) {
-          kind = k;
-          break;
-        }
-      }
-    }
-    return kind;
-  }, [events]);
+  const provider = useAppSelector((state) => state.traceProviders[traceId] ?? null);
 
   return (
     <section className="rounded-md border border-slate-200 bg-white/80 p-2 shadow-sm">
@@ -49,9 +34,11 @@ const TraceSection = ({ traceId, summary, events }: TraceSectionProps) => {
             <span className={`rounded px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
               provider === 'wasm'
                 ? 'bg-emerald-50 text-emerald-700'
-                : provider === 'llm'
-                  ? 'bg-indigo-50 text-indigo-700'
-                  : 'bg-slate-100 text-slate-600'
+                : provider === 'codegen'
+                  ? 'bg-amber-50 text-amber-700'
+                  : provider === 'llm'
+                    ? 'bg-indigo-50 text-indigo-700'
+                    : 'bg-slate-100 text-slate-600'
             }`}
             >{provider}</span>
           )}

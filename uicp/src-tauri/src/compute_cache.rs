@@ -113,7 +113,7 @@ fn collect_ws_inputs(value: &Value, acc: &mut Vec<String>) {
     }
 }
 
-fn build_ws_manifest(spec: &ComputeJobSpec, input: &Value) -> String {
+fn build_ws_manifest(input: &Value) -> String {
     let mut paths: Vec<String> = Vec::new();
     collect_ws_inputs(input, &mut paths);
     paths.sort();
@@ -144,9 +144,10 @@ fn build_ws_manifest(spec: &ComputeJobSpec, input: &Value) -> String {
     out
 }
 
+#[cfg(test)]
 pub fn compute_key_v2(spec: &ComputeJobSpec, input: &Value) -> String {
     let canonical = canonicalize_input(input);
-    let manifest = build_ws_manifest(spec, input);
+    let manifest = build_ws_manifest(input);
     let mut hasher = Sha256::new();
     hasher.update(b"v2|");
     hasher.update(spec.task.as_bytes());
@@ -164,7 +165,7 @@ pub fn compute_key_v2(spec: &ComputeJobSpec, input: &Value) -> String {
 
 pub fn compute_key_v2_plus(spec: &ComputeJobSpec, input: &Value, invariants: &str) -> String {
     let canonical = canonicalize_input(input);
-    let manifest = build_ws_manifest(spec, input);
+    let manifest = build_ws_manifest(input);
     let mut hasher = Sha256::new();
     hasher.update(b"v2|");
     hasher.update(spec.task.as_bytes());
@@ -357,16 +358,71 @@ mod tests {
         assert_eq!(ws1_created_at, 10, "created_at should remain original");
         assert_eq!(ws1_task, "task-c", "task should update on conflict");
     }
+
+    #[test]
+    fn compute_key_v2_plus_includes_invariants() {
+        use crate::policy::ComputeJobSpec;
+        
+        let spec = ComputeJobSpec {
+            job_id: "job1".to_string(),
+            task: "test.task".to_string(),
+            input: serde_json::json!({"x": 1}),
+            cache: "readwrite".to_string(),
+            workspace_id: "ws1".to_string(),
+            replayable: true,
+            provenance: crate::policy::ComputeProvenanceSpec {
+                env_hash: "env123".to_string(),
+                agent_trace_id: None,
+            },
+            token: None,
+            capabilities: crate::policy::ComputeCapabilitiesSpec {
+                ..Default::default()
+            },
+            mem_limit_mb: None,
+            timeout_ms: None,
+            fuel: None,
+            bind: vec![],
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        };
+        
+        let input = serde_json::json!({"x": 1});
+        
+        // Key without invariants
+        let key_v2 = compute_key_v2(&spec, &input);
+        
+        // Key with module invariants
+        let invariants = "modsha=abc123|modver=1.0.0";
+        let key_v2_plus = compute_key_v2_plus(&spec, &input, invariants);
+        
+        // Keys must differ when invariants are included
+        assert_ne!(key_v2, key_v2_plus, "v2_plus key must differ from v2 when invariants present");
+        
+        // Keys with same invariants must be identical (cache consistency)
+        let key_v2_plus_dup = compute_key_v2_plus(&spec, &input, invariants);
+        assert_eq!(key_v2_plus, key_v2_plus_dup, "v2_plus keys with identical invariants must match");
+        
+        // Keys with different invariants must differ
+        let different_invariants = "modsha=xyz789|modver=2.0.0";
+        let key_v2_plus_diff = compute_key_v2_plus(&spec, &input, different_invariants);
+        assert_ne!(key_v2_plus, key_v2_plus_diff, "v2_plus keys with different invariants must differ");
+        
+        // Empty invariants should match v2 key
+        let key_v2_plus_empty = compute_key_v2_plus(&spec, &input, "");
+        assert_eq!(key_v2, key_v2_plus_empty, "v2_plus with empty invariants should match v2");
+    }
 }
 
 /// Fetch cached final event payload by key, scoped to a workspace.
+#[cfg_attr(feature = "otel_spans", tracing::instrument(level = "info", skip(app), fields(workspace = %workspace_id)))]
 pub async fn lookup<R: Runtime>(
     app: &tauri::AppHandle<R>,
     workspace_id: &str,
     key: &str,
 ) -> anyhow::Result<Option<Value>> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compute_cache_lookup", workspace = %workspace_id).entered();
+    let _span = tracing::info_span!("compute_cache_lookup", workspace = %workspace_id);
     let key = key.to_string();
     let ws = workspace_id.to_string();
     let state: State<'_, AppState> = app.state();
@@ -439,6 +495,7 @@ fn upsert_cache_row(
 }
 
 /// Store final event payload by key (idempotent upsert).
+#[cfg_attr(feature = "otel_spans", tracing::instrument(level = "info", skip(app, value), fields(workspace = %workspace_id, task = %task)))]
 pub async fn store<R: Runtime>(
     app: &tauri::AppHandle<R>,
     workspace_id: &str,
@@ -448,8 +505,7 @@ pub async fn store<R: Runtime>(
     value: &Value,
 ) -> anyhow::Result<()> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compute_cache_store", workspace = %workspace_id, task = %task)
-        .entered();
+    let _span = tracing::info_span!("compute_cache_store", workspace = %workspace_id, task = %task);
     // Freeze writes to persistence in Safe Mode
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
@@ -505,6 +561,7 @@ pub fn compute_output_hash(output: &Value) -> String {
 /// successful output, then verify subsequent runs produce identical results.
 ///
 /// INVARIANT: golden_key uniquely identifies the artifact within a workspace.
+#[cfg_attr(feature = "otel_spans", tracing::instrument(level = "info", skip(app, value), fields(workspace = %workspace_id, key = %golden_key)))]
 pub async fn store_golden<R: Runtime>(
     app: &tauri::AppHandle<R>,
     workspace_id: &str,
@@ -515,8 +572,7 @@ pub async fn store_golden<R: Runtime>(
 ) -> anyhow::Result<()> {
     #[cfg(feature = "otel_spans")]
     let _span =
-        tracing::info_span!("golden_cache_store", workspace = %workspace_id, key = %golden_key)
-            .entered();
+        tracing::info_span!("golden_cache_store", workspace = %workspace_id, key = %golden_key);
 
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
@@ -555,6 +611,7 @@ pub async fn store_golden<R: Runtime>(
 ///
 /// Returns None if no golden exists for this key (first run).
 /// Returns Some(hash) if a golden artifact was previously stored.
+#[cfg_attr(feature = "otel_spans", tracing::instrument(level = "info", skip(app), fields(workspace = %workspace_id, key = %golden_key)))]
 pub async fn lookup_golden<R: Runtime>(
     app: &tauri::AppHandle<R>,
     workspace_id: &str,
@@ -562,8 +619,7 @@ pub async fn lookup_golden<R: Runtime>(
 ) -> anyhow::Result<Option<GoldenRecord>> {
     #[cfg(feature = "otel_spans")]
     let _span =
-        tracing::info_span!("golden_cache_lookup", workspace = %workspace_id, key = %golden_key)
-            .entered();
+        tracing::info_span!("golden_cache_lookup", workspace = %workspace_id, key = %golden_key);
 
     let key = golden_key.to_string();
     let ws = workspace_id.to_string();

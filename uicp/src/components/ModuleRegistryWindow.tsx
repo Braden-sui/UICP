@@ -29,6 +29,8 @@ interface ModuleInfo {
 interface RegistryData {
   dir: string;
   modules: ModuleInfo[];
+  strict?: boolean;
+  trustStore?: 'inline' | 'file' | 'single_key' | 'none';
 }
 
 const ModuleRegistryWindow = () => {
@@ -132,6 +134,20 @@ const ModuleRegistryWindow = () => {
             >
               Open
             </button>
+            <span
+              className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
+                registry.strict ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+              }`}
+              title={registry.strict ? 'STRICT_MODULES_VERIFY=1' : 'Permissive: signatures not enforced'}
+            >
+              {registry.strict ? 'STRICT' : 'PERMISSIVE'}
+            </span>
+            <span
+              className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700"
+              title="Trust store source"
+            >
+              Trust: {registry.trustStore ?? 'none'}
+            </span>
           </div>
         )}
 

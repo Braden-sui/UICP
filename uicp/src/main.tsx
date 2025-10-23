@@ -3,9 +3,14 @@ import ReactDOM from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import { getComputeBridge } from './lib/bridge/globals';
 import { newUuid } from './lib/utils';
+import { installNetworkGuard } from './lib/security/networkGuard';
 
 const LOADER_ID = 'uicp-loading-screen';
 const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flash)
+
+// Install in-app network guard to prevent connections to disallowed hosts/ports.
+// This only affects traffic from within the UICP app (no OS-level changes).
+installNetworkGuard();
 
 const hasBooleanOkFlag = (value: unknown): value is { ok: boolean } => {
   return (

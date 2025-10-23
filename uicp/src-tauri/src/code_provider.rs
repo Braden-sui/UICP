@@ -247,13 +247,10 @@ async fn maybe_wrap_with_httpjail(
     env: &HashMap<String, String>,
 ) -> (String, Vec<String>) {
     // Resolve provider executable to an absolute path when possible.
-    #[allow(unused_mut)]
-    let mut resolved_program = resolve_provider_exe(base_program, provider_key, env);
+    #[cfg(not(test))]
+    let resolved_program = resolve_provider_exe(base_program, provider_key, env);
     #[cfg(test)]
-    {
-        // Preserve plain program name in tests for StubRunner expectations.
-        resolved_program = base_program.to_string();
-    }
+    let resolved_program = base_program.to_string();
     if !httpjail_requested(env) {
         return (resolved_program, base_args);
     }
@@ -714,6 +711,7 @@ impl ClaudeProvider {
         }
     }
 
+    #[cfg(any(test, feature = "compute_harness"))]
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             runner,
@@ -873,6 +871,8 @@ impl CodeProvider for ClaudeProvider {
         ctx: ProviderContext,
         run: ProviderRun,
     ) -> Result<ProviderArtifacts, CodeProviderError> {
+        // Ensure summary is observed in non-test builds to avoid dead-field warnings
+        let _ = run.summary.as_deref();
         // WHY: Claude CLI writes all relevant information to stdout; finalize is a passthrough wrapper.
         let _ = fs::remove_dir_all(&ctx.working_dir).await;
         Ok(ProviderArtifacts {
@@ -899,6 +899,7 @@ impl CodexProvider {
         }
     }
 
+    #[cfg(any(test, feature = "compute_harness"))]
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             runner,
@@ -1067,6 +1068,8 @@ impl CodeProvider for CodexProvider {
         ctx: ProviderContext,
         run: ProviderRun,
     ) -> Result<ProviderArtifacts, CodeProviderError> {
+        // Ensure summary is observed in non-test builds to avoid dead-field warnings
+        let _ = run.summary.as_deref();
         let session_root = self.sessions_root()?;
         let session_path = find_latest_session(&session_root, ctx.started_at).await?;
 

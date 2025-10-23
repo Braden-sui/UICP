@@ -23,6 +23,26 @@ Containerization (P1)
 - **Explicit control**: Use `--container` to force containerization
 - **macOS warning**: Shows persistent policy warning badge when container unavailable
 
+Container Hardening
+
+- Enforced at runtime by the orchestrator when using containers:
+  - `--memory <N>m`, `--memory-swap <N>m` (swap capped to memory)
+  - `--cpus <n>`, `--pids-limit 256`
+  - `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`
+  - Minimal caps for firewall: `--cap-add NET_ADMIN --cap-add NET_RAW`
+- Writable tmpfs mounts provided by default for read-only rootfs:
+  - `/tmp` (mode 1777), `/var/tmp` (mode 1777), `/run` (xtables lock), `/home/app` (uid/gid 10001, mode 0700)
+- Images run as non-root user `app` by default; HOME is `/home/app`.
+
+Preferences and Overrides
+
+- Agent Settings → Container Security:
+  - Disable container firewall (iptables) → sets `UICP_DISABLE_FIREWALL=1`
+  - Strict capability minimization → sets `UICP_STRICT_CAPS=1`
+- Env overrides (CLI/CI):
+  - `UICP_DISABLE_FIREWALL=1` to skip iptables and omit `--cap-add`
+  - `UICP_STRICT_CAPS=1` to never add capabilities (omit `--cap-add` even if firewall is enabled)
+
 Artifacts
 - providers/claude-cli.yaml — container, entry, defaults
 - providers/codex-cli.yaml — container, entry, defaults
@@ -39,9 +59,20 @@ Notes
 - Error codes use E-UICP-####. Nonexistent tools or binaries raise typed errors.
 - Risk notes recorded when httpjail allowlist is configured but not enforced (e.g., binary missing on host).
 
-Building Images
-- Claude: `docker build -t uicp/claude-code:latest ops/code/images/claude-code`
-- Codex: `docker build -t uicp/codex-cli:latest ops/code/images/codex-cli`
+## Building Images
+
+- Claude:
+  ```bash
+  docker build -t uicp/claude-code:latest \
+    -f ops/code/images/claude-code/Dockerfile \
+    ops/code/images
+  ```
+- Codex:
+  ```bash
+  docker build -t uicp/codex-cli:latest \
+    -f ops/code/images/codex-cli/Dockerfile \
+    ops/code/images
+  ```
 
 Firewall Behavior
 - ENTRYPOINT runs `with-firewall.sh`: sets OUTPUT default DROP, allows loopback and established flows, then allows TCP 80/443 only to allowlisted host IPs.

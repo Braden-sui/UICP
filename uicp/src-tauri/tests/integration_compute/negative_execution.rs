@@ -24,6 +24,7 @@ fn base_spec() -> ComputeJobSpec {
             env_hash: "test-env".into(),
             agent_trace_id: None,
         },
+        token: None,
         golden_key: None,
         artifact_id: None,
         expect_golden: false,

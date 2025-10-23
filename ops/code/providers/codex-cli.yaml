@@ -30,3 +30,5 @@ notes:
   - Network is default-deny via firewall; httpjail enforces host/methods as a secondary guard.
   - Build image with: docker build -t uicp/codex-cli:latest ops/code/images/codex-cli
   - Codex CLI writes JSONL sessions under ~/.codex/sessions; harvester consumes recent logs.
+  - Runtime hardening: containers run as non-root user 'app' with read-only rootfs and tmpfs mounts for /tmp, /var/tmp, /run, /home/app.
+  - Container flags enforced by runner: --memory, --memory-swap, --cpus, --pids-limit 256, --read-only, --cap-drop ALL, --security-opt no-new-privileges, --cap-add NET_ADMIN --cap-add NET_RAW (for iptables).

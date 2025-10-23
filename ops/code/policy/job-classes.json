@@ -9,7 +9,8 @@
       "maxEdits": 50,
       "timeBudgetMs": 600000,
       "memoryMb": 2048,
-      "testsRequired": false
+      "testsRequired": false,
+      "cpus": 1
     },
     "shell_heavy_test_loop": {
       "description": "Shell-heavy or test-loop tasks",
@@ -19,7 +20,8 @@
       "maxEdits": 120,
       "timeBudgetMs": 1800000,
       "memoryMb": 4096,
-      "testsRequired": true
+      "testsRequired": true,
+      "cpus": 2
     },
     "code_synthesis_js": {
       "description": "Code synthesis in JS/TS/React",
@@ -29,7 +31,8 @@
       "maxEdits": 200,
       "timeBudgetMs": 1200000,
       "memoryMb": 4096,
-      "testsRequired": true
+      "testsRequired": true,
+      "cpus": 1
     }
   }
 }

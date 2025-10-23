@@ -6,6 +6,13 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     ca-certificates curl git iptables iproute2 dnsutils jq \
     && rm -rf /var/lib/apt/lists/*
 
+# Non-root user for runtime
+RUN groupadd -g 10001 app \
+    && useradd -u 10001 -g 10001 -m -d /home/app -s /usr/sbin/nologin app \
+    && mkdir -p /workspace \
+    && chown -R app:app /home/app /workspace
+ENV HOME=/home/app
+
 ARG HTTPJAIL_URL=
 # Optional: fetch httpjail from a release URL when provided
 RUN if [ -n "$HTTPJAIL_URL" ]; then \
@@ -20,6 +27,7 @@ RUN chmod +x /usr/local/bin/with-firewall.sh
 WORKDIR /workspace
 
 # ENTRYPOINT sets firewall then runs provided command (overridden by docker run CMD)
+USER app
 ENTRYPOINT ["/usr/local/bin/with-firewall.sh"]
 
 # Expect the claude CLI to be available (prebaked or bind mounted)

@@ -217,6 +217,7 @@ export type AppState = {
   traceEvents: Record<string, TraceEvent[]>;
   traceOrder: string[];
   traceEventVersion: number;
+  traceProviders: Record<string, string>;
   devtoolsAnalytics: DevtoolsAnalyticsEvent[];
   devtoolsAssumedOpen: boolean;
   toasts: Toast[];
@@ -259,6 +260,8 @@ export type AppState = {
   clearTelemetry: () => void;
   recordTraceEvent: (event: TraceEvent) => void;
   clearTraceEvents: (traceId?: string) => void;
+  setTraceProvider: (traceId: string, provider: string) => void;
+  clearTraceProvider: (traceId: string) => void;
   recordDevtoolsAnalytics: (payload: DevtoolsAnalyticsPayload) => void;
   clearDevtoolsAnalytics: () => void;
   setDevtoolsAssumedOpen: (value: boolean) => void;
@@ -312,6 +315,7 @@ export const useAppStore = create<AppState>()(
       traceEvents: {},
       traceOrder: [],
       traceEventVersion: 0,
+      traceProviders: {},
       devtoolsAnalytics: [],
       devtoolsAssumedOpen: false,
       toasts: [],
@@ -557,6 +561,8 @@ export const useAppStore = create<AppState>()(
         }),
       recordTraceEvent: (event) =>
         set((state) => {
+          if (!event?.traceId) return {};
+
           const existing = state.traceEvents[event.traceId] ?? [];
           const appended = [...existing, event];
           if (appended.length > TRACE_EVENTS_PER_TRACE) {
@@ -572,19 +578,42 @@ export const useAppStore = create<AppState>()(
           let trimmedOrder = updatedOrder;
           let trimmedEvents = nextTraceEvents;
 
+          let trimmedProviders = state.traceProviders;
           if (updatedOrder.length > TRACE_TRACE_CAPACITY) {
             const keep = updatedOrder.slice(0, TRACE_TRACE_CAPACITY);
             trimmedOrder = keep;
             trimmedEvents = {};
+            trimmedProviders = {};
             for (const id of keep) {
               trimmedEvents[id] = nextTraceEvents[id] ?? [];
+              const provider = state.traceProviders[id];
+              if (provider) {
+                trimmedProviders[id] = provider;
+              }
             }
           }
+
+          // Capture provider decisions into map for quick lookup
+          const providerNext = (() => {
+            if (event.name !== 'provider_decision') return trimmedProviders;
+            const data = (event.data ?? {}) as Record<string, unknown>;
+            const direct = typeof data['provider'] === 'string' ? (data['provider'] as string) : undefined;
+            const decision = data['decision'] as Record<string, unknown> | undefined;
+            const kind = typeof decision?.kind === 'string' ? (decision.kind as string) : undefined;
+            const provider = direct ?? kind;
+            if (!provider) return trimmedProviders;
+            if (trimmedProviders[event.traceId] === provider) return trimmedProviders;
+            return {
+              ...trimmedProviders,
+              [event.traceId]: provider,
+            };
+          })();
 
           return {
             traceEvents: trimmedEvents,
             traceOrder: trimmedOrder,
             traceEventVersion: state.traceEventVersion + 1,
+            traceProviders: providerNext,
           };
         }),
       clearTraceEvents: (traceId) =>
@@ -595,6 +624,7 @@ export const useAppStore = create<AppState>()(
               traceEvents: {},
               traceOrder: [],
               traceEventVersion: state.traceEventVersion + 1,
+              traceProviders: {},
             };
           }
           if (!state.traceEvents[traceId]) {
@@ -602,11 +632,33 @@ export const useAppStore = create<AppState>()(
           }
           const next = { ...state.traceEvents };
           delete next[traceId];
+          const nextProviders = { ...state.traceProviders };
+          delete nextProviders[traceId];
           return {
             traceEvents: next,
             traceOrder: state.traceOrder.filter((id) => id !== traceId),
             traceEventVersion: state.traceEventVersion + 1,
+            traceProviders: nextProviders,
           };
+        }),
+      setTraceProvider: (traceId, provider) =>
+        set((state) => {
+          if (!traceId || !provider) return {};
+          const prev = state.traceProviders[traceId];
+          if (prev === provider) return {};
+          return {
+            traceProviders: {
+              ...state.traceProviders,
+              [traceId]: provider,
+            },
+          };
+        }),
+      clearTraceProvider: (traceId) =>
+        set((state) => {
+          if (!traceId || !state.traceProviders[traceId]) return {};
+          const next = { ...state.traceProviders };
+          delete next[traceId];
+          return { traceProviders: next };
         }),
       recordDevtoolsAnalytics: (payload) =>
         set((state) => {

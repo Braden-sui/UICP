@@ -92,6 +92,10 @@ const AgentSettingsWindow = () => {
   const setDefaultProviderPreference = usePreferencesStore((state) => state.setDefaultProvider);
   const runBothByDefault = usePreferencesStore((state) => state.runBothByDefault);
   const setRunBothByDefault = usePreferencesStore((state) => state.setRunBothByDefault);
+  const firewallDisabled = usePreferencesStore((state) => state.firewallDisabled);
+  const setFirewallDisabledPref = usePreferencesStore((state) => state.setFirewallDisabled);
+  const strictCaps = usePreferencesStore((state) => state.strictCaps);
+  const setStrictCapsPref = usePreferencesStore((state) => state.setStrictCaps);
   const codexStatus = useProviderSelector((state) => state.statuses.codex);
   const claudeStatus = useProviderSelector((state) => state.statuses.claude);
   const codexModel = useProviderSelector((state) => state.settings.codexModel);
@@ -125,6 +129,49 @@ const AgentSettingsWindow = () => {
       }
     })();
   }, []);
+
+  // Keep container security env in sync with preferences
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    (async () => {
+      try {
+        await tauriInvoke('set_env_var', { name: 'UICP_DISABLE_FIREWALL', value: firewallDisabled ? '1' : null });
+        await tauriInvoke('set_env_var', { name: 'UICP_STRICT_CAPS', value: strictCaps ? '1' : null });
+      } catch {
+        // ignore in UI; toggles still apply on change
+      }
+    })();
+  }, [firewallDisabled, strictCaps]);
+
+  const handleFirewallToggle = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const disabled = event.target.checked;
+      setFirewallDisabledPref(disabled);
+      if (!hasTauriBridge()) return;
+      try {
+        await tauriInvoke('set_env_var', { name: 'UICP_DISABLE_FIREWALL', value: disabled ? '1' : null });
+        useAppStore.getState().pushToast({ variant: 'info', message: disabled ? 'Container firewall disabled' : 'Container firewall enabled' });
+      } catch (err) {
+        useAppStore.getState().pushToast({ variant: 'error', message: `Toggle failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [setFirewallDisabledPref],
+  );
+
+  const handleStrictCapsToggle = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const enabled = event.target.checked;
+      setStrictCapsPref(enabled);
+      if (!hasTauriBridge()) return;
+      try {
+        await tauriInvoke('set_env_var', { name: 'UICP_STRICT_CAPS', value: enabled ? '1' : null });
+        useAppStore.getState().pushToast({ variant: 'info', message: enabled ? 'Strict capability minimization enabled' : 'Strict capability minimization disabled' });
+      } catch (err) {
+        useAppStore.getState().pushToast({ variant: 'error', message: `Toggle failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [setStrictCapsPref],
+  );
   const handleApplyProxy = useCallback(async () => {
     if (!hasTauriBridge()) {
       useAppStore.getState().pushToast({ variant: 'error', message: 'Proxy apply requires the desktop runtime' });
@@ -723,6 +770,33 @@ const AgentSettingsWindow = () => {
               </label>
             </div>
           </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Container Security</div>
+          <label className="flex items-center gap-3 rounded border border-slate-200 bg-white/80 p-3 text-sm">
+            <input
+              type="checkbox"
+              checked={firewallDisabled}
+              onChange={handleFirewallToggle}
+              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-slate-700">Disable container firewall (iptables)</span>
+              <span className="text-xs text-slate-500">Skips iptables egress rules and removes cap-adds. httpjail host/method allowlist remains in effect.</span>
+            </div>
+          </label>
+          <label className="mt-2 flex items-center gap-3 rounded border border-slate-200 bg-white/80 p-3 text-sm">
+            <input
+              type="checkbox"
+              checked={strictCaps}
+              onChange={handleStrictCapsToggle}
+              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-slate-700">Strict capability minimization</span>
+              <span className="text-xs text-slate-500">Never add NET_ADMIN/NET_RAW to containers. Use when firewall is disabled or external egress control is enforced.</span>
+            </div>
+          </label>
         </div>
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Code Providers</div>
           <div className="flex flex-col gap-3">

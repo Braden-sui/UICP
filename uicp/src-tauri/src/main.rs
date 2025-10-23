@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use hmac::{Hmac, Mac};
 use tauri::{
-    async_runtime::{spawn, spawn_blocking, JoinHandle},
+    async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
 };
 
@@ -268,6 +268,45 @@ async fn compute_call(
         }
     };
 
+    // Provider decision telemetry (host-owned)
+    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+        .ok()
+        .flatten()
+        .is_some();
+    let provider_kind = if crate::codegen::is_codegen_task(&spec.task) {
+        "codegen"
+    } else if is_module_task {
+        "wasm"
+    } else {
+        "local"
+    };
+    emit_or_log(
+        &app_handle,
+        "provider-decision",
+        serde_json::json!({
+            "jobId": spec.job_id.clone(),
+            "task": spec.task.clone(),
+            "provider": provider_kind,
+            "workspaceId": spec.workspace_id.clone(),
+            "policyVersion": std::env::var("UICP_POLICY_VERSION").unwrap_or_default(),
+            "caps": {
+                "fsRead": &spec.capabilities.fs_read,
+                "fsWrite": &spec.capabilities.fs_write,
+                "net": &spec.capabilities.net,
+                "time": spec.capabilities.time,
+                "random": spec.capabilities.random,
+                "longRun": spec.capabilities.long_run,
+                "memHigh": spec.capabilities.mem_high
+            },
+            "limits": {
+                "memLimitMb": spec.mem_limit_mb,
+                "timeoutMs": spec.timeout_ms,
+                "fuel": spec.fuel
+            },
+            "cacheMode": spec.cache.clone(),
+        }),
+    );
+
     // Content-addressed cache lookup when enabled (normalize policy casing)
     let cache_mode = spec.cache.to_lowercase();
     if cache_mode == "readwrite" || cache_mode == "readonly" {
@@ -276,10 +315,18 @@ async fn compute_call(
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
             .unwrap_or(false);
         let module_meta = crate::registry::find_module(&app_handle, &spec.task).ok().flatten();
-        let invariants = if let Some(m) = &module_meta {
-            format!("modsha={}|modver={}", m.entry.digest_sha256, m.entry.version)
-        } else {
-            String::new()
+        let invariants = {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(m) = &module_meta {
+                parts.push(format!("modsha={}", m.entry.digest_sha256));
+                parts.push(format!("modver={}", m.entry.version));
+                if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                    if !world.is_empty() { parts.push(format!("world={}", world)); }
+                }
+                parts.push("abi=wasi-p2".to_string());
+            }
+            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+            parts.join("|")
         };
         let key = if use_v2 {
             compute_cache::compute_key_v2_plus(&spec, &normalized_input, &invariants)
@@ -2031,6 +2078,12 @@ fn main() {
         }
     };
 
+    let wasm_conc = std::env::var("UICP_WASM_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n >= 1 && n <= 64)
+        .unwrap_or(2);
+
     let state = AppState {
         db_path: db_path.clone(),
         db_ro,
@@ -2053,7 +2106,7 @@ fn main() {
         compute_ongoing: RwLock::new(HashMap::new()),
         compute_sem: Arc::new(Semaphore::new(2)),
         codegen_sem: Arc::new(Semaphore::new(2)),
-        wasm_sem: Arc::new(Semaphore::new(2)),
+        wasm_sem: Arc::new(Semaphore::new(wasm_conc)),
         compute_cancel: RwLock::new(HashMap::new()),
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),
@@ -2269,6 +2322,7 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+
 /// Set or unset a process environment variable for subsequent provider operations.
 /// ERROR: E-UICP-9201 invalid name
 /// Check if container runtime (Docker/Podman) is available
@@ -2312,25 +2366,116 @@ async fn check_container_runtime() -> Result<serde_json::Value, String> {
     }))
 }
 
-/// Check network capabilities and restrictions
+/// Check network capabilities and restrictions.
+/// WHY: Avoid misleading telemetry; report actual network gate.
+/// INVARIANT: Network is disabled unless `UICP_ALLOW_NET` is explicitly enabled.
 #[tauri::command]
 async fn check_network_capabilities() -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("check_network_capabilities").entered();
-    // P1: Check if network access is restricted based on policy
-    // This would integrate with the existing policy system
-    let has_network = true; // Default to allowing network
-    let restricted = false; // Default to not restricted
-    let reason: Option<String> = None;
-    
-    // TODO: Integrate with actual policy system to determine restrictions
-    // For now, we'll return basic capabilities
-    
+
+    // Gate network with an explicit env flag.
+    // Accept common truthy forms: 1,true,yes,on (case-insensitive).
+    fn parse_env_flag(value: &str) -> bool {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
+
+    let has_network = std::env::var("UICP_ALLOW_NET")
+        .ok()
+        .map(|v| parse_env_flag(&v))
+        .unwrap_or(false);
+
+    // If network is enabled, it's still constrained by provider allowlists via httpjail.
+    // Keep reason explicit for operators.
+    let (restricted, reason) = if has_network {
+        (
+            true,
+            Some(
+                "enabled by UICP_ALLOW_NET; provider calls restricted by httpjail allowlists"
+                    .to_string(),
+            ),
+        )
+    } else {
+        (
+            true,
+            Some("network disabled by policy; set UICP_ALLOW_NET=1 to enable".to_string()),
+        )
+    };
+
+    // Load a concise httpjail allowlist summary (best-effort).
+    fn allowlist_path() -> std::path::PathBuf {
+        if let Some(override_os) = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST") {
+            let p = std::path::PathBuf::from(&override_os);
+            if !p.as_os_str().is_empty() {
+                return p;
+            }
+        }
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("ops")
+            .join("code")
+            .join("network")
+            .join("allowlist.json")
+    }
+
+    let policy_path = allowlist_path();
+    let allowlist_summary: Option<serde_json::Value> = match std::fs::read_to_string(&policy_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(v) => {
+                let mut providers_obj = serde_json::Map::new();
+                if let Some(providers) = v.get("providers").and_then(|x| x.as_object()) {
+                    for (name, entry) in providers {
+                        let hosts = entry
+                            .get("hosts")
+                            .and_then(|h| h.as_array())
+                            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        let methods = entry
+                            .get("methods")
+                            .and_then(|m| m.as_array())
+                            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        let block_post = entry
+                            .get("blockPost")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(true);
+
+                        let sample_hosts: Vec<&str> = hosts.iter().copied().take(3).collect();
+                        let provider_json = serde_json::json!({
+                            "hostsCount": hosts.len(),
+                            "hostsSample": sample_hosts,
+                            "methods": methods,
+                            "blockPost": block_post,
+                        });
+                        providers_obj.insert(name.clone(), provider_json);
+                    }
+                }
+                Some(serde_json::json!({
+                    "source": policy_path.display().to_string(),
+                    "providers": providers_obj,
+                }))
+            }
+            Err(err) => Some(serde_json::json!({
+                "error": format!("E-UICP-9301: allowlist parse failed: {}", err),
+                "source": policy_path.display().to_string(),
+            })),
+        },
+        Err(err) => Some(serde_json::json!({
+            "error": format!("E-UICP-9300: allowlist read failed: {}", err),
+            "source": policy_path.display().to_string(),
+        })),
+    };
+
     let json = serde_json::json!({
         "hasNetwork": has_network,
         "restricted": restricted,
-        "reason": reason
+        "reason": reason,
+        "allowlist": allowlist_summary
     });
+
     #[cfg(feature = "otel_spans")]
     tracing::info!(target = "uicp", has_network, restricted, "network capabilities returned");
     Ok(json)
@@ -2490,52 +2635,7 @@ async fn provider_install(
     }
 }
 
-/// Read current proxy environment variables used by provider CLIs.
-#[tauri::command]
-async fn get_proxy_env() -> Result<serde_json::Value, String> {
-    let https = std::env::var("HTTPS_PROXY").ok();
-    let http = std::env::var("HTTP_PROXY").ok();
-    let no_proxy = std::env::var("NO_PROXY").ok();
-    Ok(serde_json::json!({
-        "https": https,
-        "http": http,
-        "noProxy": no_proxy,
-    }))
-}
-
-/// Set/unset proxy environment variables for this process (affects subsequent provider spawns).
-#[tauri::command]
-async fn set_proxy_env(
-    https: Option<String>,
-    http: Option<String>,
-    no_proxy: Option<String>,
-) -> Result<(), String> {
-    if let Some(val) = https {
-        if val.trim().is_empty() {
-            std::env::remove_var("HTTPS_PROXY");
-        } else {
-            std::env::set_var("HTTPS_PROXY", val);
-        }
-    }
-
-    if let Some(val) = http {
-        if val.trim().is_empty() {
-            std::env::remove_var("HTTP_PROXY");
-        } else {
-            std::env::set_var("HTTP_PROXY", val);
-        }
-    }
-
-    if let Some(val) = no_proxy {
-        if val.trim().is_empty() {
-            std::env::remove_var("NO_PROXY");
-        } else {
-            std::env::set_var("NO_PROXY", val);
-        }
-    }
-
-    Ok(())
-}
+// Removed unused proxy env commands (get_proxy_env, set_proxy_env) to avoid dead code.
 
 /// Verify that all module entries listed in the manifest exist and match their digests.
 #[tauri::command]
@@ -2713,9 +2813,26 @@ async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value
         }));
     }
 
+    // Security posture: strict mode + trust store source for UI surfacing
+    let strict = std::env::var("STRICT_MODULES_VERIFY")
+        .ok()
+        .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    let trust_store = if std::env::var("UICP_TRUST_STORE_JSON").is_ok() {
+        "inline"
+    } else if std::env::var("UICP_TRUST_STORE").is_ok() {
+        "file"
+    } else if std::env::var("UICP_MODULES_PUBKEY").is_ok() {
+        "single_key"
+    } else {
+        "none"
+    };
+
     Ok(serde_json::json!({
         "dir": dir.display().to_string(),
         "modules": modules,
+        "strict": strict,
+        "trustStore": trust_store,
     }))
 }
 

@@ -14,6 +14,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 #[cfg(feature = "wasm_compute")]
 use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
+#[cfg(feature = "otel_spans")]
+use tracing::Instrument;
 use tauri::{Emitter, Manager, Runtime};
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -1006,11 +1008,20 @@ mod with_runtime {
         permit: Option<OwnedSemaphorePermit>,
         queue_wait_ms: u64,
     ) -> JoinHandle<()> {
-        tauri_spawn(async move {
+        #[cfg(feature = "otel_spans")]
+        let span = tracing::info_span!(
+            "compute_spawn_job",
+            job_id = %spec.job_id,
+            task = %spec.task
+        );
+
+        let fut = async move {
             #[cfg(feature = "otel_spans")]
-            let _span =
-                tracing::info_span!("compute_spawn_job", job_id = %spec.job_id, task = %spec.task)
-                    .entered();
+            let _span = tracing::info_span!(
+                "compute_spawn_job_inner",
+                job_id = %spec.job_id,
+                task = %spec.task
+            );
             let _permit = permit;
             let started = Instant::now();
             // WHY: Feature-flag-ish env var to dump diagnostics about WASI + component at job start.
@@ -1691,7 +1702,15 @@ mod with_runtime {
             let state: tauri::State<'_, crate::AppState> = app.state();
             state.compute_cancel.write().await.remove(&spec.job_id);
             crate::remove_compute_job(&app, &spec.job_id).await;
-        })
+        };
+
+        #[cfg(feature = "otel_spans")]
+        {
+            return tauri_spawn(fut.instrument(span));
+        }
+
+        #[cfg(not(feature = "otel_spans"))]
+        tauri_spawn(fut)
     }
 
     pub fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
@@ -2199,8 +2218,22 @@ mod with_runtime {
                 .ok()
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                 .unwrap_or(false);
+            let module_meta = crate::registry::find_module(&app, &spec.task).ok().flatten();
+            let invariants = {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(m) = &module_meta {
+                    parts.push(format!("modsha={}", m.entry.digest_sha256));
+                    parts.push(format!("modver={}", m.entry.version));
+                    if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                        if !world.is_empty() { parts.push(format!("world={}", world)); }
+                    }
+                    parts.push("abi=wasi-p2".to_string());
+                }
+                if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+                parts.join("|")
+            };
             let key = if use_v2 {
-                crate::compute_cache::compute_key_v2(&spec, &spec.input)
+                crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
             } else {
                 crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
             };
@@ -2338,8 +2371,22 @@ mod with_runtime {
                 .ok()
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                 .unwrap_or(false);
+            let module_meta = crate::registry::find_module(&app, &spec.task).ok().flatten();
+            let invariants = {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(m) = &module_meta {
+                    parts.push(format!("modsha={}", m.entry.digest_sha256));
+                    parts.push(format!("modver={}", m.entry.version));
+                    if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                        if !world.is_empty() { parts.push(format!("world={}", world)); }
+                    }
+                    parts.push("abi=wasi-p2".to_string());
+                }
+                if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+                parts.join("|")
+            };
             let key = if use_v2 {
-                crate::compute_cache::compute_key_v2(&spec, &spec.input)
+                crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
             } else {
                 crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
             };
@@ -2493,25 +2540,23 @@ mod with_runtime {
                 timeout_ms: Some(30_000),
                 fuel: None,
                 mem_limit_mb: None,
-                bind: vec![],
-                cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec {
-                    fs_read: vec!["ws:/files/**".into()],
-                    fs_write: vec![],
-                    net: vec![],
-                    long_run: false,
-                    mem_high: false,
-                },
-                workspace_id: "default".into(),
-                replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-                golden_key: None,
-                artifact_id: None,
-                expect_golden: false,
-            };
+            bind: vec![],
+            cache: "readwrite".into(),
+            capabilities: crate::ComputeCapabilitiesSpec {
+                fs_read: vec!["ws:/files/**".into()],
+                ..Default::default()
+            },
+            workspace_id: "default".into(),
+            replayable: true,
+            provenance: crate::ComputeProvenanceSpec {
+                env_hash: "dev".into(),
+                agent_trace_id: None,
+            },
+            token: None,
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        };
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
             spec.capabilities.fs_read = vec!["ws:/files/sub/file.txt".into()];
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
@@ -2550,18 +2595,19 @@ mod with_runtime {
                 fuel: None,
                 mem_limit_mb: None,
                 bind: vec![],
-                cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec::default(),
-                workspace_id: "default".into(),
-                replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-                golden_key: None,
-                artifact_id: None,
-                expect_golden: false,
-            };
+            cache: "readwrite".into(),
+            capabilities: crate::ComputeCapabilitiesSpec::default(),
+            workspace_id: "default".into(),
+            replayable: true,
+            provenance: crate::ComputeProvenanceSpec {
+                env_hash: "dev".into(),
+                agent_trace_id: None,
+            },
+            token: None,
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        };
             let original = "data:text/csv,foo,bar";
             let resolved = resolve_csv_source(&spec, original).expect("passthrough");
             assert_eq!(resolved, original);
@@ -2586,21 +2632,22 @@ mod with_runtime {
                 fuel: None,
                 mem_limit_mb: None,
                 bind: vec![],
-                cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec {
-                    fs_read: vec!["ws:/files/**".into()],
-                    ..Default::default()
-                },
-                workspace_id: "default".into(),
-                replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-                golden_key: None,
-                artifact_id: None,
-                expect_golden: false,
-            };
+            cache: "readwrite".into(),
+            capabilities: crate::ComputeCapabilitiesSpec {
+                fs_read: vec!["ws:/files/**".into()],
+                ..Default::default()
+            },
+            workspace_id: "default".into(),
+            replayable: true,
+            provenance: crate::ComputeProvenanceSpec {
+                env_hash: "dev".into(),
+                agent_trace_id: None,
+            },
+            token: None,
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        };
             let ws_path = "ws:/files/tests/resolve_csv_source.csv";
             let resolved = resolve_csv_source(&spec_ok, ws_path).expect("resolves");
             assert!(resolved.starts_with("data:text/csv;base64,"));
@@ -3278,8 +3325,22 @@ mod no_runtime {
                             .ok()
                             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                             .unwrap_or(false);
+                        let module_meta = crate::registry::find_module(&app, &spec.task).ok().flatten();
+                        let invariants = {
+                            let mut parts: Vec<String> = Vec::new();
+                            if let Some(m) = &module_meta {
+                                parts.push(format!("modsha={}", m.entry.digest_sha256));
+                                parts.push(format!("modver={}", m.entry.version));
+                                if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                                    if !world.is_empty() { parts.push(format!("world={}", world)); }
+                                }
+                                parts.push("abi=wasi-p2".to_string());
+                            }
+                            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+                            parts.join("|")
+                        };
                         let key = if use_v2 {
-                            crate::compute_cache::compute_key_v2(&spec, &spec.input)
+                            crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
                         } else {
                             crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
                         };

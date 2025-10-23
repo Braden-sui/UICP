@@ -143,6 +143,7 @@ impl ComputeTestHarness {
             compute_ongoing: RwLock::new(std::collections::HashMap::new()),
             compute_sem: Arc::new(Semaphore::new(2)),
             codegen_sem: Arc::new(Semaphore::new(2)),
+            wasm_sem: Arc::new(Semaphore::new(2)),
             compute_cancel: RwLock::new(std::collections::HashMap::new()),
             safe_mode: RwLock::new(false),
             safe_reason: RwLock::new(None),
