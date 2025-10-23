@@ -30,9 +30,9 @@ In scope:
 ## Master execution checklist
 
 - [x] Phase 0: Recon and anchors
-- [ ] Phase 1: Provider router and policy (TS)
-- [ ] Phase 2: Capability tokens (Rust+TS)
-- [ ] Phase 3: Cache v2 + determinism
+- [x] Phase 1: Provider router and policy (TS)
+- [x] Phase 2: Capability tokens (Rust+TS)
+- [~] Phase 3: Cache v2 + determinism (groundwork landed; see details)
 - [ ] Phase 4: WIT world finalize + hostcall gating
 - [ ] Phase 5: Registry enforcement + trust store
 - [ ] Phase 6: Observability (failure taxonomy, SLOs) + Backpressure UI
@@ -46,9 +46,18 @@ In scope:
 
 * Wasmtime host with WIT bindings, quotas, timeouts, fuel, and provenance.
 * Registry with sha256 and optional Ed25519 signatures.
-* Compute cache keyed by module bytes + version + spec_json + workspace hash.
+* Compute cache v1: `v1|task|env|input_json_canonical`.
+* Compute cache v2 (initial, gated): `v2|task|env|input_json_canonical|manifest(ws:/files blake3)`.
 * Job lifecycle with queue and metrics.
 * UI stubs: ComputeDemoWindow, ModuleRegistryWindow.
+
+## What landed in this pass
+
+* Router wired on the frontend (operation-style tasks without `@` route to WASM modules); moduleId tasks remain unchanged.
+* `provider_decision` telemetry emits before dispatch to aid rollout and audits.
+* Capability tokens v1 (HMAC) minted in Tauri and optionally enforced by the host (env-gated).
+* Cache v2 groundwork (input manifest with ws:/files content hashing) + env switch for lookup/store.
+* Determinism metrics: `outputHash`, optional `goldenHash`, `goldenMatched` on success payloads; golden cache stored/verified when `goldenKey` is provided.
 
 ## Phase 0 - Recon anchors (done)
 
@@ -115,20 +124,44 @@ export type ResourceLimits = {
 
 ## Host capability tokens
 
-* Host mints a short-lived HMAC job token over `{jobId,moduleId,caps,limits,policyVersion,exp}`.
-* Token travels with the JobSpec over the bridge.
-* Host verifies token just before instantiation. Missing or invalid is denied with CapabilityDenied.
-* No plain JSON capabilities accepted without a valid token.
+Tokens v1 (implemented):
+
+* Host mints an HMAC-SHA256 token over `{jobId, task, workspaceId, envHash}`.
+* Token travels with the `JobSpec` and is verified before execution when enforcement is enabled.
+* Enforcement is disabled by default; opt-in via `UICP_REQUIRE_TOKENS=1`.
+
+Planned for v2 (future):
+
+* Expand token payload to include `capabilities`, `limits`, `policyVersion`, and a short-lived `exp`, then enforce strict match on host.
 
 ## Cache v2 and determinism
 
-* Replace workspace hashing with explicit input manifests.
-* Cache key: `v2|task|module_sha|module_ver|policy_ver|input_json_canonical|file_hashes|host_abi|wit_world|wasmtime_major`.
-* Determinism rules:
+Implemented (initial v2):
+
+* Replace implicit workspace hashing with explicit input manifests (ws:/files traversal).
+* Cache key: `v2|task|env|input_json_canonical|manifest(ws:/files blake3)`.
+* Env flag: `UICP_CACHE_V2=1` toggles both lookup and store to v2 keys.
+
+Planned extensions (future):
+
+* Add `module_sha`, `module_ver`, `policy_ver`, `host_abi`, `wit_world`, `wasmtime_major` into v2 key.
+
+Determinism rules:
 
   * Using time or net or unseeded random flips deterministic=false.
   * deterministic=false forces cache bypass unless policy allows.
-* Result metrics carry `deterministic` and `inputHashes` for audits.
+* Result metrics carry `outputHash` and (when golden expected) `goldenHash`, `goldenMatched`.
+
+Golden cache:
+
+* On first successful run with `goldenKey`, store `outputHash`.
+* On subsequent runs, verify equality; mismatch flips `goldenMatched=false` and emits a `replay-issue` event; UI may enter Safe Mode.
+
+## Environment flags
+
+* `UICP_REQUIRE_TOKENS=1` — enforce job token verification.
+* `UICP_JOB_TOKEN_KEY_HEX=<64 hex>` — fixed 32-byte HMAC key; random if unset.
+* `UICP_CACHE_V2=1` — use v2 cache key for lookup and store.
 
 ## Backpressure and log quotas
 
@@ -245,17 +278,17 @@ world job {
 
 ## 7 day sprint plan
 
-Day 1 - Router and tokens
+Day 1 - Router and tokens (done)
 
-* Implement policyDecide and routeStep with wasm branch.
-* Add HMAC job tokens and host verification.
-* Add policyVersion in decisions.
+* policyDecide and routing (operation → WASM) implemented; telemetry added.
+* HMAC job tokens and host-side enforcement (env-gated) implemented.
+* policyVersion tracking deferred to token v2.
 
-Day 2 - Cache v2 and determinism
+Day 2 - Cache v2 and determinism (in progress)
 
-* Input manifests and file hashing.
-* Determinism tracking in host and cache bypass rules.
-* Extend cache key with host_abi_version, wit_world_version, wasmtime_major.
+* Input manifests and file hashing implemented in v2 key (env-gated).
+* Determinism tracking (outputHash + golden verification) implemented.
+* Key extensions (host_abi, wit_world, wasmtime_major) — pending.
 
 Day 3 - First module
 

@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime, State};
 
 use crate::AppState;
+use crate::ComputeJobSpec;
+use crate::compute_input::sanitize_ws_files_path;
+use blake3::Hasher as Blake3;
 
 /// Canonicalize JSON deterministically (keys sorted, stable formatting).
 pub fn canonicalize_input(value: &Value) -> String {
@@ -18,7 +21,6 @@ pub fn canonicalize_input(value: &Value) -> String {
                 out.push('"');
                 for ch in s.chars() {
                     match ch {
-                        // Escape JS separators to avoid accidental script-breaking tokens.
                         '\u{2028}' => out.push_str("\\u2028"),
                         '\u{2029}' => out.push_str("\\u2029"),
                         '"' => out.push_str("\\\""),
@@ -87,6 +89,79 @@ pub fn compute_key(task: &str, input: &Value, env_hash: &str) -> String {
     let digest = hasher.finalize();
     hex::encode(digest)
 }
+
+ 
+
+fn collect_ws_inputs(value: &Value, acc: &mut Vec<String>) {
+    match value {
+        Value::String(s) => {
+            if s.starts_with("ws:/files/") {
+                acc.push(s.clone());
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_ws_inputs(v, acc);
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values() {
+                collect_ws_inputs(v, acc);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_ws_manifest(spec: &ComputeJobSpec, input: &Value) -> String {
+    let mut paths: Vec<String> = Vec::new();
+    collect_ws_inputs(input, &mut paths);
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for ws in paths {
+        let entry = if let Ok(host_path) = sanitize_ws_files_path(&ws) {
+            match std::fs::read(&host_path) {
+                Ok(bytes) => {
+                    let mut h = Blake3::new();
+                    h.update(&bytes);
+                    let digest = h.finalize();
+                    format!("{}={},{}", ws, "b3", hex::encode(digest.as_bytes()))
+                }
+                Err(_) => format!("{}={},{}", ws, "missing", 0),
+            }
+        } else {
+            format!("{}={},{}", ws, "denied", 0)
+        };
+        if !out.is_empty() {
+            out.push('|');
+        }
+        out.push_str(&entry);
+    }
+    out
+}
+
+pub fn compute_key_v2(spec: &ComputeJobSpec, input: &Value) -> String {
+    let canonical = canonicalize_input(input);
+    let manifest = build_ws_manifest(spec, input);
+    let mut hasher = Sha256::new();
+    hasher.update(b"v2|");
+    hasher.update(spec.task.as_bytes());
+    hasher.update(b"|env|");
+    hasher.update(spec.provenance.env_hash.as_bytes());
+    hasher.update(b"|input|");
+    hasher.update(canonical.as_bytes());
+    if !manifest.is_empty() {
+        hasher.update(b"|manifest|");
+        hasher.update(manifest.as_bytes());
+    }
+    let digest = hasher.finalize();
+    hex::encode(digest)
+}
+
 
 /// Golden artifact lookup result.
 #[derive(Debug, Clone, PartialEq)]

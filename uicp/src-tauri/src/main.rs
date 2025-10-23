@@ -17,6 +17,7 @@ use reqwest::{Client, Url};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
 use tauri::{
     async_runtime::{spawn, spawn_blocking, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
@@ -27,6 +28,7 @@ use tokio::{
     sync::{RwLock, Semaphore},
     time::{interval, timeout},
 };
+use rand::RngCore;
 use tokio_rusqlite::Connection as AsyncConn;
 use tokio_stream::StreamExt;
 
@@ -80,6 +82,28 @@ static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
 pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
     let state: State<'_, AppState> = app_handle.state();
     state.ongoing.write().await.remove(request_id);
+}
+
+#[tauri::command]
+async fn mint_job_token(
+    state: State<'_, AppState>,
+    job_id: String,
+    task: String,
+    workspace_id: String,
+    env_hash: String,
+) -> Result<String, String> {
+    let key = &state.job_token_key;
+    let mut mac: Hmac<Sha256> = Hmac::new_from_slice(key).map_err(|e| e.to_string())?;
+    mac.update(b"UICP-TOKENv1\x00");
+    mac.update(job_id.as_bytes());
+    mac.update(b"|");
+    mac.update(task.as_bytes());
+    mac.update(b"|");
+    mac.update(workspace_id.as_bytes());
+    mac.update(b"|");
+    mac.update(env_hash.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    Ok(hex::encode(tag))
 }
 
 // CircuitState and CircuitBreakerConfig now defined in core module; configure_sqlite re-exported
@@ -176,6 +200,44 @@ async fn compute_call(
 
     let app_handle = window.app_handle().clone();
 
+    let require_tokens = match std::env::var("UICP_REQUIRE_TOKENS") {
+        Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"),
+        Err(_) => false,
+    };
+    if require_tokens {
+        let expected = {
+            let key = &state.job_token_key;
+            let mut mac: Hmac<Sha256> = Hmac::new_from_slice(key).map_err(|e| e.to_string())?;
+            mac.update(b"UICP-TOKENv1\x00");
+            mac.update(spec.job_id.as_bytes());
+            mac.update(b"|");
+            mac.update(spec.task.as_bytes());
+            mac.update(b"|");
+            mac.update(spec.workspace_id.as_bytes());
+            mac.update(b"|");
+            mac.update(spec.provenance.env_hash.as_bytes());
+            let tag = mac.finalize().into_bytes();
+            hex::encode(tag)
+        };
+        let provided = spec.token.as_deref().unwrap_or("");
+        if provided != expected {
+            let payload = ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: "Compute.CapabilityDenied".into(),
+                message: "E-UICP-0701: missing or invalid job token".into(),
+                metrics: None,
+            };
+            emit_or_log(
+                &window.app_handle(),
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
+            return Ok(());
+        }
+    }
+
     // --- Policy enforcement (Non-negotiables v1) ---
     if let Some(deny) = enforce_compute_policy(&spec) {
         emit_or_log(
@@ -209,8 +271,15 @@ async fn compute_call(
     // Content-addressed cache lookup when enabled (normalize policy casing)
     let cache_mode = spec.cache.to_lowercase();
     if cache_mode == "readwrite" || cache_mode == "readonly" {
-        let key =
-            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash);
+        let use_v2 = std::env::var("UICP_CACHE_V2")
+            .ok()
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+            .unwrap_or(false);
+        let key = if use_v2 {
+            compute_cache::compute_key_v2(&spec, &normalized_input)
+        } else {
+            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash)
+        };
         if let Ok(Some(mut cached)) =
             compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
         {
@@ -1919,6 +1988,30 @@ fn main() {
         eprintln!("E-UICP-0660: failed to append boot action-log entry: {err:?}");
     }
 
+    let job_token_key: [u8; 32] = {
+        if let Ok(hex_key) = std::env::var("UICP_JOB_TOKEN_KEY_HEX") {
+            if let Ok(bytes) = hex::decode(hex_key.trim()) {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                } else {
+                    let mut arr = [0u8; 32];
+                    rand::thread_rng().fill_bytes(&mut arr);
+                    arr
+                }
+            } else {
+                let mut arr = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut arr);
+                arr
+            }
+        } else {
+            let mut arr = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut arr);
+            arr
+        }
+    };
+
     let state = AppState {
         db_path: db_path.clone(),
         db_ro,
@@ -1947,6 +2040,7 @@ fn main() {
         circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
         circuit_config: CircuitBreakerConfig::from_env(),
         action_log,
+        job_token_key,
     };
 
     if let Err(err) = load_env_key(&state) {
@@ -2124,6 +2218,7 @@ fn main() {
             cancel_chat,
             compute_call,
             compute_cancel,
+            mint_job_token,
             debug_circuits,
             kill_container,
             set_env_var,

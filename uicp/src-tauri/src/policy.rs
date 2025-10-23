@@ -52,6 +52,8 @@ pub struct ComputeJobSpec {
     #[serde(default = "default_workspace_id")]
     pub workspace_id: String,
     pub provenance: ComputeProvenanceSpec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     // Track C: Golden cache for code generation determinism
     #[serde(skip_serializing_if = "Option::is_none")]
     pub golden_key: Option<String>,
@@ -290,6 +292,7 @@ mod tests {
                 env_hash: "test-env".into(),
                 agent_trace_id: None,
             },
+            token: None,
             golden_key: None,
             artifact_id: None,
             expect_golden: false,

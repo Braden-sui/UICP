@@ -2195,11 +2195,15 @@ mod with_runtime {
             payload.clone(),
         );
         if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(
-                &spec.task,
-                &spec.input,
-                &spec.provenance.env_hash,
-            );
+            let use_v2 = std::env::var("UICP_CACHE_V2")
+                .ok()
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+                .unwrap_or(false);
+            let key = if use_v2 {
+                crate::compute_cache::compute_key_v2(&spec, &spec.input)
+            } else {
+                crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
+            };
             let obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
             let _ = crate::compute_cache::store(
                 app,
@@ -2330,11 +2334,15 @@ mod with_runtime {
         tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "compute job completed with metrics");
         crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
         if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(
-                &spec.task,
-                &spec.input,
-                &spec.provenance.env_hash,
-            );
+            let use_v2 = std::env::var("UICP_CACHE_V2")
+                .ok()
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+                .unwrap_or(false);
+            let key = if use_v2 {
+                crate::compute_cache::compute_key_v2(&spec, &spec.input)
+            } else {
+                crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
+            };
             let mut obj = serde_json::json!({ "ok": true, "jobId": spec.job_id, "task": spec.task, "output": output });
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), metrics);
@@ -2883,8 +2891,6 @@ mod with_runtime {
             // Minimal job context
             let tele = Arc::new(TestEmitter::default());
             let tele_trait: Arc<dyn TelemetryEmitter> = tele.clone();
-            let limits = LimitsWithPeak::new(64 * 1024 * 1024);
-            let tele_exec = tele_trait.clone();
             let linker = linker;
             block_on(async move {
                 let mut store: Store<Ctx> = Store::new(
@@ -2892,7 +2898,7 @@ mod with_runtime {
                     Ctx {
                         wasi: WasiCtxBuilder::new().build(),
                         table: ResourceTable::new(),
-                        emitter: tele_exec,
+                        emitter: tele_trait.clone(),
                         job_id: "log-guest".into(),
                         task: "uicp:task-log-test".into(),
                         partial_seq: Arc::new(AtomicU64::new(0)),
@@ -2914,7 +2920,7 @@ mod with_runtime {
                         logger_throttle_waits: Arc::new(AtomicU64::new(0)),
                         partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(10, 10))),
                         partial_throttle_waits: Arc::new(AtomicU64::new(0)),
-                        limits,
+                        limits: LimitsWithPeak::new(64 * 1024 * 1024),
                     },
                 );
 
@@ -3268,7 +3274,15 @@ mod no_runtime {
                     }));
                     crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
-                        let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+                        let use_v2 = std::env::var("UICP_CACHE_V2")
+                            .ok()
+                            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+                            .unwrap_or(false);
+                        let key = if use_v2 {
+                            crate::compute_cache::compute_key_v2(&spec, &spec.input)
+                        } else {
+                            crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
+                        };
                         let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
                         if let Some(map) = obj.as_object_mut() {
                             map.insert(

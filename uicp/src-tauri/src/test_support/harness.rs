@@ -149,6 +149,7 @@ impl ComputeTestHarness {
             circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
             circuit_config: crate::core::CircuitBreakerConfig::from_env(),
             action_log,
+            job_token_key: [0u8; 32],
         };
 
         // database initialized above

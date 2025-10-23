@@ -344,6 +344,20 @@ export async function initializeTauriBridge() {
           }
         } catch {}
       }
+      try {
+        const envHash = typeof finalSpec.provenance?.envHash === 'string' ? finalSpec.provenance.envHash : undefined;
+        if (envHash) {
+          const token: string = await invoke('mint_job_token', {
+            jobId: routedSpec.jobId,
+            task: routedSpec.task,
+            workspaceId: routedSpec.workspaceId,
+            envHash,
+          } as never);
+          if (typeof token === 'string' && token.length > 0) {
+            routedSpec = { ...routedSpec, token } as JobSpec;
+          }
+        }
+      } catch {}
       await invoke('compute_call', { spec: routedSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
