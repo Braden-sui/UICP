@@ -15,12 +15,6 @@ Local‑first Tauri desktop that exposes a clean workspace canvas and a DockChat
 
 Build a trustworthy, local‑first generative desktop where models describe intent and the system performs safe, declarative UI updates. The agent never emits inline JS; it speaks in validated commands that the adapter applies deterministically and can replay. The compute plane executes Wasm tasks locally (capability‑scoped, feature‑gated) so common data work stays offline. Everything fails loud with typed errors, streaming is cancellable, and state changes are auditable via logs and persisted commands. Longer‑term, integrate Claude Code and the Codex CLI directly into the desktop to enable agentic coding and real code implementation with reviewable diffs and tests.
 
-### Non‑goals for the MVP
-
-- Production hardening and enterprise security
-- Backward‑compat shims for breaking changes
-- Broad OS support beyond Windows until core flows are stable
-
 ### Key runtime guardrails
 
 - Environment Snapshot is prepended to planner/actor prompts (agent flags, open windows, last trace, and a trimmed DOM summary) to boost context-awareness.
