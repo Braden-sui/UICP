@@ -2206,7 +2206,7 @@ async fn check_network_capabilities() -> Result<serde_json::Value, String> {
     // This would integrate with the existing policy system
     let has_network = true; // Default to allowing network
     let restricted = false; // Default to not restricted
-    let reason = None;
+    let reason: Option<String> = None;
     
     // TODO: Integrate with actual policy system to determine restrictions
     // For now, we'll return basic capabilities

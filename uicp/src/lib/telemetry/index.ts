@@ -48,6 +48,7 @@ const EVENT_DEFAULTS: Partial<Record<TelemetryEventName, EventDefaults>> = {
   'adapter.dedupe.skip': { span: 'batch', kind: 'instant', status: 'skipped' },
   'adapter.ui.command': { span: 'batch', kind: 'instant' },
   needs_code_artifact: { span: 'compute', kind: 'instant', status: 'ok' },
+  provider_decision: { span: 'compute', kind: 'instant' },
   'ui.anim.window.enter': { span: 'ui', kind: 'instant', status: 'ok' },
   'ui.anim.window.exit': { span: 'ui', kind: 'instant', status: 'ok' },
   'ui.anim.panel.enter': { span: 'ui', kind: 'instant', status: 'ok' },

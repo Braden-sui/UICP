@@ -27,6 +27,21 @@ In scope:
   Out of scope right now:
 * Cross-tenant remote module registry sync, WASM debugging UI, distributed sandboxes.
 
+## Master execution checklist
+
+- [x] Phase 0: Recon and anchors
+- [ ] Phase 1: Provider router and policy (TS)
+- [ ] Phase 2: Capability tokens (Rust+TS)
+- [ ] Phase 3: Cache v2 + determinism
+- [ ] Phase 4: WIT world finalize + hostcall gating
+- [ ] Phase 5: Registry enforcement + trust store
+- [ ] Phase 6: Observability (failure taxonomy, SLOs) + Backpressure UI
+- [ ] Phase 7: Fair scheduling
+- [ ] Phase 8: DX CLI
+- [ ] Phase 9: Migrate modules (patch-tools, metrics-agg)
+- [ ] Phase 10: CI gating + rollout
+- [ ] Documentation updates
+
 ## Current state snapshot
 
 * Wasmtime host with WIT bindings, quotas, timeouts, fuel, and provenance.
@@ -34,6 +49,16 @@ In scope:
 * Compute cache keyed by module bytes + version + spec_json + workspace hash.
 * Job lifecycle with queue and metrics.
 * UI stubs: ComputeDemoWindow, ModuleRegistryWindow.
+
+## Phase 0 - Recon anchors (done)
+
+- Compute host: uicp/src-tauri/src/compute.rs. Wasmtime host, quotas, backpressure, partial/log streams, rate limiters.
+- Dispatch and cache: uicp/src-tauri/src/commands.rs. Policy gate, cache lookup (readwrite/readonly), concurrency semaphore, spawn job.
+- Cache API: uicp/src-tauri/src/compute_cache.rs. Canonicalization, v1 key. Target: cache v2 with input manifests, determinism.
+- Registry: uicp/src-tauri/src/registry.rs. Modules dir, bundled install, digest verification, signature enforcement, preflight and contract verification.
+- Policy types: uicp/src-tauri/src/policy.rs. ComputeJobSpec, capabilities, provenance. Extend with token and determinism metrics.
+- UI surfaces: AgentTraceWindow.tsx, MetricsPanel.tsx, ModuleRegistryWindow.tsx. Add provider column, wasm metrics, backpressure banner.
+- LLM orchestration: uicp/src/lib/llm/orchestrator.ts (LLM path). WASM routing will be host-owned via router, not model-owned.
 
 ## Target architecture at a glance
 

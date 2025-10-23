@@ -239,6 +239,25 @@ const AgentSettingsWindow = () => {
     }
   }, [handleProviderHealth]);
 
+  const handleStandardHealth = useCallback(async () => {
+    if (!hasTauriBridge()) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: 'Health check requires the desktop runtime' });
+      return;
+    }
+    try {
+      // Unset strict mode and run non-strict provider health checks
+      await tauriInvoke('set_env_var', { name: 'UICP_HEALTH_STRICT', value: null });
+      await handleProviderHealth('codex');
+      await handleProviderHealth('claude');
+    } catch (err) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: `Standard health failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [handleProviderHealth]);
+
   const handlePullImage = useCallback(async (provider: ProviderName) => {
     if (!hasTauriBridge()) {
       useAppStore
@@ -625,6 +644,14 @@ const AgentSettingsWindow = () => {
                 className="ml-auto rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Run Strict Health
+              </button>
+              <button
+                type="button"
+                onClick={handleStandardHealth}
+                disabled={!bridgeAvailable}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Run Standard Health
               </button>
             </div>
             <div className="flex flex-wrap items-center gap-2">

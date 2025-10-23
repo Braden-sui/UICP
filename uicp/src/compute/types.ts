@@ -45,6 +45,7 @@ export const jobSpecSchema = z.object({
     envHash: z.string().min(1),
     agentTraceId: z.string().optional(),
   }),
+  token: z.string().optional(),
   // Track C: Golden cache for code artifacts
   artifactId: z.string().min(1).optional(),
   goldenKey: z.string().min(1).optional(),

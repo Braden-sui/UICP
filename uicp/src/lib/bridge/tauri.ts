@@ -12,6 +12,8 @@ import { ComputeError } from '../compute/errors';
 import { asStatePath, type Batch, type ApplyOutcome } from '../uicp/adapters/schemas';
 import { OrchestratorEvent } from '../orchestrator/state-machine';
 import { type Result, createBridgeUnavailableError, toUICPError, UICPErrorCode } from './result';
+import { policyDecide } from '../provider/router';
+import { emitTelemetryEvent } from '../telemetry';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -287,7 +289,62 @@ export async function initializeTauriBridge() {
       prunePending();
       useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
       const finalSpec: JobSpec = { ...spec, workspaceId: spec.workspaceId ?? 'default' };
-      await invoke('compute_call', { spec: finalSpec });
+      try {
+        const traceId =
+          typeof finalSpec.provenance?.agentTraceId === 'string'
+            ? finalSpec.provenance.agentTraceId
+            : null;
+        const op = String(finalSpec.task ?? '').split('@')[0];
+        const params =
+          finalSpec.input && typeof finalSpec.input === 'object' && !Array.isArray(finalSpec.input)
+            ? (finalSpec.input as Record<string, unknown>)
+            : undefined;
+        const decision = policyDecide({ operation: op, params, workspaceId: finalSpec.workspaceId });
+        if (traceId) {
+          emitTelemetryEvent('provider_decision', {
+            traceId,
+            data: { op, task: finalSpec.task, workspaceId: finalSpec.workspaceId, decision },
+          });
+        }
+      } catch (routerError) {
+        if (import.meta.env.DEV) {
+          console.warn('[router] provider decision telemetry failed', routerError);
+        }
+      }
+      let routedSpec: JobSpec = finalSpec;
+      const isOperation = typeof finalSpec.task === 'string' && finalSpec.task.indexOf('@') === -1;
+      if (isOperation) {
+        try {
+          const op = String(finalSpec.task ?? '').split('@')[0];
+          const params =
+            finalSpec.input && typeof finalSpec.input === 'object' && !Array.isArray(finalSpec.input)
+              ? (finalSpec.input as Record<string, unknown>)
+              : undefined;
+          const decision = policyDecide({ operation: op, params, workspaceId: finalSpec.workspaceId });
+          if (decision.kind === 'wasm') {
+            const mergeArray = (a?: string[], b?: string[]) => Array.from(new Set([...(a ?? []), ...(b ?? [])]));
+            const baseCaps = (finalSpec.capabilities ?? {}) as Record<string, unknown> & { fsRead?: string[]; fsWrite?: string[]; net?: string[] };
+            const decCaps = (decision.capabilities ?? {}) as { fsRead?: string[]; fsWrite?: string[]; net?: string[] };
+            const mergedCaps = {
+              ...baseCaps,
+              ...(decCaps.fsRead ? { fsRead: mergeArray(baseCaps.fsRead, decCaps.fsRead) } : {}),
+              ...(decCaps.fsWrite ? { fsWrite: mergeArray(baseCaps.fsWrite, decCaps.fsWrite) } : {}),
+              ...(decCaps.net ? { net: mergeArray(baseCaps.net, decCaps.net) } : {}),
+            } as JobSpec['capabilities'];
+            const cacheMode = decision.cacheMode === 'bypass' ? 'bypass' : 'readwrite';
+            routedSpec = {
+              ...finalSpec,
+              task: decision.moduleId,
+              memLimitMb: finalSpec.memLimitMb ?? decision.limits.memLimitMb,
+              timeoutMs: finalSpec.timeoutMs ?? decision.limits.timeoutMs ?? finalSpec.timeoutMs,
+              fuel: finalSpec.fuel ?? decision.limits.fuel,
+              cache: finalSpec.cache ?? cacheMode,
+              capabilities: mergedCaps,
+            };
+          }
+        } catch {}
+      }
+      await invoke('compute_call', { spec: routedSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
       useComputeStore.getState().markFinal(spec.jobId, false, undefined, undefined, ComputeError.CapabilityDenied);

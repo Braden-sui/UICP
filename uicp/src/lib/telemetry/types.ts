@@ -31,6 +31,7 @@ export type TelemetryEventName =
   | 'adapter.dedupe.skip'
   | 'adapter.ui.command'
   | 'needs_code_artifact'
+  | 'provider_decision'
   | 'ui.anim.window.enter'
   | 'ui.anim.window.exit'
   | 'ui.anim.panel.enter'

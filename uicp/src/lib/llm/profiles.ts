@@ -191,7 +191,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
 const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   glm: {
     key: 'glm',
-    label: 'GLM',
+    label: 'GLM 4.6',
     description: 'Advanced agentic reasoning and coding capabilities.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson: string) => [
@@ -201,7 +201,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   },
   'gpt-oss': {
     key: 'gpt-oss',
-    label: 'GPT-OSS',
+    label: 'GPT-OSS 120B',
     description: 'Open-source GPT model with advanced reasoning capabilities.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson: string) => [
@@ -211,7 +211,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   },
   qwen: {
     key: 'qwen',
-    label: 'Qwen',
+    label: 'Qwen3-Coder 480B',
     description: 'Coding and reasoning-focused execution profile.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson) => [
@@ -221,7 +221,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   },
   kimi: {
     key: 'kimi',
-    label: 'Kimi',
+    label: 'Kimi K2',
     description: 'Multilingual reasoning and execution profile.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson) => [
@@ -231,7 +231,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   },
   deepseek: {
     key: 'deepseek',
-    label: 'DeepSeek',
+    label: 'DeepSeek V3.1',
     description: 'High-performance reasoning and execution profile.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson: string) => [
