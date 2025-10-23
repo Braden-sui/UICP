@@ -28,6 +28,8 @@ export type ProviderHealthPayload = {
 type ProviderSettings = {
   defaultProvider: ProviderPreference;
   enableBoth: boolean;
+  codexModel?: string;
+  claudeModel?: string;
 };
 
 type ProviderState = {
@@ -40,6 +42,8 @@ type ProviderState = {
   fail: (provider: ProviderName, detail: string) => void;
   setDefaultProvider: (preference: ProviderPreference) => void;
   setEnableBoth: (value: boolean) => void;
+  setCodexModel: (model: string) => void;
+  setClaudeModel: (model: string) => void;
   resetStatus: (provider: ProviderName) => void;
   resetAll: () => void;
 };
@@ -57,6 +61,8 @@ export const useProviderStore = create<ProviderState>()(
       settings: {
         defaultProvider: 'auto',
         enableBoth: true,
+        codexModel: undefined,
+        claudeModel: undefined,
       },
       statuses: {
         codex: defaultStatus(),
@@ -113,6 +119,16 @@ export const useProviderStore = create<ProviderState>()(
       setEnableBoth: (value) =>
         set((state) => {
           state.settings.enableBoth = value;
+        }),
+      setCodexModel: (model) =>
+        set((state) => {
+          const trimmed = (model || '').trim();
+          state.settings.codexModel = trimmed.length > 0 ? trimmed : undefined;
+        }),
+      setClaudeModel: (model) =>
+        set((state) => {
+          const trimmed = (model || '').trim();
+          state.settings.claudeModel = trimmed.length > 0 ? trimmed : undefined;
         }),
       resetStatus: (provider) =>
         set((state) => {

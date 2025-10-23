@@ -18,9 +18,7 @@ container:
     - name: ALLOWLIST_JSON
       value: /workspace/ops/code/network/allowlist.json
   entry: ["/usr/local/bin/codex"]
-defaults:
-  model: gpt-5-codex
-  non_interactive: true
+defaults: {}
 hardening:
   httpjail:
     enabled: true

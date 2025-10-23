@@ -17,11 +17,19 @@ export async function assembleQuickJS({ entry, printJson = true }) {
 }
 
 export function makeScriptManifest({ id, code, caps = {} }) {
+  // P1: Enhanced manifest with capability enforcement
   return {
     id,
     kind: "script.panel",
     module: "applet.quickjs@0.1.0",
     source: code,
-    caps: { net: false, fs: false, ...caps }
+    caps: {
+      net: caps.net || false,
+      fs: caps.fs || false,
+      dom: caps.dom || false,
+      ...caps
+    },
+    version: "1.0.0",
+    timestamp: new Date().toISOString()
   };
 }

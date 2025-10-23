@@ -95,7 +95,10 @@ export function getPlannerClient(): PlannerClient {
       if (options?.extraSystem) {
         messages.push({ role: 'system', content: options.extraSystem });
       }
-      const model = options?.model ?? profile.defaultModel;
+      const model = options?.model;
+      if (!model) {
+        throw new Error('Planner model not specified. Provide model via options.model or configure PLANNER_MODEL environment variable.');
+      }
       const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
       const plannerEffort =
         options?.reasoningEffort ??
@@ -148,7 +151,10 @@ export function getActorClient(): ActorClient {
       if (options?.extraSystem) {
         messages.push({ role: 'system', content: options.extraSystem });
       }
-      const model = options?.model ?? profile.defaultModel;
+      const model = options?.model;
+      if (!model) {
+        throw new Error('Actor model not specified. Provide model via options.model or configure ACTOR_MODEL environment variable.');
+      }
       const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
       const actorEffort =
         options?.reasoningEffort ?? (isGptOss ? useAppStore.getState().actorReasoningEffort : undefined);

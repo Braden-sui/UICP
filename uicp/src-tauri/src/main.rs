@@ -2126,11 +2126,16 @@ fn main() {
             compute_cancel,
             debug_circuits,
             kill_container,
+            set_env_var,
+            save_provider_api_key,
+            provider_pull_image,
             provider_login,
             provider_health,
             provider_resolve,
             provider_install,
-            frontend_ready
+            frontend_ready,
+            check_container_runtime,
+            check_network_capabilities
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2147,6 +2152,145 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
         let _ = splash.close();
     }
     Ok(())
+}
+
+/// Set or unset a process environment variable for subsequent provider operations.
+/// ERROR: E-UICP-9201 invalid name
+/// Check if container runtime (Docker/Podman) is available
+#[tauri::command]
+async fn check_container_runtime() -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("check_container_runtime").entered();
+    use std::process::Command;
+    
+    // Check for Docker
+    if let Ok(output) = Command::new("docker").arg("version").arg("--format").arg("{{.Server.Version}}").output() {
+        if output.status.success() {
+            #[cfg(feature = "otel_spans")]
+            tracing::info!(target = "uicp", runtime = "docker", "container runtime detected");
+            return Ok(serde_json::json!({
+                "available": true,
+                "runtime": "docker",
+                "version": String::from_utf8_lossy(&output.stdout).trim()
+            }));
+        }
+    }
+    
+    // Check for Podman
+    if let Ok(output) = Command::new("podman").arg("version").arg("--format").arg("{{.Server.Version}}").output() {
+        if output.status.success() {
+            #[cfg(feature = "otel_spans")]
+            tracing::info!(target = "uicp", runtime = "podman", "container runtime detected");
+            return Ok(serde_json::json!({
+                "available": true,
+                "runtime": "podman",
+                "version": String::from_utf8_lossy(&output.stdout).trim()
+            }));
+        }
+    }
+    
+    #[cfg(feature = "otel_spans")]
+    tracing::warn!(target = "uicp", "no container runtime found");
+    Ok(serde_json::json!({
+        "available": false,
+        "error": "No container runtime found (Docker or Podman required)"
+    }))
+}
+
+/// Check network capabilities and restrictions
+#[tauri::command]
+async fn check_network_capabilities() -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("check_network_capabilities").entered();
+    // P1: Check if network access is restricted based on policy
+    // This would integrate with the existing policy system
+    let has_network = true; // Default to allowing network
+    let restricted = false; // Default to not restricted
+    let reason = None;
+    
+    // TODO: Integrate with actual policy system to determine restrictions
+    // For now, we'll return basic capabilities
+    
+    let json = serde_json::json!({
+        "hasNetwork": has_network,
+        "restricted": restricted,
+        "reason": reason
+    });
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(target = "uicp", has_network, restricted, "network capabilities returned");
+    Ok(json)
+}
+
+#[tauri::command]
+async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> {
+    let key = name.trim();
+    if key.is_empty() || key.contains('\0') || key.contains('=') {
+        return Err("E-UICP-9201: invalid env var name".into());
+    }
+    match value {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    Ok(())
+}
+
+/// Save a provider API key to the OS keyring.
+/// provider: "openai" or "anthropic"
+/// ERROR: E-UICP-9202 invalid provider; E-UICP-9203 keyring error
+#[tauri::command]
+async fn save_provider_api_key(provider: String, key: String) -> Result<(), String> {
+    let account = match provider.trim().to_ascii_lowercase().as_str() {
+        "openai" => "openai_api_key",
+        "anthropic" => "anthropic_api_key",
+        other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
+    };
+    let key_trimmed = key.trim().to_string();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let entry = Entry::new("UICP", account)
+            .map_err(|e| format!("E-UICP-9203: keyring access failed: {e}"))?;
+        entry
+            .set_password(&key_trimmed)
+            .map_err(|e| format!("E-UICP-9203: keyring store failed: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))??;
+    Ok(())
+}
+
+/// Pull the container image for a provider (docker or podman). Returns the image name.
+/// ERROR: E-UICP-9204 runtime missing; E-UICP-9205 pull failed
+#[tauri::command]
+async fn provider_pull_image(provider: String) -> Result<serde_json::Value, String> {
+    fn try_pull(bin: &str, image: &str) -> Result<(), String> {
+        let out = std::process::Command::new(bin)
+            .arg("pull")
+            .arg(image)
+            .output()
+            .map_err(|e| format!("E-UICP-9204: spawn {bin} failed: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "E-UICP-9205: {bin} pull exited {}: {}",
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(())
+    }
+
+    let normalized = provider.trim().to_ascii_lowercase();
+    let image = match normalized.as_str() {
+        "codex" => std::env::var("CODEX_IMAGE").unwrap_or_else(|_| "uicp/codex-cli:latest".into()),
+        "claude" => std::env::var("CLAUDE_IMAGE").unwrap_or_else(|_| "uicp/claude-code:latest".into()),
+        other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
+    };
+    match try_pull("docker", &image) {
+        Ok(_) => Ok(serde_json::json!({ "image": image, "runtime": "docker" })),
+        Err(_e1) => match try_pull("podman", &image) {
+            Ok(_) => Ok(serde_json::json!({ "image": image, "runtime": "podman" })),
+            Err(e2) => Err(e2),
+        },
+    }
 }
 
 /// Get debug information for all circuit breakers.

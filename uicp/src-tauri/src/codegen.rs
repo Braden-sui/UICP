@@ -150,6 +150,9 @@ struct CodegenPlan {
     strategy: ExecutionStrategy,
     #[allow(dead_code)]
     install: Option<InstallPlan>,
+    // Optional per-provider model overrides (frontend may pass constraints.codexModel/claudeModel)
+    codex_model: Option<String>,
+    claude_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -665,6 +668,18 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
     hasher.update(canonical.as_bytes());
     let golden_key = hex::encode(hasher.finalize());
 
+    // Extract optional per-provider model hints from constraints
+    let codex_model = constraints
+        .get("codexModel")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let claude_model = constraints
+        .get("claudeModel")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     Ok(CodegenPlan {
         spec_text: input.spec,
         language,
@@ -680,6 +695,8 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
         providers,
         strategy,
         install,
+        codex_model,
+        claude_model,
     })
 }
 
@@ -1389,6 +1406,10 @@ async fn run_codex_cli<R: Runtime>(
         extra_env.insert("CODEX_API_KEY".into(), key);
     }
 
+    let mut extra_env: HashMap<String, String> = extra_env;
+    // Enforce httpjail on local runs to align with provider health policy
+    extra_env.insert("UICP_HTTPJAIL".into(), "1".into());
+
     let job = CodeProviderJob::new(&spec.job_id, plan.spec_text.clone(), workspace)
         .with_allowed_tools(extract_allowed_tools(plan))
         .with_extra_env(extra_env)
@@ -1396,7 +1417,11 @@ async fn run_codex_cli<R: Runtime>(
             "language": plan.language.as_str(),
         }));
 
-    let provider = CodexProvider::new().with_model(plan.model_id.clone());
+    let provider_model = plan
+        .codex_model
+        .clone()
+        .unwrap_or_else(|| plan.model_id.clone());
+    let provider = CodexProvider::new().with_model(provider_model);
     let ctx = provider
         .prepare(&job)
         .await
@@ -1424,6 +1449,10 @@ async fn run_claude_cli<R: Runtime>(
         extra_env.insert("ANTHROPIC_API_KEY".into(), key);
     }
 
+    let mut extra_env: HashMap<String, String> = extra_env;
+    // Enforce httpjail on local runs to align with provider health policy
+    extra_env.insert("UICP_HTTPJAIL".into(), "1".into());
+
     let job = CodeProviderJob::new(&spec.job_id, plan.spec_text.clone(), workspace)
         .with_allowed_tools(extract_allowed_tools(plan))
         .with_extra_env(extra_env)
@@ -1431,7 +1460,11 @@ async fn run_claude_cli<R: Runtime>(
             "language": plan.language.as_str(),
         }));
 
-    let provider = ClaudeProvider::new();
+    let provider_model = plan
+        .claude_model
+        .clone()
+        .unwrap_or_else(|| plan.model_id.clone());
+    let provider = ClaudeProvider::new().with_model(provider_model);
     let ctx = provider
         .prepare(&job)
         .await

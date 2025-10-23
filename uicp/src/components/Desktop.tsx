@@ -116,7 +116,8 @@ export const Desktop = () => {
     ensureShortcut(AGENT_SETTINGS_SHORTCUT_ID, { ...AGENT_SETTINGS_SHORTCUT_DEFAULT });
     ensureShortcut(PREFERENCES_SHORTCUT_ID, { ...PREFERENCES_SHORTCUT_DEFAULT });
     ensureShortcut(COMPUTE_DEMO_SHORTCUT_ID, { ...COMPUTE_DEMO_SHORTCUT_DEFAULT });
-    if (devMode || import.meta.env.DEV) {
+    const shouldShowAgentTrace = devMode || import.meta.env.DEV;
+    if (shouldShowAgentTrace) {
       ensureShortcut(AGENT_TRACE_SHORTCUT_ID, { ...AGENT_TRACE_SHORTCUT_DEFAULT });
     }
     upsertWorkspaceWindow({ id: 'logs', title: 'Logs', kind: 'local' });
@@ -125,9 +126,10 @@ export const Desktop = () => {
     upsertWorkspaceWindow({ id: 'agent-settings', title: 'Agent Settings', kind: 'local' });
     upsertWorkspaceWindow({ id: 'preferences', title: 'Preferences', kind: 'local' });
     upsertWorkspaceWindow({ id: 'compute-demo', title: 'Compute Demo', kind: 'local' });
-    if (devMode || import.meta.env.DEV) {
+    if (shouldShowAgentTrace) {
       upsertWorkspaceWindow({ id: 'agent-trace', title: 'Agent Trace', kind: 'local' });
     }
+    // Cleanup: Use captured value to ensure we clean up what we created
     return () => {
       removeWorkspaceWindow('logs');
       removeWorkspaceWindow('notepad');
@@ -135,7 +137,7 @@ export const Desktop = () => {
       removeWorkspaceWindow('agent-settings');
       removeWorkspaceWindow('preferences');
       removeWorkspaceWindow('compute-demo');
-      if (devMode || import.meta.env.DEV) {
+      if (shouldShowAgentTrace) {
         removeWorkspaceWindow('agent-trace');
       }
     };

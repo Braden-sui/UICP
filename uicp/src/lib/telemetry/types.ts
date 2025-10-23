@@ -30,9 +30,14 @@ export type TelemetryEventName =
   | 'adapter.validation.error'
   | 'adapter.dedupe.skip'
   | 'adapter.ui.command'
-  | 'needs_code_artifact';
+  | 'needs_code_artifact'
+  | 'ui.anim.window.enter'
+  | 'ui.anim.window.exit'
+  | 'ui.anim.panel.enter'
+  | 'ui.anim.panel.exit'
+  | 'ui.anim.frame_drop';
 
-export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs' | 'compute';
+export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs' | 'compute' | 'ui';
 
 export type TraceEventStatus = 'ok' | 'error' | 'timeout' | 'prompt' | 'dropped' | 'skipped';
 

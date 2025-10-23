@@ -18,7 +18,7 @@ import { summarizeMetrics } from "./lib/metrics.mjs";
 import { buildClaudeAllowedTools } from "./lib/claude-tools.mjs";
 
 function parseArgs(argv) {
-  const out = { dry: false, assembleOnly: false, container: false, apply: false, dual: false };
+  const out = { dry: false, assembleOnly: false, container: false, apply: false, dual: false, devOverride: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--spec") out.spec = argv[++i];
@@ -26,6 +26,7 @@ function parseArgs(argv) {
     else if (a === "--dry") out.dry = true;
     else if (a === "--assemble-only") out.assembleOnly = true;
     else if (a === "--container") out.container = true;
+    else if (a === "--no-container") out.devOverride = true;
     else if (a === "--apply") out.apply = true;
     else if (a === "--dual" || a === "--dual-shot") out.dual = true;
   }
@@ -85,6 +86,23 @@ async function main() {
     } : null;
     const claudeTools = buildClaudeAllowedTools(classCfg.allowedCommands);
 
+    // P1: Containerize by default when possible
+    // Check if container runtime is available and no dev override is set
+    let useContainer = args.container;
+    if (!args.devOverride && !args.container) {
+      try {
+        const { detectRuntime } = await import("./lib/container.mjs");
+        await detectRuntime();
+        useContainer = true;
+        record({ level: "info", msg: "container_default_enabled", reason: "runtime_available" });
+      } catch (e) {
+        useContainer = false;
+        record({ level: "warn", msg: "container_default_disabled", reason: "no_runtime", error: e.message });
+      }
+    } else if (args.devOverride) {
+      record({ level: "info", msg: "container_disabled", reason: "dev_override" });
+    }
+
     // Dual-shot optional: run both providers with small timeout, prefer valid patches
     let providerResult;
     const containerMemory = classCfg.memoryMb || undefined;
@@ -96,8 +114,8 @@ async function main() {
         prompt: spec.prompt,
         tools: claudeTools,
         acceptEdits: true,
-        dangerSkipPerms: !!args.container,
-        container: !!args.container,
+        dangerSkipPerms: !!useContainer,
+        container: !!useContainer,
         provCfg: claudeCfg,
         allowlistCfg: claudeCfg.hardening?.httpjail?.enabled ? {
           policy_file: claudeCfg.hardening.httpjail.policy_file,
@@ -111,7 +129,7 @@ async function main() {
       const codexP = runCodex({
         prompt: spec.prompt,
         model: codexCfg.defaults?.model,
-        container: !!args.container,
+        container: !!useContainer,
         provCfg: codexCfg,
         allowlistCfg: codexCfg.hardening?.httpjail?.enabled ? {
           policy_file: codexCfg.hardening.httpjail.policy_file,
@@ -145,8 +163,8 @@ async function main() {
           prompt: spec.prompt,
           tools: claudeTools,
           acceptEdits: true,
-          dangerSkipPerms: !!args.container, // safe only inside container
-          container: !!args.container,
+          dangerSkipPerms: !!useContainer, // safe only inside container
+          container: !!useContainer,
           provCfg,
           allowlistCfg,
           timeoutMs: classCfg.timeBudgetMs,
@@ -156,7 +174,7 @@ async function main() {
         providerResult = await runCodex({
           prompt: spec.prompt,
           model: provCfg.defaults?.model,
-          container: !!args.container,
+          container: !!useContainer,
           provCfg,
           allowlistCfg,
           timeoutMs: classCfg.timeBudgetMs,
@@ -168,7 +186,7 @@ async function main() {
     // Persist run state for potential kill/inspect
     const state = {
       provider,
-      container: !!args.container,
+      container: !!useContainer,
       containerName: providerResult.containerName || null,
       startedAt: nowIso()
     };
@@ -197,6 +215,10 @@ async function main() {
     let patches = extractApplyPatchBlocks(providerResult.stdout || "");
     if (!patches.length && transcriptEvents.length) {
       patches = extractPatchesFromEvents(transcriptEvents);
+    }
+    // Fail safe when nothing changed: no patches and no transcript
+    if (!patches.length && !transcriptEvents.length) {
+      throw err(Errors.ValidationFailed, "no code edits detected from provider");
     }
     if (patches.length) {
       record({ level: "info", msg: "diff_detected", blocks: patches.length });
@@ -233,8 +255,14 @@ async function main() {
 
   // Assemble + validate
   const bundle = await assembleQuickJS({ entry: spec.entry, printJson: true });
-  validateJsSource({ code: bundle.code, filename: spec.entry });
-  const manifest = makeScriptManifest({ id: spec.id || key.slice(0, 12), code: bundle.code });
+  record({ level: "info", msg: "assemble_ok", bytes: (bundle.code || "").length });
+  // P1: Pass capabilities to validator for enhanced safety checks
+  const defaultCaps = { net: false, fs: false, dom: false };
+  const caps = spec.caps || defaultCaps;
+  validateJsSource({ code: bundle.code, filename: spec.entry, caps });
+  record({ level: "info", msg: "validation_ok", caps });
+  const manifest = makeScriptManifest({ id: spec.id || key.slice(0, 12), code: bundle.code, caps });
+  record({ level: "info", msg: "manifest_ready", id: manifest.id, caps: manifest.caps });
 
   const result = { ok: true, provider, manifest, transcript }; const jobFinished = Date.now(); result.metrics = summarizeMetrics({ provider, transcriptEvents, startedAt: jobStarted, finishedAt: jobFinished });
   // Attach lightweight metrics

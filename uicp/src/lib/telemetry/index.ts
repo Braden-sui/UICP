@@ -48,6 +48,11 @@ const EVENT_DEFAULTS: Partial<Record<TelemetryEventName, EventDefaults>> = {
   'adapter.dedupe.skip': { span: 'batch', kind: 'instant', status: 'skipped' },
   'adapter.ui.command': { span: 'batch', kind: 'instant' },
   needs_code_artifact: { span: 'compute', kind: 'instant', status: 'ok' },
+  'ui.anim.window.enter': { span: 'ui', kind: 'instant', status: 'ok' },
+  'ui.anim.window.exit': { span: 'ui', kind: 'instant', status: 'ok' },
+  'ui.anim.panel.enter': { span: 'ui', kind: 'instant', status: 'ok' },
+  'ui.anim.panel.exit': { span: 'ui', kind: 'instant', status: 'ok' },
+  'ui.anim.frame_drop': { span: 'ui', kind: 'instant', status: 'error' },
 };
 
 const sanitizeData = (input: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {

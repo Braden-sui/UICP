@@ -1,9 +1,20 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
+import { getComputeBridge } from './lib/bridge/globals';
+import { newUuid } from './lib/utils';
 
 const LOADER_ID = 'uicp-loading-screen';
 const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flash)
+
+const hasBooleanOkFlag = (value: unknown): value is { ok: boolean } => {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'ok' in value &&
+    typeof (value as { ok?: unknown }).ok === 'boolean'
+  );
+};
 
 // Ensure loader exists (either from static HTML or create it)
 const ensureLoader = () => {
@@ -91,10 +102,13 @@ const bootstrap = async () => {
   try {
     await import('./styles/global.css');
     const { default: App } = await import('./App');
+    const { default: ErrorBoundary } = await import('./components/ErrorBoundary');
 
     root.render(
       <React.StrictMode>
-        <App />
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
       </React.StrictMode>,
     );
 
@@ -117,6 +131,66 @@ const bootstrap = async () => {
   } finally {
     bridgeReady = true;
     maybeHideLoader();
+  }
+
+  // Best-effort warm-start for QuickJS via script.panel.
+  // Fires once per session after module verification; non-blocking.
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      const KEY = 'uicp:warmstart:script.panel';
+      if (!sessionStorage.getItem(KEY)) {
+        sessionStorage.setItem(KEY, '1');
+        // Verify modules are installed and QuickJS is present before warming.
+        let verified = false;
+        try {
+          const res = await invoke<unknown>('verify_modules');
+          verified = hasBooleanOkFlag(res) && res.ok === true;
+        } catch {
+          verified = false;
+        }
+        if (!verified) return;
+
+        let hasQuickJS = false;
+        try {
+          const reg = await invoke<unknown>('get_modules_registry');
+          if (
+            typeof reg === 'object' &&
+            reg !== null &&
+            'modules' in reg &&
+            Array.isArray((reg as { modules?: unknown }).modules)
+          ) {
+            const list = (reg as { modules?: Array<{ task?: unknown }> }).modules ?? [];
+            hasQuickJS = list.some(
+              (entry) => typeof entry?.task === 'string' && entry.task.startsWith('applet.quickjs'),
+            );
+          }
+        } catch {
+          hasQuickJS = false;
+        }
+        if (!hasQuickJS) return;
+
+        const compute = getComputeBridge();
+        if (typeof compute !== 'function') return;
+
+        const moduleId = 'applet.quickjs@0.1.0';
+        const source = `(() => {\n  const stableState = () => "{}";\n  const applet = {\n    init() { return stableState(); },\n    render(state) { const s = typeof state === 'string' && state.length ? state : stableState(); return \`<div data-prewarm=\\"quickjs\\">\${s}</div>\`; },\n    onEvent(_a,_p,state) { const s = typeof state === 'string' && state.length ? state : stableState(); return JSON.stringify({ next_state: s }); }\n  };\n  globalThis.__uicpApplet = applet;\n})();`;
+        const job = {
+          jobId: newUuid(),
+          task: moduleId,
+          input: { mode: 'init', source },
+          timeoutMs: 4000,
+          bind: [],
+          cache: 'readwrite' as const,
+          capabilities: {},
+          replayable: false,
+          workspaceId: 'default',
+          provenance: { envHash: 'warmstart', agentTraceId: 'warmstart' },
+        };
+        void compute(job);
+      }
+    }
+  } catch {
+    // ignore warm-start failures
   }
 };
 

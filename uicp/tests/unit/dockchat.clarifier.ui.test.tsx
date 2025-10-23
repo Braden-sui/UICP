@@ -4,6 +4,15 @@ import { render, screen, within, act } from '@testing-library/react';
 vi.mock('../../src/hooks/useDockReveal', () => ({
   useDockReveal: () => ({ chatOpen: true, onFocus: () => {}, onBlur: () => {}, setChatOpen: () => {} })
 }));
+vi.mock('../../src/hooks/useContainerStatus', () => ({
+  useContainerStatus: () => ({
+    loading: false,
+    containerStatus: { available: true },
+    networkCapabilities: { hasNetwork: true, restricted: false },
+    showWarning: false,
+    warningMessage: '',
+  }),
+}));
 import DockChat from '../../src/components/DockChat';
 import { useAppStore } from '../../src/state/app';
 import { useChatStore } from '../../src/state/chat';
@@ -75,9 +84,9 @@ describe('DockChat clarifier-needed UI', () => {
     const el = within(list).getByText('Need a quick clarification on the selector.');
     const li = el.closest('li');
     expect(li).toBeTruthy();
-    // Amber card classes applied
-    expect(li!.className).toContain('bg-amber-50');
-    expect(li!.className).toContain('border-amber-200');
+    // Amber card classes applied (align with current UI)
+    expect(li!.className).toContain('bg-amber-100/30');
+    expect(li!.className).toContain('border-amber-300/50');
     // Icon is rendered inline before text
     const svg = li!.querySelector('svg');
     expect(svg).toBeTruthy();

@@ -10,9 +10,18 @@ export const createId = (prefix = 'id') => {
 
 // Generate a RFC 4122 version 4 UUID string.
 // Uses crypto.randomUUID when available; falls back to a Math.random-based v4 generator.
+const hasRandomUUID = (value: unknown): value is { randomUUID: () => string } => {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'randomUUID' in value &&
+    typeof (value as { randomUUID?: unknown }).randomUUID === 'function'
+  );
+};
+
 export const newUuid = (): string => {
-  if (typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function') {
-    return (crypto as any).randomUUID();
+  if (typeof crypto !== 'undefined' && hasRandomUUID(crypto)) {
+    return crypto.randomUUID();
   }
   const bytes = new Uint8Array(16);
   for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);

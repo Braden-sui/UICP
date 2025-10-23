@@ -204,6 +204,8 @@ export type AppState = {
   plannerReasoningEffort: ReasoningEffort;
   actorReasoningEffort: ReasoningEffort;
   plannerTwoPhaseEnabled: boolean;
+  // Feature flag: Enable Motion-powered animations for windows/panels/icons
+  motionEnabled: boolean;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Pinned workspace windows exposed as desktop shortcuts by windowId -> meta
@@ -242,6 +244,7 @@ export type AppState = {
   setPlannerReasoningEffort: (effort: ReasoningEffort) => void;
   setActorReasoningEffort: (effort: ReasoningEffort) => void;
   setPlannerTwoPhaseEnabled: (value: boolean) => void;
+  setMotionEnabled: (value: boolean) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
   removeDesktopShortcut: (id: string) => void;
@@ -300,6 +303,7 @@ export const useAppStore = create<AppState>()(
       plannerReasoningEffort: 'high',
       actorReasoningEffort: 'high',
       plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', getModeDefaults(getAppMode()).plannerTwoPhase),
+      motionEnabled: true, // Start with Motion enabled by default
       desktopShortcuts: {},
       pinnedWindows: {},
       workspaceWindows: {},
@@ -367,6 +371,7 @@ export const useAppStore = create<AppState>()(
       setPlannerReasoningEffort: (effort) => set({ plannerReasoningEffort: effort }),
       setActorReasoningEffort: (effort) => set({ actorReasoningEffort: effort }),
       setPlannerTwoPhaseEnabled: (value) => set({ plannerTwoPhaseEnabled: value }),
+      setMotionEnabled: (value) => set({ motionEnabled: value }),
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
           if (state.desktopShortcuts[id]) {
@@ -687,6 +692,7 @@ export const useAppStore = create<AppState>()(
         plannerReasoningEffort: state.plannerReasoningEffort,
         actorReasoningEffort: state.actorReasoningEffort,
         plannerTwoPhaseEnabled: state.plannerTwoPhaseEnabled,
+        motionEnabled: state.motionEnabled,
         agentSettingsOpen: state.agentSettingsOpen,
         computeDemoOpen: state.computeDemoOpen,
         moduleRegistryOpen: state.moduleRegistryOpen,

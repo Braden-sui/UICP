@@ -49,11 +49,12 @@ Status: Planner = tool-first (JSON). Actor = tool-only (strict JSON) with orches
 
 ---
 
-## Profiles (per-model capability)
+## Profiles (capability-based, model-agnostic)
 
 - File: `uicp/src/lib/llm/profiles.ts`
-- Set `capabilities.supportsTools: true` on planner/actor profiles that can use tool calling (GLM default; DeepSeek/Kimi/Qwen/GPT-OSS optional alternates).
-- Add dedicated profiles (e.g., `kimi-tools`, `qwen-tools`) to roll out per model without breaking existing profiles.
+- Profiles define capabilities (channels, tool support) and prompt formatting only; they are completely model-agnostic.
+- Model selection is handled at runtime via `options.model` parameter passed to `streamIntent()` and `streamPlan()`.
+- All profiles support tool calling (`supportsTools: true`) for JSON-first output with WIL fallback.
 
 ---
 
@@ -217,7 +218,7 @@ Rollback: set `VITE_WIL_ONLY=true` and/or revert `supportsTools` to false in pro
 
 ## Implementation Checklist
 
-- [ ] Flip `supportsTools: true` on chosen profiles in `uicp/src/lib/llm/profiles.ts`.
+- [x] Profiles are model-agnostic (no defaultModel assignments).
 - [x] Add tool-args collector (by index) for planner/actor streams. (`collectToolArgs.ts`, `collectWithFallback.ts`)
 - [x] Update `planWithProfile`/`actWithProfile` to JSON-first; keep fallbacks. (orchestrator.ts updated)
 - [ ] Extend aggregator to accept `json` channel or tool-call final args; gate by capability. (deferred - needs bridge work)

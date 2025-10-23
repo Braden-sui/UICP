@@ -13,8 +13,15 @@ Usage (CLI)
 - Assemble only (bundle + validate, cache): add `--assemble-only`
 - Apply diffs from provider (after allowlist check): add `--apply`
 - Run inside container (docker/podman): add `--container`
+- Disable container (dev override): add `--no-container`
 - Provider override: `--provider claude|codex`
 - Dual-shot (try both, small budget): add `--dual`
+
+Containerization (P1)
+- **Default behavior**: Automatically use container when Docker/Podman is available
+- **Dev override**: Use `--no-container` to disable containerization for development
+- **Explicit control**: Use `--container` to force containerization
+- **macOS warning**: Shows persistent policy warning badge when container unavailable
 
 Artifacts
 - providers/claude-cli.yaml — container, entry, defaults

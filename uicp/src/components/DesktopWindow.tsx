@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import clsx from 'clsx';
 import { useDynamicStyleRule } from '../hooks/useDynamicStyleRule';
 import { escapeForSelector } from '../lib/css/dynamicStyles';
+import { windowVariants, getWindowTransition } from '../lib/ui/animation';
+import { useAppStore } from '../state/app';
 
 export type DesktopWindowProps = {
   id: string;
@@ -81,6 +84,16 @@ const DesktopWindow = ({
       return { ...prev, height: minHeight };
     });
   }, [minHeight]);
+
+  // Reset dragging/resizing state when window closes to prevent stuck states
+  useEffect(() => {
+    if (!isOpen) {
+      setDragging(false);
+      setResizing(false);
+      pointerState.current = null;
+      resizeState.current = null;
+    }
+  }, [isOpen]);
 
   const clamp = useCallback((value: number, max: number) => {
     if (Number.isNaN(value)) return 0;
@@ -269,31 +282,48 @@ const DesktopWindow = ({
     [position.x, position.y, size.width, normalizedHeight, minWidth, minHeight],
   );
 
+  // Check if Motion is enabled for this window
+  const motionEnabled = useAppStore((state) => state.motionEnabled);
+  const transition = getWindowTransition();
+
+  // Build Motion props conditionally to avoid TypeScript errors
+  const motionProps = motionEnabled
+    ? {
+        initial: windowVariants.initial,
+        animate: windowVariants.animate,
+        exit: windowVariants.exit,
+        transition,
+      }
+    : {};
+
   return (
     <div className="pointer-events-none absolute inset-0 z-40" aria-hidden={!isOpen}>
-      <div
-        ref={windowRef}
-        className={clsx(
-          'pointer-events-auto absolute',
-          (dragging || resizing) && 'transition-none',
-          !isOpen && 'hidden',
-        )}
-        role="dialog"
-        aria-labelledby={titleId}
-        data-desktop-window={id}
-      >
-        <div
-          className={clsx(
-            'relative flex h-full flex-col overflow-hidden rounded-2xl transition-all duration-200',
-            // Premium glassmorphic frame with gradient border simulation via multi-layer shadows
-            'border border-white/70 bg-gradient-to-br from-white/95 via-white/90 to-white/85',
-            'backdrop-blur-2xl backdrop-saturate-150',
-            // Multi-layer depth: outer glow, medium shadow, close contact shadow, and inner highlights
-            dragging
-              ? 'scale-[1.01] shadow-[0_0_0_1px_rgba(99,102,241,0.2),0_30px_70px_rgba(0,0,0,0.20),0_15px_35px_rgba(0,0,0,0.15),inset_0_1px_0_rgba(255,255,255,0.9)]'
-              : 'shadow-[0_0_0_1px_rgba(148,163,184,0.15),0_25px_60px_rgba(0,0,0,0.14),0_10px_25px_rgba(0,0,0,0.10),0_4px_12px_rgba(0,0,0,0.08),inset_0_1px_0_rgba(255,255,255,0.9),inset_0_0_20px_rgba(255,255,255,0.5)]',
-          )}
-        >
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            key={`window-${id}`}
+            ref={windowRef}
+            className={clsx(
+              'pointer-events-auto absolute',
+              (dragging || resizing) && 'transition-none',
+            )}
+            role="dialog"
+            aria-labelledby={titleId}
+            data-desktop-window={id}
+            {...motionProps}
+          >
+            <div
+              className={clsx(
+                'relative flex h-full flex-col overflow-hidden rounded-2xl transition-all duration-200',
+                // Premium glassmorphic frame with gradient border simulation via multi-layer shadows
+                'border border-white/70 bg-gradient-to-br from-white/95 via-white/90 to-white/85',
+                'backdrop-blur-2xl backdrop-saturate-150',
+                // Multi-layer depth: outer glow, medium shadow, close contact shadow, and inner highlights
+                dragging
+                  ? 'scale-[1.01] shadow-[0_0_0_1px_rgba(99,102,241,0.2),0_30px_70px_rgba(0,0,0,0.20),0_15px_35px_rgba(0,0,0,0.15),inset_0_1px_0_rgba(255,255,255,0.9)]'
+                  : 'shadow-[0_0_0_1px_rgba(148,163,184,0.15),0_25px_60px_rgba(0,0,0,0.14),0_10px_25px_rgba(0,0,0,0.10),0_4px_12px_rgba(0,0,0,0.08),inset_0_1px_0_rgba(255,255,255,0.9),inset_0_0_20px_rgba(255,255,255,0.5)]',
+              )}
+            >
           <div
             className={chromeClasses}
             onPointerDown={handlePointerDown}
@@ -351,8 +381,10 @@ const DesktopWindow = ({
             onPointerUp={endResizeTracking}
             onPointerCancel={endResizeTracking}
           />
-        </div>
-      </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

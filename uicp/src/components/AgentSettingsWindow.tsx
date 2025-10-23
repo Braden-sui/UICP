@@ -94,11 +94,15 @@ const AgentSettingsWindow = () => {
   const setRunBothByDefault = usePreferencesStore((state) => state.setRunBothByDefault);
   const codexStatus = useProviderSelector((state) => state.statuses.codex);
   const claudeStatus = useProviderSelector((state) => state.statuses.claude);
+  const codexModel = useProviderSelector((state) => state.settings.codexModel);
+  const claudeModel = useProviderSelector((state) => state.settings.claudeModel);
   const beginConnect = useProviderSelector((state) => state.beginConnect);
   const completeConnect = useProviderSelector((state) => state.completeConnect);
   const beginHealthCheck = useProviderSelector((state) => state.beginHealthCheck);
   const completeHealthCheck = useProviderSelector((state) => state.completeHealthCheck);
   const failProvider = useProviderSelector((state) => state.fail);
+  const setCodexModel = useProviderSelector((state) => state.setCodexModel);
+  const setClaudeModel = useProviderSelector((state) => state.setClaudeModel);
   const bridgeAvailable = hasTauriBridge();
   const devMode = import.meta.env.DEV === true;
   const [installingProvider, setInstallingProvider] = useState<ProviderName | null>(null);
@@ -149,7 +153,112 @@ const AgentSettingsWindow = () => {
     if (!devMode || !hasTauriBridge()) return;
     void refreshResolved('codex');
     void refreshResolved('claude');
-  }, [devMode]);
+  }, [devMode, refreshResolved]);
+
+  // Wizard: API key inputs
+  const [openaiKey, setOpenaiKey] = useState<string>("");
+  const [anthropicKey, setAnthropicKey] = useState<string>("");
+  const saveProviderKey = useCallback(
+    async (provider: 'openai' | 'anthropic', key: string) => {
+      if (!hasTauriBridge()) {
+        useAppStore.getState().pushToast({ variant: 'error', message: 'Saving keys requires the desktop runtime' });
+        return;
+      }
+      try {
+        await tauriInvoke('save_provider_api_key', { provider, key });
+        useAppStore.getState().pushToast({ variant: 'success', message: `${provider} key saved to OS keychain` });
+      } catch (err) {
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `Save failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [],
+  );
+
+  const handleProviderHealth = useCallback(
+    async (provider: ProviderName) => {
+      const info = PROVIDER_INFO[provider];
+      if (!hasTauriBridge()) {
+        failProvider(provider, 'Desktop bridge unavailable');
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} health check requires the desktop runtime` });
+        return;
+      }
+      beginHealthCheck(provider);
+      try {
+        const raw = (await tauriInvoke('provider_health', { provider })) as ProviderHealthPayload | undefined;
+        const payload: ProviderHealthPayload = {
+          ok: !!raw?.ok,
+          version:
+            typeof raw?.version === 'string' && raw.version.trim().length > 0
+              ? raw.version.trim()
+              : undefined,
+          detail: typeof raw?.detail === 'string' ? raw.detail : undefined,
+        };
+        completeHealthCheck(provider, payload);
+        useAppStore.getState().pushToast(
+          payload.ok
+            ? {
+                variant: 'success',
+                message: `${info.label} health check succeeded${payload.version ? ` (${payload.version})` : ''}`,
+              }
+            : {
+                variant: 'error',
+                message:
+                  payload.detail && payload.detail.trim().length > 0
+                    ? `${info.label} health check failed: ${payload.detail}`
+                    : `${info.label} health check failed`,
+              },
+        );
+      } catch (error) {
+        const message = (error as Error)?.message ?? String(error);
+        failProvider(provider, message);
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} health check failed: ${message}` });
+      }
+    },
+    [beginHealthCheck, completeHealthCheck, failProvider],
+  );
+
+  const handleStrictHealth = useCallback(async () => {
+    if (!hasTauriBridge()) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: 'Health check requires the desktop runtime' });
+      return;
+    }
+    try {
+      await tauriInvoke('set_env_var', { name: 'UICP_HEALTH_STRICT', value: '1' });
+      await handleProviderHealth('codex');
+      await handleProviderHealth('claude');
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Strict health failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [handleProviderHealth]);
+
+  const handlePullImage = useCallback(async (provider: ProviderName) => {
+    if (!hasTauriBridge()) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: 'Image pull requires the desktop runtime' });
+      return;
+    }
+    try {
+      const res = (await tauriInvoke('provider_pull_image', { provider })) as { image?: string; runtime?: string };
+      const image = res?.image || '<unknown>';
+      const runtime = res?.runtime || '<runtime>';
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'success', message: `Pulled ${image} via ${runtime}` });
+    } catch (err) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: `Pull failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, []);
 
   const handlePlannerChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
@@ -238,52 +347,7 @@ const AgentSettingsWindow = () => {
     [beginConnect, completeConnect, failProvider],
   );
 
-  const handleProviderHealth = useCallback(
-    async (provider: ProviderName) => {
-      const info = PROVIDER_INFO[provider];
-      if (!hasTauriBridge()) {
-        failProvider(provider, 'Desktop bridge unavailable');
-        useAppStore
-          .getState()
-          .pushToast({ variant: 'error', message: `${info.label} health check requires the desktop runtime` });
-        return;
-      }
-      beginHealthCheck(provider);
-      try {
-        const raw = (await tauriInvoke('provider_health', { provider })) as ProviderHealthPayload | undefined;
-        const payload: ProviderHealthPayload = {
-          ok: !!raw?.ok,
-          version:
-            typeof raw?.version === 'string' && raw.version.trim().length > 0
-              ? raw.version.trim()
-              : undefined,
-          detail: typeof raw?.detail === 'string' ? raw.detail : undefined,
-        };
-        completeHealthCheck(provider, payload);
-        useAppStore.getState().pushToast(
-          payload.ok
-            ? {
-                variant: 'success',
-                message: `${info.label} health check succeeded${payload.version ? ` (${payload.version})` : ''}`,
-              }
-            : {
-                variant: 'error',
-                message:
-                  payload.detail && payload.detail.trim().length > 0
-                    ? `${info.label} health check failed: ${payload.detail}`
-                    : `${info.label} health check failed`,
-              },
-        );
-      } catch (error) {
-        const message = (error as Error)?.message ?? String(error);
-        failProvider(provider, message);
-        useAppStore
-          .getState()
-          .pushToast({ variant: 'error', message: `${info.label} health check failed: ${message}` });
-      }
-    },
-    [beginHealthCheck, completeHealthCheck, failProvider],
-  );
+  
 
   const handleProviderInstall = useCallback(
     async (provider: ProviderName) => {
@@ -453,8 +517,8 @@ const AgentSettingsWindow = () => {
     >
       <div className="flex flex-col gap-4">
         <p className="text-sm text-slate-600">
-          Select which model profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). The defaults now
-          target GLM 4.6; you can switch profiles here when you need a different pairing.
+          Select which profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). Profiles are model-agnostic
+          and can be paired with any compatible LLM provider. Switch profiles here to change reasoning and execution behavior.
         </p>
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-2 text-sm text-slate-600">
@@ -549,6 +613,90 @@ const AgentSettingsWindow = () => {
           </label>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Connect Providers (Wizard)</div>
+          <div className="grid grid-cols-1 gap-2 text-xs text-slate-600">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Step 1:</span>
+              <span>Detect CLI and version with strict policy (httpjail required unless using container)</span>
+              <button
+                type="button"
+                onClick={handleStrictHealth}
+                disabled={!bridgeAvailable}
+                className="ml-auto rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Run Strict Health
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Step 2:</span>
+              <span>Optional: Install via container images (safer defaults)</span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handlePullImage('codex')}
+                  disabled={!bridgeAvailable}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Pull Codex Image
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePullImage('claude')}
+                  disabled={!bridgeAvailable}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Pull Claude Image
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Step 3:</span>
+              <span>Save API keys to OS keychain</span>
+            </div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-slate-500">OPENAI_API_KEY</span>
+                <input
+                  type="password"
+                  value={openaiKey}
+                  onChange={(e) => setOpenaiKey(e.target.value)}
+                  placeholder="sk-..."
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                />
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => saveProviderKey('openai', openaiKey)}
+                    disabled={!bridgeAvailable || !openaiKey.trim()}
+                    className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Save Key
+                  </button>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-slate-500">ANTHROPIC_API_KEY</span>
+                <input
+                  type="password"
+                  value={anthropicKey}
+                  onChange={(e) => setAnthropicKey(e.target.value)}
+                  placeholder="anthropic-..."
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                />
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => saveProviderKey('anthropic', anthropicKey)}
+                    disabled={!bridgeAvailable || !anthropicKey.trim()}
+                    className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Save Key
+                  </button>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Code Providers</div>
           <div className="flex flex-col gap-3">
             {providerEntries.map(({ provider, status }) => {
@@ -575,6 +723,21 @@ const AgentSettingsWindow = () => {
                     </div>
                   )}
                   {detail && <div className="mt-1 text-xs text-slate-500">{detail}</div>}
+                  <div className="mt-2 text-xs">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-semibold uppercase tracking-wide text-slate-500">Model Override</span>
+                      <input
+                        type="text"
+                        value={provider === 'codex' ? (codexModel ?? '') : (claudeModel ?? '')}
+                        onChange={(e) =>
+                          provider === 'codex' ? setCodexModel(e.target.value) : setClaudeModel(e.target.value)
+                        }
+                        placeholder={provider === 'codex' ? 'e.g. gpt-5-codex' : 'e.g. claude-3.5' }
+                        className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                      />
+                      <span className="text-slate-500">Applies via CLI <code>--model</code>; leave blank to use defaults.</span>
+                    </label>
+                  </div>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -754,7 +917,6 @@ const AgentSettingsWindow = () => {
             Close
           </button>
         </div>
-      </div>
     </DesktopWindow>
   );
 };

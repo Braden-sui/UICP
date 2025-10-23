@@ -17,6 +17,21 @@ import { getComponentCatalogSummary as getAdapterComponentCatalogSummary } from 
 import { type TaskSpec } from './schemas';
 import { generateTaskSpec } from './generateTaskSpec';
 
+// Model selection: read from environment or use defaults
+const getPlannerModel = (): string => {
+  const envModel = import.meta.env.VITE_PLANNER_MODEL as string | undefined;
+  if (envModel) return envModel;
+  // Default fallback for development
+  return 'deepseek-v3.1:671b';
+};
+
+const getActorModel = (): string => {
+  const envModel = import.meta.env.VITE_ACTOR_MODEL as string | undefined;
+  if (envModel) return envModel;
+  // Default fallback for development
+  return 'qwen3-coder:480b';
+};
+
 // Derive sane defaults from mode, allow env override
 const __modeDefaults = getModeDefaults(getAppMode());
 const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', __modeDefaults.plannerTimeoutMs ?? 180_000, { min: 1_000 });
@@ -123,6 +138,7 @@ export async function planWithProfile(
     try {
       const stream = client.streamIntent(intent, {
         profileKey: profile.key,
+        model: getPlannerModel(),
         extraSystem,
         meta: { traceId: options?.traceId, intent },
         taskSpec: options?.taskSpec,
@@ -344,6 +360,7 @@ export async function actWithProfile(
     try {
       const stream = client.streamPlan(planJson, {
         profileKey: profile.key,
+        model: getActorModel(),
         extraSystem,
         meta: { traceId: options?.traceId, planSummary: plan.summary },
       });

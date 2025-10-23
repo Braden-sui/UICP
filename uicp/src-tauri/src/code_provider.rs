@@ -720,6 +720,11 @@ impl ClaudeProvider {
             model: None,
         }
     }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
 }
 
 #[async_trait]

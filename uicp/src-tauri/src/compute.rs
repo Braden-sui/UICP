@@ -2176,16 +2176,19 @@ mod with_runtime {
         #[cfg(feature = "otel_spans")]
         tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, code = %code, duration_ms = ms, "compute job failed");
         // Surface a debug-log entry for observability with a unique error code per event
-        let _ = app.emit(
-            "debug-log",
-            serde_json::json!({
-                "event": "compute_error",
-                "jobId": spec.job_id,
-                "task": spec.task,
-                "code": code,
-                "ts": chrono::Utc::now().timestamp_millis(),
-            }),
-        );
+        // Skip warmstart noise to keep Debug events clean
+        if spec.provenance.env_hash != "warmstart" {
+            let _ = app.emit(
+                "debug-log",
+                serde_json::json!({
+                    "event": "compute_error",
+                    "jobId": spec.job_id,
+                    "task": spec.task,
+                    "code": code,
+                    "ts": chrono::Utc::now().timestamp_millis(),
+                }),
+            );
+        }
         crate::emit_or_log(
             &app,
             crate::events::EVENT_COMPUTE_RESULT_FINAL,

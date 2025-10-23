@@ -244,8 +244,13 @@ select:focus {
   }
 }
 
-/* Desktop icon hover effects */
-.desktop-icon:hover .desktop-icon-inner {
+/* Desktop icon hover effects migrated to Motion (see DesktopIcon.tsx) */
+/* Fallback CSS for when Motion is disabled */
+.desktop-icon:not([data-motion-enabled]) .desktop-icon-inner {
+  transition: transform 0.3s ease-out;
+}
+
+.desktop-icon:not([data-motion-enabled]):hover .desktop-icon-inner {
   transform: translateY(-4px) scale(1.05);
 }
 
@@ -253,11 +258,11 @@ select:focus {
   animation: icon-pulse-active 2s ease-in-out infinite;
 }
 
-.desktop-icon .icon-content {
+.desktop-icon:not([data-motion-enabled]) .icon-content {
   transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.desktop-icon:hover .icon-content {
+.desktop-icon:not([data-motion-enabled]):hover .icon-content {
   transform: scale(1.15);
 }
 
@@ -281,29 +286,11 @@ select:focus {
   animation: dock-thinking-pulse 2.5s ease-in-out infinite;
 }
 
-/* Window entrance animations */
-@keyframes window-appear {
-  0% {
-    opacity: 0;
-    transform: scale(0.92) translateY(20px);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-@keyframes window-shimmer {
-  0% {
-    background-position: -200% center;
-  }
-  100% {
-    background-position: 200% center;
-  }
-}
+/* Window entrance animations migrated to Motion (see uicp/src/lib/ui/animation.ts) */
+/* window-appear and window-shimmer keyframes removed - now handled by Motion presence animations */
 
 .workspace-window {
-  animation: window-appear var(--animation-duration-normal, 0.4s) cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* CSS animation removed - now using Motion AnimatePresence */
   position: absolute;
   display: flex;
   flex-direction: column;

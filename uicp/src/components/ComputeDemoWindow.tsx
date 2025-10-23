@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppSelector } from '../state/app';
-import { createId, newUuid } from '../lib/utils';
+import { newUuid } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
 import { getComputeBridge } from '../lib/bridge/globals';
