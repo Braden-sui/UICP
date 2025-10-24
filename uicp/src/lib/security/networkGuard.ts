@@ -1,3 +1,6 @@
+import { getEffectivePolicy } from './policyLoader';
+import type { Policy } from './policy';
+
 type GuardConfig = {
   enabled: boolean;
   monitorOnly: boolean;
@@ -16,6 +19,48 @@ type GuardConfig = {
   maxRequestBytes?: number;
   maxResponseBytes?: number;
   attemptSample?: number;
+};
+
+const getPolicyRpsForHost = (host: string): number | undefined => {
+  try {
+    const pol = getEffectivePolicy();
+    const quotas = pol?.network?.quotas;
+    if (!quotas) return undefined;
+    let rps: number | undefined = quotas.domain_defaults?.rps;
+    const overrides = quotas.overrides || {};
+    for (const [pattern, rule] of Object.entries(overrides)) {
+      if (matchesWildcardDomain(host, pattern) && typeof rule?.rps === 'number') {
+        rps = rule.rps;
+        break;
+      }
+    }
+    if (typeof rps === 'number' && Number.isFinite(rps) && rps > 0) return rps;
+  } catch {}
+  return undefined;
+};
+
+const rpsBuckets: Map<string, { tokens: number; last: number; capacity: number; refillPerMs: number }> = new Map();
+
+const consumeRpsToken = (host: string, rps: number): boolean => {
+  try {
+    const now = Date.now();
+    let b = rpsBuckets.get(host);
+    if (!b) {
+      b = { tokens: rps, last: now, capacity: rps, refillPerMs: rps / 1000 };
+      rpsBuckets.set(host, b);
+    }
+    // Refill
+    const elapsed = Math.max(0, now - b.last);
+    b.tokens = Math.min(b.capacity, b.tokens + elapsed * b.refillPerMs);
+    b.last = now;
+    if (b.tokens >= 1) {
+      b.tokens -= 1;
+      return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
 };
 
 const toUrl = (input: RequestInfo | URL, base?: string): URL => {
@@ -100,6 +145,44 @@ const pathAllowed = (u: URL): boolean => {
   }
 };
 
+// Simple wildcard matcher supporting patterns like '*.github.com'
+const matchesWildcardDomain = (host: string, pattern: string): boolean => {
+  try {
+    const h = host.toLowerCase().replace(/\.$/, '');
+    const p = pattern.toLowerCase().replace(/\.$/, '');
+    if (!p.includes('*')) return h === p;
+    if (p.startsWith('*.')) {
+      const suffix = p.slice(1); // '.github.com'
+      return h === p.slice(2) || h.endsWith(suffix);
+    }
+    // Basic fallback: treat '*' as prefix wildcard
+    const parts = p.split('*');
+    return h.startsWith(parts[0] ?? '') && h.endsWith(parts[1] ?? '');
+  } catch {
+    return false;
+  }
+};
+
+const getPolicyMaxResponseBytesForHost = (host: string): number | undefined => {
+  try {
+    const pol = getEffectivePolicy();
+    const quotas = pol?.network?.quotas;
+    if (!quotas) return undefined;
+    let maxMb: number | undefined = quotas.domain_defaults?.max_response_mb;
+    const overrides = quotas.overrides || {};
+    for (const [pattern, rule] of Object.entries(overrides)) {
+      if (matchesWildcardDomain(host, pattern) && typeof rule?.max_response_mb === 'number') {
+        maxMb = rule.max_response_mb;
+        break;
+      }
+    }
+    if (typeof maxMb === 'number' && Number.isFinite(maxMb) && maxMb > 0) {
+      return Math.floor(maxMb * 1024 * 1024);
+    }
+  } catch {}
+  return undefined;
+};
+
 const isIPv4 = (host: string) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host);
 const isIPv6 = (host: string) => host.includes(":") && !host.includes(" ");
 const toIpv4Int = (ip: string): number | null => {
@@ -171,6 +254,7 @@ const maybeEmitAttempt = (api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon', url: s
     }
   } catch {}
 };
+
 const setConfig = (next: Partial<GuardConfig>) => {
   const base: GuardConfig = cfg ?? {
     enabled: true,
@@ -195,6 +279,7 @@ const shouldBlockHost = (host: string, port: string | number | null | undefined)
   const domainParts = lower.split('.');
   const isIp4 = isIPv4(lower);
   const isIp6 = !isIp4 && isIPv6(lower);
+  const policy: Policy = getEffectivePolicy();
 
   if (port && String(port) === '853') return { block: true, reason: 'port_853' };
 
@@ -224,24 +309,64 @@ const shouldBlockHost = (host: string, port: string | number | null | undefined)
 
   if (isIp4 || isIp6) {
     if (!(cfg.allowIPs && cfg.allowIPs.includes(lower))) {
+      // Policy-aware IP literal gating
       if (isIp4) {
-        if (privateBlockIPv4Cidrs.some((c) => ipInCidrV4(lower, c))) return { block: true, reason: 'ip_private' };
+        const isPrivate = privateBlockIPv4Cidrs.some((c) => ipInCidrV4(lower, c));
+        if (isPrivate) {
+          if (policy.network.allow_private_lan === 'allow') return { block: false };
+          if (policy.network.allow_private_lan === 'ask') return { block: true, reason: 'private_lan_blocked' };
+          return { block: true, reason: 'ip_private' };
+        }
         if (defaultBlockIPsExact.has(lower) || (cfg.blockIPs ?? []).includes(lower)) return { block: true, reason: 'ip_exact' };
         if (defaultBlockIPv4Cidrs.some((c) => ipInCidrV4(lower, c))) return { block: true, reason: 'ip_cidr' };
+        if (!policy.network.allow_ip_literals) return { block: true, reason: 'ip_literal_blocked' };
       } else {
+        const isPrivateV6 = lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80');
+        if (isPrivateV6) {
+          if (policy.network.allow_private_lan === 'allow') return { block: false };
+          if (policy.network.allow_private_lan === 'ask') return { block: true, reason: 'private_lan_blocked' };
+          return { block: true, reason: 'ip_v6_private' };
+        }
         if (defaultBlockIPsExact.has(lower) || (cfg.blockIPs ?? []).includes(lower)) return { block: true, reason: 'ip_v6' };
-        if (lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80')) return { block: true, reason: 'ip_v6_private' };
+        if (!policy.network.allow_ip_literals) return { block: true, reason: 'ip_literal_blocked' };
       }
-      return { block: true, reason: 'ip_literal' };
     }
   }
 
+  // default_deny mode: require explicit allow via wildcard_rules
+  try {
+    const policy: Policy = getEffectivePolicy();
+    if (policy.network.mode === 'default_deny') {
+      const rules = policy.network.wildcard_rules || [];
+      const allowed = rules.some((r) => Array.isArray(r.allow) && r.allow.some((pat) => matchesWildcardDomain(lower, pat)));
+      if (!allowed) return { block: true, reason: 'policy_default_deny' };
+    }
+  } catch {}
   return { block: false };
 };
 
 const makeBlockResponse = (url: string, reason?: string): Response => {
-  const body = JSON.stringify({ ok: false, blocked: true, reason: reason ?? 'policy', url });
-  return new Response(body, { status: 403, headers: { 'content-type': 'application/json' } });
+  try {
+    const policy = getEffectivePolicy();
+    const u = new URL(url);
+    const payload: Record<string, unknown> = {
+      ok: false,
+      blocked: true,
+      reason: reason ?? 'policy', // backward compatibility
+      error: 'network_blocked',
+      domain: u.hostname,
+      policy_mode: policy.network.mode,
+      rule: reason ?? 'policy',
+      how_to_fix: 'Open Policy and allow this domain or change LAN/IP settings',
+      actions: ['allow_once', 'always_allow', 'open_policy_editor'],
+      url,
+    };
+    const body = JSON.stringify(payload);
+    return new Response(body, { status: 403, headers: { 'content-type': 'application/json' } });
+  } catch {
+    const body = JSON.stringify({ ok: false, blocked: true, reason: reason ?? 'policy', url });
+    return new Response(body, { status: 403, headers: { 'content-type': 'application/json' } });
+  }
 };
 
 const installFetchGuard = () => {
@@ -263,6 +388,16 @@ const installFetchGuard = () => {
       const url = toUrl(input);
       const scheme = url.protocol.replace(/:$/, '');
       maybeEmitAttempt('fetch', sanitizeForLog(url), (init as any)?.method || (input?.method ?? 'GET'));
+      // Enforce HTTPS-only when policy requires
+      try {
+        const pol = getEffectivePolicy();
+        if (pol.network.https_only && scheme === 'http') {
+          if (cfg?.verbose) console.warn('[net-guard] fetch blocked (https_only)', sanitizeForLog(url));
+          emitBlockEvent({ url: sanitizeForLog(url), reason: 'https_only', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
+          if (cfg?.monitorOnly) return orig(input, init);
+          return Promise.resolve(makeBlockResponse(sanitizeForLog(url), 'https_only'));
+        }
+      } catch {}
       if (scheme === 'blob' || scheme === 'data') {
         return orig(input, init);
       }
@@ -298,13 +433,30 @@ const installFetchGuard = () => {
         if (cfg?.monitorOnly) return orig(input, init);
         return Promise.resolve(makeBlockResponse(sanitizeForLog(url), res.reason));
       }
+      // Per-domain RPS quotas (token bucket)
+      try {
+        const host = url.hostname;
+        const rps = getPolicyRpsForHost(host);
+        if (typeof rps === 'number' && rps > 0) {
+          const ok = consumeRpsToken(host, rps);
+          if (!ok) {
+            if (cfg?.verbose) console.warn('[net-guard] fetch blocked (rate_limited)', sanitizeForLog(url));
+            emitBlockEvent({ url: sanitizeForLog(url), reason: 'rate_limited', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
+            if (!(cfg?.monitorOnly)) {
+              const pol = getEffectivePolicy();
+              const body = JSON.stringify({ ok: false, blocked: true, reason: 'rate_limited', error: 'rate_limited', domain: host, policy_mode: pol.network.mode, rule: 'quota_rps', how_to_fix: 'Reduce rate or raise quota for this domain', actions: ['open_policy_editor'], url: sanitizeForLog(url) });
+              return Promise.resolve(new Response(body, { status: 429, headers: { 'content-type': 'application/json' } }));
+            }
+          }
+        }
+      } catch {}
     } catch {}
     const startedUrl = (() => { try { return sanitizeForLog(toUrl(input)); } catch { return String(input); } })();
     const p = orig(input, init);
     // Post-response checks (redirects and content-length)
     if (!cfg) return p;
     const wantsRedirectCheck = typeof cfg.maxRedirects === 'number';
-    const wantsSizeCheck = typeof cfg.maxResponseBytes === 'number';
+    const wantsSizeCheck = typeof cfg.maxResponseBytes === 'number' || !!getPolicyMaxResponseBytesForHost((() => { try { return new URL(startedUrl).hostname; } catch { return ''; } })());
     if (!wantsRedirectCheck && !wantsSizeCheck) return p;
     return p.then((res: Response) => {
       try {
@@ -319,8 +471,17 @@ const installFetchGuard = () => {
         if (wantsSizeCheck) {
           const clHeader = res.headers.get('content-length');
           const cl = clHeader ? Number(clHeader) : NaN;
-          if (Number.isFinite(cl) && cl > (cfg!.maxResponseBytes as number)) {
-            if (cfg?.verbose) console.warn('[net-guard] fetch blocked (response_too_large)', startedUrl, cl);
+          const host = (() => { try { return new URL(startedUrl).hostname; } catch { return ''; } })();
+          const policyMax = getPolicyMaxResponseBytesForHost(host);
+          const cfgMax = cfg!.maxResponseBytes as number | undefined;
+          const limit = (() => {
+            if (typeof cfgMax === 'number' && typeof policyMax === 'number') return Math.min(cfgMax, policyMax);
+            if (typeof cfgMax === 'number') return cfgMax;
+            if (typeof policyMax === 'number') return policyMax;
+            return undefined;
+          })();
+          if (Number.isFinite(cl) && typeof limit === 'number' && cl > limit) {
+            if (cfg?.verbose) console.warn('[net-guard] fetch blocked (response_too_large)', startedUrl, cl, 'limit', limit);
             emitBlockEvent({ url: startedUrl, reason: 'response_too_large', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
             if (!(cfg?.monitorOnly)) {
               const body = JSON.stringify({ ok: false, blocked: true, reason: 'response_too_large', url: startedUrl });
@@ -638,7 +799,7 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
   const installed = !!g.__UICP_NET_GUARD_INSTALLED__;
   const enabledEnv = String(env.VITE_NET_GUARD_ENABLED ?? '1').toLowerCase();
   const mode = String(env.MODE ?? env.NODE_ENV ?? '').toLowerCase();
-  const defaultMonitor = (mode === 'development' || mode === 'dev') ? '1' : '0';
+  const defaultMonitor = '1';
   const monitorEnv = String(env.VITE_NET_GUARD_MONITOR ?? defaultMonitor).toLowerCase();
   const verboseEnv = String(env.VITE_GUARD_VERBOSE ?? '0').toLowerCase();
   const blockWorkersEnv = String(env.VITE_GUARD_BLOCK_WORKERS ?? '1').toLowerCase();

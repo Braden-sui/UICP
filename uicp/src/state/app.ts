@@ -199,6 +199,9 @@ export type AppState = {
   computeDemoOpen: boolean;
   moduleRegistryOpen: boolean;
   agentTraceOpen: boolean;
+  policyViewerOpen: boolean;
+  networkInspectorOpen: boolean;
+  firstRunPermissionsReviewed: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
   plannerReasoningEffort: ReasoningEffort;
@@ -240,6 +243,9 @@ export type AppState = {
   setComputeDemoOpen: (value: boolean) => void;
   setModuleRegistryOpen: (value: boolean) => void;
   setAgentTraceOpen: (value: boolean) => void;
+  setPolicyViewerOpen: (value: boolean) => void;
+  setNetworkInspectorOpen: (value: boolean) => void;
+  setFirstRunPermissionsReviewed: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
   setPlannerReasoningEffort: (effort: ReasoningEffort) => void;
@@ -301,6 +307,9 @@ export const useAppStore = create<AppState>()(
       computeDemoOpen: false,
       moduleRegistryOpen: false,
       agentTraceOpen: false,
+      policyViewerOpen: false,
+      networkInspectorOpen: false,
+      firstRunPermissionsReviewed: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
       plannerReasoningEffort: 'high',
@@ -364,6 +373,9 @@ export const useAppStore = create<AppState>()(
       setComputeDemoOpen: (value) => set({ computeDemoOpen: value }),
       setModuleRegistryOpen: (value) => set({ moduleRegistryOpen: value }),
       setAgentTraceOpen: (value) => set({ agentTraceOpen: value }),
+      setPolicyViewerOpen: (value) => set({ policyViewerOpen: value }),
+      setNetworkInspectorOpen: (value) => set({ networkInspectorOpen: value }),
+      setFirstRunPermissionsReviewed: (value) => set({ firstRunPermissionsReviewed: value }),
       setPlannerProfileKey: (key) => {
         setSelectedPlannerProfileKey(key);
         set({ plannerProfileKey: key });
@@ -750,6 +762,7 @@ export const useAppStore = create<AppState>()(
         moduleRegistryOpen: state.moduleRegistryOpen,
         safeMode: state.safeMode,
         safeReason: state.safeReason,
+        firstRunPermissionsReviewed: state.firstRunPermissionsReviewed,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

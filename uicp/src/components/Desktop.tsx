@@ -26,6 +26,9 @@ import { installWorkspaceArtifactCleanup } from '../lib/uicp/cleanup';
 import { inv } from '../lib/bridge/tauri';
 
 import DesktopClock from './DesktopClock';
+import PolicyViewer from './PolicyViewer';
+import NetworkInspector from './NetworkInspector';
+import FirstRunPermissionsSheet from './FirstRunPermissionsSheet';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
@@ -41,6 +44,10 @@ const COMPUTE_DEMO_SHORTCUT_ID = 'compute-demo';
 const COMPUTE_DEMO_SHORTCUT_DEFAULT = { x: 32, y: 512 } as const;
 const AGENT_TRACE_SHORTCUT_ID = 'agent-trace';
 const AGENT_TRACE_SHORTCUT_DEFAULT = { x: 32, y: 608 } as const;
+const POLICY_VIEWER_SHORTCUT_ID = 'policy-viewer';
+const POLICY_VIEWER_SHORTCUT_DEFAULT = { x: 200, y: 32 } as const;
+const NETWORK_INSPECTOR_SHORTCUT_ID = 'network-inspector';
+const NETWORK_INSPECTOR_SHORTCUT_DEFAULT = { x: 200, y: 128 } as const;
 
 // Desktop hosts the empty canvas the agent mutates via the adapter and surfaces shortcuts for manual control.
 export const Desktop = () => {
@@ -61,6 +68,10 @@ export const Desktop = () => {
   const setComputeDemoOpen = useAppSelector((s) => s.setComputeDemoOpen);
   const agentTraceOpen = useAppSelector((s) => s.agentTraceOpen);
   const setAgentTraceOpen = useAppSelector((s) => s.setAgentTraceOpen);
+  const policyViewerOpen = useAppSelector((s) => s.policyViewerOpen);
+  const setPolicyViewerOpen = useAppSelector((s) => s.setPolicyViewerOpen);
+  const networkInspectorOpen = useAppSelector((s) => s.networkInspectorOpen);
+  const setNetworkInspectorOpen = useAppSelector((s) => s.setNetworkInspectorOpen);
   const devMode = useAppSelector((s) => s.devMode);
   const openLogs = useCallback(() => setLogsOpen(true), [setLogsOpen]);
   const hideLogs = useCallback(() => setLogsOpen(false), [setLogsOpen]);
@@ -116,6 +127,8 @@ export const Desktop = () => {
     ensureShortcut(AGENT_SETTINGS_SHORTCUT_ID, { ...AGENT_SETTINGS_SHORTCUT_DEFAULT });
     ensureShortcut(PREFERENCES_SHORTCUT_ID, { ...PREFERENCES_SHORTCUT_DEFAULT });
     ensureShortcut(COMPUTE_DEMO_SHORTCUT_ID, { ...COMPUTE_DEMO_SHORTCUT_DEFAULT });
+    ensureShortcut(POLICY_VIEWER_SHORTCUT_ID, { ...POLICY_VIEWER_SHORTCUT_DEFAULT });
+    ensureShortcut(NETWORK_INSPECTOR_SHORTCUT_ID, { ...NETWORK_INSPECTOR_SHORTCUT_DEFAULT });
     const shouldShowAgentTrace = devMode || import.meta.env.DEV;
     if (shouldShowAgentTrace) {
       ensureShortcut(AGENT_TRACE_SHORTCUT_ID, { ...AGENT_TRACE_SHORTCUT_DEFAULT });
@@ -126,6 +139,8 @@ export const Desktop = () => {
     upsertWorkspaceWindow({ id: 'agent-settings', title: 'Agent Settings', kind: 'local' });
     upsertWorkspaceWindow({ id: 'preferences', title: 'Preferences', kind: 'local' });
     upsertWorkspaceWindow({ id: 'compute-demo', title: 'Compute Demo', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'policy-viewer', title: 'Policy Viewer', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'network-inspector', title: 'Network Inspector', kind: 'local' });
     if (shouldShowAgentTrace) {
       upsertWorkspaceWindow({ id: 'agent-trace', title: 'Agent Trace', kind: 'local' });
     }
@@ -137,6 +152,8 @@ export const Desktop = () => {
       removeWorkspaceWindow('agent-settings');
       removeWorkspaceWindow('preferences');
       removeWorkspaceWindow('compute-demo');
+      removeWorkspaceWindow('policy-viewer');
+      removeWorkspaceWindow('network-inspector');
       if (shouldShowAgentTrace) {
         removeWorkspaceWindow('agent-trace');
       }
@@ -171,6 +188,8 @@ export const Desktop = () => {
   const preferencesPosition = shortcutPositions[PREFERENCES_SHORTCUT_ID] ?? PREFERENCES_SHORTCUT_DEFAULT;
   const computeDemoPosition = shortcutPositions[COMPUTE_DEMO_SHORTCUT_ID] ?? COMPUTE_DEMO_SHORTCUT_DEFAULT;
   const agentTracePosition = shortcutPositions[AGENT_TRACE_SHORTCUT_ID] ?? AGENT_TRACE_SHORTCUT_DEFAULT;
+  const policyViewerPosition = shortcutPositions[POLICY_VIEWER_SHORTCUT_ID] ?? POLICY_VIEWER_SHORTCUT_DEFAULT;
+  const networkInspectorPosition = shortcutPositions[NETWORK_INSPECTOR_SHORTCUT_ID] ?? NETWORK_INSPECTOR_SHORTCUT_DEFAULT;
 
   const handleOpenLogs = useCallback(() => {
     openLogs();
@@ -359,6 +378,26 @@ export const Desktop = () => {
             ],
           } satisfies DesktopMenu;
         }
+        if (meta.id === 'policy-viewer') {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Policy Viewer', onSelect: () => setPolicyViewerOpen(true), disabled: policyViewerOpen },
+              { id: 'hide', label: 'Hide Policy Viewer', onSelect: () => setPolicyViewerOpen(false), disabled: !policyViewerOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
+        if (meta.id === 'network-inspector') {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Network Inspector', onSelect: () => setNetworkInspectorOpen(true), disabled: networkInspectorOpen },
+              { id: 'hide', label: 'Hide Network Inspector', onSelect: () => setNetworkInspectorOpen(false), disabled: !networkInspectorOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
         if (meta.id === 'compute-demo') {
           return {
             id: meta.id,
@@ -479,6 +518,26 @@ export const Desktop = () => {
             active={agentSettingsOpen}
           />
           <DesktopIcon
+            id="policy-viewer-shortcut"
+            label="Policy Viewer"
+            position={policyViewerPosition}
+            containerRef={overlayRef}
+            onOpen={() => setPolicyViewerOpen(true)}
+            onPositionChange={(pos) => setShortcutPosition(POLICY_VIEWER_SHORTCUT_ID, pos)}
+            icon={<SlidersIcon className="h-8 w-8" />}
+            active={policyViewerOpen}
+          />
+          <DesktopIcon
+            id="network-inspector-shortcut"
+            label="Network Inspector"
+            position={networkInspectorPosition}
+            containerRef={overlayRef}
+            onOpen={() => setNetworkInspectorOpen(true)}
+            onPositionChange={(pos) => setShortcutPosition(NETWORK_INSPECTOR_SHORTCUT_ID, pos)}
+            icon={<GaugeIcon className="h-8 w-8" />}
+            active={networkInspectorOpen}
+          />
+          <DesktopIcon
             id="preferences-shortcut"
             label="Preferences"
             position={preferencesPosition}
@@ -539,6 +598,9 @@ export const Desktop = () => {
       <ComputeDemoWindow />
       <ModuleRegistryWindow />
       <AgentTraceWindow />
+      <PolicyViewer />
+      <NetworkInspector />
+      <FirstRunPermissionsSheet />
     </div>
   );
 };
