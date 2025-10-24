@@ -19,25 +19,26 @@ const NetworkInspector = () => {
   const open = useAppStore((s) => s.networkInspectorOpen);
   const setOpen = useAppStore((s) => s.setNetworkInspectorOpen);
   const setPolicyViewerOpen = useAppStore((s) => s.setPolicyViewerOpen);
+  const setPolicyViewerSeedRule = useAppStore((s) => s.setPolicyViewerSeedRule);
   const [events, setEvents] = useState<NetEvent[]>([]);
 
   useEffect(() => {
     if (!open) return;
     const onAttempt = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { url: string; api: NetEvent['api']; method?: string };
+      const detail = (e as CustomEvent<{ url: string; api: NetEvent['api']; method?: string }>).detail;
       const rec: NetEvent = { ts: Date.now(), type: 'attempt', url: detail.url, api: detail.api, method: detail.method };
       setEvents((prev) => [rec, ...prev].slice(0, 300));
     };
     const onBlock = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { url: string; api: NetEvent['api']; reason?: string; method?: string };
+      const detail = (e as CustomEvent<{ url: string; api: NetEvent['api']; reason?: string; method?: string }>).detail;
       const rec: NetEvent = { ts: Date.now(), type: 'block', url: detail.url, api: detail.api, reason: detail.reason, method: detail.method };
       setEvents((prev) => [rec, ...prev].slice(0, 300));
     };
-    window.addEventListener('net-guard-attempt', onAttempt as any);
-    window.addEventListener('net-guard-block', onBlock as any);
+    window.addEventListener('net-guard-attempt', onAttempt);
+    window.addEventListener('net-guard-block', onBlock);
     return () => {
-      window.removeEventListener('net-guard-attempt', onAttempt as any);
-      window.removeEventListener('net-guard-block', onBlock as any);
+      window.removeEventListener('net-guard-attempt', onAttempt);
+      window.removeEventListener('net-guard-block', onBlock);
     };
   }, [open]);
 
@@ -74,7 +75,11 @@ const NetworkInspector = () => {
             </thead>
             <tbody>
               {events.map((e, i) => (
-                <tr key={`${e.ts}-${i}`} className={e.type === 'block' ? 'bg-rose-50 text-rose-700' : 'bg-white text-slate-700'}>
+                <tr
+                  key={`${e.ts}-${i}`}
+                  className={e.type === 'block' ? 'bg-rose-50 text-rose-700' : 'bg-white text-slate-700'}
+                  onDoubleClick={() => { const d = toDomain(e.url); if (d) { setPolicyViewerSeedRule(d); setPolicyViewerOpen(true); } }}
+                >
                   <td className="px-2 py-1 font-mono">{new Date(e.ts).toLocaleTimeString()}</td>
                   <td className="px-2 py-1 uppercase">{e.type}</td>
                   <td className="px-2 py-1">{e.api}</td>

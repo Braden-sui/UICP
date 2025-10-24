@@ -29,3 +29,6 @@ tmp/
 npm-install.log
 temp_*.txt
 tmp_*.ps1
+
+# coding plans
+plans/

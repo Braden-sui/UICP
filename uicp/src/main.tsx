@@ -14,7 +14,9 @@ const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flas
 installNetworkGuard();
 // Start adaptive rollout controller: begins in monitor (dev) and auto-escalates to enforce
 // after a stable window with zero blocks, per env thresholds.
-try { startGuardRollout(); } catch {}
+try { startGuardRollout(); } catch (err) {
+  console.warn('[main] startGuardRollout failed', err);
+}
 
 const hasBooleanOkFlag = (value: unknown): value is { ok: boolean } => {
   return (

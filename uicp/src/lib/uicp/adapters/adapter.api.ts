@@ -187,12 +187,21 @@ const handleHttpFetch = async (
     const prompt = getPermissionPromptHandler();
     const shouldPrompt = Boolean(prompt) || policy.network.mode === 'default_deny';
     if (shouldPrompt) {
-      const decision = await checkPermission(command, (prompt ?? undefined) as any);
+      const decision = await checkPermission(command, (prompt ?? undefined));
       if (decision !== 'allow') {
+        try {
+          const w = typeof window !== 'undefined' ? window : undefined;
+          if (w && typeof w.dispatchEvent === 'function' && typeof w.CustomEvent === 'function') {
+            const ev = new w.CustomEvent('permissions-deny', { detail: { origin: urlObj.origin, method } });
+            w.dispatchEvent(ev);
+          }
+        } catch (err) {
+          console.warn('[api] permissions-deny dispatch failed', err);
+        }
         return { success: false, error: 'Permission denied' };
       }
     }
-  } catch (e) {
+  } catch {
     // If policy cannot be read or handler fails, do not block default_allow flows
   }
 

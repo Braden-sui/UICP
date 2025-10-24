@@ -207,7 +207,10 @@ export type AppState = {
   agentTraceOpen: boolean;
   policyViewerOpen: boolean;
   networkInspectorOpen: boolean;
+  // When opening the Policy Viewer from a toast or inspector, seed the rule input
+  policyViewerSeedRule: string | null;
   firstRunPermissionsReviewed: boolean;
+  filesystemScopesOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
   plannerReasoningEffort: ReasoningEffort;
@@ -250,8 +253,10 @@ export type AppState = {
   setModuleRegistryOpen: (value: boolean) => void;
   setAgentTraceOpen: (value: boolean) => void;
   setPolicyViewerOpen: (value: boolean) => void;
+  setPolicyViewerSeedRule: (rule: string | null) => void;
   setNetworkInspectorOpen: (value: boolean) => void;
   setFirstRunPermissionsReviewed: (value: boolean) => void;
+  setFilesystemScopesOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
   setPlannerReasoningEffort: (effort: ReasoningEffort) => void;
@@ -314,8 +319,10 @@ export const useAppStore = create<AppState>()(
       moduleRegistryOpen: false,
       agentTraceOpen: false,
       policyViewerOpen: false,
+      policyViewerSeedRule: null,
       networkInspectorOpen: false,
       firstRunPermissionsReviewed: false,
+      filesystemScopesOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
       plannerReasoningEffort: 'high',
@@ -380,8 +387,10 @@ export const useAppStore = create<AppState>()(
       setModuleRegistryOpen: (value) => set({ moduleRegistryOpen: value }),
       setAgentTraceOpen: (value) => set({ agentTraceOpen: value }),
       setPolicyViewerOpen: (value) => set({ policyViewerOpen: value }),
+      setPolicyViewerSeedRule: (rule) => set({ policyViewerSeedRule: rule }),
       setNetworkInspectorOpen: (value) => set({ networkInspectorOpen: value }),
       setFirstRunPermissionsReviewed: (value) => set({ firstRunPermissionsReviewed: value }),
+      setFilesystemScopesOpen: (value) => set({ filesystemScopesOpen: value }),
       setPlannerProfileKey: (key) => {
         setSelectedPlannerProfileKey(key);
         set({ plannerProfileKey: key });
@@ -459,7 +468,7 @@ export const useAppStore = create<AppState>()(
         }),
       pushToast: (toast) =>
         set((state) => ({
-          toasts: [...state.toasts, { id: crypto.randomUUID(), ...toast }],
+          toasts: [...state.toasts, { id: createId('toast'), ...toast }],
         })),
       dismissToast: (id) =>
         set((state) => ({

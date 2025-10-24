@@ -1,3 +1,11 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, no-undef */
+/* Note: This file intentionally uses 'any' types for browser API interop.
+   The network guard wraps dynamic global objects (window, XMLHttpRequest, etc.)
+   that require runtime type flexibility. Strict typing would break the guard's
+   ability to intercept and wrap these APIs across different environments.
+   no-undef is disabled because this file references DOM types (RequestInfo,
+   RequestInit, EventSourceInit, BodyInit, RTCConfiguration) that ESLint doesn't
+   recognize despite being standard browser APIs. */
 import { getEffectivePolicy } from './policyLoader';
 import type { Policy } from './policy';
 
@@ -35,7 +43,7 @@ const getPolicyRpsForHost = (host: string): number | undefined => {
       }
     }
     if (typeof rps === 'number' && Number.isFinite(rps) && rps > 0) return rps;
-  } catch {}
+  } catch { /* non-fatal */ }
   return undefined;
 };
 
@@ -80,16 +88,16 @@ const sanitizeForLog = (u: URL): string => `${u.protocol}//${u.host}${u.pathname
 const isTestEnv = (): boolean => {
   try {
     // Vitest or generic NODE_ENV=test
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const p: any = typeof process !== 'undefined' ? process : undefined;
     if (p && p.env && (p.env.VITEST || p.env.NODE_ENV === 'test')) return true;
-  } catch {}
+  } catch { /* non-fatal */ }
   try {
     // Vite-style import.meta.env
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const ie: any = (import.meta as any)?.env;
     if (ie && (ie.MODE === 'test' || ie.VITEST)) return true;
-  } catch {}
+  } catch { /* non-fatal */ }
   return false;
 };
 
@@ -102,7 +110,7 @@ const setProp = (obj: any, key: string, value: any) => {
       enumerable: false,
     });
   } catch {
-    try { obj[key] = value; } catch {}
+    try { obj[key] = value; } catch { /* non-fatal */ }
   }
 };
 
@@ -131,7 +139,7 @@ const getBodyLength = (data: any): number | null => {
     if (typeof Blob !== 'undefined' && data instanceof Blob) return data.size;
     if (data instanceof ArrayBuffer) return data.byteLength;
     if (ArrayBuffer.isView(data)) return (data as ArrayBufferView).byteLength;
-  } catch {}
+  } catch { /* non-fatal */ }
   return null;
 };
 
@@ -179,7 +187,7 @@ const getPolicyMaxResponseBytesForHost = (host: string): number | undefined => {
     if (typeof maxMb === 'number' && Number.isFinite(maxMb) && maxMb > 0) {
       return Math.floor(maxMb * 1024 * 1024);
     }
-  } catch {}
+  } catch { /* non-fatal */ }
   return undefined;
 };
 
@@ -230,19 +238,23 @@ let cfg: GuardConfig | null = null;
 const emitBlockEvent = (detail: { url: string; reason?: string; method?: string; api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon' | 'webrtc' | 'webtransport' | 'worker'; blocked: boolean }) => {
   try {
     const w: any = typeof window !== 'undefined' ? window : undefined;
+     
     if (!w || typeof w.dispatchEvent !== 'function' || typeof (w as any).CustomEvent !== 'function') return;
+     
     const ev = new (w as any).CustomEvent('net-guard-block', { detail });
     w.dispatchEvent(ev);
-  } catch {}
+  } catch { /* non-fatal */ }
 };
 
 const emitAttemptEvent = (detail: { url: string; method?: string; api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon' }) => {
   try {
     const w: any = typeof window !== 'undefined' ? window : undefined;
+     
     if (!w || typeof w.dispatchEvent !== 'function' || typeof (w as any).CustomEvent !== 'function') return;
+     
     const ev = new (w as any).CustomEvent('net-guard-attempt', { detail });
     w.dispatchEvent(ev);
-  } catch {}
+  } catch { /* non-fatal */ }
 };
 
 const maybeEmitAttempt = (api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon', url: string, method?: string) => {
@@ -252,7 +264,7 @@ const maybeEmitAttempt = (api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon', url: s
     if (sample === 1 || Math.floor(Math.random() * sample) === 0) {
       emitAttemptEvent({ api, url, method });
     }
-  } catch {}
+  } catch { /* non-fatal */ }
 };
 
 const setConfig = (next: Partial<GuardConfig>) => {
@@ -268,6 +280,7 @@ const setConfig = (next: Partial<GuardConfig>) => {
     attemptSample: 1,
   };
   cfg = { ...base, ...next };
+   
   (globalThis as any).__UICP_NET_GUARD__ = cfg;
 };
 
@@ -341,7 +354,7 @@ const shouldBlockHost = (host: string, port: string | number | null | undefined)
       const allowed = rules.some((r) => Array.isArray(r.allow) && r.allow.some((pat) => matchesWildcardDomain(lower, pat)));
       if (!allowed) return { block: true, reason: 'policy_default_deny' };
     }
-  } catch {}
+  } catch { /* non-fatal */ }
   return { block: false };
 };
 
@@ -370,11 +383,14 @@ const makeBlockResponse = (url: string, reason?: string): Response => {
 };
 
 const installFetchGuard = () => {
+   
   const g: any = globalThis as any;
+   
   const win: any = typeof window !== 'undefined' ? (window as any) : undefined;
   const hasWindowFetch = !!(win && typeof win.fetch === 'function');
   const hasGlobalFetch = typeof g.fetch === 'function';
   if (!hasWindowFetch && !hasGlobalFetch) return;
+   
   const testFetch: any = (g as any).__UICP_TEST_FETCH__;
   let orig: typeof fetch;
   if (typeof testFetch === 'function') {
@@ -387,22 +403,25 @@ const installFetchGuard = () => {
     try {
       const url = toUrl(input);
       const scheme = url.protocol.replace(/:$/, '');
+       
       maybeEmitAttempt('fetch', sanitizeForLog(url), (init as any)?.method || (input?.method ?? 'GET'));
       // Enforce HTTPS-only when policy requires
       try {
         const pol = getEffectivePolicy();
         if (pol.network.https_only && scheme === 'http') {
           if (cfg?.verbose) console.warn('[net-guard] fetch blocked (https_only)', sanitizeForLog(url));
+           
           emitBlockEvent({ url: sanitizeForLog(url), reason: 'https_only', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
           if (cfg?.monitorOnly) return orig(input, init);
           return Promise.resolve(makeBlockResponse(sanitizeForLog(url), 'https_only'));
         }
-      } catch {}
+      } catch { /* non-fatal */ }
       if (scheme === 'blob' || scheme === 'data') {
         return orig(input, init);
       }
       if (scheme === 'file' || scheme === 'filesystem') {
         if (cfg?.verbose) console.warn('[net-guard] fetch blocked (scheme)', sanitizeForLog(url), 'scheme_forbidden');
+         
         emitBlockEvent({ url: sanitizeForLog(url), reason: 'scheme_forbidden', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
         if (cfg?.monitorOnly) return orig(input, init);
         return Promise.resolve(makeBlockResponse(sanitizeForLog(url), 'scheme_forbidden'));
@@ -410,13 +429,16 @@ const installFetchGuard = () => {
       // Path allowlist (optional)
       if (!pathAllowed(url)) {
         if (cfg?.verbose) console.warn('[net-guard] fetch blocked (path)', sanitizeForLog(url), 'path_forbidden');
+         
         emitBlockEvent({ url: sanitizeForLog(url), reason: 'path_forbidden', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
         if (cfg?.monitorOnly) return orig(input, init);
         return Promise.resolve(makeBlockResponse(sanitizeForLog(url), 'path_forbidden'));
       }
       // Request payload cap (best-effort)
+       
       const method = String((init as any)?.method || (input?.method ?? 'GET')).toUpperCase();
       if (cfg?.maxRequestBytes && method !== 'GET') {
+         
         const len = getBodyLength((init as any)?.body ?? (input as any)?.body);
         if (len != null && len > (cfg.maxRequestBytes as number)) {
           if (cfg?.verbose) console.warn('[net-guard] fetch blocked (payload_too_large)', sanitizeForLog(url), len);
@@ -429,6 +451,7 @@ const installFetchGuard = () => {
       const res = shouldBlockHost(url.hostname, url.port);
       if (res.block) {
         if (cfg?.verbose) console.warn('[net-guard] fetch blocked', sanitizeForLog(url), res.reason);
+         
         emitBlockEvent({ url: sanitizeForLog(url), reason: res.reason, method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
         if (cfg?.monitorOnly) return orig(input, init);
         return Promise.resolve(makeBlockResponse(sanitizeForLog(url), res.reason));
@@ -441,6 +464,7 @@ const installFetchGuard = () => {
           const ok = consumeRpsToken(host, rps);
           if (!ok) {
             if (cfg?.verbose) console.warn('[net-guard] fetch blocked (rate_limited)', sanitizeForLog(url));
+             
             emitBlockEvent({ url: sanitizeForLog(url), reason: 'rate_limited', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
             if (!(cfg?.monitorOnly)) {
               const pol = getEffectivePolicy();
@@ -449,8 +473,8 @@ const installFetchGuard = () => {
             }
           }
         }
-      } catch {}
-    } catch {}
+      } catch { /* non-fatal */ }
+    } catch { /* non-fatal */ }
     const startedUrl = (() => { try { return sanitizeForLog(toUrl(input)); } catch { return String(input); } })();
     const p = orig(input, init);
     // Post-response checks (redirects and content-length)
@@ -462,6 +486,7 @@ const installFetchGuard = () => {
       try {
         if (wantsRedirectCheck && (cfg!.maxRedirects as number) === 0 && res.redirected) {
           if (cfg?.verbose) console.warn('[net-guard] fetch blocked (redirect_exceeded)', startedUrl);
+           
           emitBlockEvent({ url: startedUrl, reason: 'redirect_exceeded', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
           if (!(cfg?.monitorOnly)) {
             const body = JSON.stringify({ ok: false, blocked: true, reason: 'redirect_exceeded', url: startedUrl });
@@ -482,6 +507,7 @@ const installFetchGuard = () => {
           })();
           if (Number.isFinite(cl) && typeof limit === 'number' && cl > limit) {
             if (cfg?.verbose) console.warn('[net-guard] fetch blocked (response_too_large)', startedUrl, cl, 'limit', limit);
+             
             emitBlockEvent({ url: startedUrl, reason: 'response_too_large', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
             if (!(cfg?.monitorOnly)) {
               const body = JSON.stringify({ ok: false, blocked: true, reason: 'response_too_large', url: startedUrl });
@@ -489,14 +515,15 @@ const installFetchGuard = () => {
             }
           }
         }
-      } catch {}
+      } catch { /* non-fatal */ }
       return res;
     });
   };
+   
   (wrapper as any).__uicpWrapped = true;
   // Wrap both window and global fetch if present
-  try { if (win) setProp(win, 'fetch', wrapper); } catch {}
-  try { if (hasGlobalFetch) setProp(g, 'fetch', wrapper); } catch {}
+  try { if (win) setProp(win, 'fetch', wrapper); } catch { /* non-fatal */ }
+  try { if (hasGlobalFetch) setProp(g, 'fetch', wrapper); } catch { /* non-fatal */ }
   // Lock properties in non-test envs to prevent unhooking
   try {
     if (!isTestEnv()) {
@@ -509,11 +536,13 @@ const installFetchGuard = () => {
         Object.defineProperty(g, 'fetch', { value: current, configurable: false, writable: false });
       }
     }
-  } catch {}
+  } catch { /* non-fatal */ }
 };
 
 const installXHRGuard = () => {
+   
   if (typeof window === 'undefined' || !(window as any).XMLHttpRequest) return;
+   
   const XHR = (window as any).XMLHttpRequest;
   const wrapped = function (this: any, ...args: any[]) {
     let blockError: Error | undefined;
@@ -555,15 +584,21 @@ const installXHRGuard = () => {
         console.warn('[net-guard] xhr policy inspection failed', error);
       }
     }
+     
     return (XHR as any).prototype.__uicpOrigOpen.apply(this, args as any);
+   
   } as any;
+   
   if (!(XHR as any).prototype.__uicpOrigOpen) {
+     
     (XHR as any).prototype.__uicpOrigOpen = XHR.prototype.open;
   }
+   
   (wrapped as any).__uicpWrapped = true;
-  try { Object.defineProperty(XHR.prototype, 'open', { value: wrapped, configurable: true, writable: isTestEnv() }); } catch {}
+  try { Object.defineProperty(XHR.prototype, 'open', { value: wrapped, configurable: true, writable: isTestEnv() }); } catch { /* non-fatal */ }
   // Wrap send() to enforce request payload caps
   try {
+     
     const proto: any = (XHR as any).prototype;
     if (!proto.__uicpOrigSend && typeof proto.send === 'function') {
       proto.__uicpOrigSend = proto.send;
@@ -579,20 +614,27 @@ const installXHRGuard = () => {
               if (!(cfg?.monitorOnly)) throw new Error('Blocked by Network Guard');
             }
           }
-        } catch {}
+        } catch { /* non-fatal */ }
+         
         const fn = (this as any).__uicpOrigSend || proto.__uicpOrigSend || proto.send;
+         
         return fn.apply(this, arguments as any);
+       
       } as any;
       try { Object.defineProperty(proto, 'send', { value: sendWrapped, configurable: true, writable: isTestEnv() }); } catch { proto.send = sendWrapped; }
     }
-  } catch {}
+  } catch { /* non-fatal */ }
 };
 
 const installWSGuard = () => {
+   
   if (typeof window === 'undefined' || !(window as any).WebSocket) return;
+   
   const WS = (window as any).WebSocket as typeof WebSocket;
+   
   if ((WS as any).__uicpWrapped) return;
   const Wrapped = function (this: WebSocket, url: string | URL, protocols?: string | string[]) {
+     
     const u = toUrl(url as any);
     const scheme = u.protocol.replace(/:$/, '');
     maybeEmitAttempt('ws', sanitizeForLog(u));
@@ -612,18 +654,26 @@ const installWSGuard = () => {
       emitBlockEvent({ url: sanitizeForLog(u), reason: res.reason, api: 'ws', blocked: !(cfg?.monitorOnly) });
       if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
     }
+     
     return new WS(url as any, protocols as any) as any;
+   
   } as any;
+   
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = WS.prototype;
+   
   setProp(window as any, 'WebSocket', Wrapped);
 };
 
 const installESGuard = () => {
+   
   if (typeof window === 'undefined' || !(window as any).EventSource) return;
+   
   const ES = (window as any).EventSource as typeof EventSource;
+   
   if ((ES as any).__uicpWrapped) return;
   const Wrapped = function (this: EventSource, url: string | URL, eventSourceInitDict?: EventSourceInit) {
+     
     const u = toUrl(url as any);
     const scheme = u.protocol.replace(/:$/, '');
     maybeEmitAttempt('sse', sanitizeForLog(u));
@@ -643,20 +693,28 @@ const installESGuard = () => {
       emitBlockEvent({ url: sanitizeForLog(u), reason: res.reason, api: 'sse', blocked: !(cfg?.monitorOnly) });
       if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
     }
+     
     return new ES(url as any, eventSourceInitDict) as any;
+   
   } as any;
+   
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = ES.prototype;
+   
   setProp(window as any, 'EventSource', Wrapped);
 };
 
 const installBeaconGuard = () => {
+   
   if (typeof navigator === 'undefined' || typeof (navigator as any).sendBeacon !== 'function') return;
+   
   const nav: any = navigator as any;
+   
   if (nav.sendBeacon && (nav.sendBeacon as any).__uicpWrapped) return;
   const orig = nav.sendBeacon.bind(nav);
   nav.sendBeacon = (url: string | URL, data?: BodyInit | null) => {
     try {
+       
       const u = toUrl(url as any);
       const scheme = u.protocol.replace(/:$/, '');
       maybeEmitAttempt('beacon', sanitizeForLog(u));
@@ -684,65 +742,82 @@ const installBeaconGuard = () => {
           if (!(cfg?.monitorOnly)) return false;
         }
       }
-    } catch {}
+    } catch { /* non-fatal */ }
+     
     return orig(url as any, data as any);
   };
+   
   (nav.sendBeacon as any).__uicpWrapped = true;
 };
 
 const installWebRTCGuard = () => {
   if (typeof window === 'undefined') return;
+   
   const PC: any = (window as any).RTCPeerConnection;
   if (!PC) return;
+   
   if ((PC as any).__uicpWrapped) return;
   const Wrapped = function (this: any, config?: RTCConfiguration, ...rest: any[]) {
     const hasServers = Array.isArray(config?.iceServers) && (config!.iceServers!.length > 0);
     if (hasServers) {
+       
       const hasStunTurn = (config!.iceServers as any[]).some((s: any) => {
+         
         const urls = ([] as any[]).concat((s && (s.urls as any)) || []);
         return urls.some((u) => typeof u === 'string' && /^(stun:|turn:|turns:)/i.test(u));
       });
       if (hasStunTurn) {
         const doBlock = !!(cfg?.blockWebRTC) && !(cfg?.monitorOnly);
-        try { emitBlockEvent({ url: 'webrtc:iceservers', reason: doBlock ? 'webrtc_blocked' : 'webrtc_monitor', api: 'webrtc', blocked: doBlock }); } catch {}
+        try { emitBlockEvent({ url: 'webrtc:iceservers', reason: doBlock ? 'webrtc_blocked' : 'webrtc_monitor', api: 'webrtc', blocked: doBlock }); } catch { /* non-fatal */ }
         if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
       }
     }
+     
     return new (PC as any)(config, ...rest);
+   
   } as any;
+   
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = PC.prototype;
+   
   setProp(window as any, 'RTCPeerConnection', Wrapped);
 };
 
 const installWebTransportGuard = () => {
   if (typeof window === 'undefined') return;
+   
   const WT: any = (window as any).WebTransport;
   if (!WT) return;
+   
   if ((WT as any).__uicpWrapped) return;
   const Wrapped = function (this: any, url: string, opts?: any) {
     const doBlock = !!(cfg?.blockWebTransport) && !(cfg?.monitorOnly);
+     
     const u = toUrl(url as any);
     const scheme = u.protocol.replace(/:$/, '');
     if (scheme !== 'https') {
       if (cfg?.verbose) console.warn('[net-guard] webtransport blocked (scheme)', sanitizeForLog(u), 'scheme_forbidden');
-      try { emitBlockEvent({ url: sanitizeForLog(u), reason: 'scheme_forbidden', api: 'webtransport', blocked: !(cfg?.monitorOnly) }); } catch {}
+      try { emitBlockEvent({ url: sanitizeForLog(u), reason: 'scheme_forbidden', api: 'webtransport', blocked: !(cfg?.monitorOnly) }); } catch { /* non-fatal */ }
       if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
     }
     if (doBlock) {
-      try { emitBlockEvent({ url: sanitizeForLog(u), reason: 'webtransport_blocked', api: 'webtransport', blocked: true }); } catch {}
+      try { emitBlockEvent({ url: sanitizeForLog(u), reason: 'webtransport_blocked', api: 'webtransport', blocked: true }); } catch { /* non-fatal */ }
       throw new DOMException('Blocked by Network Guard', 'SecurityError');
     }
     const res = shouldBlockHost(u.hostname, u.port);
     if (res.block) {
       if (cfg?.verbose) console.warn('[net-guard] webtransport blocked', sanitizeForLog(u), res.reason);
-      try { emitBlockEvent({ url: sanitizeForLog(u), reason: res.reason, api: 'webtransport', blocked: !(cfg?.monitorOnly) }); } catch {}
+      try { emitBlockEvent({ url: sanitizeForLog(u), reason: res.reason, api: 'webtransport', blocked: !(cfg?.monitorOnly) }); } catch { /* non-fatal */ }
       if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
     }
+     
     return new (WT as any)(url, opts);
+   
   } as any;
+   
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = WT.prototype;
+   
   setProp(window as any, 'WebTransport', Wrapped);
 };
 
@@ -750,51 +825,70 @@ const installWorkerGuards = () => {
   const w: any = typeof window !== 'undefined' ? window : undefined;
   if (!w) return;
   if (w.Worker) {
+     
     const W = w.Worker as any;
+     
     if (!(W as any).__uicpWrapped) {
       const Wrapped = function (this: any, ..._args: any[]) {
         const doBlock = !!(cfg?.blockWorkers) && !(cfg?.monitorOnly);
-        try { emitBlockEvent({ url: 'worker', reason: doBlock ? 'worker_blocked' : 'worker_monitor', api: 'worker', blocked: doBlock }); } catch {}
+        try { emitBlockEvent({ url: 'worker', reason: doBlock ? 'worker_blocked' : 'worker_monitor', api: 'worker', blocked: doBlock }); } catch { /* non-fatal */ }
         if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+         
         return new (W as any)(..._args);
+       
       } as any;
+       
       (Wrapped as any).__uicpWrapped = true;
       Wrapped.prototype = W.prototype;
       setProp(w, 'Worker', Wrapped);
     }
   }
   if (w.SharedWorker) {
+     
     const SW = w.SharedWorker as any;
+     
     if (!(SW as any).__uicpWrapped) {
       const Wrapped = function (this: any, ..._args: any[]) {
         const doBlock = !!(cfg?.blockWorkers) && !(cfg?.monitorOnly);
-        try { emitBlockEvent({ url: 'sharedworker', reason: doBlock ? 'worker_blocked' : 'worker_monitor', api: 'worker', blocked: doBlock }); } catch {}
+        try { emitBlockEvent({ url: 'sharedworker', reason: doBlock ? 'worker_blocked' : 'worker_monitor', api: 'worker', blocked: doBlock }); } catch { /* non-fatal */ }
         if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+         
         return new (SW as any)(..._args);
+       
       } as any;
+       
       (Wrapped as any).__uicpWrapped = true;
       Wrapped.prototype = SW.prototype;
       setProp(w, 'SharedWorker', Wrapped);
     }
   }
+   
   if (w.navigator && (w.navigator as any).serviceWorker && typeof (w.navigator as any).serviceWorker.register === 'function') {
+     
     const reg = (w.navigator as any).serviceWorker.register.bind((w.navigator as any).serviceWorker);
+     
     const cur = (w.navigator as any).serviceWorker.register as any;
+     
     if (!(cur as any).__uicpWrapped) {
       const wrapped = ((scriptURL: string, options?: any) => {
         const doBlock = (cfg?.blockServiceWorker ?? true) && !(cfg?.monitorOnly);
-        try { emitBlockEvent({ url: String(scriptURL), reason: doBlock ? 'service_worker_blocked' : 'service_worker_monitor', api: 'worker', blocked: doBlock }); } catch {}
+        try { emitBlockEvent({ url: String(scriptURL), reason: doBlock ? 'service_worker_blocked' : 'service_worker_monitor', api: 'worker', blocked: doBlock }); } catch { /* non-fatal */ }
         if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
         return reg(scriptURL, options);
+       
       }) as any;
+       
       (wrapped as any).__uicpWrapped = true;
+       
       (w.navigator as any).serviceWorker.register = wrapped;
     }
   }
 };
 
 export function installNetworkGuard(custom?: Partial<GuardConfig>) {
+   
   const env: any = (import.meta as any)?.env ?? {};
+   
   const g: any = globalThis as any;
   const installed = !!g.__UICP_NET_GUARD_INSTALLED__;
   const enabledEnv = String(env.VITE_NET_GUARD_ENABLED ?? '1').toLowerCase();

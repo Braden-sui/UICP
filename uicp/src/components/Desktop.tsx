@@ -29,6 +29,7 @@ import DesktopClock from './DesktopClock';
 import PolicyViewer from './PolicyViewer';
 import NetworkInspector from './NetworkInspector';
 import FirstRunPermissionsSheet from './FirstRunPermissionsSheet';
+import FilesystemScopesWindow from './FilesystemScopesWindow';
 
 const LOGS_SHORTCUT_ID = 'logs';
 const LOGS_SHORTCUT_DEFAULT = { x: 32, y: 32 } as const;
@@ -48,6 +49,8 @@ const POLICY_VIEWER_SHORTCUT_ID = 'policy-viewer';
 const POLICY_VIEWER_SHORTCUT_DEFAULT = { x: 200, y: 32 } as const;
 const NETWORK_INSPECTOR_SHORTCUT_ID = 'network-inspector';
 const NETWORK_INSPECTOR_SHORTCUT_DEFAULT = { x: 200, y: 128 } as const;
+const FILESYSTEM_SCOPES_SHORTCUT_ID = 'filesystem-scopes';
+const FILESYSTEM_SCOPES_SHORTCUT_DEFAULT = { x: 200, y: 224 } as const;
 
 // Desktop hosts the empty canvas the agent mutates via the adapter and surfaces shortcuts for manual control.
 export const Desktop = () => {
@@ -72,6 +75,8 @@ export const Desktop = () => {
   const setPolicyViewerOpen = useAppSelector((s) => s.setPolicyViewerOpen);
   const networkInspectorOpen = useAppSelector((s) => s.networkInspectorOpen);
   const setNetworkInspectorOpen = useAppSelector((s) => s.setNetworkInspectorOpen);
+  const filesystemScopesOpen = useAppSelector((s) => s.filesystemScopesOpen);
+  const setFilesystemScopesOpen = useAppSelector((s) => s.setFilesystemScopesOpen);
   const devMode = useAppSelector((s) => s.devMode);
   const openLogs = useCallback(() => setLogsOpen(true), [setLogsOpen]);
   const hideLogs = useCallback(() => setLogsOpen(false), [setLogsOpen]);
@@ -129,6 +134,7 @@ export const Desktop = () => {
     ensureShortcut(COMPUTE_DEMO_SHORTCUT_ID, { ...COMPUTE_DEMO_SHORTCUT_DEFAULT });
     ensureShortcut(POLICY_VIEWER_SHORTCUT_ID, { ...POLICY_VIEWER_SHORTCUT_DEFAULT });
     ensureShortcut(NETWORK_INSPECTOR_SHORTCUT_ID, { ...NETWORK_INSPECTOR_SHORTCUT_DEFAULT });
+    ensureShortcut(FILESYSTEM_SCOPES_SHORTCUT_ID, { ...FILESYSTEM_SCOPES_SHORTCUT_DEFAULT });
     const shouldShowAgentTrace = devMode || import.meta.env.DEV;
     if (shouldShowAgentTrace) {
       ensureShortcut(AGENT_TRACE_SHORTCUT_ID, { ...AGENT_TRACE_SHORTCUT_DEFAULT });
@@ -141,6 +147,7 @@ export const Desktop = () => {
     upsertWorkspaceWindow({ id: 'compute-demo', title: 'Compute Demo', kind: 'local' });
     upsertWorkspaceWindow({ id: 'policy-viewer', title: 'Policy Viewer', kind: 'local' });
     upsertWorkspaceWindow({ id: 'network-inspector', title: 'Network Inspector', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'filesystem-scopes', title: 'Filesystem Scopes', kind: 'local' });
     if (shouldShowAgentTrace) {
       upsertWorkspaceWindow({ id: 'agent-trace', title: 'Agent Trace', kind: 'local' });
     }
@@ -154,6 +161,7 @@ export const Desktop = () => {
       removeWorkspaceWindow('compute-demo');
       removeWorkspaceWindow('policy-viewer');
       removeWorkspaceWindow('network-inspector');
+      removeWorkspaceWindow('filesystem-scopes');
       if (shouldShowAgentTrace) {
         removeWorkspaceWindow('agent-trace');
       }
@@ -190,6 +198,7 @@ export const Desktop = () => {
   const agentTracePosition = shortcutPositions[AGENT_TRACE_SHORTCUT_ID] ?? AGENT_TRACE_SHORTCUT_DEFAULT;
   const policyViewerPosition = shortcutPositions[POLICY_VIEWER_SHORTCUT_ID] ?? POLICY_VIEWER_SHORTCUT_DEFAULT;
   const networkInspectorPosition = shortcutPositions[NETWORK_INSPECTOR_SHORTCUT_ID] ?? NETWORK_INSPECTOR_SHORTCUT_DEFAULT;
+  const filesystemScopesPosition = shortcutPositions[FILESYSTEM_SCOPES_SHORTCUT_ID] ?? FILESYSTEM_SCOPES_SHORTCUT_DEFAULT;
 
   const handleOpenLogs = useCallback(() => {
     openLogs();
@@ -398,6 +407,16 @@ export const Desktop = () => {
             ],
           } satisfies DesktopMenu;
         }
+        if (meta.id === 'filesystem-scopes') {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Filesystem Scopes', onSelect: () => setFilesystemScopesOpen(true), disabled: filesystemScopesOpen },
+              { id: 'hide', label: 'Hide Filesystem Scopes', onSelect: () => setFilesystemScopesOpen(false), disabled: !filesystemScopesOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
         if (meta.id === 'compute-demo') {
           return {
             id: meta.id,
@@ -447,6 +466,10 @@ export const Desktop = () => {
     openNotepad,
     openPreferences,
     preferencesOpen,
+    policyViewerOpen,
+    setPolicyViewerOpen,
+    networkInspectorOpen,
+    setNetworkInspectorOpen,
     setAgentSettingsOpen,
     workspaceWindows,
     pinnedWindows,
@@ -538,6 +561,16 @@ export const Desktop = () => {
             active={networkInspectorOpen}
           />
           <DesktopIcon
+            id="filesystem-scopes-shortcut"
+            label="Filesystem Scopes"
+            position={filesystemScopesPosition}
+            containerRef={overlayRef}
+            onOpen={() => setFilesystemScopesOpen(true)}
+            onPositionChange={(pos) => setShortcutPosition(FILESYSTEM_SCOPES_SHORTCUT_ID, pos)}
+            icon={<SlidersIcon className="h-8 w-8" />}
+            active={filesystemScopesOpen}
+          />
+          <DesktopIcon
             id="preferences-shortcut"
             label="Preferences"
             position={preferencesPosition}
@@ -601,6 +634,7 @@ export const Desktop = () => {
       <PolicyViewer />
       <NetworkInspector />
       <FirstRunPermissionsSheet />
+      <FilesystemScopesWindow />
     </div>
   );
 };

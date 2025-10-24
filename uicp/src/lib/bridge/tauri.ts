@@ -360,7 +360,9 @@ export async function initializeTauriBridge() {
               capabilities: mergedCaps,
             };
           }
-        } catch {}
+        } catch (err) {
+          console.warn('[router] provider decision for operation failed', err);
+        }
       }
       try {
         const envHash = typeof finalSpec.provenance?.envHash === 'string' ? finalSpec.provenance.envHash : undefined;
@@ -375,7 +377,9 @@ export async function initializeTauriBridge() {
             routedSpec = { ...routedSpec, token } as JobSpec;
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn('[tauri] mint_job_token failed', err);
+      }
       await invoke('compute_call', { spec: routedSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);

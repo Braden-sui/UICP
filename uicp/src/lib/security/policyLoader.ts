@@ -14,16 +14,19 @@ export function onPolicyChange(fn: Listener): () => void {
 export function setRuntimePolicy(p: Partial<Policy>) {
   runtimePolicy = ensurePolicy(p as Policy);
   for (const fn of Array.from(listeners)) {
-    try { fn(runtimePolicy); } catch {}
+    try { fn(runtimePolicy); } catch (err) {
+      // keep non-fatal: policy listeners must not crash app
+      console.warn('[policyLoader] listener failed', err);
+    }
   }
 }
 
 function fromEnv(): Policy {
-  const env: any = (import.meta as any)?.env ?? {};
+  const env = ((import.meta as unknown) as { env?: Record<string, unknown> }).env ?? {};
   const safe = String(env.UICP_SAFE_MODE ?? '0').toLowerCase();
   if (safe === '1' || safe === 'true') return Presets.locked;
   const raw = String(env.UICP_POLICY ?? '').trim();
-  if (!raw) return Presets.balanced;
+  if (!raw) return Presets.open;
   const lower = raw.toLowerCase();
   if (lower === 'open') return Presets.open;
   if (lower === 'balanced') return Presets.balanced;
@@ -32,12 +35,13 @@ function fromEnv(): Policy {
     try {
       const obj = JSON.parse(raw);
       return ensurePolicy(obj);
-    } catch {
-      return Presets.balanced;
+    } catch (err) {
+      console.warn('[policyLoader] failed to parse UICP_POLICY JSON, falling back to open', err);
+      return Presets.open;
     }
   }
   // Path-based loading is not implemented in the browser context; fall back.
-  return Presets.balanced;
+  return Presets.open;
 }
 
 export function getEffectivePolicy(): Policy {

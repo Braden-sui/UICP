@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+/* global EventListener */
 import { installNetworkGuard } from './networkGuard';
 import { emitTelemetryEvent } from '../telemetry';
 import type { TelemetryEventName } from '../telemetry/types';
@@ -24,30 +26,30 @@ const now = () => Date.now();
 const MINUTES = (m: number) => m * 60 * 1000;
 
 const getEnvStage = (): RolloutStage => {
-  const env: any = (import.meta as any)?.env ?? {};
+  const env = ((import.meta as unknown) as { env?: Record<string, unknown> }).env ?? {};
   const val = String(env.VITE_GUARD_ROLLOUT_STAGE ?? '').toLowerCase();
   if (val === 'monitor' || val === 'enforce' || val === 'auto') return val as RolloutStage;
   // Default: auto in dev, enforce in prod
-  const mode = String(env.MODE ?? env.NODE_ENV ?? '').toLowerCase();
+  const mode = String((env as Record<string, unknown>).MODE ?? (env as Record<string, unknown>).NODE_ENV ?? '').toLowerCase();
   return mode === 'development' || mode === 'dev' ? 'auto' : 'enforce';
 };
 
 const getEnvMinutes = (): number => {
-  const env: any = (import.meta as any)?.env ?? {};
+  const env = ((import.meta as unknown) as { env?: Record<string, unknown> }).env ?? {};
   const num = Number(env.VITE_GUARD_ROLLOUT_MINUTES_MONITOR);
   if (Number.isFinite(num) && num > 0) return num;
   return 30; // default 30 min
 };
 
 const getEnvFprThreshold = (): number => {
-  const env: any = (import.meta as any)?.env ?? {};
+  const env = ((import.meta as unknown) as { env?: Record<string, unknown> }).env ?? {};
   const n = Number(env.VITE_GUARD_FPR_THRESHOLD);
   if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
   return 0.001; // 0.1%
 };
 
 const getEnvMinAttempts = (): number => {
-  const env: any = (import.meta as any)?.env ?? {};
+  const env = ((import.meta as unknown) as { env?: Record<string, unknown> }).env ?? {};
   const n = Number(env.VITE_GUARD_MIN_ATTEMPTS);
   if (Number.isFinite(n) && n > 0) return Math.floor(n);
   return 50;
@@ -70,7 +72,11 @@ const readState = (key: string): GuardRolloutState | null => {
 const writeState = (key: string, state: GuardRolloutState) => {
   try {
     localStorage.setItem(key, JSON.stringify(state));
-  } catch {}
+  } catch (err) {
+    // keep rollout non-fatal
+     
+    console.warn('[rollout] failed to write state', err);
+  }
 };
 
 const getTraceId = (): string => {
@@ -88,7 +94,7 @@ const emit = (name: TelemetryEventName, data: Record<string, unknown>) => {
     emitTelemetryEvent(name, { traceId: getTraceId(), data });
   } catch (err) {
     // keep guard non-fatal
-    // eslint-disable-next-line no-console
+     
     console.warn('[rollout] failed to emit telemetry', err);
   }
 };
@@ -113,7 +119,9 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
   const onBlock = (e: CustomEvent) => {
     state.blockCount += 1;
     writeState(storageKey, state);
-    const { reason, api } = (e as any).detail || {};
+    const detail = (e as CustomEvent<{ reason?: string; api?: string }>).detail;
+    const reason = detail?.reason;
+    const api = detail?.api;
     emit('security.net_guard.block', { reason, api, blocks: state.blockCount });
   };
 
@@ -123,9 +131,11 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
   };
 
   try {
-    window.addEventListener('net-guard-block', onBlock as any);
-    window.addEventListener('net-guard-attempt', onAttempt as any);
-  } catch {}
+    window.addEventListener('net-guard-block', onBlock as EventListener);
+    window.addEventListener('net-guard-attempt', onAttempt as EventListener);
+  } catch (err) {
+    console.warn('[rollout] failed to attach listeners', err);
+  }
 
   const checkEscalate = () => {
     if (state.stage === 'enforce') return;
@@ -140,7 +150,11 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
     // If no attempts observed, allow zero-block fast path
     if (attempts === 0 && blocks === 0) {
       try {
-        opts?.onEscalate ? opts.onEscalate() : installNetworkGuard({ monitorOnly: false });
+        if (opts?.onEscalate) {
+          opts.onEscalate();
+        } else {
+          installNetworkGuard({ monitorOnly: false });
+        }
         state.stage = 'enforce';
         state.lastEscalatedAt = now();
         writeState(storageKey, state);
@@ -156,13 +170,16 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
 
     // Escalate to enforce
     try {
-      opts?.onEscalate ? opts.onEscalate() : installNetworkGuard({ monitorOnly: false });
+      if (opts?.onEscalate) {
+        opts.onEscalate();
+      } else {
+        installNetworkGuard({ monitorOnly: false });
+      }
       state.stage = 'enforce';
       state.lastEscalatedAt = now();
       writeState(storageKey, state);
       emit('security.net_guard.rollout_state', { from: 'monitor', to: 'enforce', minutesMonitor, method: 'fpr', fpr, attempts, blocks, threshold: fprThreshold });
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('[rollout] failed to escalate guard', err);
     }
   };
@@ -174,8 +191,12 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
     getState: () => ({ ...state }),
     checkNow: () => checkEscalate(),
     stop: () => {
-      try { window.removeEventListener('net-guard-block', onBlock as any); } catch {}
-      try { window.removeEventListener('net-guard-attempt', onAttempt as any); } catch {}
+      try { window.removeEventListener('net-guard-block', onBlock as EventListener); } catch (err) {
+        console.warn('[rollout] failed to remove block listener', err);
+      }
+      try { window.removeEventListener('net-guard-attempt', onAttempt as EventListener); } catch (err) {
+        console.warn('[rollout] failed to remove attempt listener', err);
+      }
       window.clearInterval(interval);
     },
   };

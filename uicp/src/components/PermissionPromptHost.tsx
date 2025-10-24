@@ -31,7 +31,7 @@ const PermissionPromptHost = () => {
   if (!open || !prompt) return null;
 
   const act = (choice: PromptState['choices'][number]) => {
-    try { resolver?.({ decision: choice.decision, duration: choice.duration }); } catch {}
+    try { resolver?.({ decision: choice.decision, duration: choice.duration }); } catch { /* non-fatal */ }
     setOpen(false);
     setResolver(null);
     setPrompt(null);

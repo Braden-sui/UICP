@@ -105,8 +105,6 @@ export const usePreferencesStore = create<PreferencesState>()(
         const providerStore = useProviderStore.getState();
         const defaultProvider = snapshot?.defaultProvider ?? 'auto';
         const runBoth = snapshot?.runBothByDefault ?? true;
-        const firewallDisabled = snapshot?.firewallDisabled ?? false;
-        const strictCaps = snapshot?.strictCaps ?? false;
         providerStore.setDefaultProvider(defaultProvider);
         providerStore.setEnableBoth(runBoth);
         // Persist middleware will hydrate firewallDisabled and strictCaps; avoid referencing the store during initialization
