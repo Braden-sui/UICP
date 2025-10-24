@@ -71,6 +71,7 @@ In scope:
 * Module verification script upgraded to verify Ed25519 signatures using a trust store (`UICP_TRUST_STORE_JSON`) when `STRICT_MODULES_VERIFY=1`.
 * `verify-modules.yml` sets `STRICT_MODULES_VERIFY=1` and enforces signatures (single-key or trust store) on every PR touching modules.
 * `.env.example` updated with secure-compute flags: `UICP_CACHE_V2`, `UICP_REQUIRE_TOKENS`, `STRICT_MODULES_VERIFY`, `UICP_TRUST_STORE_JSON`, `UICP_WASM_CONCURRENCY`.
+* Blocking backpressure quotas implemented for guest stdout/stderr, partial events, and wasi logging; no drops. Streams block in ~10 ms intervals until tokens are available; throttle counters are recorded. Defaults: stdout+stderr 256 KiB/s (burst 1 MiB), logger 64 KiB/s, partial events 30/s.
 
 ## Phase 0 - Recon anchors (done)
 
@@ -146,11 +147,12 @@ export type ResourceLimits = {
 
 ## Host capability tokens
 
-Tokens v1 (implemented):
+Tokens v1 (implemented, operator-managed):
 
 * Host mints an HMAC-SHA256 token over `{jobId, task, workspaceId, envHash}`.
 * Token travels with the `JobSpec` and is verified before execution when enforcement is enabled.
-* Enforcement is disabled by default; opt-in via `UICP_REQUIRE_TOKENS=1`.
+* Enforcement is disabled by default and is operator-managed. Enable via `UICP_REQUIRE_TOKENS=1` in production deployments. Packaging does not auto-enable this.
+* Operators should set a stable 32-byte hex key via `UICP_JOB_TOKEN_KEY_HEX` for continuity across restarts. If unset, the host generates an ephemeral random key at boot (tokens from previous runs will not verify).
 
 Planned for v2 (future):
 
@@ -186,8 +188,8 @@ Golden cache:
 
 ## Environment flags
 
-* `UICP_REQUIRE_TOKENS=1` — enforce job token verification.
-* `UICP_JOB_TOKEN_KEY_HEX=<64 hex>` — fixed 32-byte HMAC key; random if unset.
+* `UICP_REQUIRE_TOKENS=1` — enforce job token verification (operator-managed; recommended for production).
+* `UICP_JOB_TOKEN_KEY_HEX=<64 hex>` — operator-managed fixed 32-byte HMAC key; if unset, a random ephemeral key is generated at boot.
 * `UICP_CACHE_V2=1` — use v2 cache key (with invariants) for lookup and store.
 * `UICP_WASM_CONCURRENCY=<1..64>` — WASM provider concurrency cap (default 2); separate from generic compute_sem.
 * `UICP_WASM_PROVIDER=0|1` — runtime kill switch for routing to the WASM provider. Defaults to 1 in production builds; set to 0 to disable and route to alternative providers.
@@ -195,12 +197,13 @@ Golden cache:
 Notes:
 
 - Flags are read at startup; changing them requires an app restart to take effect.
-- Security posture defaults: tokens and cache v2 may be disabled in dev; signatures are required when `STRICT_MODULES_VERIFY=1`.
+- Security posture defaults: tokens are operator-managed and may be disabled in dev; signatures are required when `STRICT_MODULES_VERIFY=1`.
 
 ## Backpressure and log quotas
 
-* Bounded queues for logs and events.
-* When full, drop with rate-limited "logs dropped" events.
+* Blocking token-bucket quotas for logs and events (guest stdout/stderr, partial events, wasi logging).
+* Streams block in small (~10 ms) intervals until tokens are available; no drops. Throttle counters increment for observability.
+* Defaults (tunable): stdout+stderr 256 KiB/s with 1 MiB burst; logger 64 KiB/s; partial events 30/s.
 * UI shows a red "backpressure active" banner.
 
 ## Failure taxonomy and SLOs
@@ -367,7 +370,7 @@ OpenTelemetry spans around `policyDecide`, `cache.lookup`, `exec`, and `cache.st
 
 ## Fire drills
 
-* Log flood: verify drops and UI banner.
+* Log flood: verify blocking behavior (no drops), throttle counters increment, and UI banner.
 * Capability denial: verify reason and metric.
 * Timeout: verify kill and cleanup.
 * Memory blowup: verify termination and no leaks.
@@ -430,7 +433,7 @@ Day 7 - Policy hardening and drills
 - Cache v2 invariants
   - Extend invariants to include `policy_ver`, `host_abi`, `wit_world`, `wasmtime_major`; validate key stability across releases.
 - Token enforcement
-  - Enable `UICP_REQUIRE_TOKENS=1` in production packaging; verify denial paths and metrics.
+  - Enable `UICP_REQUIRE_TOKENS=1` via operator environment (do not auto-enable in packaging); verify denial paths and metrics. Provide `UICP_JOB_TOKEN_KEY_HEX` for stable HMAC.
 - Module golden tests
   - Add golden vectors for `uicp/patch-tools@1` and `uicp/metrics-agg@1`; validate determinism and mismatch surfacing.
 - Module migrations

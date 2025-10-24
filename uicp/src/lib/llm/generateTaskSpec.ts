@@ -12,6 +12,7 @@ const DEFAULT_TASKSPEC_TIMEOUT_MS = readNumberEnv('VITE_TASK_SPEC_TIMEOUT_MS', 6
 const getPlannerModel = (): string => {
   const envModel = import.meta.env.VITE_PLANNER_MODEL as string | undefined;
   if (envModel) return envModel;
+  // Default fallback for development
   return 'deepseek-v3.1:671b';
 };
 

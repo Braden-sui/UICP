@@ -16,7 +16,7 @@ pub async fn compute_call<R: Runtime>(
     spec: ComputeJobSpec,
 ) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compute_call", job_id = %spec.job_id, task = %spec.task, cache = %spec.cache).entered();
+    let _span = tracing::info_span!("compute_call", job_id = %spec.job_id, task = %spec.task, cache = %spec.cache);
     // Reject duplicate job ids
     if state
         .compute_ongoing

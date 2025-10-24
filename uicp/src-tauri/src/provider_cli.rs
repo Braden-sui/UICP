@@ -11,8 +11,6 @@ const ERR_PROGRAM_NOT_FOUND: &str = "E-UICP-1501"; // ProgramNotFound
 const ERR_NOT_AUTHENTICATED: &str = "E-UICP-1502"; // NotAuthenticated
 const ERR_KEYCHAIN_LOCKED: &str = "E-UICP-1503"; // KeychainLocked (macOS)
 const ERR_NETWORK_DENIED: &str = "E-UICP-1504"; // NetworkDenied (jail)
-#[cfg(any(test, feature = "compute_harness"))]
-const ERR_VERSION_MISMATCH: &str = "E-UICP-1505"; // VersionMismatch
 const ERR_TIMEOUT: &str = "E-UICP-1506"; // Timeout
 const ERR_SPAWN: &str = "E-UICP-1507"; // Spawn/exec failure
 
@@ -537,41 +535,6 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
         code,
         search_paths: None,
     })
-}
-
-#[cfg(any(test, feature = "compute_harness"))]
-fn extract_host_from_error(detail: &Option<String>) -> Option<String> {
-    if let Some(d) = detail {
-        let lower = d.to_ascii_lowercase();
-        // Look for common host patterns in error messages
-        if let Some(start) = lower.find("host") {
-            let after_host = &lower[start..];
-            if let Some(colon) = after_host.find(':') {
-                let host_part = &after_host[..colon];
-                let trimmed = host_part.trim_matches(|c| c == ' ' || c == '\'' || c == '"');
-                if !trimmed.is_empty() && trimmed != "null" {
-                    return Some(trimmed.to_string());
-                }
-            }
-        }
-        // Look for URLs in error messages
-        for line in lower.lines() {
-            if line.contains("://") {
-                let parts: Vec<&str> = line.split("://").collect();
-                if parts.len() >= 2 {
-                    let host_part = parts[1];
-                    if let Some(slash) = host_part.find('/') {
-                        let host = &host_part[..slash];
-                        let trimmed = host.trim_matches(|c| c == ' ' || c == '\'' || c == '"');
-                        if !trimmed.is_empty() && trimmed != "null" {
-                            return Some(trimmed.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 fn merge_streams(stdout: &str, stderr: &str) -> Option<String> {

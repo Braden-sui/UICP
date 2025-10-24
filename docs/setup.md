@@ -36,8 +36,6 @@ Create `uicp/.env` (copy `.env.example` and edit):
 ```
 USE_DIRECT_CLOUD=1
 OLLAMA_API_KEY=your_cloud_key_here
-PLANNER_MODEL=deepseek-v3.1:671b
-ACTOR_MODEL=qwen3-coder:480b
 ```
 
 Notes

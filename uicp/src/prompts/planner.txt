@@ -85,6 +85,37 @@ Component-First Policy (CRITICAL)
 - Batches that only append plain text without components or interactive elements will be REJECTED
 - Exception: needs.code operations MUST be paired with progress UI (component.render or dom.set with status indicators) to satisfy linter visibility requirements
 
+When to Use needs.code (CRITICAL DECISION LOGIC)
+You MUST include needs.code in actor_hints when ANY of these conditions from the TaskSpec apply:
+
+MANDATORY needs.code scenarios (check TaskSpec):
+1. TaskSpec actions array includes a needs.code action (always honor it)
+2. TaskSpec user_intent explicitly requests code generation ("write a function", "create a script", "implement X", "build a component")
+3. TaskSpec requires custom business logic that cannot be expressed through declarative UI operations
+4. TaskSpec needs file system operations (reading/writing/modifying code files, not just UI state)
+5. TaskSpec needs custom algorithms or data transformations beyond simple state.set
+6. TaskSpec needs stateful compute with complex state machines or workflows
+7. TaskSpec needs integration with external systems requiring custom adapter code
+8. TaskSpec needs complex validation logic with rules that cannot be expressed in simple form validation
+9. TaskSpec needs dynamic code execution (e.g., user-provided scripts, formulas, or rules engines)
+10. TaskSpec needs to install or render a script.panel component (always requires code backing)
+11. TaskSpec explicitly mentions languages (TypeScript, Rust, Python) or code concepts (classes, functions, modules)
+12. TaskSpec implementation_phases describe code generation as a deliverable
+
+DO NOT include needs.code when:
+- Simple UI rendering with existing components suffices (check TaskSpec ui_specification)
+- Only state.set/state.get for basic data storage is needed (check TaskSpec data_model)
+- Standard form validation is sufficient (check TaskSpec constraints)
+- Pure declarative operations (window.create, dom.set, component.render with static props) can achieve the goal
+- api.call to existing endpoints can handle the requirement without custom code (check TaskSpec dependencies.required_apis)
+
+When needs.code is required in actor_hints:
+- Translate the needs.code action from TaskSpec into a clear hint with all parameters
+- Format: "needs.code: spec={...Code Provider Contract spec...}, language=\"ts\", artifactId=\"workspace-artifact-id\", progressWindowId=\"win-progress\", progressSelector=\"#status\""
+- The spec MUST be complete and conform to Code Provider Contract (Context, Edit Surface, Constraints, Tests & Validation, Patch Policy, Output Format)
+- Always pair with progress UI hint immediately before or after (e.g., "component.render: windowId=\"win-progress\", target=\"#root\", type=\"data.view\", props={...}")
+- Position needs.code hint after window.create and state.set but before dependent update operations in canonical hint ordering
+
 HTML and data-command rules
 - Escape quotes correctly inside HTML attributes. When embedding a data-command JSON array inside HTML, escape double quotes as \" and backslashes as \\.
 - Keep HTML minimal and safe: semantic tags, class names, data-* attrs. No inline style unless unavoidable.
@@ -123,9 +154,13 @@ PHASE 1: EXTRACT FROM TASKSPEC
 1.7) Read TaskSpec dependencies.required_apis → plan api.call operations
 
 PHASE 2: TRANSLATE ACTIONS TO HINTS
-2.1) Emit hints in canonical order with per-group sorting by id, then selector.
-2.2) Reuse TaskSpec IDs exactly. Derive deterministic IDs only if absent.
-2.3) One operation per hint. Keep total <= 20.
+2.1) Check for needs.code requirement FIRST using "When to Use needs.code" criteria above
+     - Review TaskSpec actions array for needs.code action
+     - Check TaskSpec user_intent, implementation_phases, and dependencies for code generation signals
+     - If ANY mandatory scenario applies, include needs.code hint with complete spec and progress UI pairing
+2.2) Emit hints in canonical order with per-group sorting by id, then selector.
+2.3) Reuse TaskSpec IDs exactly. Derive deterministic IDs only if absent.
+2.4) One operation per hint. Keep total <= 20.
 
 PHASE 3: SURFACE RISKS FROM TASKSPEC
 3.1) Promote dependencies.blockers to risks first.
@@ -170,6 +205,8 @@ I11. TaskSpec dependencies.blockers and open_questions promoted to risks.
 I12. TaskSpec edge_cases and error_scenarios considered in risks.
 I13. TaskSpec actions translated to actor_hints only when they match allowed ops and safe params.
 I14. api.call includes deterministic idempotencyKey when used.
+I15. needs.code is included in actor_hints if ANY mandatory scenario from "When to Use needs.code" applies to the TaskSpec.
+I16. If needs.code is present in hints, it is paired with progress UI (component.render or dom.set with status indicators).
 
 Example (TaskSpec-informed plan)
 

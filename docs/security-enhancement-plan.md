@@ -14,29 +14,52 @@ Non‑negotiable constraints (repo policy)
 - Default‑allow loopback (localhost, 127.0.0.1, ::1). LAN/private ranges blocked unless explicitly allow‑listed.
 - No intent‑specific hardcoded hints. Global, capability‑based controls only.
 
+- Job token enforcement is operator‑managed. Enable via `UICP_REQUIRE_TOKENS=1` and set `UICP_JOB_TOKEN_KEY_HEX` (32‑byte hex) in production. Packaging does not auto‑enable this.
+
 Repo touchpoints (current)
 - Compute host (WASI P2, Component Model): `uicp/src-tauri/src/compute.rs`, `policy.rs`
-- In‑app egress guard: `uicp/src/lib/security/networkGuard.ts` (+ unit tests)
+- In-app egress guard: `uicp/src/lib/security/networkGuard.ts` (+ unit tests)
 - Tauri app (CSP/capabilities): `src-tauri/` config
 - Sanitization: docs + unit tests (frontend)
+
+Quick environment flags (security-relevant)
+- Compute host
+  - `UICP_REQUIRE_TOKENS` (0|1) — enforce per-job MAC tokens (operator-managed)
+  - `UICP_JOB_TOKEN_KEY_HEX` — 32-byte hex key for token verification
+  - `UICP_WASM_CONCURRENCY` — WASM provider concurrency cap
+  - `UICP_CACHE_V2` (0|1) — enable v2 cache key with input manifests and invariants
+- Registry
+  - `STRICT_MODULES_VERIFY` (0|1) — require signed modules outside dev
+  - `UICP_TRUST_STORE_JSON` — inline trust store mapping key IDs → Ed25519 public keys
+- Network guard
+  - `VITE_NET_GUARD_ENABLED`, `VITE_NET_GUARD_MONITOR`, `VITE_GUARD_VERBOSE`
+  - `VITE_GUARD_ALLOW_DOMAINS`, `VITE_GUARD_ALLOW_IPS`, `VITE_GUARD_ALLOW_IP_RANGES`, `VITE_GUARD_ALLOW_PATHS`
+  - `VITE_GUARD_BLOCK_WORKERS`, `VITE_GUARD_BLOCK_SERVICE_WORKER`, `VITE_GUARD_BLOCK_WEBRTC`, `VITE_GUARD_BLOCK_WEBTRANSPORT`
+  - Caps: `VITE_GUARD_MAX_REQUEST_BYTES`, `VITE_GUARD_MAX_RESPONSE_BYTES`, `VITE_GUARD_MAX_REDIRECTS`
+- Model routing
+  - `VITE_PLANNER_MODEL`, `VITE_ACTOR_MODEL` — explicit model selection
 
 1) Compute sandbox: lock it down without killing UX
 
 Keep Wasmtime + Component Model and tighten defaults.
 
 Actions
-- Time limiting: Use epoch‑based interruption as the primary time budget. Verify every job store has `epoch_interruption(true)` and a live epoch pump. Add coverage that long‑running jobs trap with `Compute.Timeout` within configured budgets.
-- Resource limiting: Keep `StoreLimits` for memory/tables/instances with per‑job caps. Fail cleanly with `Compute.Resource.Limit`. Record peak memory/table metrics for feedback.
+- Time limiting: Use epoch-based interruption as the primary time budget. Verify every job store has `epoch_interruption(true)` and a live epoch pump. Add coverage that long-running jobs trap with `Compute.Timeout` within configured budgets.
+- Resource limiting: Keep `StoreLimits` for memory/tables/instances with per-job caps. Fail cleanly with `Compute.Resource.Limit`. Record peak memory/table metrics for feedback.
 - Component surface area: Only expose WIT interfaces actually needed per task. Audit vendored WIT and remove dead imports. Treat each component as capability scoped.
-- WASI capabilities: No ambient authority. Preopen only `ws:/...` paths as read‑only/read‑write per job need. Keep time/random disabled by default unless explicitly permitted by policy.
+- WASI capabilities: No ambient authority. Preopen only `ws:/...` paths as read-only/read-write per job need. Keep time/random disabled by default unless explicitly permitted by policy.
 - Version pinning + upgrade gate: Pin Wasmtime. Test upgrades on a branch with replayed workloads before promotion. Capture perf/overhead deltas for epoch checks and StoreLimits.
+- Backpressure and quotas: Enforce blocking token-bucket quotas for guest stdout/stderr, partial events, and wasi logging. No drops; streams block in small intervals until tokens are available. Track throttle counters.
+  - Defaults (tunable): stdout+stderr 256 KiB/s with 1 MiB burst; logger 64 KiB/s; partial events 30/s.
 
 Validation
-- Add integration tests that assert traps for: deadline exceeded, out‑of‑fuel (when enabled), memory growth beyond limit, missing export.
+- Add integration tests that assert traps for: deadline exceeded, out-of-fuel (when enabled), memory growth beyond limit, missing export.
 - Emit structured metrics per job: `durationMs`, `queueMs`, `memPeakMb`, `fuelConsumed`, `epochTicks`.
+- Backpressure tests: saturate outputs and assert blocking behavior (no drops), throttle counters increment, and UI surfaces backpressure state.
 
 Why users won’t hate this
 - Time/memory ceilings are invisible during normal runs. Epoch checks add minimal overhead vs. fuel alone. The “it just runs” experience is preserved.
+- Backpressure is transparent under normal load; only heavy emitters see throttling with a clear UI banner.
 
 2) Outbound network guard (httpjail) that doesn’t break everything
 

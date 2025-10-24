@@ -109,8 +109,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         const strictCaps = snapshot?.strictCaps ?? false;
         providerStore.setDefaultProvider(defaultProvider);
         providerStore.setEnableBoth(runBoth);
-        usePreferencesStore.getState().setFirewallDisabled(firewallDisabled);
-        usePreferencesStore.getState().setStrictCaps(strictCaps);
+        // Persist middleware will hydrate firewallDisabled and strictCaps; avoid referencing the store during initialization
       },
     }
   )
