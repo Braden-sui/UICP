@@ -868,3 +868,17 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
     g.__UICP_NET_GUARD_INSTALLED__ = true;
   }
 }
+
+export function addNetGuardSessionAllow(domain: string): boolean {
+  try {
+    if (!domain || typeof domain !== 'string') return false;
+    const lower = domain.toLowerCase().replace(/\.$/, '');
+    const current = Array.isArray(cfg?.allowDomains) ? (cfg!.allowDomains as string[]) : [];
+    if (current.includes(lower)) return true;
+    const next = [...current, lower];
+    setConfig({ allowDomains: next });
+    return true;
+  } catch {
+    return false;
+  }
+}

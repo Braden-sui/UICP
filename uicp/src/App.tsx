@@ -1,4 +1,4 @@
-﻿import { useMemo } from 'react';
+import { useMemo } from 'react';
 import { MotionConfig } from 'motion/react';
 import DockChat from './components/DockChat';
 import Desktop from './components/Desktop';
@@ -7,6 +7,8 @@ import SystemToast from './components/SystemToast';
 import DevtoolsComputePanel from './components/DevtoolsComputePanel';
 import SystemBanner from './components/SystemBanner';
 import AmbientParticles from './components/AmbientParticles';
+import PermissionPromptHost from './components/PermissionPromptHost';
+import NetGuardToastBridge from './components/NetGuardToastBridge';
 import { useApplyTheme } from './state/preferences';
 import { useAppStore } from './state/app';
 import { isReducedMotion } from './lib/ui/animation';
@@ -43,6 +45,8 @@ const App = () => {
         <Desktop />
         <DockChat />
         <GrantModal />
+        <PermissionPromptHost />
+        <NetGuardToastBridge />
         <SystemToast />
         {import.meta.env.DEV ? <DevtoolsComputePanel /> : null}
       </div>

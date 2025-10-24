@@ -240,26 +240,8 @@ pub fn enforce_compute_policy(spec: &ComputeJobSpec) -> Option<ComputeFinalErr> 
         });
     }
 
-    if spec.capabilities.time {
-        return Some(ComputeFinalErr {
-            ok: false,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
-            message: "Time is disabled by policy (cap.time denied)".into(),
-            metrics: None,
-        });
-    }
-    if spec.capabilities.random {
-        return Some(ComputeFinalErr {
-            ok: false,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            code: "Compute.CapabilityDenied".into(),
-            message: "Random is disabled by policy (cap.random denied)".into(),
-            metrics: None,
-        });
-    }
+    // Allow time and random capabilities in v2 (Balanced/Open presets).
+    // Enforcement of quotas and runtime behavior remains in the compute host.
 
     let fs_ok = spec
         .capabilities

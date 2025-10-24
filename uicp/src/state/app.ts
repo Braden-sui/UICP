@@ -30,10 +30,16 @@ import {
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 export type ToastVariant = 'info' | 'success' | 'error';
 
+export type ToastAction = {
+  label: string;
+  run: () => void;
+};
+
 export type Toast = {
   id: string;
   message: string;
   variant: ToastVariant;
+  actions?: ToastAction[];
 };
 
 export type DesktopShortcutPosition = {
