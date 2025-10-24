@@ -110,3 +110,29 @@ fn filesystem_paths_must_be_workspace_scoped() {
 
 // NOTE: Network test removed - web browsing capability will allow network access by default.
 // When that lands, update policy tests to validate allowlist/denylist behavior instead.
+
+#[test]
+fn time_capability_is_denied() {
+    let mut spec = base_spec();
+    spec.capabilities.time = true;
+    let deny = enforce_compute_policy(&spec).expect("expected policy rejection for time");
+    assert_eq!(deny.code, "Compute.CapabilityDenied");
+    assert!(
+        deny.message.contains("cap.time denied"),
+        "unexpected message {}",
+        deny.message
+    );
+}
+
+#[test]
+fn random_capability_is_denied() {
+    let mut spec = base_spec();
+    spec.capabilities.random = true;
+    let deny = enforce_compute_policy(&spec).expect("expected policy rejection for random");
+    assert_eq!(deny.code, "Compute.CapabilityDenied");
+    assert!(
+        deny.message.contains("cap.random denied"),
+        "unexpected message {}",
+        deny.message
+    );
+}

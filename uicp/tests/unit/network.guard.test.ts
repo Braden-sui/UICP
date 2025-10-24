@@ -222,12 +222,11 @@ describe('NetworkGuard (in-app egress)', () => {
     expect(json.ok).toBe(true);
   });
 
-  it('WebRTC allowed by default (monitor-only) even with STUN/TURN', () => {
+  it('WebRTC blocked by default when STUN/TURN present', () => {
     class PCStub { constructor(_cfg?: any) {} }
     (globalThis as any).window.RTCPeerConnection = PCStub as any;
     installNetworkGuard({ enabled: true, monitorOnly: false });
-    const pc = new (globalThis as any).window.RTCPeerConnection({ iceServers: [{ urls: ['stun:exfil.local'] }] });
-    expect(pc).toBeInstanceOf(PCStub);
+    expect(() => new (globalThis as any).window.RTCPeerConnection({ iceServers: [{ urls: ['stun:exfil.local'] }] })).toThrowError();
   });
 
   it('WebRTC blocked when blockWebRTC=true and STUN/TURN present', () => {
@@ -251,12 +250,11 @@ describe('NetworkGuard (in-app egress)', () => {
     expect(() => new (globalThis as any).window.WebTransport('https://example.com/transport')).toThrowError();
   });
 
-  it('Worker constructor is allowed by default (monitor-only)', () => {
+  it('Worker constructor is blocked by default', () => {
     class WorkerStub { constructor(_s: string) {} }
     (globalThis as any).window.Worker = WorkerStub as any;
     installNetworkGuard({ enabled: true, monitorOnly: false });
-    const w = new (globalThis as any).window.Worker('foo.js');
-    expect(w).toBeInstanceOf(WorkerStub);
+    expect(() => new (globalThis as any).window.Worker('foo.js')).toThrowError();
   });
 
   it('Worker constructor is blocked when blockWorkers=true', () => {
@@ -277,5 +275,54 @@ describe('NetworkGuard (in-app egress)', () => {
     installNetworkGuard({ enabled: true, monitorOnly: false, blockServiceWorker: false });
     const res = await (globalThis as any).navigator.serviceWorker.register('/sw.js');
     expect(res).toBeTruthy();
+  });
+
+  it('path allowlist permits only configured prefixes', async () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, allowPaths: ['/ok', '/api/v1'] });
+    const ok1 = await fetch('https://example.com/ok/resource');
+    expect(ok1.status).toBe(200);
+    const ok2 = await fetch('https://example.com/api/v1/items');
+    expect(ok2.status).toBe(200);
+    const blocked = await fetch('https://example.com/deny/here');
+    expect(blocked.status).toBe(403);
+    const json = await getJSON(blocked);
+    expect(json.reason).toBe('path_forbidden');
+  });
+
+  it('fetch blocks payload larger than maxRequestBytes', async () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxRequestBytes: 4 });
+    const small = await fetch('https://example.com/ok', { method: 'POST', body: '1234' });
+    expect(small.status).toBe(200);
+    const big = await fetch('https://example.com/ok', { method: 'POST', body: '12345' });
+    expect(big.status).toBe(413);
+    const json = await getJSON(big);
+    expect(json.reason).toBe('payload_too_large');
+  });
+
+  it('XMLHttpRequest.send blocks payload larger than maxRequestBytes', () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxRequestBytes: 2 });
+    const xhr = new (globalThis as any).XMLHttpRequest();
+    xhr.open('POST', 'https://example.com/ok');
+    expect(() => xhr.send('123')).toThrowError();
+  });
+
+  it('sendBeacon blocks payload larger than maxRequestBytes', () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxRequestBytes: 3 });
+    const ok = (globalThis as any).navigator.sendBeacon('https://example.com/ok', '123');
+    expect(ok).toBe(true);
+    const blocked = (globalThis as any).navigator.sendBeacon('https://example.com/ok', '1234');
+    expect(blocked).toBe(false);
+  });
+
+  it('fetch blocks when response content-length exceeds maxResponseBytes', async () => {
+    // Override test fetch to emit a large content-length. Must be set BEFORE guard install.
+    (globalThis as any).__UICP_TEST_FETCH__ = (_input: any) => {
+      return Promise.resolve(new Response('ok', { status: 200, headers: { 'content-length': '10000', 'content-type': 'text/plain' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxResponseBytes: 1024 });
+    const res = await fetch('https://example.com/ok');
+    expect(res.status).toBe(413);
+    const json = await getJSON(res);
+    expect(json.reason).toBe('response_too_large');
   });
 });

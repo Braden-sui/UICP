@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getComputeBridge } from './lib/bridge/globals';
 import { newUuid } from './lib/utils';
 import { installNetworkGuard } from './lib/security/networkGuard';
+import { startGuardRollout } from './lib/security/guardRollout';
 
 const LOADER_ID = 'uicp-loading-screen';
 const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flash)
@@ -11,6 +12,9 @@ const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flas
 // Install in-app network guard to prevent connections to disallowed hosts/ports.
 // This only affects traffic from within the UICP app (no OS-level changes).
 installNetworkGuard();
+// Start adaptive rollout controller: begins in monitor (dev) and auto-escalates to enforce
+// after a stable window with zero blocks, per env thresholds.
+try { startGuardRollout(); } catch {}
 
 const hasBooleanOkFlag = (value: unknown): value is { ok: boolean } => {
   return (

@@ -36,7 +36,9 @@ export type TelemetryEventName =
   | 'ui.anim.window.exit'
   | 'ui.anim.panel.enter'
   | 'ui.anim.panel.exit'
-  | 'ui.anim.frame_drop';
+  | 'ui.anim.frame_drop'
+  | 'security.net_guard.block'
+  | 'security.net_guard.rollout_state';
 
 export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs' | 'compute' | 'ui';
 
