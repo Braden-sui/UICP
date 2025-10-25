@@ -17,19 +17,32 @@ import { type TaskSpec } from './schemas';
 import { generateTaskSpec } from './generateTaskSpec';
 import { cfg } from '../config';
 
-// Model selection: read from environment or use defaults
-const getPlannerModel = (): string => {
-  const envModel = import.meta.env.VITE_PLANNER_MODEL as string | undefined;
-  if (envModel) return envModel;
-  // Default fallback for development
+// Model selection: derive from selected profile, no .env dependency
+const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
+  const profile = getPlannerProfile(profileKey);
+  if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
+    return profile.defaultModel;
+  }
+  // Fallback: a broadly supported tools-capable planner
   return 'deepseek-v3.1:671b';
 };
 
-const getActorModel = (): string => {
-  const envModel = import.meta.env.VITE_ACTOR_MODEL as string | undefined;
-  if (envModel) return envModel;
-  // Default fallback for development
-  return 'qwen3-coder:480b';
+const getActorModel = (profileKey?: ActorProfileKey): string => {
+  // Prefer sensible defaults per actor profile
+  switch (profileKey) {
+    case 'qwen':
+      return 'qwen3-coder:480b';
+    case 'deepseek':
+      return 'deepseek-v3.1:671b';
+    case 'glm':
+      return 'glm-4.6:cloud';
+    case 'gpt-oss':
+      return 'gpt-oss:120b';
+    case 'kimi':
+      return 'kimi-k2:latest';
+    default:
+      return 'qwen3-coder:480b';
+  }
 };
 
 // Derive sane defaults from mode, allow env override
@@ -138,7 +151,7 @@ export async function planWithProfile(
     try {
       const stream = client.streamIntent(intent, {
         profileKey: profile.key,
-        model: getPlannerModel(),
+        model: getPlannerModel(profile.key),
         extraSystem,
         meta: { traceId: options?.traceId, intent },
         taskSpec: options?.taskSpec,
@@ -359,7 +372,7 @@ export async function actWithProfile(
     try {
       const stream = client.streamPlan(planJson, {
         profileKey: profile.key,
-        model: getActorModel(),
+        model: getActorModel(profile.key),
         extraSystem,
         meta: { traceId: options?.traceId, planSummary: plan.summary },
       });

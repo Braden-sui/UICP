@@ -97,7 +97,7 @@ export function getPlannerClient(): PlannerClient {
       }
       const model = options?.model;
       if (!model) {
-        throw new Error('Planner model not specified. Provide model via options.model or configure PLANNER_MODEL environment variable.');
+        throw new Error('Planner model not specified. Provide model via options.model or choose a profile in Agent Settings.');
       }
       const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
       const plannerEffort =
@@ -153,7 +153,7 @@ export function getActorClient(): ActorClient {
       }
       const model = options?.model;
       if (!model) {
-        throw new Error('Actor model not specified. Provide model via options.model or configure ACTOR_MODEL environment variable.');
+        throw new Error('Actor model not specified. Provide model via options.model or choose a profile in Agent Settings.');
       }
       const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
       const actorEffort =

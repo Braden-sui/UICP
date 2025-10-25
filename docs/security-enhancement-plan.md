@@ -77,6 +77,7 @@ Actions
 - WebRTC/WebTransport/Workers/ServiceWorkers: Block by default unless explicitly needed and capability-gated per window.
 
 Implementation (current)
+- Default preset: Open (permissive) for new installs. Balanced and Locked remain available via Policy Viewer or env (UICP_POLICY). UICP_SAFE_MODE=1 forces Locked.
 - Guard installed in-app at startup; default-allow loopback (localhost, 127.0.0.1, ::1); blocks DoH/dot, metadata IPs, and RFC1918/CGNAT by default.
 - New constraints:
   - Path allowlist prefixes: `VITE_GUARD_ALLOW_PATHS=/api,/ok`

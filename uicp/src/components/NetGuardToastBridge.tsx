@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useAppStore } from '../state/app';
 import { getEffectivePolicy, setRuntimePolicy } from '../lib/security/policyLoader';
-import { addNetGuardSessionAllow, installNetworkGuard } from '../lib/security/networkGuard';
+import { addNetGuardSessionAllow } from '../lib/security/networkGuard';
 
 const toDomain = (url: string): string => {
   try { return new URL(url).hostname; } catch { return ''; }

@@ -84,6 +84,67 @@ pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_i
     state.ongoing.write().await.remove(request_id);
 }
 
+/// Copy a workspace file (ws:/files/...) to a host destination path and return the final host path.
+#[tauri::command]
+async fn export_from_files(ws_path: String, dest_path: String) -> Result<String, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("export_from_files");
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    let src_buf: PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
+        Ok(p) => p,
+        Err(e) => return Err(format!("{}", e.message)),
+    };
+    if !src_buf.exists() {
+        return Err(format!("Source not found: {}", ws_path));
+    }
+    let meta = fs::symlink_metadata(&src_buf).map_err(|e| format!("stat failed: {e}"))?;
+    if !meta.file_type().is_file() {
+        return Err("Source must be a regular file".into());
+    }
+
+    let dest_input = Path::new(&dest_path);
+    let mut dest_final: PathBuf = if dest_input.is_dir() {
+        let fname = src_buf
+            .file_name()
+            .ok_or_else(|| "Invalid source file name".to_string())?
+            .to_string_lossy()
+            .to_string();
+        dest_input.join(fname)
+    } else {
+        dest_input.to_path_buf()
+    };
+
+    if let Some(parent) = dest_final.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            return Err(format!("Failed to create destination dir: {e}"));
+        }
+    }
+
+    if dest_final.exists() {
+        let stem = dest_final
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = dest_final
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let ts = chrono::Utc::now().timestamp();
+        let new_name = if ext.is_empty() {
+            format!("{}-{}", stem, ts)
+        } else {
+            format!("{}-{}.{}", stem, ts, ext)
+        };
+        let parent = dest_final.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        dest_final = parent.join(new_name);
+    }
+
+    fs::copy(&src_buf, &dest_final).map_err(|e| format!("Copy failed: {e}"))?;
+    Ok(dest_final.display().to_string())
+}
+
 #[tauri::command]
 async fn mint_job_token(
     state: State<'_, AppState>,
@@ -1008,10 +1069,9 @@ async fn chat_completion(
         return Err("No API key configured".into());
     }
 
-    let requested_model = model.unwrap_or_else(|| {
-        // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
-        std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
-    });
+    // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
+    // Avoid reading .env here; the UI selects the model per Agent Settings.
+    let requested_model = model.unwrap_or_else(|| "qwen3-coder:480b".into());
     // Normalize to colon-delimited tags for both Cloud and local.
     // If the input had a "-cloud" suffix, preserve it on local to aid routing.
     let resolved_model = normalize_model_name(&requested_model, use_cloud);
@@ -2266,6 +2326,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_paths,
             copy_into_files,
+            export_from_files,
             get_modules_info,
             get_modules_registry,
             get_action_log_stats,

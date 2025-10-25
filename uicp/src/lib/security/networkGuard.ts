@@ -6,7 +6,7 @@
    no-undef is disabled because this file references DOM types (RequestInfo,
    RequestInit, EventSourceInit, BodyInit, RTCConfiguration) that ESLint doesn't
    recognize despite being standard browser APIs. */
-import { getEffectivePolicy } from './policyLoader';
+import { getEffectivePolicy, onPolicyChange } from './policyLoader';
 import type { Policy } from './policy';
 
 type GuardConfig = {
@@ -28,6 +28,312 @@ type GuardConfig = {
   maxResponseBytes?: number;
   attemptSample?: number;
 };
+
+type GuardApi = 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon' | 'webrtc' | 'webtransport' | 'worker';
+
+export type RemediationActionType =
+  | 'allow_once'
+  | 'allow_exact'
+  | 'allow_wildcard'
+  | 'open_policy_viewer'
+  | 'set_lan_mode_allow'
+  | 'set_lan_mode_ask'
+  | 'allow_ip_literals'
+  | 'disable_https_only';
+
+type RemediationPlan = {
+  how_to_fix: string;
+  actions: RemediationActionType[];
+};
+
+export type GuardBlockPayload = {
+  ok: false;
+  blocked: true;
+  error: string;
+  reason: string;
+  rule: string;
+  domain?: string;
+  policy_mode: Policy['network']['mode'];
+  how_to_fix: string;
+  actions: RemediationActionType[];
+  remediation: RemediationPlan;
+  context: {
+    api: GuardApi;
+    method?: string;
+    url: string;
+  };
+  timestamp: number;
+};
+
+type BlockContext = {
+  api: GuardApi;
+  url: string;
+  reason: string;
+  method?: string;
+  blocked: boolean;
+  error?: string;
+};
+
+export type BlockEventDetail = {
+  api: GuardApi;
+  url: string;
+  reason?: string;
+  method?: string;
+  blocked: boolean;
+  payload?: GuardBlockPayload;
+  retryId?: string;
+};
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+};
+
+type PendingFetchRetry = {
+  id: string;
+  context: BlockContext;
+  payload: GuardBlockPayload;
+  status: number;
+  executor: () => Promise<Response>;
+  resolve: (value: Response) => void;
+  reject: (reason?: unknown) => void;
+  timeout: ReturnType<typeof setTimeout> | null;
+};
+
+const createDeferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
+
+const getHostname = (rawUrl: string): string => {
+  try {
+    return new URL(rawUrl).hostname;
+  } catch {
+    return '';
+  }
+};
+
+const BASE_RETRY_TIMEOUT_MS = 15000;
+
+let interactiveRemediationEnabled = false;
+const pendingFetchRetries = new Map<string, PendingFetchRetry>();
+
+export const setInteractiveGuardRemediation = (enabled: boolean) => {
+  interactiveRemediationEnabled = enabled;
+  if (!enabled) {
+    for (const entry of pendingFetchRetries.values()) {
+      if (entry.timeout) clearTimeout(entry.timeout);
+      const fallback = makeBlockResponseFromPayload(entry.payload, entry.status);
+      entry.resolve(fallback);
+    }
+    pendingFetchRetries.clear();
+  }
+};
+
+const nextRetryId = (() => {
+  let counter = 0;
+  return () => {
+    counter = (counter + 1) % Number.MAX_SAFE_INTEGER;
+    return `net-guard-retry-${Date.now()}-${counter}`;
+  };
+})();
+
+const cloneFetchInput = (input: any): any => {
+  try {
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      return input.clone();
+    }
+  } catch { /* non-fatal */ }
+  return input;
+};
+
+const cloneFetchInit = (init?: RequestInit): RequestInit | undefined => {
+  if (!init) return undefined;
+  const cloned: RequestInit = { ...init };
+  if (init.headers) {
+    try {
+      cloned.headers = init.headers instanceof Headers ? new Headers(init.headers) : new Headers(init.headers as HeadersInit);
+    } catch { /* non-fatal */ }
+  }
+  return cloned;
+};
+
+const defaultRemediationPlan = (domain: string): RemediationPlan => ({
+  how_to_fix: domain
+    ? `Open Policy viewer and allow access to ${domain}.`
+    : 'Open Policy viewer to review network rules.',
+  actions: ['allow_once', 'allow_exact', 'allow_wildcard', 'open_policy_viewer'],
+});
+
+const remediationForReason = (ctx: BlockContext, domain: string, policy: Policy): RemediationPlan => {
+  switch (ctx.reason) {
+    case 'https_only':
+      return {
+        how_to_fix: 'Disable HTTPS-only for this workspace or switch the request to HTTPS.',
+        actions: ['disable_https_only', 'open_policy_viewer'],
+      };
+    case 'private_lan_blocked':
+    case 'ip_private':
+    case 'ip_v6_private':
+      return {
+        how_to_fix: 'Allow private LAN access or enable LAN prompts in Policy.',
+        actions: ['set_lan_mode_allow', 'set_lan_mode_ask', 'open_policy_viewer'],
+      };
+    case 'ip_literal_blocked':
+      return {
+        how_to_fix: 'Allow IP literal requests for this workspace.',
+        actions: ['allow_ip_literals', 'open_policy_viewer'],
+      };
+    case 'rate_limited':
+      return {
+        how_to_fix: 'Reduce request rate or raise the per-domain quota.',
+        actions: ['open_policy_viewer'],
+      };
+    case 'payload_too_large':
+      return {
+        how_to_fix: 'Reduce request payload size or raise the payload limit.',
+        actions: ['open_policy_viewer'],
+      };
+    case 'response_too_large':
+      return {
+        how_to_fix: 'Lower response size or increase the response cap in Policy.',
+        actions: ['open_policy_viewer'],
+      };
+    case 'policy_default_deny':
+      return {
+        how_to_fix: 'Allow this domain via wildcard rules or relax default-deny mode.',
+        actions: ['allow_exact', 'allow_wildcard', 'open_policy_viewer'],
+      };
+    default:
+      return defaultRemediationPlan(domain);
+  }
+};
+
+const buildBlockPayload = (ctx: BlockContext): GuardBlockPayload => {
+  const policy = getEffectivePolicy();
+  const domain = getHostname(ctx.url);
+  const remediation = remediationForReason(ctx, domain, policy);
+  return {
+    ok: false,
+    blocked: true,
+    error: ctx.error ?? 'network_blocked',
+    reason: ctx.reason,
+    rule: ctx.reason,
+    domain: domain || undefined,
+    policy_mode: policy.network.mode,
+    how_to_fix: remediation.how_to_fix,
+    actions: remediation.actions,
+    remediation,
+    context: {
+      api: ctx.api,
+      method: ctx.method,
+      url: ctx.url,
+    },
+    timestamp: Date.now(),
+  };
+};
+
+const makeBlockResponseFromPayload = (payload: GuardBlockPayload, status = 403): Response => {
+  const body = JSON.stringify(payload);
+  return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+};
+
+const emitBlockPayload = (ctx: BlockContext): GuardBlockPayload => {
+  const payload = buildBlockPayload(ctx);
+  emitBlockEvent({ ...ctx, payload });
+  return payload;
+};
+
+const respondWithBlock = (ctx: BlockContext, status = 403): Response => {
+  try {
+    const payload = emitBlockPayload(ctx);
+    return makeBlockResponseFromPayload(payload, status);
+  } catch {
+    const body = JSON.stringify({ ok: false, blocked: true, reason: ctx.reason, url: ctx.url });
+    return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+  }
+};
+
+const registerFetchRetry = (
+  ctx: BlockContext,
+  status: number,
+  input: any,
+  init: RequestInit | undefined,
+  orig: typeof fetch,
+) => {
+  const deferred = createDeferred<Response>();
+  const payload = buildBlockPayload(ctx);
+  const retryId = nextRetryId();
+  const clonedInput = cloneFetchInput(input);
+  const clonedInit = cloneFetchInit(init);
+  const executor = () => orig(clonedInput, clonedInit);
+  const entry: PendingFetchRetry = {
+    id: retryId,
+    context: ctx,
+    payload,
+    status,
+    executor,
+    resolve: deferred.resolve,
+    reject: deferred.reject,
+    timeout: null,
+  };
+  entry.timeout = setTimeout(() => {
+    if (!pendingFetchRetries.has(retryId)) return;
+    pendingFetchRetries.delete(retryId);
+    const fallback = makeBlockResponseFromPayload(payload, status);
+    deferred.resolve(fallback);
+  }, BASE_RETRY_TIMEOUT_MS);
+  pendingFetchRetries.set(retryId, entry);
+  emitBlockEvent({ ...ctx, payload, retryId });
+  return { promise: deferred.promise, retryId, payload };
+};
+
+export const retryBlockedFetch = async (retryId: string): Promise<boolean> => {
+  const entry = pendingFetchRetries.get(retryId);
+  if (!entry) return false;
+  pendingFetchRetries.delete(retryId);
+  if (entry.timeout) clearTimeout(entry.timeout);
+  try {
+    const response = await entry.executor();
+    entry.resolve(response);
+    return true;
+  } catch (err) {
+    const fallback = respondWithBlock({ ...entry.context, blocked: true }, entry.status);
+    entry.resolve(fallback);
+    console.warn('[net-guard] retry failed', err);
+    return false;
+  }
+};
+
+const completeFetchBlock = (
+  ctx: BlockContext,
+  status: number,
+  input: any,
+  init: RequestInit | undefined,
+  orig: typeof fetch,
+): Promise<Response> => {
+  if (ctx.blocked && interactiveRemediationEnabled) {
+    const { promise } = registerFetchRetry(ctx, status, input, init, orig);
+    return promise;
+  }
+  if (ctx.blocked) {
+    const payload = emitBlockPayload(ctx);
+    return Promise.resolve(makeBlockResponseFromPayload(payload, status));
+  }
+  emitBlockEvent(ctx);
+  return Promise.resolve(orig(input, init));
+};
+
+const mapComputeToggleToBlock = (value: 'allow' | 'ask' | 'deny'): boolean => value === 'deny';
+
+let policyListenerTeardown: (() => void) | null = null;
+let lastCustomConfig: Partial<GuardConfig> | undefined;
 
 const getPolicyRpsForHost = (host: string): number | undefined => {
   try {
@@ -235,7 +541,7 @@ const defaultAllowIPs = new Set<string>(['127.0.0.1', '::1']);
 
 let cfg: GuardConfig | null = null;
 
-const emitBlockEvent = (detail: { url: string; reason?: string; method?: string; api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon' | 'webrtc' | 'webtransport' | 'worker'; blocked: boolean }) => {
+const emitBlockEvent = (detail: BlockEventDetail) => {
   try {
     const w: any = typeof window !== 'undefined' ? window : undefined;
      
@@ -358,29 +664,7 @@ const shouldBlockHost = (host: string, port: string | number | null | undefined)
   return { block: false };
 };
 
-const makeBlockResponse = (url: string, reason?: string): Response => {
-  try {
-    const policy = getEffectivePolicy();
-    const u = new URL(url);
-    const payload: Record<string, unknown> = {
-      ok: false,
-      blocked: true,
-      reason: reason ?? 'policy', // backward compatibility
-      error: 'network_blocked',
-      domain: u.hostname,
-      policy_mode: policy.network.mode,
-      rule: reason ?? 'policy',
-      how_to_fix: 'Open Policy and allow this domain or change LAN/IP settings',
-      actions: ['allow_once', 'always_allow', 'open_policy_editor'],
-      url,
-    };
-    const body = JSON.stringify(payload);
-    return new Response(body, { status: 403, headers: { 'content-type': 'application/json' } });
-  } catch {
-    const body = JSON.stringify({ ok: false, blocked: true, reason: reason ?? 'policy', url });
-    return new Response(body, { status: 403, headers: { 'content-type': 'application/json' } });
-  }
-};
+const makeBlockResponse = (ctx: BlockContext, status = 403): Response => respondWithBlock(ctx, status);
 
 const installFetchGuard = () => {
    
@@ -403,17 +687,30 @@ const installFetchGuard = () => {
     try {
       const url = toUrl(input);
       const scheme = url.protocol.replace(/:$/, '');
-       
-      maybeEmitAttempt('fetch', sanitizeForLog(url), (init as any)?.method || (input?.method ?? 'GET'));
+      const method = String((init as any)?.method || (input?.method ?? 'GET') || 'GET').toUpperCase();
+      const sanitizedUrl = sanitizeForLog(url);
+      
+      maybeEmitAttempt('fetch', sanitizedUrl, method);
+
+      const emitMonitor = (reason: string) => {
+        emitBlockEvent({ api: 'fetch', url: sanitizedUrl, reason, method, blocked: false });
+      };
+
+      const blockFetch = (reason: string, status = 403, error = 'network_blocked'): Promise<Response> => {
+        const ctx: BlockContext = { api: 'fetch', url: sanitizedUrl, reason, method, blocked: true, error };
+        return completeFetchBlock(ctx, status, input, init, orig);
+      };
+
       // Enforce HTTPS-only when policy requires
       try {
         const pol = getEffectivePolicy();
         if (pol.network.https_only && scheme === 'http') {
           if (cfg?.verbose) console.warn('[net-guard] fetch blocked (https_only)', sanitizeForLog(url));
-           
-          emitBlockEvent({ url: sanitizeForLog(url), reason: 'https_only', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
-          if (cfg?.monitorOnly) return orig(input, init);
-          return Promise.resolve(makeBlockResponse(sanitizeForLog(url), 'https_only'));
+          if (cfg?.monitorOnly) {
+            emitMonitor('https_only');
+            return orig(input, init);
+          }
+          return blockFetch('https_only');
         }
       } catch { /* non-fatal */ }
       if (scheme === 'blob' || scheme === 'data') {
@@ -421,40 +718,44 @@ const installFetchGuard = () => {
       }
       if (scheme === 'file' || scheme === 'filesystem') {
         if (cfg?.verbose) console.warn('[net-guard] fetch blocked (scheme)', sanitizeForLog(url), 'scheme_forbidden');
-         
-        emitBlockEvent({ url: sanitizeForLog(url), reason: 'scheme_forbidden', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
-        if (cfg?.monitorOnly) return orig(input, init);
-        return Promise.resolve(makeBlockResponse(sanitizeForLog(url), 'scheme_forbidden'));
+        if (cfg?.monitorOnly) {
+          emitMonitor('scheme_forbidden');
+          return orig(input, init);
+        }
+        return blockFetch('scheme_forbidden');
       }
       // Path allowlist (optional)
       if (!pathAllowed(url)) {
         if (cfg?.verbose) console.warn('[net-guard] fetch blocked (path)', sanitizeForLog(url), 'path_forbidden');
-         
-        emitBlockEvent({ url: sanitizeForLog(url), reason: 'path_forbidden', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
-        if (cfg?.monitorOnly) return orig(input, init);
-        return Promise.resolve(makeBlockResponse(sanitizeForLog(url), 'path_forbidden'));
+        if (cfg?.monitorOnly) {
+          emitMonitor('path_forbidden');
+          return orig(input, init);
+        }
+        return blockFetch('path_forbidden');
       }
       // Request payload cap (best-effort)
        
-      const method = String((init as any)?.method || (input?.method ?? 'GET')).toUpperCase();
       if (cfg?.maxRequestBytes && method !== 'GET') {
-         
+        
         const len = getBodyLength((init as any)?.body ?? (input as any)?.body);
         if (len != null && len > (cfg.maxRequestBytes as number)) {
           if (cfg?.verbose) console.warn('[net-guard] fetch blocked (payload_too_large)', sanitizeForLog(url), len);
-          emitBlockEvent({ url: sanitizeForLog(url), reason: 'payload_too_large', method, api: 'fetch', blocked: !(cfg?.monitorOnly) });
-          if (cfg?.monitorOnly) return orig(input, init);
-          const body = JSON.stringify({ ok: false, blocked: true, reason: 'payload_too_large', url: sanitizeForLog(url) });
-          return Promise.resolve(new Response(body, { status: 413, headers: { 'content-type': 'application/json' } }));
+          if (cfg?.monitorOnly) {
+            emitMonitor('payload_too_large');
+            return orig(input, init);
+          }
+          return blockFetch('payload_too_large', 413);
         }
       }
       const res = shouldBlockHost(url.hostname, url.port);
       if (res.block) {
         if (cfg?.verbose) console.warn('[net-guard] fetch blocked', sanitizeForLog(url), res.reason);
-         
-        emitBlockEvent({ url: sanitizeForLog(url), reason: res.reason, method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
-        if (cfg?.monitorOnly) return orig(input, init);
-        return Promise.resolve(makeBlockResponse(sanitizeForLog(url), res.reason));
+        const reason = res.reason ?? 'policy';
+        if (cfg?.monitorOnly) {
+          emitMonitor(reason);
+          return orig(input, init);
+        }
+        return blockFetch(reason);
       }
       // Per-domain RPS quotas (token bucket)
       try {
@@ -464,13 +765,11 @@ const installFetchGuard = () => {
           const ok = consumeRpsToken(host, rps);
           if (!ok) {
             if (cfg?.verbose) console.warn('[net-guard] fetch blocked (rate_limited)', sanitizeForLog(url));
-             
-            emitBlockEvent({ url: sanitizeForLog(url), reason: 'rate_limited', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
-            if (!(cfg?.monitorOnly)) {
-              const pol = getEffectivePolicy();
-              const body = JSON.stringify({ ok: false, blocked: true, reason: 'rate_limited', error: 'rate_limited', domain: host, policy_mode: pol.network.mode, rule: 'quota_rps', how_to_fix: 'Reduce rate or raise quota for this domain', actions: ['open_policy_editor'], url: sanitizeForLog(url) });
-              return Promise.resolve(new Response(body, { status: 429, headers: { 'content-type': 'application/json' } }));
+            if (cfg?.monitorOnly) {
+              emitMonitor('rate_limited');
+              return orig(input, init);
             }
+            return blockFetch('rate_limited', 429, 'rate_limited');
           }
         }
       } catch { /* non-fatal */ }
@@ -486,12 +785,12 @@ const installFetchGuard = () => {
       try {
         if (wantsRedirectCheck && (cfg!.maxRedirects as number) === 0 && res.redirected) {
           if (cfg?.verbose) console.warn('[net-guard] fetch blocked (redirect_exceeded)', startedUrl);
-           
-          emitBlockEvent({ url: startedUrl, reason: 'redirect_exceeded', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
-          if (!(cfg?.monitorOnly)) {
-            const body = JSON.stringify({ ok: false, blocked: true, reason: 'redirect_exceeded', url: startedUrl });
-            return new Response(body, { status: 470, headers: { 'content-type': 'application/json' } });
+          const ctx: BlockContext = { api: 'fetch', url: startedUrl, reason: 'redirect_exceeded', method: String((init as any)?.method || (input?.method ?? 'GET')).toUpperCase(), blocked: true, error: 'network_blocked' };
+          if (cfg?.monitorOnly) {
+            emitBlockEvent({ ...ctx, blocked: false });
+            return res;
           }
+          return respondWithBlock(ctx, 470);
         }
         if (wantsSizeCheck) {
           const clHeader = res.headers.get('content-length');
@@ -507,12 +806,12 @@ const installFetchGuard = () => {
           })();
           if (Number.isFinite(cl) && typeof limit === 'number' && cl > limit) {
             if (cfg?.verbose) console.warn('[net-guard] fetch blocked (response_too_large)', startedUrl, cl, 'limit', limit);
-             
-            emitBlockEvent({ url: startedUrl, reason: 'response_too_large', method: (init as any)?.method || (input?.method ?? 'GET'), api: 'fetch', blocked: !(cfg?.monitorOnly) });
-            if (!(cfg?.monitorOnly)) {
-              const body = JSON.stringify({ ok: false, blocked: true, reason: 'response_too_large', url: startedUrl });
-              return new Response(body, { status: 413, headers: { 'content-type': 'application/json' } });
+            const ctx: BlockContext = { api: 'fetch', url: startedUrl, reason: 'response_too_large', method: String((init as any)?.method || (input?.method ?? 'GET')).toUpperCase(), blocked: true, error: 'network_blocked' };
+            if (cfg?.monitorOnly) {
+              emitBlockEvent({ ...ctx, blocked: false });
+              return res;
             }
+            return respondWithBlock(ctx, 413);
           }
         }
       } catch { /* non-fatal */ }
@@ -886,20 +1185,18 @@ const installWorkerGuards = () => {
 };
 
 export function installNetworkGuard(custom?: Partial<GuardConfig>) {
-   
+  lastCustomConfig = custom;
+
   const env: any = (import.meta as any)?.env ?? {};
-   
   const g: any = globalThis as any;
   const installed = !!g.__UICP_NET_GUARD_INSTALLED__;
+
   const enabledEnv = String(env.VITE_NET_GUARD_ENABLED ?? '1').toLowerCase();
   const mode = String(env.MODE ?? env.NODE_ENV ?? '').toLowerCase();
   const defaultMonitor = '1';
   const monitorEnv = String(env.VITE_NET_GUARD_MONITOR ?? defaultMonitor).toLowerCase();
   const verboseEnv = String(env.VITE_GUARD_VERBOSE ?? '0').toLowerCase();
-  const blockWorkersEnv = String(env.VITE_GUARD_BLOCK_WORKERS ?? '1').toLowerCase();
-  const blockSWEnv = String(env.VITE_GUARD_BLOCK_SERVICE_WORKER ?? '1').toLowerCase();
-  const blockRtcEnv = String(env.VITE_GUARD_BLOCK_WEBRTC ?? '1').toLowerCase();
-  const blockWtEnv = String(env.VITE_GUARD_BLOCK_WEBTRANSPORT ?? '1').toLowerCase();
+
   const parseList = (v: unknown): string[] =>
     typeof v === 'string' && v.trim().length > 0 ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
   const parseNumber = (v: unknown): number | undefined => {
@@ -913,6 +1210,7 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
     const i = Math.floor(n);
     return i > 0 ? i : fallback;
   };
+
   const allowDomains = parseList(env.VITE_GUARD_ALLOW_DOMAINS);
   const blockDomains = parseList(env.VITE_GUARD_BLOCK_DOMAINS);
   const allowIPs = parseList(env.VITE_GUARD_ALLOW_IPS);
@@ -926,9 +1224,55 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
     env.VITE_GUARD_ATTEMPT_SAMPLE,
     (mode === 'development' || mode === 'dev') ? 1 : 10,
   );
+
   if (!allowDomains.includes('localhost')) allowDomains.push('localhost');
   if (!allowIPs.includes('127.0.0.1')) allowIPs.push('127.0.0.1');
   if (!allowIPs.includes('::1')) allowIPs.push('::1');
+
+  const policy = getEffectivePolicy();
+  const compute = policy.compute ?? ({} as Policy['compute']);
+  const computeFlags = {
+    blockWorkers: mapComputeToggleToBlock(compute.workers ?? 'ask'),
+    blockServiceWorker: mapComputeToggleToBlock(compute.service_worker ?? 'ask'),
+    blockWebRTC: mapComputeToggleToBlock(compute.webrtc ?? 'ask'),
+    blockWebTransport: mapComputeToggleToBlock(compute.webtransport ?? 'ask'),
+  };
+
+  const parseDeprecatedBoolean = (value: unknown): boolean | null => {
+    if (value === undefined || value === null) return null;
+    const normalized = String(value).toLowerCase();
+    if (normalized === '1' || normalized === 'true') return true;
+    if (normalized === '0' || normalized === 'false') return false;
+    return null;
+  };
+
+  const deprecatedOverrides: Array<{ envName: string; value: boolean | null; apply: (flag: boolean) => void }> = [
+    { envName: 'VITE_GUARD_BLOCK_WORKERS', value: parseDeprecatedBoolean(env.VITE_GUARD_BLOCK_WORKERS), apply: (flag) => { computeFlags.blockWorkers = flag; } },
+    { envName: 'VITE_GUARD_BLOCK_SERVICE_WORKER', value: parseDeprecatedBoolean(env.VITE_GUARD_BLOCK_SERVICE_WORKER), apply: (flag) => { computeFlags.blockServiceWorker = flag; } },
+    { envName: 'VITE_GUARD_BLOCK_WEBRTC', value: parseDeprecatedBoolean(env.VITE_GUARD_BLOCK_WEBRTC), apply: (flag) => { computeFlags.blockWebRTC = flag; } },
+    { envName: 'VITE_GUARD_BLOCK_WEBTRANSPORT', value: parseDeprecatedBoolean(env.VITE_GUARD_BLOCK_WEBTRANSPORT), apply: (flag) => { computeFlags.blockWebTransport = flag; } },
+  ];
+
+  for (const override of deprecatedOverrides) {
+    if (override.value !== null) {
+      try {
+        console.warn(`[net-guard] ${override.envName} is deprecated. Use Policy.compute toggles instead.`);
+      } catch { /* non-fatal */ }
+      override.apply(override.value);
+    }
+  }
+
+  if (!policyListenerTeardown) {
+    try {
+      policyListenerTeardown = onPolicyChange(() => {
+        installNetworkGuard(lastCustomConfig);
+      });
+    } catch (err) {
+      console.warn('[net-guard] failed to subscribe to policy changes', err);
+      policyListenerTeardown = () => {};
+    }
+  }
+
   setConfig({
     enabled: enabledEnv !== '0' && enabledEnv !== 'false',
     monitorOnly: monitorEnv === '1' || monitorEnv === 'true',
@@ -943,12 +1287,13 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
     maxRequestBytes,
     maxResponseBytes,
     attemptSample,
-    blockWorkers: blockWorkersEnv === '1' || blockWorkersEnv === 'true',
-    blockServiceWorker: blockSWEnv === '1' || blockSWEnv === 'true',
-    blockWebRTC: blockRtcEnv === '1' || blockRtcEnv === 'true',
-    blockWebTransport: blockWtEnv === '1' || blockWtEnv === 'true',
+    blockWorkers: computeFlags.blockWorkers,
+    blockServiceWorker: computeFlags.blockServiceWorker,
+    blockWebRTC: computeFlags.blockWebRTC,
+    blockWebTransport: computeFlags.blockWebTransport,
     ...(custom ?? {}),
   });
+
   // Always (re)install guards to catch late stubs and dynamic environments
   installFetchGuard();
   installXHRGuard();
@@ -958,6 +1303,7 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
   installWorkerGuards();
   installWebRTCGuard();
   installWebTransportGuard();
+
   if (!installed) {
     g.__UICP_NET_GUARD_INSTALLED__ = true;
   }

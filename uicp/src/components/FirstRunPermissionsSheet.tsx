@@ -94,8 +94,8 @@ const FirstRunPermissionsSheet = () => {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm">
       <div className="w-[min(560px,92vw)] rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-        <h2 className="text-lg font-semibold text-slate-900">Set project permissions</h2>
-        <p className="mt-1 text-sm text-slate-600">Choose defaults for this project. You can change these later in Policy Viewer.</p>
+        <h2 className="text-lg font-semibold text-slate-900">Review project permissions</h2>
+        <p className="mt-1 text-sm text-slate-600">Defaults: Open (permissive) for a frictionless experience. You can tighten or lock down anytime in Policy Viewer.</p>
         <div className="mt-4 grid grid-cols-1 gap-3 text-sm">
           <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
             <span className="text-slate-700">Internet access</span>
