@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { StreamEvent } from '../../src/lib/llm/ollama';
+import * as Telemetry from '../../src/lib/telemetry';
 
 const plannerBase: StreamEvent[] = [
   { type: 'content', channel: 'commentary', text: 'Summary: Create notepad' },
@@ -47,6 +48,10 @@ describe('orchestrator integration', () => {
     actorEvents = [...actorBase];
   });
 
+  afterEach(() => {
+    vi.resetAllMocks();
+  });
+
   it('parses planner outline text (plain sections)', async () => {
     const plan = await planWithDeepSeek('make a notepad');
     expect(plan.summary).toMatch(/notepad/i);
@@ -78,17 +83,50 @@ describe('orchestrator integration', () => {
   });
 
   it('emits phase updates to observers', async () => {
-    const phases: Array<{ phase: string; planMs?: number }> = [];
+    const phases: Array<{ phase: string; planMs?: number; traceId: string }> = [];
     await runIntent('make a notepad', false, {
       onPhaseChange: (detail) => {
         phases.push(detail);
       },
     });
     expect(phases.length).toBeGreaterThanOrEqual(2);
-    expect(phases[0]?.phase).toBe('planning');
-    expect(phases[1]?.phase).toBe('acting');
-    expect(typeof phases[1]?.planMs).toBe('number');
-    expect((phases[1]?.planMs ?? 0)).toBeGreaterThanOrEqual(0);
+    const planning = phases[0];
+    const acting = phases[1];
+    expect(planning?.phase).toBe('planning');
+    expect(typeof planning?.traceId).toBe('string');
+    expect((planning?.traceId ?? '').length).toBeGreaterThan(0);
+    expect(acting?.phase).toBe('acting');
+    expect(acting?.planMs).toBeGreaterThanOrEqual(0);
+    expect(acting?.traceId).toBe(planning?.traceId);
+  });
+
+  it('emits telemetry around planner and actor phases', async () => {
+    const telemetrySpy = vi.spyOn(Telemetry, 'emitTelemetryEvent');
+
+    await runIntent('collect telemetry', false);
+
+    const events = telemetrySpy.mock.calls.map(([name, payload]) => ({ name, payload }));
+
+    const plannerStart = events.find((e) => e.name === 'planner_start' && e.payload?.data?.phase === 'plan');
+    const plannerFinish = events.find((e) => e.name === 'planner_finish' && e.payload?.data?.phase === 'plan');
+    const actorStart = events.find((e) => e.name === 'actor_start');
+    const actorFinish = events.find((e) => e.name === 'actor_finish');
+
+    expect(plannerStart).toBeDefined();
+    expect(plannerStart?.payload?.traceId).toBeDefined();
+    expect(plannerStart?.payload?.data?.intentLength).toBeGreaterThan(0);
+
+    expect(plannerFinish).toBeDefined();
+    expect(plannerFinish?.payload?.durationMs).toBeGreaterThanOrEqual(0);
+    expect(plannerFinish?.payload?.data?.summary).toMatch(/create notepad/i);
+
+    expect(actorStart).toBeDefined();
+    expect(actorStart?.payload?.traceId).toBe(plannerStart?.payload?.traceId);
+    expect(actorStart?.payload?.data?.plannerFallback).toBe(false);
+
+    expect(actorFinish).toBeDefined();
+    expect(actorFinish?.payload?.traceId).toBe(plannerStart?.payload?.traceId);
+    expect(actorFinish?.payload?.data?.batchSize).toBeGreaterThan(0);
   });
 
   it('consumes return events emitted by the streaming transport', async () => {

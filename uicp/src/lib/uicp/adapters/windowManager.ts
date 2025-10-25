@@ -14,6 +14,8 @@ import type { WindowId, WindowRecord, WindowLifecycleEvent, WindowLifecycleListe
 import type { OperationParamMap } from '../../schema';
 import { AdapterError } from './adapter.errors';
 
+const TOP_BAR_SAFEZONE = 64;
+
 export interface WindowManager {
   create(params: OperationParamMap['window.create']): Promise<{ windowId: string; applied: boolean }>;
   move(params: OperationParamMap['window.move']): Promise<{ applied: boolean }>;
@@ -89,7 +91,8 @@ export const createWindowManager = (
       declarations.left = `${clamped}px`;
     }
     if (typeof params.y === 'number') {
-      const clamped = clampRange(params.y, 0, Math.max(0, bounds.height - 100));
+      const maxY = Math.max(TOP_BAR_SAFEZONE, bounds.height - 100);
+      const clamped = clampRange(params.y, TOP_BAR_SAFEZONE, maxY);
       declarations.top = `${clamped}px`;
     }
     if (typeof params.width === 'number') {
@@ -301,7 +304,11 @@ export const createWindowManager = (
     };
 
     if (typeof params.x === 'number') initialGeometry.x = params.x;
-    if (typeof params.y === 'number') initialGeometry.y = params.y;
+    if (typeof params.y === 'number') {
+      initialGeometry.y = params.y;
+    } else {
+      initialGeometry.y = TOP_BAR_SAFEZONE;
+    }
     if (typeof params.zIndex === 'number') initialGeometry.zIndex = params.zIndex;
 
     applyWindowGeometry(record, initialGeometry);

@@ -18,12 +18,15 @@ describe('policyLoader default preset', () => {
     const { getEffectivePolicy } = policyLoader;
     const pol = getEffectivePolicy();
 
-    // Open preset characteristics
+    // Open preset characteristics (personal OS baseline)
     expect(pol.network.mode).toBe('default_allow');
+    expect(pol.network.https_only).toBe(false);
+    expect(pol.network.allow_ip_literals).toBe(true);
     expect(pol.network.allow_private_lan).toBe('allow');
+    expect(pol.compute.mem_mb).toBe(8192);
     expect(pol.compute.webrtc).toBe('allow');
-    // sanity check on quotas to distinguish from Balanced
-    expect(pol.network.quotas?.domain_defaults?.rps).toBe(50);
+    // Quota defaults distinguish from Balanced/Locked
+    expect(pol.network.quotas?.domain_defaults?.rps).toBe(200);
   });
 
   it('respects UICP_SAFE_MODE=1 forcing locked', async () => {

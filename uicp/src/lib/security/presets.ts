@@ -4,24 +4,27 @@ import type { Policy } from './policy';
 export const PresetOpen: Policy = ensurePolicy({
   network: {
     mode: 'default_allow',
-    https_only: true,
+    https_only: false,
     allow_ip_literals: true,
     allow_private_lan: 'allow',
     blocklists: {
-      ips: ['169.254.169.254/32', '127.0.0.0/8'],
-      domains: ['*.metadata.internal', '*.onion'],
+      ips: ['169.254.169.254/32', '100.100.100.200/32'],
+      domains: ['*.metadata.internal', '*.metadata.google.internal'],
     },
-    wildcard_rules: [],
+    wildcard_rules: [
+      { allow: ['localhost', '127.0.0.1', '*.local', '*.lan'] },
+      { allow: ['*.github.com', '*.githubusercontent.com', 'registry.npmjs.org', 'crates.io', 'static.crates.io'] },
+    ],
     quotas: {
-      domain_defaults: { rps: 50, max_response_mb: 500 },
+      domain_defaults: { rps: 200, max_response_mb: 2048 },
       overrides: {},
     },
   },
   compute: {
     time: true,
     random: 'csprng',
-    cpu_ms_per_second: 1000,
-    mem_mb: 512,
+    cpu_ms_per_second: 4000,
+    mem_mb: 8192,
     workers: 'allow',
     service_worker: 'allow',
     webrtc: 'allow',
@@ -29,15 +32,20 @@ export const PresetOpen: Policy = ensurePolicy({
   },
   filesystem: {
     access: 'prompt',
-    scopes: [],
+    scopes: [
+      { description: 'App home', read: ['app://home/**'], write: ['app://home/**'] },
+      { description: 'Downloads', read: ['~/Downloads/**'], write: ['~/Downloads/**'] },
+      { description: 'Documents', read: ['~/Documents/**'], write: ['~/Documents/**'] },
+      { description: 'Pictures', read: ['~/Pictures/**'], write: ['~/Pictures/**'] },
+    ],
   },
   permissions: {
     persist: true,
-    review_on_first_run: true,
+    review_on_first_run: false,
   },
   observability: {
-    logs: 'info',
-    policy_overlay: true,
+    logs: 'warn',
+    policy_overlay: false,
   },
 });
 
@@ -45,35 +53,39 @@ export const PresetBalanced: Policy = ensurePolicy({
   network: {
     mode: 'default_allow',
     https_only: true,
-    allow_ip_literals: false,
+    allow_ip_literals: true,
     allow_private_lan: 'ask',
     blocklists: {
-      ips: ['169.254.169.254/32', '127.0.0.0/8'],
-      domains: ['*.metadata.internal', '*.onion'],
+      ips: ['169.254.169.254/32', '100.100.100.200/32'],
+      domains: ['*.metadata.internal', '*.metadata.google.internal'],
     },
     wildcard_rules: [
+      { allow: ['localhost', '127.0.0.1'] },
       { allow: ['*.github.com', '*.githubusercontent.com'] },
     ],
     quotas: {
-      domain_defaults: { rps: 10, max_response_mb: 20 },
+      domain_defaults: { rps: 60, max_response_mb: 512 },
       overrides: {
-        '*.github.com': { rps: 30, max_response_mb: 200 },
+        '*.github.com': { rps: 100, max_response_mb: 1024 },
       },
     },
   },
   compute: {
     time: true,
     random: 'csprng',
-    cpu_ms_per_second: 800,
-    mem_mb: 256,
-    workers: 'ask',
+    cpu_ms_per_second: 1500,
+    mem_mb: 4096,
+    workers: 'allow',
     service_worker: 'ask',
     webrtc: 'ask',
     webtransport: 'ask',
   },
   filesystem: {
     access: 'prompt',
-    scopes: [],
+    scopes: [
+      { description: 'App home', read: ['app://home/**'], write: ['app://home/**'] },
+      { description: 'Documents', read: ['~/Documents/**'], write: ['~/Documents/**'] },
+    ],
   },
   permissions: {
     persist: true,

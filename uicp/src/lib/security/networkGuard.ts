@@ -27,6 +27,74 @@ type GuardConfig = {
   maxRequestBytes?: number;
   maxResponseBytes?: number;
   attemptSample?: number;
+  urlhausEnabled?: boolean;
+  urlhausMode?: 'host' | 'url';
+  urlhausApiBase?: string;
+  urlhausAuthKey?: string;
+  urlhausTimeoutMs?: number;
+  urlhausCacheTtlSec?: number;
+  urlhausRespectAllows?: boolean;
+  urlhausPersistEnabled?: boolean;
+  urlhausPersistKey?: string;
+  urlhausPersistMaxEntries?: number;
+  urlhausPersistTtlSec?: number;
+};
+
+// IPv6 helpers (minimal implementation for our needed CIDRs)
+// Parse the first two bytes of an IPv6 address. Supports compressed forms and IPv4-mapped tails.
+const firstTwoBytesOfV6 = (ip: string): [number, number] | null => {
+  try {
+    let s = ip.trim();
+    if (!s) return null;
+    // strip brackets and zone id (e.g., fe80::1%eth0)
+    if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1);
+    const zoneIdx = s.indexOf('%');
+    if (zoneIdx !== -1) s = s.slice(0, zoneIdx);
+
+    // Split head/tail around '::'
+    const dbl = s.split('::');
+    if (dbl.length > 2) return null; // invalid
+    const headStr = dbl[0] ?? '';
+    const tailStr = dbl.length === 2 ? dbl[1] : '';
+
+    const parsePart = (part: string): number[] => {
+      if (!part) return [];
+      return part.split(':').filter(Boolean).flatMap((chunk) => {
+        if (chunk.includes('.')) {
+          // IPv4-mapped suffix: convert to two hextets
+          const b = chunk.split('.').map((x) => Number(x));
+          if (b.length !== 4 || b.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) return [];
+          return [(b[0]! << 8) + b[1]!, (b[2]! << 8) + b[3]!];
+        }
+        const v = parseInt(chunk, 16);
+        if (!Number.isFinite(v) || v < 0 || v > 0xffff) return [];
+        return [v];
+      });
+    };
+
+    const head = parsePart(headStr);
+    const tail = parsePart(tailStr);
+    const total = head.length + tail.length;
+    if (total > 8) return null;
+    const zeros = new Array(Math.max(0, 8 - total)).fill(0);
+    const full = [...head, ...zeros, ...tail];
+    if (full.length !== 8) return null;
+    const he0 = full[0] ?? 0;
+    return [(he0 >> 8) & 0xff, he0 & 0xff];
+  } catch {
+    return null;
+  }
+};
+
+// fc00::/7 → first 7 bits 1111110x => (byte0 & 0xfe) === 0xfc
+// fe80::/10 → byte0 === 0xfe and top two bits of byte1 == 10 (0x80..0xbf)
+const ipInPrivateV6 = (ip: string): boolean => {
+  const first = firstTwoBytesOfV6(ip);
+  if (!first) return false;
+  const [b0, b1] = first;
+  if ((b0 & 0xfe) === 0xfc) return true; // fc00::/7 (includes fd00::/8)
+  if (b0 === 0xfe && (b1 & 0xc0) === 0x80) return true; // fe80::/10
+  return false;
 };
 
 type GuardApi = 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon' | 'webrtc' | 'webtransport' | 'worker';
@@ -422,6 +490,8 @@ const isTestEnv = (): boolean => {
   return false;
 };
 
+const SECURITY_ERROR_MESSAGE = 'Blocked by Network Guard';
+
 const setProp = (obj: any, key: string, value: any) => {
   try {
     Object.defineProperty(obj, key, {
@@ -433,6 +503,17 @@ const setProp = (obj: any, key: string, value: any) => {
   } catch {
     try { obj[key] = value; } catch { /* non-fatal */ }
   }
+};
+
+const createSecurityError = (): Error => {
+  try {
+    if (typeof DOMException === 'function') {
+      return new DOMException(SECURITY_ERROR_MESSAGE, 'SecurityError');
+    }
+  } catch { /* non-fatal */ }
+  const err = new Error(SECURITY_ERROR_MESSAGE);
+  try { (err as any).name = 'SecurityError'; } catch { /* non-fatal */ }
+  return err;
 };
 
 const normalizePath = (p: string): string => {
@@ -462,6 +543,205 @@ const getBodyLength = (data: any): number | null => {
     if (ArrayBuffer.isView(data)) return (data as ArrayBufferView).byteLength;
   } catch { /* non-fatal */ }
   return null;
+};
+
+const urlhausCache = new Map<string, { verdict: 'malicious' | 'suspicious' | 'clean' | 'unknown'; expires: number }>();
+const urlhausMaliciousHosts = new Set<string>();
+const urlhausPending = new Map<string, Promise<'malicious' | 'suspicious' | 'clean' | 'unknown'>>();
+
+const getStorage = (): Storage | null => {
+  try {
+    const w: any = typeof window !== 'undefined' ? window : undefined;
+    if (!w || !w.localStorage) return null;
+    return w.localStorage as Storage;
+  } catch {
+    return null;
+  }
+};
+
+const loadPersistedUrlhaus = () => {
+  try {
+    if (!cfg || !cfg.urlhausPersistEnabled) return;
+    const st = getStorage();
+    if (!st) return;
+    const key = (cfg.urlhausPersistKey && cfg.urlhausPersistKey.trim()) || 'uicp:urlhaus:cache:v1';
+    const raw = st.getItem(key);
+    if (!raw) return;
+    const obj = JSON.parse(raw || '{}') as Record<string, { verdict: string; expires: number }>;
+    const now = Date.now();
+    for (const [k, v] of Object.entries(obj)) {
+      if (!v || typeof v.expires !== 'number' || v.expires <= now) continue;
+      const vv = String(v.verdict || '');
+      if (vv === 'clean') {
+        urlhausCache.set(k, { verdict: 'clean', expires: v.expires });
+      }
+    }
+  } catch {}
+};
+
+const savePersistedUrlhaus = (k: string, verdict: 'clean' | 'suspicious' | 'malicious' | 'unknown', expires: number) => {
+  try {
+    if (!cfg || !cfg.urlhausPersistEnabled) return;
+    if (verdict !== 'clean') return;
+    const st = getStorage();
+    if (!st) return;
+    const key = (cfg.urlhausPersistKey && cfg.urlhausPersistKey.trim()) || 'uicp:urlhaus:cache:v1';
+    const now = Date.now();
+    const maxEntries = typeof cfg.urlhausPersistMaxEntries === 'number' && cfg.urlhausPersistMaxEntries! > 0 ? cfg.urlhausPersistMaxEntries! : 500;
+    let obj: Record<string, { verdict: string; expires: number }> = {};
+    try { obj = JSON.parse(st.getItem(key) || '{}') || {}; } catch {}
+    for (const kk of Object.keys(obj)) {
+      const vv = obj[kk];
+      if (!vv || typeof vv.expires !== 'number' || vv.expires <= now) delete obj[kk];
+    }
+    obj[k] = { verdict: 'clean', expires };
+    const keys = Object.keys(obj);
+    if (keys.length > maxEntries) {
+      const sorted = keys.sort((a, b) => (obj[a]!.expires - obj[b]!.expires));
+      const toDrop = sorted.slice(0, Math.max(0, keys.length - maxEntries));
+      for (const d of toDrop) delete obj[d];
+    }
+    st.setItem(key, JSON.stringify(obj));
+  } catch {}
+};
+
+function cacheUrlhausVerdict(
+  u: URL,
+  verdict: 'malicious' | 'suspicious' | 'clean' | 'unknown',
+): void {
+  try {
+    if (!cfg || !cfg.urlhausEnabled) return;
+    const mode = cfg.urlhausMode === 'url' ? 'url' : 'host';
+    const key = mode === 'url' ? stripHash(u.href) : u.hostname.toLowerCase();
+    if (!key) return;
+    const now = Date.now();
+    const baseTtlSec = typeof cfg.urlhausCacheTtlSec === 'number' && cfg.urlhausCacheTtlSec! > 0 ? cfg.urlhausCacheTtlSec! : 600;
+    const ttlMs = verdict === 'malicious' ? baseTtlSec * 2000 : baseTtlSec * 1000;
+    urlhausCache.set(key, { verdict, expires: now + ttlMs });
+    const persistTtlSec = typeof cfg.urlhausPersistTtlSec === 'number' && cfg.urlhausPersistTtlSec! > 0 ? cfg.urlhausPersistTtlSec! : 86400;
+    savePersistedUrlhaus(key, verdict, now + persistTtlSec * 1000);
+    try {
+      if (verdict === 'malicious') {
+        const hostLower = u.hostname.toLowerCase();
+        if (hostLower) urlhausMaliciousHosts.add(hostLower);
+      }
+    } catch { /* non-fatal */ }
+  } catch { /* non-fatal */ }
+}
+
+const stripHash = (s: string): string => {
+  try {
+    const i = s.indexOf('#');
+    return i >= 0 ? s.slice(0, i) : s;
+  } catch {
+    return s;
+  }
+};
+
+const hostMatchesAllow = (hostLower: string): boolean => {
+  try {
+    if (!cfg) return false;
+    const domains = Array.isArray(cfg.allowDomains) ? (cfg.allowDomains as string[]) : [];
+    if (domains.some((d) => hostLower === d || hostLower.endsWith('.' + d))) return true;
+    if (Array.isArray(cfg.allowIPs) && (isIPv4(hostLower) || isIPv6(hostLower))) {
+      if ((cfg.allowIPs as string[]).includes(hostLower)) return true;
+      if (isIPv4(hostLower)) {
+        if ((cfg.allowIPs as string[]).some((entry) => typeof entry === 'string' && entry.includes('/') && ipInCidrV4(hostLower, entry))) return true;
+      }
+    }
+  } catch { /* non-fatal */ }
+  return false;
+};
+
+const getUrlhausCachedVerdict = (u: URL): 'malicious' | 'suspicious' | 'clean' | 'unknown' | null => {
+  try {
+    if (!cfg || !cfg.urlhausEnabled) return null;
+    const hostKey = u.hostname.toLowerCase();
+    if (urlhausMaliciousHosts.has(hostKey)) return 'malicious';
+    const urlKey = stripHash(u.href);
+    const now = Date.now();
+    // Prefer configured mode key first
+    const primaryKey = (cfg.urlhausMode === 'url' ? urlKey : hostKey);
+    const secondaryKey = (cfg.urlhausMode === 'url' ? hostKey : urlKey);
+    const e1 = urlhausCache.get(primaryKey);
+    if (e1 && e1.expires > now) return e1.verdict;
+    const e2 = urlhausCache.get(secondaryKey);
+    if (e2 && e2.expires > now) return e2.verdict;
+  } catch { /* non-fatal */ }
+  return null;
+};
+
+const urlhausLookup = async (u: URL, origFetch: typeof fetch): Promise<'malicious' | 'suspicious' | 'clean' | 'unknown'> => {
+  try {
+    if (!cfg || !cfg.urlhausEnabled) return 'unknown';
+    const scheme = u.protocol.replace(/:$/, '');
+    if (scheme !== 'http' && scheme !== 'https') return 'unknown';
+    const hostLower = u.hostname.toLowerCase();
+    if (defaultAllowHosts.has(hostLower)) return 'unknown';
+    if (defaultAllowIPs.has(hostLower)) return 'unknown';
+    if (cfg.urlhausRespectAllows && hostMatchesAllow(hostLower)) return 'unknown';
+    const mode = cfg.urlhausMode === 'url' ? 'url' : 'host';
+    const key = mode === 'url' ? stripHash(u.href) : hostLower;
+    const now = Date.now();
+    const cached = urlhausCache.get(key);
+    if (cached && cached.expires > now) return cached.verdict;
+    const pending = urlhausPending.get(key);
+    if (pending) return pending;
+    const base = (cfg.urlhausApiBase && cfg.urlhausApiBase.trim()) || 'https://urlhaus-api.abuse.ch/v1';
+    const endpoint = `${base.replace(/\/+$/, '')}/${mode}/`;
+    const form = new URLSearchParams();
+    if (mode === 'url') form.set('url', stripHash(u.href)); else form.set('host', hostLower);
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const t = typeof cfg.urlhausTimeoutMs === 'number' && cfg.urlhausTimeoutMs! > 0 ? cfg.urlhausTimeoutMs! : 1500;
+    let tid: any = null;
+    if (controller) {
+      try { tid = setTimeout(() => { try { controller.abort(); } catch { /* non-fatal */ } }, t); } catch { /* non-fatal */ }
+    }
+    const p = (async () => {
+      try {
+        const headers = new Headers({ 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' });
+        if (cfg.urlhausAuthKey && cfg.urlhausAuthKey.trim().length > 0) headers.set('Auth-Key', cfg.urlhausAuthKey.trim());
+        const res = await origFetch(endpoint, { method: 'POST', headers, body: form.toString(), signal: controller ? controller.signal : undefined } as RequestInit);
+        if (!res.ok) return 'unknown';
+        const json: any = await res.json().catch(() => null);
+        if (!json) return 'unknown';
+        const status = String(json.query_status || json.query_staus || '').toLowerCase();
+        if (status === 'no_results') return 'clean';
+        if (status !== 'ok') return 'unknown';
+        if (mode === 'url') {
+          const threat = String(json.threat ?? '').toLowerCase();
+          const urlStatus = String(json.url_status ?? '').toLowerCase();
+          if (threat.includes('malware') && urlStatus !== 'offline') return 'malicious';
+          const bl: any = json.blacklists || {};
+          if (String(bl.surbl || '').toLowerCase().includes('listed')) return 'suspicious';
+          if (String(bl.spamhaus_dbl || '').toLowerCase() !== 'not listed' && String(bl.spamhaus_dbl || '').trim() !== '') return 'suspicious';
+          return 'clean';
+        } else {
+          const countRaw = json.url_count;
+          const count = typeof countRaw === 'string' ? parseInt(countRaw, 10) : (typeof countRaw === 'number' ? countRaw : 0);
+          const urls: any[] = Array.isArray(json.urls) ? json.urls : [];
+          const hasMal = urls.some((r: any) => String(r.threat || '').toLowerCase().includes('malware') && String(r.url_status || '').toLowerCase() !== 'offline');
+          if (hasMal) return 'malicious';
+          if (count > 0) return 'suspicious';
+          const bl: any = json.blacklists || {};
+          if (String(bl.surbl || '').toLowerCase().includes('listed')) return 'suspicious';
+          if (String(bl.spamhaus_dbl || '').toLowerCase() !== 'not listed' && String(bl.spamhaus_dbl || '').trim() !== '') return 'suspicious';
+          return 'clean';
+        }
+      } catch {
+        return 'unknown';
+      } finally {
+        try { if (tid) clearTimeout(tid); } catch { /* non-fatal */ }
+      }
+    })();
+    urlhausPending.set(key, p);
+    const verdict = await p;
+    urlhausPending.delete(key);
+    cacheUrlhausVerdict(u, verdict);
+    return verdict;
+  } catch {
+    return 'unknown';
+  }
 };
 
 const pathAllowed = (u: URL): boolean => {
@@ -664,8 +944,8 @@ const shouldBlockHost = (host: string, port: string | number | null | undefined)
       // 4) If policy forbids IP literals altogether
       if (!policy.network.allow_ip_literals) return { block: true, reason: 'ip_literal_blocked' };
     } else {
-      // IPv6 private/link-local blocks (fc00::/7, fe80::/10 rough prefixes)
-      const isPrivateV6 = lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80');
+      // IPv6 private/link-local blocks using CIDR matches: fc00::/7 and fe80::/10
+      const isPrivateV6 = ipInPrivateV6(lower);
       if (isPrivateV6) {
         if (!isTestEnv()) {
           if (policy.network.allow_private_lan === 'allow') return { block: false };
@@ -707,7 +987,7 @@ const installFetchGuard = () => {
   } else {
     orig = (hasWindowFetch ? win.fetch : g.fetch).bind(hasWindowFetch ? win : g);
   }
-  const wrapper = (input: any, init?: RequestInit) => {
+  const wrapper = async (input: any, init?: RequestInit) => {
     try {
       const url = toUrl(input);
       const scheme = url.protocol.replace(/:$/, '');
@@ -779,6 +1059,20 @@ const installFetchGuard = () => {
           return blockFetch('payload_too_large', 413);
         }
       }
+      try {
+        const verdict = await urlhausLookup(url, orig);
+        cacheUrlhausVerdict(url, verdict); // cache verdict even if fetch is blocked
+        if (verdict === 'malicious') {
+          if (cfg?.verbose) console.warn('[net-guard] fetch blocked (urlhaus_flagged)', sanitizeForLog(url));
+          if (cfg?.monitorOnly) {
+            emitMonitor('urlhaus_flagged');
+          } else {
+            return blockFetch('urlhaus_flagged', 403, 'urlhaus_flagged');
+          }
+        } else if (verdict === 'suspicious') {
+          if (cfg?.monitorOnly) emitMonitor('urlhaus_suspicious');
+        }
+      } catch { /* non-fatal */ }
       const res = shouldBlockHost(url.hostname, url.port);
       if (res.block) {
         if (cfg?.verbose) console.warn('[net-guard] fetch blocked', sanitizeForLog(url), res.reason);
@@ -898,6 +1192,17 @@ const installXHRGuard = () => {
           throw blockError;
         }
       }
+      try {
+        const v = getUrlhausCachedVerdict(u);
+        if (v === 'malicious') {
+          if (cfg?.verbose) console.warn('[net-guard] xhr blocked (urlhaus_flagged)', sanitizeForLog(u));
+          emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', method: String(args[0] ?? 'GET'), api: 'xhr', blocked: !(cfg?.monitorOnly) });
+          if (!(cfg?.monitorOnly)) {
+            blockError = new Error('Blocked by Network Guard');
+            throw blockError;
+          }
+        }
+      } catch { /* non-fatal */ }
       const res = shouldBlockHost(u.hostname, u.port);
       if (res.block) {
         if (cfg?.verbose) console.warn('[net-guard] xhr blocked', sanitizeForLog(u), res.reason);
@@ -959,6 +1264,7 @@ const installXHRGuard = () => {
 
 const installWSGuard = () => {
    
+  const g: any = globalThis as any;
   if (typeof window === 'undefined' || !(window as any).WebSocket) return;
    
   const WS = (window as any).WebSocket as typeof WebSocket;
@@ -972,18 +1278,32 @@ const installWSGuard = () => {
     if (scheme !== 'ws' && scheme !== 'wss' && scheme !== 'http' && scheme !== 'https') {
       if (cfg?.verbose) console.warn('[net-guard] ws blocked (scheme)', sanitizeForLog(u), 'scheme_forbidden');
       emitBlockEvent({ url: sanitizeForLog(u), reason: 'scheme_forbidden', api: 'ws', blocked: !(cfg?.monitorOnly) });
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
     if (!pathAllowed(u)) {
       if (cfg?.verbose) console.warn('[net-guard] ws blocked (path)', sanitizeForLog(u), 'path_forbidden');
       emitBlockEvent({ url: sanitizeForLog(u), reason: 'path_forbidden', api: 'ws', blocked: !(cfg?.monitorOnly) });
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
+    try {
+      const v = getUrlhausCachedVerdict(u);
+      if (v === 'malicious') {
+        if (cfg?.verbose) console.warn('[net-guard] ws blocked (urlhaus_flagged)', sanitizeForLog(u));
+        emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'ws', blocked: !(cfg?.monitorOnly) });
+        if (!(cfg?.monitorOnly)) throw createSecurityError();
+      }
+      const hostLower = u.hostname.toLowerCase();
+      if (urlhausMaliciousHosts.has(hostLower)) {
+        if (cfg?.verbose) console.warn('[net-guard] ws blocked (urlhaus_flagged:host)', sanitizeForLog(u));
+        emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'ws', blocked: !(cfg?.monitorOnly) });
+        if (!(cfg?.monitorOnly)) throw createSecurityError();
+      }
+    } catch { /* non-fatal */ }
     const res = shouldBlockHost(u.hostname, u.port);
     if (res.block) {
       if (cfg?.verbose) console.warn('[net-guard] ws blocked', sanitizeForLog(u), res.reason);
       emitBlockEvent({ url: sanitizeForLog(u), reason: res.reason, api: 'ws', blocked: !(cfg?.monitorOnly) });
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
      
     return new WS(url as any, protocols as any) as any;
@@ -994,10 +1314,12 @@ const installWSGuard = () => {
   Wrapped.prototype = WS.prototype;
    
   setProp(window as any, 'WebSocket', Wrapped);
+  try { setProp(g, 'WebSocket', Wrapped); } catch { /* non-fatal */ }
 };
 
 const installESGuard = () => {
    
+  const g: any = globalThis as any;
   if (typeof window === 'undefined' || !(window as any).EventSource) return;
    
   const ES = (window as any).EventSource as typeof EventSource;
@@ -1011,18 +1333,26 @@ const installESGuard = () => {
     if (scheme !== 'http' && scheme !== 'https') {
       if (cfg?.verbose) console.warn('[net-guard] es blocked (scheme)', sanitizeForLog(u), 'scheme_forbidden');
       emitBlockEvent({ url: sanitizeForLog(u), reason: 'scheme_forbidden', api: 'sse', blocked: !(cfg?.monitorOnly) });
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
     if (!pathAllowed(u)) {
       if (cfg?.verbose) console.warn('[net-guard] es blocked (path)', sanitizeForLog(u), 'path_forbidden');
       emitBlockEvent({ url: sanitizeForLog(u), reason: 'path_forbidden', api: 'sse', blocked: !(cfg?.monitorOnly) });
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
+    try {
+      const v = getUrlhausCachedVerdict(u);
+      if (v === 'malicious') {
+        if (cfg?.verbose) console.warn('[net-guard] es blocked (urlhaus_flagged)', sanitizeForLog(u));
+        emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'sse', blocked: !(cfg?.monitorOnly) });
+        if (!(cfg?.monitorOnly)) throw createSecurityError();
+      }
+    } catch { /* non-fatal */ }
     const res = shouldBlockHost(u.hostname, u.port);
     if (res.block) {
       if (cfg?.verbose) console.warn('[net-guard] es blocked', sanitizeForLog(u), res.reason);
       emitBlockEvent({ url: sanitizeForLog(u), reason: res.reason, api: 'sse', blocked: !(cfg?.monitorOnly) });
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
      
     return new ES(url as any, eventSourceInitDict) as any;
@@ -1033,6 +1363,7 @@ const installESGuard = () => {
   Wrapped.prototype = ES.prototype;
    
   setProp(window as any, 'EventSource', Wrapped);
+  try { setProp(g, 'EventSource', Wrapped); } catch { /* non-fatal */ }
 };
 
 const installBeaconGuard = () => {
@@ -1059,6 +1390,14 @@ const installBeaconGuard = () => {
         emitBlockEvent({ url: sanitizeForLog(u), reason: 'path_forbidden', api: 'beacon', blocked: !(cfg?.monitorOnly) });
         if (!(cfg?.monitorOnly)) return false;
       }
+      try {
+        const v = getUrlhausCachedVerdict(u);
+        if (v === 'malicious') {
+          if (cfg?.verbose) console.warn('[net-guard] beacon blocked (urlhaus_flagged)', sanitizeForLog(u));
+          emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'beacon', blocked: !(cfg?.monitorOnly) });
+          if (!(cfg?.monitorOnly)) return false;
+        }
+      } catch { /* non-fatal */ }
       const res = shouldBlockHost(u.hostname, u.port);
       if (res.block) {
         if (cfg?.verbose) console.warn('[net-guard] beacon blocked', sanitizeForLog(u), res.reason);
@@ -1100,7 +1439,7 @@ const installWebRTCGuard = () => {
       if (hasStunTurn) {
         const doBlock = !!(cfg?.blockWebRTC) && !(cfg?.monitorOnly);
         try { emitBlockEvent({ url: 'webrtc:iceservers', reason: doBlock ? 'webrtc_blocked' : 'webrtc_monitor', api: 'webrtc', blocked: doBlock }); } catch { /* non-fatal */ }
-        if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+        if (doBlock) throw createSecurityError();
       }
     }
      
@@ -1129,17 +1468,17 @@ const installWebTransportGuard = () => {
     if (scheme !== 'https') {
       if (cfg?.verbose) console.warn('[net-guard] webtransport blocked (scheme)', sanitizeForLog(u), 'scheme_forbidden');
       try { emitBlockEvent({ url: sanitizeForLog(u), reason: 'scheme_forbidden', api: 'webtransport', blocked: !(cfg?.monitorOnly) }); } catch { /* non-fatal */ }
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
     if (doBlock) {
       try { emitBlockEvent({ url: sanitizeForLog(u), reason: 'webtransport_blocked', api: 'webtransport', blocked: true }); } catch { /* non-fatal */ }
-      throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      throw createSecurityError();
     }
     const res = shouldBlockHost(u.hostname, u.port);
     if (res.block) {
       if (cfg?.verbose) console.warn('[net-guard] webtransport blocked', sanitizeForLog(u), res.reason);
       try { emitBlockEvent({ url: sanitizeForLog(u), reason: res.reason, api: 'webtransport', blocked: !(cfg?.monitorOnly) }); } catch { /* non-fatal */ }
-      if (!(cfg?.monitorOnly)) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
      
     return new (WT as any)(url, opts);
@@ -1163,7 +1502,7 @@ const installWorkerGuards = () => {
       const Wrapped = function (this: any, ..._args: any[]) {
         const doBlock = !!(cfg?.blockWorkers) && !(cfg?.monitorOnly);
         try { emitBlockEvent({ url: 'worker', reason: doBlock ? 'worker_blocked' : 'worker_monitor', api: 'worker', blocked: doBlock }); } catch { /* non-fatal */ }
-        if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+        if (doBlock) throw createSecurityError();
          
         return new (W as any)(..._args);
        
@@ -1182,7 +1521,7 @@ const installWorkerGuards = () => {
       const Wrapped = function (this: any, ..._args: any[]) {
         const doBlock = !!(cfg?.blockWorkers) && !(cfg?.monitorOnly);
         try { emitBlockEvent({ url: 'sharedworker', reason: doBlock ? 'worker_blocked' : 'worker_monitor', api: 'worker', blocked: doBlock }); } catch { /* non-fatal */ }
-        if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+        if (doBlock) throw createSecurityError();
          
         return new (SW as any)(..._args);
        
@@ -1204,7 +1543,7 @@ const installWorkerGuards = () => {
       const wrapped = ((scriptURL: string, options?: any) => {
         const doBlock = (cfg?.blockServiceWorker ?? true) && !(cfg?.monitorOnly);
         try { emitBlockEvent({ url: String(scriptURL), reason: doBlock ? 'service_worker_blocked' : 'service_worker_monitor', api: 'worker', blocked: doBlock }); } catch { /* non-fatal */ }
-        if (doBlock) throw new DOMException('Blocked by Network Guard', 'SecurityError');
+        if (doBlock) throw createSecurityError();
         return reg(scriptURL, options);
        
       }) as any;
@@ -1256,6 +1595,20 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
     env.VITE_GUARD_ATTEMPT_SAMPLE,
     (mode === 'development' || mode === 'dev') ? 1 : 10,
   );
+  
+  const urlhausEnabledEnv = String(env.VITE_URLHAUS_ENABLED ?? '').toLowerCase();
+  const urlhausAuthKey = typeof env.VITE_URLHAUS_AUTH_KEY === 'string' ? String(env.VITE_URLHAUS_AUTH_KEY) : '';
+  const urlhausEnabled = urlhausEnabledEnv === '1' || urlhausEnabledEnv === 'true' || (urlhausEnabledEnv === '' && !!urlhausAuthKey);
+  const urlhausMode = (String(env.VITE_URLHAUS_MODE ?? 'host').toLowerCase() === 'url') ? 'url' : 'host';
+  const urlhausApiBase = typeof env.VITE_URLHAUS_API_BASE === 'string' ? String(env.VITE_URLHAUS_API_BASE) : 'https://urlhaus-api.abuse.ch/v1';
+  const urlhausTimeoutMs = parsePositiveInt(env.VITE_URLHAUS_TIMEOUT_MS, 1500);
+  const urlhausCacheTtlSec = parsePositiveInt(env.VITE_URLHAUS_CACHE_TTL_SEC, 600);
+  const urlhausRespectAllows = String(env.VITE_URLHAUS_RESPECT_ALLOWS ?? '1').toLowerCase() === '1' || String(env.VITE_URLHAUS_RESPECT_ALLOWS ?? '1').toLowerCase() === 'true';
+  const urlhausPersistEnabledEnv = String(env.VITE_URLHAUS_PERSIST ?? '1').toLowerCase();
+  const urlhausPersistEnabled = urlhausPersistEnabledEnv === '1' || urlhausPersistEnabledEnv === 'true';
+  const urlhausPersistKey = typeof env.VITE_URLHAUS_PERSIST_KEY === 'string' ? String(env.VITE_URLHAUS_PERSIST_KEY) : 'uicp:urlhaus:cache:v1';
+  const urlhausPersistTtlSec = parsePositiveInt(env.VITE_URLHAUS_PERSIST_TTL_SEC, 86400);
+  const urlhausPersistMaxEntries = parsePositiveInt(env.VITE_URLHAUS_PERSIST_MAX, 500);
 
   if (!allowDomains.includes('localhost')) allowDomains.push('localhost');
   if (!allowIPs.includes('127.0.0.1')) allowIPs.push('127.0.0.1');
@@ -1334,6 +1687,17 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
     blockServiceWorker: computeFlags.blockServiceWorker,
     blockWebRTC: computeFlags.blockWebRTC,
     blockWebTransport: computeFlags.blockWebTransport,
+    urlhausEnabled: urlhausEnabled,
+    urlhausMode,
+    urlhausApiBase,
+    urlhausAuthKey,
+    urlhausTimeoutMs,
+    urlhausCacheTtlSec,
+    urlhausRespectAllows,
+    urlhausPersistEnabled,
+    urlhausPersistKey,
+    urlhausPersistTtlSec,
+    urlhausPersistMaxEntries,
     ...(custom ?? {}),
   });
 
@@ -1346,6 +1710,7 @@ export function installNetworkGuard(custom?: Partial<GuardConfig>) {
   installWorkerGuards();
   installWebRTCGuard();
   installWebTransportGuard();
+  loadPersistedUrlhaus();
 
   if (!installed) {
     g.__UICP_NET_GUARD_INSTALLED__ = true;

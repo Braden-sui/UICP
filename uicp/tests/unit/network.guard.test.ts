@@ -365,4 +365,85 @@ describe('NetworkGuard (in-app egress)', () => {
     const json = await getJSON(res);
     expect(json.reason).toBe('response_too_large');
   });
+
+  it('fetch blocks when URLHaus flags host malicious (enforce)', async () => {
+    (globalThis as any).__UICP_TEST_FETCH__ = (input: any) => {
+      const url = typeof input === 'string' ? input : (input?.url ?? '');
+      if (String(url).includes('/v1/host/')) {
+        const body = JSON.stringify({
+          query_status: 'ok',
+          host: 'red.example',
+          url_count: '1',
+          urls: [{ threat: 'malware_download', url_status: 'online' }],
+        });
+        return Promise.resolve(new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, url }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: false, urlhausEnabled: true, urlhausMode: 'host', urlhausAuthKey: 'test-key' } as any);
+    const res = await fetch('https://red.example/');
+    expect(res.status).toBe(403);
+    const json = await getJSON(res);
+    expect(json.reason).toBe('urlhaus_flagged');
+  });
+
+  it('fetch allows when URLHaus returns no_results', async () => {
+    (globalThis as any).__UICP_TEST_FETCH__ = (input: any) => {
+      const url = typeof input === 'string' ? input : (input?.url ?? '');
+      if (String(url).includes('/v1/host/')) {
+        const body = JSON.stringify({ query_status: 'no_results', host: 'clean.example', url_count: '0' });
+        return Promise.resolve(new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, url }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: false, urlhausEnabled: true, urlhausMode: 'host', urlhausAuthKey: 'test-key' } as any);
+    const res = await fetch('https://clean.example/');
+    expect(res.status).toBe(200);
+    const json = await getJSON(res);
+    expect(json.ok).toBe(true);
+  });
+
+  it('monitorOnly does not block when URLHaus flags malicious and emits event', async () => {
+    const events: BlockEventDetail[] = [];
+    (globalThis as any).window.addEventListener('net-guard-block', (e: CustomEvent<BlockEventDetail>) => events.push(e.detail));
+    (globalThis as any).__UICP_TEST_FETCH__ = (input: any) => {
+      const url = typeof input === 'string' ? input : (input?.url ?? '');
+      if (String(url).includes('/v1/host/')) {
+        const body = JSON.stringify({
+          query_status: 'ok',
+          host: 'amber.example',
+          url_count: '1',
+          urls: [{ threat: 'malware_download', url_status: 'online' }],
+        });
+        return Promise.resolve(new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, url }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: true, urlhausEnabled: true, urlhausMode: 'host', urlhausAuthKey: 'test-key' } as any);
+    const res = await fetch('https://amber.example/');
+    expect(res.status).toBe(200);
+    const json = await getJSON(res);
+    expect(json.ok).toBe(true);
+    expect(events.some((e) => e.reason === 'urlhaus_flagged' && e.blocked === false)).toBe(true);
+  });
+
+  it('WebSocket blocks based on cached URLHaus verdict after fetch', async () => {
+    (globalThis as any).__UICP_TEST_FETCH__ = (input: any) => {
+      const url = typeof input === 'string' ? input : (input?.url ?? '');
+      if (String(url).includes('/v1/host/')) {
+        const body = JSON.stringify({
+          query_status: 'ok',
+          host: 'cachehit.example',
+          url_count: '1',
+          urls: [{ threat: 'malware_download', url_status: 'online' }],
+        });
+        return Promise.resolve(new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, url }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: false, urlhausEnabled: true, urlhausMode: 'host', urlhausAuthKey: 'test-key' } as any);
+    const res = await fetch('https://cachehit.example/');
+    expect(res.status).toBe(403);
+    expect(() => new (globalThis as any).WebSocket('wss://cachehit.example/socket')).toThrowError();
+  });
 });

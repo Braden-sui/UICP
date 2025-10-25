@@ -9,6 +9,13 @@ Translate that to:
 - Adaptive controls that add friction only when a real signal fires.
 - Fast feedback loops so we can tune guardrails based on actual false positives, not vibes.
 
+### Personal OS baseline (new default)
+
+- **Network:** default_allow, HTTPS required only for public hosts (localhost + RFC1918 exempt), IP literals allowed, private LAN allowed, blocklists limited to metadata endpoints, generous quotas (200 rps / 2 GiB per domain).
+- **Compute:** CSPRNG enabled, ~4 cores (cpu_ms_per_second 4000) and 8 GiB RAM available by default, realtime transports and workers allowed.
+- **Filesystem:** prompt with pre-defined scopes (app home, Downloads, Documents, Pictures) to eliminate repetitive prompts while keeping user consent.
+- **Permissions & Observability:** approvals persist, no first-run review nag once template trusted, logs default to warn, policy overlay off (users can enable via Security Center).
+
 Non‑negotiable constraints (repo policy)
 - In‑app network guard only; no OS firewall edits by default. Host‑level scripts remain ops‑only and disabled in product builds.
 - Default‑allow loopback (localhost, 127.0.0.1, ::1). LAN/private ranges blocked unless explicitly allow‑listed.
@@ -36,6 +43,7 @@ Quick environment flags (security-relevant)
   - `VITE_GUARD_ALLOW_DOMAINS`, `VITE_GUARD_ALLOW_IPS`, `VITE_GUARD_ALLOW_IP_RANGES`, `VITE_GUARD_ALLOW_PATHS`
   - `VITE_GUARD_BLOCK_WORKERS`, `VITE_GUARD_BLOCK_SERVICE_WORKER`, `VITE_GUARD_BLOCK_WEBRTC`, `VITE_GUARD_BLOCK_WEBTRANSPORT`
   - Caps: `VITE_GUARD_MAX_REQUEST_BYTES`, `VITE_GUARD_MAX_RESPONSE_BYTES`, `VITE_GUARD_MAX_REDIRECTS`
+  - URLHaus reputation: `VITE_URLHAUS_ENABLED`, `VITE_URLHAUS_AUTH_KEY`, `VITE_URLHAUS_MODE` (host|url), `VITE_URLHAUS_API_BASE`, `VITE_URLHAUS_TIMEOUT_MS`, `VITE_URLHAUS_CACHE_TTL_SEC`, `VITE_URLHAUS_RESPECT_ALLOWS`
 - Model routing
   - `VITE_PLANNER_MODEL`, `VITE_ACTOR_MODEL` — explicit model selection
 

@@ -16,6 +16,47 @@ fn new_circuits() -> Arc<RwLock<HashMap<String, CircuitState>>> {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
+#[tokio::test]
+async fn test_half_open_success_emits_telemetry_payload() {
+    let circuits = new_circuits();
+    let (events, emit) = create_telemetry_sink();
+    let host = "api.example.com";
+
+    {
+        let mut guard = circuits.write().await;
+        let state = guard.entry(host.to_string()).or_default();
+        state.half_open = true;
+        state.half_open_probe_in_flight = true;
+        state.total_failures = 4;
+        state.total_successes = 7;
+    }
+
+    circuit_record_success(&circuits, host, emit.clone()).await;
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let events_guard = events.read().await;
+    let success_event = events_guard
+        .iter()
+        .find(|(evt, _)| evt == "circuit-half-open-success")
+        .expect("expected circuit-half-open-success event");
+    let payload = &success_event.1;
+    assert_eq!(payload.get("host").and_then(|v| v.as_str()), Some(host));
+    assert_eq!(
+        payload.get("totalFailures").and_then(|v| v.as_u64()),
+        Some(4)
+    );
+    assert_eq!(
+        payload.get("totalSuccesses").and_then(|v| v.as_u64()),
+        Some(8),
+        "success counter should increment after call"
+    );
+
+    let guard = circuits.read().await;
+    let state = guard.get(host).expect("state exists after success");
+    assert!(!state.half_open, "half_open flag cleared");
+    assert!(!state.half_open_probe_in_flight, "probe flag cleared");
+}
+
 /// Test fixture: telemetry event collector
 fn create_telemetry_sink() -> (
     Arc<RwLock<Vec<(String, serde_json::Value)>>>,
@@ -74,6 +115,25 @@ async fn test_circuit_opens_after_max_failures() {
         circuit_open_events.len(),
         1,
         "should emit circuit-open event"
+    );
+
+    let payload = &circuit_open_events[0].1;
+    assert_eq!(
+        payload.get("host").and_then(|v| v.as_str()),
+        Some(host),
+        "payload should include host"
+    );
+    assert_eq!(
+        payload
+            .get("consecutiveFailures")
+            .and_then(|v| v.as_u64()),
+        Some(config.max_failures as u64),
+        "payload should include consecutive failure count"
+    );
+    assert_eq!(
+        payload.get("openDurationMs").and_then(|v| v.as_u64()),
+        Some(config.open_duration_ms),
+        "payload should include open duration"
     );
 }
 

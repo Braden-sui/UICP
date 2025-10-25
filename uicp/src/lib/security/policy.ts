@@ -61,6 +61,46 @@ export type ObservabilityPolicy = {
   policy_overlay?: boolean;
 };
 
+const DEFAULT_BLOCKLIST_IPS = ['169.254.169.254/32', '100.100.100.200/32'];
+const DEFAULT_BLOCKLIST_DOMAINS = ['*.metadata.internal', '*.metadata.google.internal'];
+const DEFAULT_WILDCARD_RULES: NonNullable<NetworkPolicy['wildcard_rules']> = [
+  { allow: ['localhost', '127.0.0.1', '*.local', '*.lan'] },
+  { allow: ['*.github.com', '*.githubusercontent.com', 'registry.npmjs.org', 'crates.io', 'static.crates.io'] },
+];
+
+const cloneScopes = (scopes: FilesystemScope[]): FilesystemScope[] =>
+  scopes.map((scope) => ({
+    description: scope.description,
+    read: scope.read ? [...scope.read] : undefined,
+    write: scope.write ? [...scope.write] : undefined,
+  }));
+
+const cloneWildcardRules = (
+  rules: NonNullable<NetworkPolicy['wildcard_rules']>,
+): NonNullable<NetworkPolicy['wildcard_rules']> =>
+  rules.map((rule) => ({
+    allow: rule.allow ? [...rule.allow] : undefined,
+    paths: rule.paths ? [...rule.paths] : undefined,
+  }));
+
+const DEFAULT_FILESYSTEM_SCOPES: FilesystemScope[] = [
+  {
+    description: 'App home',
+    read: ['app://home/**'],
+    write: ['app://home/**'],
+  },
+  {
+    description: 'Downloads',
+    read: ['~/Downloads/**'],
+    write: ['~/Downloads/**'],
+  },
+  {
+    description: 'Documents',
+    read: ['~/Documents/**'],
+    write: ['~/Documents/**'],
+  },
+];
+
 export type Policy = {
   uicp_policy: 2;
   network: NetworkPolicy;
@@ -76,40 +116,42 @@ export const ensurePolicy = (p: Partial<Policy>): Policy => {
     uicp_policy: 2,
     network: {
       mode: p.network?.mode ?? 'default_allow',
-      https_only: p.network?.https_only ?? true,
-      allow_ip_literals: p.network?.allow_ip_literals ?? false,
-      allow_private_lan: p.network?.allow_private_lan ?? 'ask',
+      https_only: p.network?.https_only ?? false,
+      allow_ip_literals: p.network?.allow_ip_literals ?? true,
+      allow_private_lan: p.network?.allow_private_lan ?? 'allow',
       blocklists: {
-        ips: p.network?.blocklists?.ips ?? [],
-        domains: p.network?.blocklists?.domains ?? [],
+        ips: p.network?.blocklists?.ips ?? [...DEFAULT_BLOCKLIST_IPS],
+        domains: p.network?.blocklists?.domains ?? [...DEFAULT_BLOCKLIST_DOMAINS],
       },
-      wildcard_rules: p.network?.wildcard_rules ?? [],
+      wildcard_rules: p.network?.wildcard_rules
+        ? cloneWildcardRules(p.network.wildcard_rules)
+        : cloneWildcardRules(DEFAULT_WILDCARD_RULES),
       quotas: {
-        domain_defaults: p.network?.quotas?.domain_defaults ?? {},
+        domain_defaults: p.network?.quotas?.domain_defaults ?? { rps: 100, max_response_mb: 1024 },
         overrides: p.network?.quotas?.overrides ?? {},
       },
     },
     compute: {
       time: p.compute?.time ?? true,
       random: p.compute?.random ?? 'csprng',
-      cpu_ms_per_second: p.compute?.cpu_ms_per_second ?? 800,
-      mem_mb: p.compute?.mem_mb ?? 256,
-      workers: p.compute?.workers ?? 'ask',
-      service_worker: p.compute?.service_worker ?? 'ask',
-      webrtc: p.compute?.webrtc ?? 'ask',
-      webtransport: p.compute?.webtransport ?? 'ask',
+      cpu_ms_per_second: p.compute?.cpu_ms_per_second ?? 2000,
+      mem_mb: p.compute?.mem_mb ?? 4096,
+      workers: p.compute?.workers ?? 'allow',
+      service_worker: p.compute?.service_worker ?? 'allow',
+      webrtc: p.compute?.webrtc ?? 'allow',
+      webtransport: p.compute?.webtransport ?? 'allow',
     },
     filesystem: {
       access: p.filesystem?.access ?? 'prompt',
-      scopes: p.filesystem?.scopes ?? [],
+      scopes: p.filesystem?.scopes ? cloneScopes(p.filesystem.scopes) : cloneScopes(DEFAULT_FILESYSTEM_SCOPES),
     },
     permissions: {
       persist: p.permissions?.persist ?? true,
-      review_on_first_run: p.permissions?.review_on_first_run ?? true,
+      review_on_first_run: p.permissions?.review_on_first_run ?? false,
     },
     observability: {
-      logs: p.observability?.logs ?? 'info',
-      policy_overlay: p.observability?.policy_overlay ?? true,
+      logs: p.observability?.logs ?? 'warn',
+      policy_overlay: p.observability?.policy_overlay ?? false,
     },
   };
   return policy;
