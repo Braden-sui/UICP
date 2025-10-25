@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppStore } from '../state/app';
+import type { BlockEventDetail } from '../lib/security/networkGuard';
 
 export type NetEvent = {
   ts: number;
@@ -30,8 +31,18 @@ const NetworkInspector = () => {
       setEvents((prev) => [rec, ...prev].slice(0, 300));
     };
     const onBlock = (e: Event) => {
-      const detail = (e as CustomEvent<{ url: string; api: NetEvent['api']; reason?: string; method?: string }>).detail;
-      const rec: NetEvent = { ts: Date.now(), type: 'block', url: detail.url, api: detail.api, reason: detail.reason, method: detail.method };
+      const detail = (e as CustomEvent<BlockEventDetail>).detail;
+      if (!detail) return;
+      const payload = detail.payload;
+      const ctx = payload?.context as { url?: string; api?: string; method?: string } | undefined;
+      const rec: NetEvent = {
+        ts: Date.now(),
+        type: 'block',
+        url: ctx?.url ?? detail.url,
+        api: ((ctx?.api ?? detail.api) as NetEvent['api']) ?? 'fetch',
+        reason: payload?.reason ?? detail.reason,
+        method: ctx?.method ?? detail.method,
+      };
       setEvents((prev) => [rec, ...prev].slice(0, 300));
     };
     window.addEventListener('net-guard-attempt', onAttempt);

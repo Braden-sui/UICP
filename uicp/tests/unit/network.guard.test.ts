@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { installNetworkGuard } from '../../src/lib/security/networkGuard';
+import {
+  installNetworkGuard,
+  retryBlockedFetch,
+  setInteractiveGuardRemediation,
+  type GuardBlockPayload,
+  type BlockEventDetail,
+} from '../../src/lib/security/networkGuard';
 
 const getJSON = async (res: Response) => JSON.parse(await res.text());
 
@@ -195,15 +201,49 @@ describe('NetworkGuard (in-app egress)', () => {
     expect(ok).toBe(true);
   });
 
-  it('blocks RFC1918 IP literal via fetch and emits event', async () => {
-    const events: any[] = [];
-    (globalThis as any).window.addEventListener('net-guard-block', (e: any) => events.push(e.detail));
+  it('blocks RFC1918 IP literal via fetch and emits structured event', async () => {
+    const events: Array<{ payload?: GuardBlockPayload; url: string; reason?: string }> = [];
+    (globalThis as any).window.addEventListener('net-guard-block', (e: CustomEvent<BlockEventDetail>) => events.push(e.detail));
     installNetworkGuard({ enabled: true, monitorOnly: false });
     const res = await fetch('http://192.168.1.10/api');
     expect(res.status).toBe(403);
     const json = await getJSON(res);
     expect(json.blocked).toBe(true);
-    expect(events.some((d) => d && d.api === 'fetch' && d.blocked === true)).toBe(true);
+    expect(events.some((d) => d && d.payload?.context?.api === 'fetch' && d.payload?.blocked === true)).toBe(true);
+    const detail = events.find((d) => d?.payload?.context?.api === 'fetch');
+    expect(detail?.payload?.actions).toContain('allow_once');
+    expect(detail?.payload?.how_to_fix).toBeDefined();
+  });
+
+  it('registers retry for blocked fetch and resolves on retry', async () => {
+    const events: BlockEventDetail[] = [];
+    (globalThis as any).window.addEventListener('net-guard-block', (e: CustomEvent<BlockEventDetail>) => events.push(e.detail));
+    setInteractiveGuardRemediation(true);
+    let attempt = 0;
+    (globalThis as any).__UICP_TEST_FETCH__ = (input: any) => {
+      attempt += 1;
+      if (attempt === 1) {
+        return Promise.reject(new Error('should not hit original fetch')); // guard intercepts before
+      }
+      const url = typeof input === 'string' ? input : (input?.url ?? '');
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, url }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: false, allowDomains: [] });
+    const blockedPromise = fetch('http://169.254.169.254/metadata');
+    // Allow microtask queue to process retry registration
+    await Promise.resolve();
+    expect(events.length).toBeGreaterThan(0);
+    const detail = events[0];
+    expect(detail.blocked).toBe(true);
+    expect(detail.retryId).toBeTruthy();
+    // Retry should resolve to successful response
+    const retried = await retryBlockedFetch(detail.retryId!);
+    expect(retried).toBe(true);
+    const res = await blockedPromise;
+    expect(res.status).toBe(200);
+    const json = await getJSON(res);
+    expect(json.ok).toBe(true);
+    setInteractiveGuardRemediation(false);
   });
 
   it('allows explicitly allow-listed IP literal', async () => {

@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 /* global EventListener */
-import { installNetworkGuard } from './networkGuard';
+import { installNetworkGuard, type BlockEventDetail } from './networkGuard';
 import { emitTelemetryEvent } from '../telemetry';
 import type { TelemetryEventName } from '../telemetry/types';
 import { useAppStore } from '../../state/app';
@@ -116,12 +116,12 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
   // Persist initial
   writeState(storageKey, state);
 
-  const onBlock = (e: CustomEvent) => {
+  const onBlock = (e: CustomEvent<BlockEventDetail>) => {
     state.blockCount += 1;
     writeState(storageKey, state);
-    const detail = (e as CustomEvent<{ reason?: string; api?: string }>).detail;
-    const reason = detail?.reason;
-    const api = detail?.api;
+    const detail = (e as CustomEvent<BlockEventDetail>).detail;
+    const reason = detail?.payload?.reason ?? detail?.reason;
+    const api = detail?.payload?.context?.api ?? detail?.api;
     emit('security.net_guard.block', { reason, api, blocks: state.blockCount });
   };
 
