@@ -36,8 +36,6 @@ Create `uicp/.env` (copy `.env.example` and edit):
 ```
 USE_DIRECT_CLOUD=1
 OLLAMA_API_KEY=your_cloud_key_here
-PLANNER_MODEL=deepseek-v3.1:671b
-ACTOR_MODEL=qwen3-coder:480b
 ```
 
 Notes
@@ -71,11 +69,13 @@ VITE_GUARD_ALLOW_IPS=127.0.0.1,::1
 # IPv4 CIDR ranges for labs (example)
 VITE_GUARD_ALLOW_IP_RANGES=192.168.0.0/16
 
-# Optional hard blocks (off by default except service workers)
-VITE_GUARD_BLOCK_WORKERS=0
-VITE_GUARD_BLOCK_SERVICE_WORKER=1
-VITE_GUARD_BLOCK_WEBRTC=0
-VITE_GUARD_BLOCK_WEBTRANSPORT=0
+# Runtime policy (recommended)
+# Use Policy Viewer or presets to choose allow/ask/deny for workers, service workers, WebRTC, WebTransport.
+# Env overrides (deprecated; kept for compatibility) are still read if present:
+# VITE_GUARD_BLOCK_WORKERS=0
+# VITE_GUARD_BLOCK_SERVICE_WORKER=1
+# VITE_GUARD_BLOCK_WEBRTC=0
+# VITE_GUARD_BLOCK_WEBTRANSPORT=0
 ```
 
 CSP

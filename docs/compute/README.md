@@ -255,6 +255,12 @@ Safety and guardrails:
   - Command: `clear_compute_cache(workspace_id?: String)`.
   - UI: Agent Settings → "Clear Cache" (clears `default`).
 
+## Operator configuration: job tokens
+
+- Enforcement is operator-managed. Enable verification via `UICP_REQUIRE_TOKENS=1` in production environments.
+- Set `UICP_JOB_TOKEN_KEY_HEX` to a 32-byte hex key to keep tokens valid across restarts. If unset, the host generates a random ephemeral key at boot (tokens from prior runs won't verify after restart).
+- The frontend already mints tokens when `provenance.envHash` is provided; no UI changes are needed. Tokens are verified early in `compute_call` and failures surface as `Compute.CapabilityDenied` with code `E-UICP-0701`.
+
 ## Troubleshooting
 
 - See `docs/compute/troubleshooting.md` for errors such as `Task.NotFound`, digest mismatches, and `CapabilityDenied`.

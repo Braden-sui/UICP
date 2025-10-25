@@ -456,6 +456,7 @@ fn log_httpjail_skipped(provider: &str, reason: &str) {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
     if cfg!(debug_assertions) {
         #[cfg(feature = "otel_spans")]
@@ -480,6 +481,7 @@ fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn resolve_provider_exe(
     default_prog: &str,
     provider_key: &str,
@@ -529,6 +531,7 @@ fn resolve_provider_exe(
     default_prog.to_string()
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var_os("PATHEXT")
@@ -557,6 +560,7 @@ fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn candidate_in_dir(
     dir: &std::path::Path,
     program: &str,
@@ -585,6 +589,7 @@ fn candidate_in_dir(
     None
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -626,6 +631,7 @@ fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     out
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn managed_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let base = managed_bin_base();
@@ -656,6 +662,7 @@ fn managed_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     out
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn managed_bin_base() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if cfg!(target_os = "windows") {

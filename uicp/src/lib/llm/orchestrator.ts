@@ -2,7 +2,6 @@ import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
 import { createId } from '../utils';
-import { cfg } from '../config';
 import { collectTextFromChannels } from '../orchestrator/collectTextFromChannels';
 import { composeClarifier } from '../orchestrator/clarifier';
 import { enforcePlannerCap } from '../orchestrator/plannerCap';
@@ -16,20 +15,34 @@ import { getToolRegistrySummary } from './registry';
 import { getComponentCatalogSummary as getAdapterComponentCatalogSummary } from '../uicp/adapters/componentRenderer';
 import { type TaskSpec } from './schemas';
 import { generateTaskSpec } from './generateTaskSpec';
+import { cfg } from '../config';
 
-// Model selection: read from environment or use defaults
-const getPlannerModel = (): string => {
-  const envModel = import.meta.env.VITE_PLANNER_MODEL as string | undefined;
-  if (envModel) return envModel;
-  // Default fallback for development
+// Model selection: derive from selected profile, no .env dependency
+const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
+  const profile = getPlannerProfile(profileKey);
+  if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
+    return profile.defaultModel;
+  }
+  // Fallback: a broadly supported tools-capable planner
   return 'deepseek-v3.1:671b';
 };
 
-const getActorModel = (): string => {
-  const envModel = import.meta.env.VITE_ACTOR_MODEL as string | undefined;
-  if (envModel) return envModel;
-  // Default fallback for development
-  return 'qwen3-coder:480b';
+const getActorModel = (profileKey?: ActorProfileKey): string => {
+  // Prefer sensible defaults per actor profile
+  switch (profileKey) {
+    case 'qwen':
+      return 'qwen3-coder:480b';
+    case 'deepseek':
+      return 'deepseek-v3.1:671b';
+    case 'glm':
+      return 'glm-4.6:cloud';
+    case 'gpt-oss':
+      return 'gpt-oss:120b';
+    case 'kimi':
+      return 'kimi-k2:latest';
+    default:
+      return 'qwen3-coder:480b';
+  }
 };
 
 // Derive sane defaults from mode, allow env override
@@ -105,8 +118,8 @@ export async function planWithProfile(
   const client = getPlannerClient();
   const profile = getPlannerProfile(options?.profileKey);
   const supportsTools = profile.capabilities?.supportsTools === true;
-  const useJsonFirst = supportsTools && !cfg.wilOnly;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS;
+  const wilOnly = cfg.wilOnly === true;
 
   // WIL deterministic planner (local, no model call)
   if (profile.key === 'wil') {
@@ -138,7 +151,7 @@ export async function planWithProfile(
     try {
       const stream = client.streamIntent(intent, {
         profileKey: profile.key,
-        model: getPlannerModel(),
+        model: getPlannerModel(profile.key),
         extraSystem,
         meta: { traceId: options?.traceId, intent },
         taskSpec: options?.taskSpec,
@@ -146,7 +159,7 @@ export async function planWithProfile(
       });
 
       // JSON-first path: collect both tool calls AND text in single pass
-      if (useJsonFirst) {
+      if (supportsTools && !wilOnly) {
         const { toolResult, textContent } = await collectWithFallback(stream, 'emit_plan', timeoutMs, {
           traceId: options?.traceId,
           phase: 'planner',
@@ -236,7 +249,7 @@ export async function planWithProfile(
       };
     } catch (err) {
       lastErr = err;
-      const retry = buildStructuredRetryMessage('emit_plan', err, useJsonFirst);
+      const retry = buildStructuredRetryMessage('emit_plan', err, supportsTools);
       extraSystem = `${buildCatalogSummary()}\n\n${retry}`;
     }
   }
@@ -348,8 +361,7 @@ export async function actWithProfile(
 ): Promise<{ batch: Batch; channelUsed?: string }> {
   const client = getActorClient();
   const profile = getActorProfile(options?.profileKey);
-  // JSON-only for Actor (pilot): ignore non-tool profiles when wilOnly=false
-  const useJsonFirst = !cfg.wilOnly;
+  const supportsTools = profile.capabilities?.supportsTools === true;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS;
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, actor_hints: plan.actorHints, batch: plan.batch });
 
@@ -360,13 +372,13 @@ export async function actWithProfile(
     try {
       const stream = client.streamPlan(planJson, {
         profileKey: profile.key,
-        model: getActorModel(),
+        model: getActorModel(profile.key),
         extraSystem,
         meta: { traceId: options?.traceId, planSummary: plan.summary },
       });
 
-      // JSON-only path: collect tool calls and JSON text; no WIL fallback
-      if (useJsonFirst) {
+      // JSON-first path: collect tool calls and JSON text (WIL only when wilOnly)
+      if (supportsTools) {
         const { toolResult, textContent } = await collectWithFallback(stream, 'emit_batch', timeoutMs, {
           traceId: options?.traceId,
           phase: 'actor',
@@ -415,27 +427,20 @@ export async function actWithProfile(
           });
         }
         if (trimmed.length > 0) {
-          let fallbackBatch: Batch | null = null;
-          let fallbackChannel: string | undefined;
+          // Accept JSON fallback for structured payloads
           try {
             const normalized = normalizeBatchJson(trimmed);
             if (Array.isArray(normalized) && normalized.length > 0) {
-              fallbackBatch = normalized;
-              fallbackChannel = 'json-fallback';
+              const ensured = ensureWindowSpawn(plan, normalized);
+              return { batch: ensured, channelUsed: 'json-fallback' };
             }
           } catch {
-            // ignore parse errors; fall back to WIL below
+            // ignore parse errors; consider WIL only if wilOnly
           }
-          if (!fallbackBatch) {
-            const wilBatch = parseWilToBatch(trimmed);
-            if (wilBatch && wilBatch.length > 0) {
-              fallbackBatch = wilBatch;
-              fallbackChannel = 'text-fallback';
-            }
-          }
-          if (fallbackBatch && fallbackBatch.length > 0) {
-            const ensured = ensureWindowSpawn(plan, fallbackBatch);
-            return { batch: ensured, channelUsed: fallbackChannel ?? 'text-fallback' };
+          const wilBatch = parseWilToBatch(trimmed);
+          if (wilBatch && wilBatch.length > 0) {
+            const ensured = ensureWindowSpawn(plan, wilBatch);
+            return { batch: ensured, channelUsed: 'text-fallback' };
           }
         }
         const snippet = trimmed.slice(0, 200).replace(/\s+/g, ' ').trim();
@@ -443,11 +448,23 @@ export async function actWithProfile(
         throw new Error(`actor_nop: missing emit_batch tool call${detail}`);
       }
 
-      // Legacy WIL path disabled for Actor during JSON-only pilot
-      throw new Error('actor_nop: json-only actor');
+      // Text-only fallback for profiles without tool support
+      const text = await collectTextFromChannels(stream, timeoutMs, {
+        traceId: options?.traceId,
+        phase: 'actor',
+      });
+      if (!text || text.trim().length === 0) {
+        throw new Error('actor_empty');
+      }
+      const wilBatch = parseWilToBatch(text);
+      if (wilBatch && wilBatch.length > 0) {
+        const ensured = ensureWindowSpawn(plan, wilBatch);
+        return { batch: ensured, channelUsed: 'text' };
+      }
+      throw new Error('actor_nop: no valid batch from text');
     } catch (err) {
       lastErr = err;
-      const retry = buildStructuredRetryMessage('emit_batch', err, useJsonFirst);
+      const retry = buildStructuredRetryMessage('emit_batch', err, supportsTools);
       extraSystem = `${buildCatalogSummary()}\n\n${retry}`;
     }
   }

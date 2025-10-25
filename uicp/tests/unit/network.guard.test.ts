@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { installNetworkGuard } from '../../src/lib/security/networkGuard';
+import {
+  installNetworkGuard,
+  retryBlockedFetch,
+  setInteractiveGuardRemediation,
+  type GuardBlockPayload,
+  type BlockEventDetail,
+} from '../../src/lib/security/networkGuard';
 
 const getJSON = async (res: Response) => JSON.parse(await res.text());
 
@@ -195,15 +201,49 @@ describe('NetworkGuard (in-app egress)', () => {
     expect(ok).toBe(true);
   });
 
-  it('blocks RFC1918 IP literal via fetch and emits event', async () => {
-    const events: any[] = [];
-    (globalThis as any).window.addEventListener('net-guard-block', (e: any) => events.push(e.detail));
+  it('blocks RFC1918 IP literal via fetch and emits structured event', async () => {
+    const events: Array<{ payload?: GuardBlockPayload; url: string; reason?: string }> = [];
+    (globalThis as any).window.addEventListener('net-guard-block', (e: CustomEvent<BlockEventDetail>) => events.push(e.detail));
     installNetworkGuard({ enabled: true, monitorOnly: false });
     const res = await fetch('http://192.168.1.10/api');
     expect(res.status).toBe(403);
     const json = await getJSON(res);
     expect(json.blocked).toBe(true);
-    expect(events.some((d) => d && d.api === 'fetch' && d.blocked === true)).toBe(true);
+    expect(events.some((d) => d && d.payload?.context?.api === 'fetch' && d.payload?.blocked === true)).toBe(true);
+    const detail = events.find((d) => d?.payload?.context?.api === 'fetch');
+    expect(detail?.payload?.actions).toContain('allow_once');
+    expect(detail?.payload?.how_to_fix).toBeDefined();
+  });
+
+  it('registers retry for blocked fetch and resolves on retry', async () => {
+    const events: BlockEventDetail[] = [];
+    (globalThis as any).window.addEventListener('net-guard-block', (e: CustomEvent<BlockEventDetail>) => events.push(e.detail));
+    setInteractiveGuardRemediation(true);
+    let attempt = 0;
+    (globalThis as any).__UICP_TEST_FETCH__ = (input: any) => {
+      attempt += 1;
+      if (attempt === 1) {
+        return Promise.reject(new Error('should not hit original fetch')); // guard intercepts before
+      }
+      const url = typeof input === 'string' ? input : (input?.url ?? '');
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, url }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: false, allowDomains: [] });
+    const blockedPromise = fetch('http://169.254.169.254/metadata');
+    // Allow microtask queue to process retry registration
+    await Promise.resolve();
+    expect(events.length).toBeGreaterThan(0);
+    const detail = events[0];
+    expect(detail.blocked).toBe(true);
+    expect(detail.retryId).toBeTruthy();
+    // Retry should resolve to successful response
+    const retried = await retryBlockedFetch(detail.retryId!);
+    expect(retried).toBe(true);
+    const res = await blockedPromise;
+    expect(res.status).toBe(200);
+    const json = await getJSON(res);
+    expect(json.ok).toBe(true);
+    setInteractiveGuardRemediation(false);
   });
 
   it('allows explicitly allow-listed IP literal', async () => {
@@ -222,12 +262,11 @@ describe('NetworkGuard (in-app egress)', () => {
     expect(json.ok).toBe(true);
   });
 
-  it('WebRTC allowed by default (monitor-only) even with STUN/TURN', () => {
+  it('WebRTC blocked by default when STUN/TURN present', () => {
     class PCStub { constructor(_cfg?: any) {} }
     (globalThis as any).window.RTCPeerConnection = PCStub as any;
     installNetworkGuard({ enabled: true, monitorOnly: false });
-    const pc = new (globalThis as any).window.RTCPeerConnection({ iceServers: [{ urls: ['stun:exfil.local'] }] });
-    expect(pc).toBeInstanceOf(PCStub);
+    expect(() => new (globalThis as any).window.RTCPeerConnection({ iceServers: [{ urls: ['stun:exfil.local'] }] })).toThrowError();
   });
 
   it('WebRTC blocked when blockWebRTC=true and STUN/TURN present', () => {
@@ -251,12 +290,11 @@ describe('NetworkGuard (in-app egress)', () => {
     expect(() => new (globalThis as any).window.WebTransport('https://example.com/transport')).toThrowError();
   });
 
-  it('Worker constructor is allowed by default (monitor-only)', () => {
+  it('Worker constructor is blocked by default', () => {
     class WorkerStub { constructor(_s: string) {} }
     (globalThis as any).window.Worker = WorkerStub as any;
     installNetworkGuard({ enabled: true, monitorOnly: false });
-    const w = new (globalThis as any).window.Worker('foo.js');
-    expect(w).toBeInstanceOf(WorkerStub);
+    expect(() => new (globalThis as any).window.Worker('foo.js')).toThrowError();
   });
 
   it('Worker constructor is blocked when blockWorkers=true', () => {
@@ -277,5 +315,54 @@ describe('NetworkGuard (in-app egress)', () => {
     installNetworkGuard({ enabled: true, monitorOnly: false, blockServiceWorker: false });
     const res = await (globalThis as any).navigator.serviceWorker.register('/sw.js');
     expect(res).toBeTruthy();
+  });
+
+  it('path allowlist permits only configured prefixes', async () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, allowPaths: ['/ok', '/api/v1'] });
+    const ok1 = await fetch('https://example.com/ok/resource');
+    expect(ok1.status).toBe(200);
+    const ok2 = await fetch('https://example.com/api/v1/items');
+    expect(ok2.status).toBe(200);
+    const blocked = await fetch('https://example.com/deny/here');
+    expect(blocked.status).toBe(403);
+    const json = await getJSON(blocked);
+    expect(json.reason).toBe('path_forbidden');
+  });
+
+  it('fetch blocks payload larger than maxRequestBytes', async () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxRequestBytes: 4 });
+    const small = await fetch('https://example.com/ok', { method: 'POST', body: '1234' });
+    expect(small.status).toBe(200);
+    const big = await fetch('https://example.com/ok', { method: 'POST', body: '12345' });
+    expect(big.status).toBe(413);
+    const json = await getJSON(big);
+    expect(json.reason).toBe('payload_too_large');
+  });
+
+  it('XMLHttpRequest.send blocks payload larger than maxRequestBytes', () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxRequestBytes: 2 });
+    const xhr = new (globalThis as any).XMLHttpRequest();
+    xhr.open('POST', 'https://example.com/ok');
+    expect(() => xhr.send('123')).toThrowError();
+  });
+
+  it('sendBeacon blocks payload larger than maxRequestBytes', () => {
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxRequestBytes: 3 });
+    const ok = (globalThis as any).navigator.sendBeacon('https://example.com/ok', '123');
+    expect(ok).toBe(true);
+    const blocked = (globalThis as any).navigator.sendBeacon('https://example.com/ok', '1234');
+    expect(blocked).toBe(false);
+  });
+
+  it('fetch blocks when response content-length exceeds maxResponseBytes', async () => {
+    // Override test fetch to emit a large content-length. Must be set BEFORE guard install.
+    (globalThis as any).__UICP_TEST_FETCH__ = (_input: any) => {
+      return Promise.resolve(new Response('ok', { status: 200, headers: { 'content-length': '10000', 'content-type': 'text/plain' } }));
+    };
+    installNetworkGuard({ enabled: true, monitorOnly: false, maxResponseBytes: 1024 });
+    const res = await fetch('https://example.com/ok');
+    expect(res.status).toBe(413);
+    const json = await getJSON(res);
+    expect(json.reason).toBe('response_too_large');
   });
 });

@@ -35,7 +35,7 @@ Senior grade only. Clear structure, explicit invariants, typed errors, and disci
 
 2) Decision protocol
 
-Ask at most two concise clarifying questions only if required for correctness. If ambiguity remains, proceed with the best documented assumption and record it in the PLAN. Once a task starts, complete it in this session or present the single blocking item.
+Ask at most five concise clarifying questions only if required for correctness. If ambiguity remains, proceed with the best documented assumption and record it in the PLAN. Once a task starts, complete it in this session or present the single blocking item.
 
 3) Autonomy tiers and risk gates
 

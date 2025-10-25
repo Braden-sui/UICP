@@ -47,7 +47,6 @@ export function getAppMode(): AppMode {
 export type ModeDefaults = {
   devMode: boolean;
   plannerTwoPhase: boolean;
-  wilOnly: boolean;
   wilDebug: boolean;
   plannerTimeoutMs: number;
   actorTimeoutMs: number;
@@ -59,7 +58,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
       return {
         devMode: true,
         plannerTwoPhase: true,
-        wilOnly: false,
         wilDebug: true,
         plannerTimeoutMs: 180_000,
         actorTimeoutMs: 180_000,
@@ -69,7 +67,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
         devMode: false,
         // Keep existing behavior: two-phase off during tests
         plannerTwoPhase: false,
-        wilOnly: false,
         wilDebug: false,
         // Keep generous timeouts to avoid flakes; callers can override
         plannerTimeoutMs: 180_000,
@@ -80,7 +77,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
         devMode: false,
         // JSON-first production pilot uses two-phase planner by default
         plannerTwoPhase: true,
-        wilOnly: false,
         wilDebug: false,
         plannerTimeoutMs: 180_000,
         actorTimeoutMs: 180_000,
@@ -90,7 +86,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
       return {
         devMode: false,
         plannerTwoPhase: true,
-        wilOnly: false,
         wilDebug: false,
         plannerTimeoutMs: 180_000,
         actorTimeoutMs: 180_000,

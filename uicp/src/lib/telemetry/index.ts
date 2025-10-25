@@ -54,6 +54,8 @@ const EVENT_DEFAULTS: Partial<Record<TelemetryEventName, EventDefaults>> = {
   'ui.anim.panel.enter': { span: 'ui', kind: 'instant', status: 'ok' },
   'ui.anim.panel.exit': { span: 'ui', kind: 'instant', status: 'ok' },
   'ui.anim.frame_drop': { span: 'ui', kind: 'instant', status: 'error' },
+  'security.net_guard.block': { span: 'api', kind: 'instant', status: 'error' },
+  'security.net_guard.rollout_state': { span: 'api', kind: 'instant', status: 'ok' },
 };
 
 const sanitizeData = (input: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {

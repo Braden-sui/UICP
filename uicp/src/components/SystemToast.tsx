@@ -1,4 +1,4 @@
-﻿import { useAppStore } from '../state/app';
+import { useAppStore } from '../state/app';
 
 // SystemToast surfaces failures loudly per the fail-fast policy.
 export const SystemToast = () => {
@@ -23,12 +23,33 @@ export const SystemToast = () => {
             <span>{toast.message}</span>
             <button
               type="button"
-              onClick={() => dismiss(toast.id)}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismiss(toast.id); }}
               className="rounded bg-transparent px-1 py-0.5 text-xs text-slate-500 hover:text-slate-900"
             >
               Close
             </button>
           </div>
+          {toast.actions && toast.actions.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {toast.actions.map((a, idx) => (
+                <button
+                  key={`${toast.id}-act-${idx}`}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Dismiss first for responsive UX, then run the action.
+                    const id = toast.id;
+                    dismiss(id);
+                    try { a.run(); } catch { /* non-fatal */ }
+                  }}
+                  className="rounded border border-slate-300 bg-white/90 px-2 py-0.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>

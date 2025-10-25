@@ -80,7 +80,7 @@ lto = true
 strip = true
 
 [features]
-default = ["tauri2", "dialog_plugin"]
+default = ["tauri2", "dialog_plugin", "wasm_compute", "uicp_wasi_enable"]
 tauri2 = []
 dialog_plugin = ["dep:tauri-plugin-dialog"]
 wasm_compute = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:tempfile"]

@@ -84,6 +84,67 @@ pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_i
     state.ongoing.write().await.remove(request_id);
 }
 
+/// Copy a workspace file (ws:/files/...) to a host destination path and return the final host path.
+#[tauri::command]
+async fn export_from_files(ws_path: String, dest_path: String) -> Result<String, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("export_from_files");
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    let src_buf: PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
+        Ok(p) => p,
+        Err(e) => return Err(format!("{}", e.message)),
+    };
+    if !src_buf.exists() {
+        return Err(format!("Source not found: {}", ws_path));
+    }
+    let meta = fs::symlink_metadata(&src_buf).map_err(|e| format!("stat failed: {e}"))?;
+    if !meta.file_type().is_file() {
+        return Err("Source must be a regular file".into());
+    }
+
+    let dest_input = Path::new(&dest_path);
+    let mut dest_final: PathBuf = if dest_input.is_dir() {
+        let fname = src_buf
+            .file_name()
+            .ok_or_else(|| "Invalid source file name".to_string())?
+            .to_string_lossy()
+            .to_string();
+        dest_input.join(fname)
+    } else {
+        dest_input.to_path_buf()
+    };
+
+    if let Some(parent) = dest_final.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            return Err(format!("Failed to create destination dir: {e}"));
+        }
+    }
+
+    if dest_final.exists() {
+        let stem = dest_final
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = dest_final
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let ts = chrono::Utc::now().timestamp();
+        let new_name = if ext.is_empty() {
+            format!("{}-{}", stem, ts)
+        } else {
+            format!("{}-{}.{}", stem, ts, ext)
+        };
+        let parent = dest_final.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        dest_final = parent.join(new_name);
+    }
+
+    fs::copy(&src_buf, &dest_final).map_err(|e| format!("Copy failed: {e}"))?;
+    Ok(dest_final.display().to_string())
+}
+
 #[tauri::command]
 async fn mint_job_token(
     state: State<'_, AppState>,
@@ -169,8 +230,7 @@ async fn compute_call(
         job_id = %spec.job_id,
         task = %spec.task,
         cache = %spec.cache
-    )
-    .entered();
+    );
     // Reject duplicate job ids
     if state
         .compute_ongoing
@@ -614,7 +674,7 @@ async fn test_api_key(
 #[tauri::command]
 async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("persist_command", id = %cmd.id, tool = %cmd.tool).entered();
+    let _span = tracing::info_span!("persist_command", id = %cmd.id, tool = %cmd.tool);
     // Freeze writes in Safe Mode
     if *state.safe_mode.read().await {
         return Ok(());
@@ -622,7 +682,8 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
     let id = cmd.id.clone();
     let tool = cmd.tool.clone();
     let args_json = serde_json::to_string(&cmd.args).map_err(|e| format!("{e}"))?;
-    let _started = Instant::now();
+    #[cfg(feature = "otel_spans")]
+    let started = Instant::now();
     let res = state
         .db_rw
         .call(move |conn| -> tokio_rusqlite::Result<()> {
@@ -653,8 +714,9 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
 #[tauri::command]
 async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<CommandRequest>, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("load_commands").entered();
-    let _started = Instant::now();
+    let _span = tracing::info_span!("load_commands");
+    #[cfg(feature = "otel_spans")]
+    let started = Instant::now();
     let res = state
         .db_ro
         .call(|conn| -> tokio_rusqlite::Result<Vec<CommandRequest>> {
@@ -702,7 +764,7 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
 #[tauri::command]
 async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("clear_commands").entered();
+    let _span = tracing::info_span!("clear_commands");
     #[cfg(feature = "otel_spans")]
     let _started = Instant::now(); // WHY: Silence dead_code when spans disabled; still track duration where enabled.
     let res = state
@@ -736,7 +798,7 @@ async fn delete_window_commands(
     window_id: String,
 ) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("delete_window_commands", window_id = %window_id).entered();
+    let _span = tracing::info_span!("delete_window_commands", window_id = %window_id);
     state
         .db_rw
         .call(move |conn| {
@@ -1007,10 +1069,9 @@ async fn chat_completion(
         return Err("No API key configured".into());
     }
 
-    let requested_model = model.unwrap_or_else(|| {
-        // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
-        std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
-    });
+    // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
+    // Avoid reading .env here; the UI selects the model per Agent Settings.
+    let requested_model = model.unwrap_or_else(|| "qwen3-coder:480b".into());
     // Normalize to colon-delimited tags for both Cloud and local.
     // If the input had a "-cloud" suffix, preserve it on local to aid routing.
     let resolved_model = normalize_model_name(&requested_model, use_cloud);
@@ -1884,11 +1945,10 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             }
 
             #[cfg(feature = "otel_spans")]
-            let span = tracing::info_span!(
+            let _span = tracing::info_span!(
                 "db_maintenance",
                 run_vacuum = ticks_since_vacuum >= ticks_per_vacuum
-            )
-            .entered();
+            );
             #[cfg(feature = "otel_spans")]
             let started = Instant::now();
 
@@ -1955,7 +2015,9 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             }
 
             #[cfg(feature = "otel_spans")]
-            drop(span);
+            {
+                let _ = &started; // preserve instrumentation variable usage guard
+            }
         }
     });
 }
@@ -2160,7 +2222,7 @@ fn main() {
             #[cfg(feature = "wasm_compute")]
             {
                 let handle = app.handle().clone();
-                let _ = spawn_blocking(move || {
+                let _ = tauri::async_runtime::spawn_blocking(move || {
                     if let Err(err) = crate::compute::prewarm_quickjs(&handle) {
                         eprintln!("quickjs prewarm failed: {err:?}");
                     }
@@ -2264,6 +2326,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_paths,
             copy_into_files,
+            export_from_files,
             get_modules_info,
             get_modules_registry,
             get_action_log_stats,
@@ -2329,7 +2392,7 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn check_container_runtime() -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("check_container_runtime").entered();
+    let _span = tracing::info_span!("check_container_runtime");
     use std::process::Command;
     
     // Check for Docker
@@ -2372,7 +2435,7 @@ async fn check_container_runtime() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn check_network_capabilities() -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("check_network_capabilities").entered();
+    let _span = tracing::info_span!("check_network_capabilities");
 
     // Gate network with an explicit env flag.
     // Accept common truthy forms: 1,true,yes,on (case-insensitive).
@@ -2641,7 +2704,7 @@ async fn provider_install(
 #[tauri::command]
 async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("verify_modules").entered();
+    let _span = tracing::info_span!("verify_modules");
     use crate::registry::{load_manifest, modules_dir};
     let dir = modules_dir(&app);
     let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
@@ -2733,7 +2796,7 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 #[tauri::command]
 async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<String, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("copy_into_files").entered();
+    let _span = tracing::info_span!("copy_into_files");
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -2790,7 +2853,7 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
 #[tauri::command]
 async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_modules_registry").entered();
+    let _span = tracing::info_span!("get_modules_registry");
     let dir = crate::registry::modules_dir(&app);
     let manifest = crate::registry::load_manifest(&app).map_err(|e| e.to_string())?;
 
@@ -2839,7 +2902,7 @@ async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value
 #[tauri::command]
 async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_modules_info").entered();
+    let _span = tracing::info_span!("get_modules_info");
     let dir = crate::registry::modules_dir(&app);
     let manifest = dir.join("manifest.json");
     let exists = manifest.exists();
@@ -2864,14 +2927,14 @@ async fn get_action_log_stats(
     state: State<'_, AppState>,
 ) -> Result<crate::action_log::ActionLogStatsSnapshot, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_action_log_stats").entered();
+    let _span = tracing::info_span!("get_action_log_stats");
     Ok(state.action_log.stats_snapshot())
 }
 
 #[tauri::command]
 async fn open_path(path: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("open_path").entered();
+    let _span = tracing::info_span!("open_path");
     use std::process::Command;
     let p = std::path::Path::new(&path);
     if !p.exists() {
@@ -2922,7 +2985,7 @@ async fn health_quick_check(app: tauri::AppHandle) -> Result<serde_json::Value, 
 
 async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<serde_json::Value> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("health_quick_check").entered();
+    let _span = tracing::info_span!("health_quick_check");
     let state: State<'_, AppState> = app.state();
     let status = state
         .db_ro
@@ -2955,7 +3018,7 @@ async fn clear_compute_cache(
     workspace_id: Option<String>,
 ) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("clear_compute_cache", workspace = %workspace_id.as_deref().unwrap_or("default")).entered();
+    let _span = tracing::info_span!("clear_compute_cache", workspace = %workspace_id.as_deref().unwrap_or("default"));
     let ws = workspace_id.unwrap_or_else(|| "default".into());
     let state: State<'_, AppState> = app.state();
     state
@@ -2999,7 +3062,7 @@ async fn set_safe_mode(
 #[tauri::command]
 async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("save_checkpoint", hash_len = hash.len()).entered();
+    let _span = tracing::info_span!("save_checkpoint", hash_len = hash.len());
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
         return Ok(());
@@ -3047,8 +3110,7 @@ async fn determinism_probe(
         "determinism_probe",
         n = n,
         has_hash = recomputed_hash.is_some()
-    )
-    .entered();
+    );
     let state: State<'_, AppState> = app.state();
     let limit = n as i64;
     let samples = state
@@ -3089,7 +3151,7 @@ async fn determinism_probe(
 #[tauri::command]
 async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_action", kind = %kind).entered();
+    let _span = tracing::info_span!("recovery_action", kind = %kind);
     let emit = |app: &tauri::AppHandle, action: &str, outcome: &str, payload: serde_json::Value| {
         let _ = app.emit(
             "replay-issue",
@@ -3199,7 +3261,7 @@ async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), Stri
 #[tauri::command]
 async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_auto").entered();
+    let _span = tracing::info_span!("recovery_auto");
     let mut attempts: Vec<serde_json::Value> = Vec::new();
     let mut status: &str = "failed";
     let mut failed_reason: Option<String> = None;
@@ -3261,7 +3323,7 @@ async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
 #[tauri::command]
 async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_export").entered();
+    let _span = tracing::info_span!("recovery_export");
     let state: State<'_, AppState> = app.state();
     let logs_dir = LOGS_DIR.clone();
     let integrity = reindex_and_integrity(&app).await.unwrap_or(false);
@@ -3301,7 +3363,7 @@ async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, Str
 
 async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("reindex_and_integrity").entered();
+    let _span = tracing::info_span!("reindex_and_integrity");
     let state: State<'_, AppState> = app.state();
     let status = state
         .db_rw
@@ -3325,7 +3387,7 @@ async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
 
 async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64>> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("last_checkpoint_ts").entered();
+    let _span = tracing::info_span!("last_checkpoint_ts");
     let state: State<'_, AppState> = app.state();
     let ts = state
         .db_rw
@@ -3347,7 +3409,7 @@ async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64
 
 async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compact_log_after_last_checkpoint").entered();
+    let _span = tracing::info_span!("compact_log_after_last_checkpoint");
     let Some(since) = last_checkpoint_ts(app).await? else {
         return Ok(0);
     };
@@ -3368,7 +3430,7 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
 
 async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("rollback_to_last_checkpoint").entered();
+    let _span = tracing::info_span!("rollback_to_last_checkpoint");
     let Some(since) = last_checkpoint_ts(app).await? else {
         return Ok(0);
     };

@@ -18,3 +18,5 @@ validateJsSource({ code: "/* maybe fetch at runtime */", filename: "cap-ok.js", 
 console.log("validator caps tests passed");
 
 
+
+

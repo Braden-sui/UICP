@@ -13,6 +13,9 @@ import { emitTelemetryEvent } from "../../telemetry";
 import type { OperationParamMap, Envelope } from "./schemas";
 import { jobSpecSchema, type JobSpec } from "../../../compute/types";
 import type { StructuredClarifierBody } from "./adapter.clarifier";
+import { checkPermission } from "../../permissions/PermissionManager";
+import { getPermissionPromptHandler } from "../../permissions/promptBridge";
+import { getEffectivePolicy } from "../../security/policyLoader";
 import { isStructuredClarifierBody } from "./adapter.clarifier";
 
 // Derive options type from fetch so lint rules do not expect a RequestInit global at runtime.
@@ -179,6 +182,29 @@ const handleHttpFetch = async (
   const traceId = command.traceId;
   const urlObj = new URL(url);
 
+  try {
+    const policy = getEffectivePolicy();
+    const prompt = getPermissionPromptHandler();
+    const shouldPrompt = Boolean(prompt) || policy.network.mode === 'default_deny';
+    if (shouldPrompt) {
+      const decision = await checkPermission(command, (prompt ?? undefined));
+      if (decision !== 'allow') {
+        try {
+          const w = typeof window !== 'undefined' ? window : undefined;
+          if (w && typeof w.dispatchEvent === 'function' && typeof w.CustomEvent === 'function') {
+            const ev = new w.CustomEvent('permissions-deny', { detail: { origin: urlObj.origin, method } });
+            w.dispatchEvent(ev);
+          }
+        } catch (err) {
+          console.warn('[api] permissions-deny dispatch failed', err);
+        }
+        return { success: false, error: 'Permission denied' };
+      }
+    }
+  } catch {
+    // If policy cannot be read or handler fails, do not block default_allow flows
+  }
+
   if (!ALLOWED_HTTP_METHODS.has(method)) {
     if (traceId) {
       emitTelemetryEvent('api_call', {
@@ -213,6 +239,7 @@ const handleHttpFetch = async (
   const startedAt = performance.now();
   try {
     const response = await fetch(url, init);
+
     const duration = Math.round(performance.now() - startedAt);
     if (traceId) {
       emitTelemetryEvent('api_call', {

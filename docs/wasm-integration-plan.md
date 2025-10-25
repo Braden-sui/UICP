@@ -11,6 +11,14 @@ Policy-enforced, first-class provider integration. This turns the WASM plane fro
 * Observability, failure taxonomy, and backpressure are wired end to end.
 * Two production workloads migrate first: patch.summarize and metrics.aggregate.
 
+## Terminology and normative keywords
+
+- MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are as defined in RFC 2119 and RFC 8174.
+- Provider: execution backend selected by the router (llm, local, wasm).
+- Module: a versioned WebAssembly component implementing `uicp:compute/job`.
+- Deterministic: fixed inputs and environment produce identical outputs and side effects.
+- Golden: expected output hash recorded for a given `goldenKey`.
+
 ## Objectives and non-negotiables
 
 * Respect WASI isolation and Component Model contracts at all times.
@@ -33,13 +41,13 @@ In scope:
 - [x] Phase 1: Provider router and policy (TS)
 - [x] Phase 2: Capability tokens (Rust+TS)
 - [x] Phase 3: Cache v2 + determinism (v2_plus with modsha/modver/world/abi/policy invariants wired; wasmtime_major pending)
-- [~] Phase 4: WIT world finalize + hostcall gating (time/random denied by policy; RNG deterministic; net not exposed; preflight import policy enforced)
-- [~] Phase 5: Registry enforcement + trust store (trust store + keyid support; strict mode + UI surfacing done)
+- [x] Phase 4: WIT world finalize + hostcall gating (time/random denied by policy; RNG deterministic; net not exposed; preflight import policy enforced)
+- [x] Phase 5: Registry enforcement + trust store (trust store + keyid support; strict mode + UI surfacing; CI signature gate)
 - [~] Phase 6: Observability (failure taxonomy, SLOs) + Backpressure UI (banner + determinism/backpressure chips in place)
-- [~] Phase 7: Fair scheduling (wasm_sem separate from compute_sem; UICP_WASM_CONCURRENCY env cap)
+- [x] Phase 7: Fair scheduling (wasm_sem separate from compute_sem; UICP_WASM_CONCURRENCY env cap)
 - [ ] Phase 8: DX CLI
 - [ ] Phase 9: Migrate modules (patch-tools, metrics-agg)
-- [ ] Phase 10: CI gating + rollout
+- [~] Phase 10: CI gating + rollout (verify-modules: import-policy + signature gating landed; staged rollout pending)
 - [ ] Documentation updates
 
 ## Current state snapshot
@@ -58,6 +66,12 @@ In scope:
 * Capability tokens v1 (HMAC) minted in Tauri and optionally enforced by the host (env-gated).
 * Cache v2 groundwork (input manifest with ws:/files content hashing) + env switch for lookup/store.
 * Determinism metrics: `outputHash`, optional `goldenHash`, `goldenMatched` on success payloads; golden cache stored/verified when `goldenKey` is provided.
+* Tauri Cargo defaults now include `wasm_compute` and `uicp_wasi_enable` features so the WASM provider ships in prod by default.
+* New CI workflow step runs `wit-component wit` to enforce import-surface policy: forbid `wasi:http` and `wasi:sockets`; require `wasi:logging` for observability.
+* Module verification script upgraded to verify Ed25519 signatures using a trust store (`UICP_TRUST_STORE_JSON`) when `STRICT_MODULES_VERIFY=1`.
+* `verify-modules.yml` sets `STRICT_MODULES_VERIFY=1` and enforces signatures (single-key or trust store) on every PR touching modules.
+* `.env.example` updated with secure-compute flags: `UICP_CACHE_V2`, `UICP_REQUIRE_TOKENS`, `STRICT_MODULES_VERIFY`, `UICP_TRUST_STORE_JSON`, `UICP_WASM_CONCURRENCY`.
+* Blocking backpressure quotas implemented for guest stdout/stderr, partial events, and wasi logging; no drops. Streams block in ~10 ms intervals until tokens are available; throttle counters are recorded. Defaults: stdout+stderr 256 KiB/s (burst 1 MiB), logger 64 KiB/s, partial events 30/s.
 
 ## Phase 0 - Recon anchors (done)
 
@@ -80,6 +94,15 @@ Planner (hint) -> Router policy -> Provider decision -> Executor
                                                        |
                                             FS jail + quotas + tokens
 ```
+
+## Standards and compliance
+
+- WebAssembly Component Model and WASI Preview 2 compliant modules.
+- Wasmtime pinned and recorded with SBOM; pooling allocator and memory limits enabled.
+- Import-surface policy enforced in CI: forbid `wasi:http` and `wasi:sockets`; require `wasi:logging`.
+- Network access, if allowed, occurs only via the host `http_fetch` shim and is controlled by capability tokens and the in-app network guard (loopback allowed by default; private ranges blocked unless allow-listed).
+- Supply chain: Ed25519 signatures required outside dev; trust store with key IDs; optional Sigstore/cosign attestations accepted when provided.
+- Reproducible builds: containerized builder image digest recorded; deterministic outputs required for cacheable modules.
 
 ## Provider policy gate
 
@@ -124,11 +147,12 @@ export type ResourceLimits = {
 
 ## Host capability tokens
 
-Tokens v1 (implemented):
+Tokens v1 (implemented, operator-managed):
 
 * Host mints an HMAC-SHA256 token over `{jobId, task, workspaceId, envHash}`.
 * Token travels with the `JobSpec` and is verified before execution when enforcement is enabled.
-* Enforcement is disabled by default; opt-in via `UICP_REQUIRE_TOKENS=1`.
+* Enforcement is disabled by default and is operator-managed. Enable via `UICP_REQUIRE_TOKENS=1` in production deployments. Packaging does not auto-enable this.
+* Operators should set a stable 32-byte hex key via `UICP_JOB_TOKEN_KEY_HEX` for continuity across restarts. If unset, the host generates an ephemeral random key at boot (tokens from previous runs will not verify).
 
 Planned for v2 (future):
 
@@ -164,15 +188,22 @@ Golden cache:
 
 ## Environment flags
 
-* `UICP_REQUIRE_TOKENS=1` — enforce job token verification.
-* `UICP_JOB_TOKEN_KEY_HEX=<64 hex>` — fixed 32-byte HMAC key; random if unset.
+* `UICP_REQUIRE_TOKENS=1` — enforce job token verification (operator-managed; recommended for production).
+* `UICP_JOB_TOKEN_KEY_HEX=<64 hex>` — operator-managed fixed 32-byte HMAC key; if unset, a random ephemeral key is generated at boot.
 * `UICP_CACHE_V2=1` — use v2 cache key (with invariants) for lookup and store.
 * `UICP_WASM_CONCURRENCY=<1..64>` — WASM provider concurrency cap (default 2); separate from generic compute_sem.
+* `UICP_WASM_PROVIDER=0|1` — runtime kill switch for routing to the WASM provider. Defaults to 1 in production builds; set to 0 to disable and route to alternative providers.
+
+Notes:
+
+- Flags are read at startup; changing them requires an app restart to take effect.
+- Security posture defaults: tokens are operator-managed and may be disabled in dev; signatures are required when `STRICT_MODULES_VERIFY=1`.
 
 ## Backpressure and log quotas
 
-* Bounded queues for logs and events.
-* When full, drop with rate-limited "logs dropped" events.
+* Blocking token-bucket quotas for logs and events (guest stdout/stderr, partial events, wasi logging).
+* Streams block in small (~10 ms) intervals until tokens are available; no drops. Throttle counters increment for observability.
+* Defaults (tunable): stdout+stderr 256 KiB/s with 1 MiB burst; logger 64 KiB/s; partial events 30/s.
 * UI shows a red "backpressure active" banner.
 
 ## Failure taxonomy and SLOs
@@ -231,10 +262,20 @@ world job {
 
 ## DX CLI
 
-* `uicp mod init` creates a Rust or AssemblyScript template with the WIT world and a stub `run`.
-* `uicp mod build` uses a containerized builder for stable outputs across platforms. Emits module `.wasm` plus manifest with sha256 and limits.
-* `uicp mod run` runs a module locally via the host using a JSON file.
-* `uicp mod publish` writes into the local registry directory with signature.
+* `uicp mod init --lang rust --name uicp/patch-tools` — create a template with `uicp:compute/job` world and stub `run`.
+* `uicp mod build --platform wasi-preview2 --wit uicp:compute/job --out dist/ --sbom spdx-2.3.json --provenance attest.json` — containerized, reproducible build. Outputs `.wasm` and manifest (sha256, limits).
+* `uicp mod run --module dist/patch-tools.wasm --input input.json` — execute locally via the host; prints result JSON and `outputHash`.
+* `uicp mod publish --registry ws:/modules --sign key.pem --keyid dev-2025` — sign and publish to the local registry with key id recorded.
+
+Example build output (truncated):
+
+```text
+✓ Built uicp/patch-tools@1
+sha256: 2f5c...9a
+limits: { memoryMb: 64, timeoutMs: 5000 }
+sbom: dist/spdx-2.3.json
+provenance: dist/attest.json
+```
 
 ## Migration targets and payoffs
 
@@ -256,10 +297,22 @@ world job {
 
 ## CI and gating
 
-* Refuse unsigned modules in non-dev builds. CI fails if unsigned.
+* Refuse unsigned modules in non-dev builds. CI fails if unsigned or signature invalid (Node verifier with Ed25519 trust store).
+* Enforce import-surface policy in CI using `wit-component` for all shipped components:
+  * Forbid `wasi:http` and `wasi:sockets`.
+  * Require `wasi:logging` import for baseline observability.
 * Run golden tests for each module with deterministic outputs.
 * Mutation tests for policyDecide mapping.
 * Wasmtime version pin with SBOM and license checks.
+
+## Validation and testing
+
+- Unit: `policyDecide` mapping, cache key invariants, token mint/verify.
+- Integration: sandboxing (FS jail), quotas, capability denials, fair scheduling.
+- Golden: per-module vectors with `outputHash` verification and `goldenMatched`.
+- Property: determinism under input reordering and repeated runs.
+- Fuzzing (optional): WIT JSON inputs and boundary behaviors.
+- Performance: enforce p50/p95 latency and resource budgets in CI.
 
 ## Security model
 
@@ -278,15 +331,46 @@ world job {
 * Security: wasm.modules.unsigned_runs, wasm.capability.denials.
 * Determinism: wasm.results.deterministic_ratio.
 
+### Structured logs (NDJSON)
+
+Fields: `ts`, `level`, `code`, `jobId`, `module`, `provider`, `span`, `msg`, `ctx`.
+
+Example:
+
+```json
+{"ts":"2025-01-23T18:42:01.234Z","level":"ERROR","code":"E-UICP-0203","jobId":"j_abc","provider":"wasm","module":"uicp/patch-tools@1","span":"exec","msg":"Exec timeout","ctx":{"timeoutMs":5000}}
+```
+
+### Error codes
+
+Use repo-wide prefix `E-UICP-####`. Map to failure taxonomy:
+
+- E-UICP-0201 CapabilityDenied
+- E-UICP-0202 MemLimit
+- E-UICP-0203 ExecTimeout
+- E-UICP-0204 FuelExhausted
+- E-UICP-0205 BackpressureDrop
+- E-UICP-0206 SignatureRequired / SignatureInvalid
+
+### Tracing
+
+OpenTelemetry spans around `policyDecide`, `cache.lookup`, `exec`, and `cache.store`. Propagate `traceId` into module logs via the `log` capability.
+
 ## Rollout plan
 
-* Feature flag WASM_PROVIDER in dev first. Kill switch present.
-* Canary to 10 percent of sessions. Watch failure rate and cache hit ratio.
-* Enable for all dev. Wait 2 days. Enable for prod if SLOs hold.
+* Phase 0 (dev only): behind `UICP_WASM_PROVIDER=1`. Observe for 48–72 hours.
+* Canary (10% sessions): promote when all hold for 48 hours:
+  * Failure rate (non-cancel) < 1.0% overall and < 0.5% for deterministic jobs
+  * Determinism ratio ≥ 95%
+  * Cache hit ratio ≥ 60% for eligible jobs
+  * p95 latency ≤ 1.5x baseline local provider
+  * Backpressure banner occurrence < 0.5% of jobs
+* Ramp: 10% → 50% → 100% with the same gates at each step.
+* Rollback: set `UICP_WASM_PROVIDER=0` and restart. Cache can be bypassed via `cacheMode: "bypass"` in `ProviderDecision` for emergency runs.
 
 ## Fire drills
 
-* Log flood: verify drops and UI banner.
+* Log flood: verify blocking behavior (no drops), throttle counters increment, and UI banner.
 * Capability denial: verify reason and metric.
 * Timeout: verify kill and cleanup.
 * Memory blowup: verify termination and no leaks.
@@ -341,6 +425,28 @@ Day 7 - Policy hardening and drills
 * Backpressure visible in UI. Failure taxonomy present in logs and metrics.
 * DX CLI builds a template module and runs it end to end.
 
+## Remaining checks before full rollout
+
+- Observability completeness
+  - Wire SLO thresholds (failure rate, determinism ratio, cache hit ratio, p95 latency) into dashboards.
+  - Ensure tracing spans cover policyDecide, cache.lookup/store, exec, and surface `traceId` in module logs.
+- Cache v2 invariants
+  - Extend invariants to include `policy_ver`, `host_abi`, `wit_world`, `wasmtime_major`; validate key stability across releases.
+- Token enforcement
+  - Enable `UICP_REQUIRE_TOKENS=1` via operator environment (do not auto-enable in packaging); verify denial paths and metrics. Provide `UICP_JOB_TOKEN_KEY_HEX` for stable HMAC.
+- Module golden tests
+  - Add golden vectors for `uicp/patch-tools@1` and `uicp/metrics-agg@1`; validate determinism and mismatch surfacing.
+- Module migrations
+  - Port `patch.summarize`/`patch.normalize` and `metrics.aggregate` to WASM components with tests.
+- Fair scheduling validation
+  - Load-test `wasm_sem` vs `compute_sem` isolation; confirm head-of-line protection.
+- CI gating and staged rollout
+  - Keep import-surface checks via `wit-component`; finalize canary gates and promotion criteria in CI.
+- DX CLI
+  - Ship `uicp mod init|build|run|publish` with containerized, reproducible builds and provenance SBOMs.
+- Documentation
+  - Update README/architecture docs to reflect provider router, tokens, cache v2, and module lifecycle.
+
 ## PR breakdown and checklist
 
 PR 1 - Router and policy
@@ -387,6 +493,25 @@ Context: Model-chosen providers allowed capability escalation. Caching was coars
 Decision: Router owns provider selection. Host mints and verifies capability tokens. Cache v2 with input manifests and determinism tagging. Signatures enforced outside dev.
 Consequences: Deterministic, cacheable compute with clear boundaries and metrics. Slight complexity increase in router and host. DX improves with templates and builder.
 
+## Operational runbook
+
+Rollback
+
+- Set `UICP_WASM_PROVIDER=0` and restart the app to route away from WASM.
+- For a single job, set `cacheMode: "bypass"` in `ProviderDecision` to avoid cache effects.
+
+Incident triage
+
+- Check MetricsPanel for spikes in failure rate, determinism ratio, backpressure.
+- Inspect logs filtered by `provider=wasm` and error codes `E-UICP-02xx`.
+- Verify registry strict mode and trust store health; reject unsigned modules.
+- Kill runaway jobs via host timeout; inspect memory/fuel counters.
+
+Safety checks
+
+- Disable `http_fetch` in host if data exfiltration is suspected; validate in-app network guard allow-list.
+- Switch cache to v1 or disable via `UICP_CACHE_V2=0` if cache-related incidents occur.
+
 ## Appendix A - Failure reasons
 
 ExecTimeout, FuelExhausted, MemLimit, CapabilityDenied, HostPanic, ModulePanic, BackpressureDrop, SignatureRequired, SignatureInvalid.
@@ -405,7 +530,16 @@ wasm.jobs.started, wasm.jobs.completed, wasm.jobs.failed, wasm.jobs.timeout, was
   "capabilities": ["log"],
   "limits": { "memoryMb": 64, "timeoutMs": 5000 },
   "sha256": "...",
-  "signature": "ed25519:...",
+  "signatures": [
+    { "alg": "ed25519", "keyid": "dev-2025", "sig": "..." }
+  ],
+  "sbom": "spdx-2.3.json",
+  "licenses": ["Apache-2.0"],
+  "provenance": {
+    "builder_image": "ghcr.io/uicp/builder@sha256:...",
+    "built_at": "2025-01-23T18:40:00Z",
+    "reproducible": true
+  },
   "tests": [
     { "input": { "diff": "..." }, "expect": { "files_changed": 3 } }
   ]

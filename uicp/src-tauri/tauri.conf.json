@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm run dev",
     "beforeBuildCommand": "pnpm run build",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
   "app": {
@@ -22,8 +22,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; connect-src 'self' https: http://127.0.0.1 http://localhost ws: wss: ipc:; img-src 'self' data:; font-src 'self'; style-src 'self' 'sha256-6ZTSpIKPgE3x13RncnAsbcrlc7PmCQFAqyqjiPCLm00='; script-src 'self';",
-      "devCsp": "default-src 'self' http://localhost:1420 ws://localhost:1420; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; connect-src 'self' http://localhost:1420 ws://localhost:1420 https: http://127.0.0.1 http://localhost ws: wss: ipc:; img-src 'self' data: blob: http://localhost:1420; font-src 'self' http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; script-src 'self' 'unsafe-eval' http://localhost:1420;",
+      "csp": "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; connect-src 'self' https: http://127.0.0.1 ws: wss: ipc:; img-src 'self' data:; font-src 'self'; style-src 'self' 'sha256-6ZTSpIKPgE3x13RncnAsbcrlc7PmCQFAqyqjiPCLm00='; script-src 'self';",
+      "devCsp": "default-src 'self' http://127.0.0.1:1420 ws://127.0.0.1:1420; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; connect-src 'self' http://127.0.0.1:1420 ws://127.0.0.1:1420 https: http://127.0.0.1 http://ipc.localhost ws: wss: ipc:; img-src 'self' data: blob: http://127.0.0.1:1420; font-src 'self' http://127.0.0.1:1420; style-src 'self' 'unsafe-inline' http://127.0.0.1:1420; script-src 'self' 'unsafe-eval' http://127.0.0.1:1420;",
       "capabilities": [
         "default"
       ]

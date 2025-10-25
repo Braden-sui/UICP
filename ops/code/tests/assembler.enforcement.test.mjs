@@ -45,3 +45,5 @@ if (!/innerHTML assignment blocked/.test(text)) throw new Error("innerHTML was n
 console.log("assembler enforcement tests passed (validation integrated)");
 
 
+
+
