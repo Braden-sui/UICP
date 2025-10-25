@@ -25,6 +25,8 @@ use tokio::sync::{
 };
 use tokio::time::timeout;
 
+use crate::core::log_error;
+
 const HASH_DOMAIN: &[u8] = b"UICP-ACTION-LOG-V0";
 #[cfg(not(test))]
 // WHY: Compute stdout bursts can enqueue thousands of frames; 256 depth keeps writers mostly non-blocking while remaining bounded.
@@ -141,7 +143,7 @@ impl ActionLogService {
                     &mut rx,
                     metrics_for_worker,
                 ) {
-                    tracing::error!("action_log worker terminated with error: {err:?}");
+                    log_error(format!("action_log worker terminated with error: {err:?}"));
                 }
                 Ok(())
             })();
@@ -153,7 +155,7 @@ impl ActionLogService {
 
         tauri::async_runtime::spawn(async move {
             if let Err(err) = worker_join.await {
-                tracing::error!("action_log worker join failed: {err:?}");
+                log_error(format!("action_log worker join failed: {err:?}"));
             }
         });
 

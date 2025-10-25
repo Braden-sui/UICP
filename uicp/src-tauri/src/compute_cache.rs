@@ -5,6 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime, State};
 
+use crate::core::log_warn;
 use crate::AppState;
 use crate::ComputeJobSpec;
 use crate::compute_input::sanitize_ws_files_path;
@@ -463,10 +464,12 @@ pub async fn lookup<R: Runtime>(
                 hit = false,
                 "cache lookup ok"
             ),
-            Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache lookup failed")
-            }
+            Err(e) => log_warn(format!("cache lookup failed (duration_ms={ms}, error={e})")),
         }
+    }
+    #[cfg(not(feature = "otel_spans"))]
+    if let Err(e) = &res {
+        log_warn(format!("cache lookup failed: {e}"));
     }
     res
 }
@@ -532,9 +535,7 @@ pub async fn store<R: Runtime>(
         let ms = started.elapsed().as_millis() as i64;
         match &res {
             Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "cache store ok"),
-            Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "cache store failed")
-            }
+            Err(e) => log_warn(format!("cache store failed (duration_ms={ms}, error={e})")),
         }
     }
     res?;

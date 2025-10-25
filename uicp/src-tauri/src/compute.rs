@@ -1076,6 +1076,11 @@ mod with_runtime {
                     ));
                     let (code, msg) = map_trap_error(&any);
                     let message = if msg.is_empty() { any.to_string() } else { msg };
+                    #[cfg(not(feature = "otel_spans"))]
+                    log_error(format!(
+                        "module resolve error (job_id={}, task={}, error={message})",
+                        spec.job_id, spec.task
+                    ));
                     #[cfg(feature = "otel_spans")]
                     tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, error = %message, "module resolve error");
                     finalize_error(&app, &spec, code, &message, started, queue_wait_ms, None).await;
@@ -1099,6 +1104,11 @@ mod with_runtime {
                     let (code, msg) = map_trap_error(&any);
                     let chain = format!("{:#}", &any); // include error chain
                     let message = if msg.is_empty() { chain } else { msg };
+                    #[cfg(not(feature = "otel_spans"))]
+                    log_error(format!(
+                        "component load error (job_id={}, task={}, error={message})",
+                        spec.job_id, spec.task
+                    ));
                     #[cfg(feature = "otel_spans")]
                     tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, error = %message, "component load error");
                     finalize_error(&app, &spec, code, &message, started, queue_wait_ms, None).await;
@@ -2192,6 +2202,11 @@ mod with_runtime {
             message: message.into(),
             metrics: metrics.clone(),
         };
+        #[cfg(not(feature = "otel_spans"))]
+        log_error(format!(
+            "compute job failed (job_id={}, task={}, code={}, duration_ms={})",
+            spec.job_id, spec.task, code, ms
+        ));
         #[cfg(feature = "otel_spans")]
         tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, code = %code, duration_ms = ms, "compute job failed");
         // Surface a debug-log entry for observability with a unique error code per event
@@ -2274,6 +2289,11 @@ mod with_runtime {
                     golden_hash_opt = Some(record.output_hash.clone());
                     golden_matched = Some(matches);
                     if !matches {
+                        #[cfg(not(feature = "otel_spans"))]
+                        log_warn(format!(
+                            "Golden mismatch: nondeterministic code generation (job_id={}, golden_key={}, expected={}, actual={})",
+                            spec.job_id, golden_key, record.output_hash, out_hash
+                        ));
                         #[cfg(feature = "otel_spans")]
                         tracing::warn!(
                             target = "uicp",
@@ -2307,7 +2327,7 @@ mod with_runtime {
                     .await
                     {
                         #[cfg(not(feature = "otel_spans"))]
-                        let _ = &err;
+                        log_warn(format!("Failed to store golden hash: {err}"));
                         #[cfg(feature = "otel_spans")]
                         tracing::warn!(target = "uicp", error = %err, "Failed to store golden hash");
                     } else {
@@ -2324,7 +2344,7 @@ mod with_runtime {
                 }
                 Err(err) => {
                     #[cfg(not(feature = "otel_spans"))]
-                    let _ = &err;
+                    log_warn(format!("Failed to lookup golden hash: {err}"));
                     #[cfg(feature = "otel_spans")]
                     tracing::warn!(target = "uicp", error = %err, "Failed to lookup golden hash");
                 }
@@ -2487,7 +2507,7 @@ mod with_runtime {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::compute_input::{fs_read_allowed, sanitize_ws_files_path};
+        use crate::core::{emit_problem_detail, files_dir_path, job_result_path, log_error, log_warn};
 
         #[test]
         fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {

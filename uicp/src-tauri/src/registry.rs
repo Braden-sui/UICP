@@ -149,7 +149,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                 #[cfg(feature = "otel_spans")]
                 tracing::info!(target = "uicp", from = %src.display(), to = %target.display(), "modules installed from bundle");
                 if let Err(err) = verify_installed_modules(&target) {
-                    tracing::error!("bundled modules verification failed: {err:#}");
+                    log_error(format!("bundled modules verification failed: {err:#}"));
                 }
             }
         }
@@ -181,10 +181,10 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     let manifest = parse_manifest(&text)?;
     for entry in manifest.entries {
         if !is_clean_filename(&entry.filename) {
-            tracing::error!(
+            log_error(format!(
                 "invalid module filename (must be basename only): {}",
                 entry.filename
-            );
+            ));
             continue;
         }
         let path = target.join(&entry.filename);
@@ -200,20 +200,20 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                         if candidate.exists() {
                             let tmp = path.with_extension("tmp");
                             if let Err(err) = fs::copy(&candidate, &tmp) {
-                                tracing::error!(
+                                log_error(format!(
                                     "modules copy repair failed {} -> {}: {}",
                                     candidate.display(),
                                     tmp.display(),
                                     err
-                                );
+                                ));
                             } else if let Ok(true) = verify_digest(&tmp, &entry.digest_sha256) {
                                 if let Err(err) = replace_file(&tmp, &path) {
-                                    tracing::error!(
+                                    log_error(format!(
                                         "modules repair replace failed {} -> {}: {}",
                                         tmp.display(),
                                         path.display(),
                                         err
-                                    );
+                                    ));
                                     let _ = fs::remove_file(&tmp);
                                 } else {
                                     continue;
@@ -237,7 +237,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
             if candidate.exists() {
                 if let Some(parent) = path.parent() {
                     if let Err(e) = fs::create_dir_all(parent) {
-                        tracing::error!("modules mkdir failed: {e}");
+                        log_error(format!("modules mkdir failed: {e}"));
                     }
                 }
                 // Atomic copy-then-rename with digest verification before publish
@@ -246,36 +246,40 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                     Ok(_) => match verify_digest(&tmp, &entry.digest_sha256) {
                         Ok(true) => {
                             if let Err(e) = replace_file(&tmp, &path) {
-                                tracing::error!(
+                                log_error(format!(
                                     "modules rename failed {} -> {}: {}",
                                     tmp.display(),
                                     path.display(),
                                     e
-                                );
+                                ));
                                 let _ = fs::remove_file(&tmp);
                             }
                         }
                         Ok(false) => {
-                            tracing::error!(
+                            log_error(format!(
                                 "bundled digest mismatch for {} (expected {}, tmp at {})",
                                 entry.filename,
                                 entry.digest_sha256,
                                 tmp.display()
-                            );
+                            ));
                             let _ = fs::remove_file(&tmp);
                         }
                         Err(err) => {
-                            tracing::error!("digest verify error for {}: {}", entry.filename, err);
+                            log_error(format!(
+                                "digest verify error for {}: {}",
+                                entry.filename,
+                                err
+                            ));
                             let _ = fs::remove_file(&tmp);
                         }
                     },
                     Err(e) => {
-                        tracing::error!(
+                        log_error(format!(
                             "modules copy failed {} -> {}: {}",
                             candidate.display(),
                             tmp.display(),
                             e
-                        );
+                        ));
                     }
                 }
             }
@@ -432,6 +436,7 @@ pub fn find_module<R: Runtime>(
             enforce_strict_signature(entry)?;
             #[cfg(feature = "wasm_compute")]
             {
+                use crate::core::{compute_cache_key, log_error, log_warn};
                 crate::compute::preflight_component_imports(
                     &path,
                     &format!("{}@{}", entry.task, entry.version),
@@ -736,8 +741,9 @@ mod tests {
         let enforce = std::env::var("UICP_CI_PUBKEY_ENFORCE").unwrap_or_default();
         let enforce = matches!(enforce.as_str(), "1" | "true" | "TRUE" | "yes" | "on");
         if !enforce {
-            tracing::warn!(
+            log_warn(
                 "skipping bundled manifest signature enforcement (UICP_CI_PUBKEY_ENFORCE not set)"
+                    .to_string(),
             );
             return;
         }
@@ -852,10 +858,10 @@ fn verify_installed_modules(target: &Path) -> Result<()> {
     let manifest = parse_manifest(&text)?;
     for entry in manifest.entries {
         if !is_clean_filename(&entry.filename) {
-            tracing::warn!(
+            log_warn(format!(
                 "skipping digest check for invalid filename {}",
                 entry.filename
-            );
+            ));
             continue;
         }
         let path = target.join(&entry.filename);
@@ -947,10 +953,10 @@ fn select_manifest_entry<'a>(
             match semver::Version::parse(&entry.version) {
                 Ok(v) => parsed.push((*entry, v)),
                 Err(err) => {
-                    tracing::warn!(
+                    log_warn(format!(
                         "skipping module {} due to invalid semver {}: {err}",
                         entry.task, entry.version
-                    );
+                    ));
                 }
             }
         }
@@ -971,15 +977,15 @@ fn is_regular_file(path: &Path) -> bool {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_file() => true,
         Ok(_) => {
-            tracing::warn!("skip non-regular candidate: {}", path.display());
+            log_warn(format!("skip non-regular candidate: {}", path.display()));
             false
         }
         Err(err) => {
-            tracing::warn!(
+            log_warn(format!(
                 "skip candidate {} due to metadata error: {}",
                 path.display(),
                 err
-            );
+            ));
             false
         }
     }

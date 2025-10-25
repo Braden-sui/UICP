@@ -60,7 +60,7 @@ pub use policy::{
 };
 
 use compute_input::canonicalize_task_input;
-use core::CircuitBreakerConfig;
+use core::{init_tracing, log_error, log_info, log_warn, CircuitBreakerConfig};
 use provider_cli::{ProviderHealthResult, ProviderLoginResult};
 
 // Re-export shared core items so crate::... references in submodules remain valid
@@ -1847,7 +1847,7 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
     } else {
         // still load default .env if present elsewhere
         if let Err(err) = dotenv() {
-            tracing::warn!("Failed to load fallback .env: {err:?}");
+            log_warn(format!("Failed to load fallback .env: {err:?}"));
         }
         env_api_key = std::env::var("OLLAMA_API_KEY").ok();
         if let Ok(val) = std::env::var("USE_DIRECT_CLOUD") {
@@ -1859,11 +1859,11 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
     // Migration: if API key was in .env but not in keyring, migrate it
     if !key_from_keyring {
         if let Some(key_value) = env_api_key {
-            tracing::info!("Migrating OLLAMA_API_KEY from .env to secure keyring...");
+            log_info("Migrating OLLAMA_API_KEY from .env to secure keyring...");
             if let Err(e) = entry.set_password(&key_value) {
-                tracing::warn!("Failed to migrate API key to keyring: {e}");
+                log_warn(format!("Failed to migrate API key to keyring: {e}"));
             } else {
-                tracing::info!("Successfully migrated API key to keyring. You can now remove OLLAMA_API_KEY from .env");
+                log_info("Successfully migrated API key to keyring. You can now remove OLLAMA_API_KEY from .env");
             }
             state.ollama_key.blocking_write().replace(key_value);
         }
@@ -2027,7 +2027,6 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                         // Always checkpoint and optimize
                         c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
                             .map_err(tokio_rusqlite::Error::from)?;
-
                         // Periodically vacuum to reclaim fragmented space
                         if should_vacuum {
                             c.execute_batch("VACUUM;")
@@ -2056,7 +2055,7 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                     }
                 }
                 Err(e) => {
-                    tracing::error!("Database maintenance failed: {e:?}");
+                    log_error(format!("Database maintenance failed: {e:?}"));
                     #[cfg(feature = "otel_spans")]
                     {
                         let ms = started.elapsed().as_millis() as i64;
@@ -2096,19 +2095,21 @@ fn main() {
             .try_init();
         tracing::info!(target = "uicp", "tracing initialized");
     }
+    #[cfg(not(feature = "otel_spans"))]
+    init_tracing();
     if let Err(err) = dotenv() {
-        tracing::warn!("Failed to load .env: {err:?}");
+        log_warn(format!("Failed to load .env: {err:?}"));
     }
 
     let db_path = DB_PATH.clone();
 
     // Initialize database and ensure directory exists BEFORE opening connections
     if let Err(err) = init_database(&db_path) {
-        tracing::error!("Failed to initialize database: {err:?}");
+        log_error(format!("Failed to initialize database: {err:?}"));
         std::process::exit(1);
     }
     if let Err(err) = ensure_default_workspace(&db_path) {
-        tracing::error!("Failed to ensure default workspace: {err:?}");
+        log_error(format!("Failed to ensure default workspace: {err:?}"));
         std::process::exit(1);
     }
 
@@ -2166,7 +2167,7 @@ fn main() {
     let action_log = match action_log::ActionLogService::start(&db_path) {
         Ok(handle) => handle,
         Err(err) => {
-            tracing::error!("Failed to start action log service: {err:?}");
+            log_error(format!("Failed to start action log service: {err:?}"));
             std::process::exit(1);
         }
     };
@@ -2178,7 +2179,9 @@ fn main() {
             "ts": chrono::Utc::now().timestamp(),
         }),
     ) {
-        tracing::error!("E-UICP-0660: failed to append boot action-log entry: {err:?}");
+        log_error(format!(
+            "E-UICP-0660: failed to append boot action-log entry: {err:?}"
+        ));
     }
 
     let job_token_key: [u8; 32] = {
@@ -2244,7 +2247,7 @@ fn main() {
     };
 
     if let Err(err) = load_env_key(&state) {
-        tracing::error!("Failed to load environment keys: {err:?}");
+        log_error(format!("Failed to load environment keys: {err:?}"));
         std::process::exit(1);
     }
 
@@ -2268,17 +2271,17 @@ fn main() {
         .setup(|app| {
             // Ensure base data directories exist
             if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) {
-                tracing::error!("create data dir failed: {e:?}");
+                log_error(format!("create data dir failed: {e:?}"));
             }
             if let Err(e) = std::fs::create_dir_all(&*LOGS_DIR) {
-                tracing::error!("create logs dir failed: {e:?}");
+                log_error(format!("create logs dir failed: {e:?}"));
             }
             if let Err(e) = std::fs::create_dir_all(&*FILES_DIR) {
-                tracing::error!("create files dir failed: {e:?}");
+                log_error(format!("create files dir failed: {e:?}"));
             }
             // Ensure bundled compute modules are installed into the user modules dir
             if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
-                tracing::error!("module install failed: {err:?}");
+                log_error(format!("module install failed: {err:?}"));
             }
             spawn_autosave(app.handle().clone());
             // Periodic DB maintenance to keep WAL and stats tidy
@@ -2289,7 +2292,7 @@ fn main() {
                 let handle = app.handle().clone();
                 let _ = tauri::async_runtime::spawn_blocking(move || {
                     if let Err(err) = crate::compute::prewarm_quickjs(&handle) {
-                        tracing::warn!("quickjs prewarm failed: {err:?}");
+                        log_warn(format!("quickjs prewarm failed: {err:?}"));
                     }
                 });
             }
@@ -2361,7 +2364,9 @@ fn main() {
                 .visible(true)
                 .build();
             if let Err(err) = splash_try_app {
-                tracing::warn!("splash app:// failed, falling back to data URL: {err:?}");
+                log_warn(format!(
+                    "splash app:// failed, falling back to data URL: {err:?}"
+                ));
                 let data_url = format!("data:text/html;base64,{}", BASE64_ENGINE.encode(splash_html));
                 let splash_fallback = tauri::WebviewWindowBuilder::new(app, "splash", WebviewUrl::External(
                     Url::parse(&data_url).expect("valid data url")
@@ -2383,7 +2388,7 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = health_quick_check_internal(&handle).await {
-                    tracing::error!("health_quick_check failed: {err:?}");
+                    log_error(format!("health_quick_check failed: {err:?}"));
                 }
             });
             Ok(())

@@ -1,3 +1,5 @@
+#![deny(clippy::print_stderr)]
+
 pub mod action_log;
 pub mod policy;
 
@@ -41,7 +43,8 @@ use serde_json::Value; // WHY: compute_cache_key is exercised in harness/tests; 
 
 pub use core::{
     configure_sqlite, emit_or_log, ensure_default_workspace, files_dir_path, init_database,
-    remove_compute_job, AppState, DATA_DIR, FILES_DIR, LOGS_DIR,
+    init_tracing, log_error, log_info, log_warn, remove_compute_job, AppState, DATA_DIR,
+    FILES_DIR, LOGS_DIR,
 };
 
 // WHY: Restrict harness-only commands to tests or the explicit compute_harness feature to avoid dead code warnings in wasm-only builds.

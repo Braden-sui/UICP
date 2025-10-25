@@ -40,6 +40,7 @@ pub static FILES_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("files"));
 static TRACING_INIT_ONCE: Once = Once::new();
 static TRACING_READY: AtomicBool = AtomicBool::new(false);
 static STDERR_FALLBACK_EMITTED: AtomicBool = AtomicBool::new(false);
+const DEFAULT_TRACING_LEVEL: &str = "info";
 
 pub fn files_dir_path() -> &'static std::path::Path {
     &FILES_DIR
