@@ -142,6 +142,12 @@ const NeedsCodeParams = z
     language: z.enum(['ts', 'rust', 'python']).default('ts'),
     constraints: z.record(z.unknown()).optional(),
     caps: z.record(z.unknown()).optional(),
+    provider: z.enum(['codex', 'claude', 'auto']).default('auto'),
+    providers: z
+      .array(z.enum(['codex', 'claude']))
+      .max(2)
+      .optional(),
+    strategy: z.enum(['first-ok', 'best-of-both', 'sequential-fallback']).default('sequential-fallback'),
     artifactId: z.string().min(1).optional(),
     goldenKey: z.string().min(1).optional(),
     progressWindowId: z.string().min(1).optional(),

@@ -8,6 +8,15 @@ import { readNumberEnv } from '../env/values';
 
 const DEFAULT_TASKSPEC_TIMEOUT_MS = readNumberEnv('VITE_TASK_SPEC_TIMEOUT_MS', 60_000, { min: 1_000 });
 
+// Model selection for TaskSpec generation (profile-driven)
+const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
+  const profile = getPlannerProfile(profileKey);
+  if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
+    return profile.defaultModel;
+  }
+  return 'deepseek-v3.1:671b';
+};
+
 const toError = (input: unknown): Error => (input instanceof Error ? input : new Error(String(input)));
 
 /**
@@ -49,6 +58,7 @@ export async function generateTaskSpec(
   try {
     const stream = client.streamIntent(intent, {
       profileKey: profile.key,
+      model: getPlannerModel(profile.key),
       mode: 'taskSpec',
       toolSummary,
       meta: { traceId, intent, mode: 'taskSpec' },

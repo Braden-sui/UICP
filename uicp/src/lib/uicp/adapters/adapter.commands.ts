@@ -11,6 +11,12 @@ import { routeApiCall } from "./adapter.api";
 import type { StructuredClarifierBody } from "./adapter.clarifier";
 import type { ComputeFinalEvent } from "../../../compute/types";
 import { emitTelemetryEvent } from "../../telemetry";
+import { getProviderSettingsSnapshot } from "../../../state/providers";
+import { newUuid } from "../../utils";
+
+type NeedsCodeParams = OperationParamMap["needs.code"] & {
+  providers?: ("codex" | "claude")[];
+};
 
 export type CommandResult<T = unknown> =
   | { success: true; value: T }
@@ -133,6 +139,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 };
 
+const CODE_PROVIDER_BASE_URLS: Record<'codex' | 'claude', readonly string[]> = {
+  codex: ['https://api.openai.com'],
+  claude: ['https://api.anthropic.com'],
+} as const;
+
 /**
  * Creates command executor for needs.code operations.
  * 
@@ -141,7 +152,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
  */
 const createNeedsCodeExecutor = (): CommandExecutor => ({
   async execute(command: Envelope, ctx: ApplyContext, deps: CommandExecutorDeps): Promise<CommandResult> {
-    const params = command.params as OperationParamMap["needs.code"];
+    const params = command.params as NeedsCodeParams;
     const traceId = ctx.runId ?? command.traceId;
     
     if (!params.spec) {
@@ -154,31 +165,134 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
     }
     
     // Build compute job spec for code generation
-    const jobId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    // INVARIANT: jobId must be a RFC4122 UUID (frontend schemas enforce z.string().uuid())
+    const jobId = newUuid();
     const task = `codegen.run@0.1.0`; // Track D code generation task
 
-    const netCaps =
-      params.caps &&
-      typeof params.caps === 'object' &&
-      Array.isArray((params.caps as Record<string, unknown>).net)
+    const providerRequestRaw = typeof params.provider === 'string' ? params.provider : 'auto';
+    const providerRequest = providerRequestRaw.trim().toLowerCase();
+    let providerLabel: 'auto' | 'codex' | 'claude' =
+      providerRequest === 'codex' || providerRequest === 'claude'
+        ? (providerRequest as 'codex' | 'claude')
+        : 'auto';
+    const providerSet = new Set<'codex' | 'claude'>();
+    if (Array.isArray(params.providers)) {
+      for (const raw of params.providers) {
+        if (raw === 'codex' || raw === 'claude') {
+          providerSet.add(raw);
+        }
+      }
+    }
+    if (providerLabel === 'codex' || providerLabel === 'claude') {
+      providerSet.add(providerLabel);
+    }
+    const providerSettings = getProviderSettingsSnapshot();
+    if (providerSet.size === 0) {
+      if (providerSettings.enableBoth) {
+        providerSet.add('codex');
+        providerSet.add('claude');
+        providerLabel = providerLabel === 'auto' ? 'auto' : providerLabel;
+      } else {
+        const preferred =
+          providerSettings.defaultProvider === 'claude'
+            ? 'claude'
+            : providerSettings.defaultProvider === 'codex'
+              ? 'codex'
+              : 'codex';
+        providerSet.add(preferred);
+        providerLabel = preferred;
+      }
+    } else if (!providerSettings.enableBoth && providerLabel === 'auto' && providerSet.size === 1) {
+      providerLabel = Array.from(providerSet)[0];
+    }
+    const allowedProviderHosts = new Set<string>();
+    for (const providerName of providerSet) {
+      const hosts = CODE_PROVIDER_BASE_URLS[providerName] ?? [];
+      for (const host of hosts) {
+        allowedProviderHosts.add(host);
+      }
+    }
+    const allowedProviderHostList = Array.from(allowedProviderHosts);
+
+    const candidateCaps =
+      params.caps && typeof params.caps === 'object' && Array.isArray((params.caps as Record<string, unknown>).net)
         ? (params.caps as { net: unknown }).net
         : undefined;
-    let netAllowlist: string[];
-    if (Array.isArray(netCaps)) {
-      const filtered = netCaps.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-      netAllowlist = filtered.length > 0 ? filtered : ['https://api.openai.com'];
-    } else {
-      netAllowlist = ['https://api.openai.com'];
-    }
+
+    const sanitizedCandidates = Array.isArray(candidateCaps)
+      ? candidateCaps.filter((value): value is string => {
+          if (typeof value !== 'string') return false;
+          const trimmed = value.trim();
+          if (!trimmed) return false;
+          return allowedProviderHostList.some(
+            (allowed) => trimmed.startsWith(allowed) || allowed.startsWith(trimmed),
+          );
+        })
+      : [];
+
+    const netAllowlist = (() => {
+      if (sanitizedCandidates.length > 0) {
+        const sanitizedSet = new Set<string>();
+        const sanitizedValues: string[] = [];
+        sanitizedCandidates.forEach((value) => {
+          if (!sanitizedSet.has(value)) {
+            sanitizedSet.add(value);
+            sanitizedValues.push(value);
+          }
+        });
+        for (const allowed of allowedProviderHostList) {
+          const alreadyRepresented = sanitizedValues.some(
+            (value) => value.startsWith(allowed) || allowed.startsWith(value),
+          );
+          if (!alreadyRepresented) {
+            sanitizedSet.add(allowed);
+            sanitizedValues.push(allowed);
+          }
+        }
+        return sanitizedValues;
+      }
+      if (allowedProviderHostList.length > 0) {
+        return allowedProviderHostList;
+      }
+      return ['https://api.openai.com'];
+    })();
+
+    const providersForInput =
+      Array.isArray(params.providers) && params.providers.length > 0
+        ? params.providers
+        : providerSet.size > 0
+          ? Array.from(providerSet)
+          : undefined;
     
+    // Reuse providerSettings snapshot captured above to avoid duplicate declarations
+    const codexModel = providerSettings.codexModel;
+    const claudeModel = providerSettings.claudeModel;
+
     const jobSpec = {
       jobId,
       task,
       input: {
         spec: params.spec,
         language: params.language || 'ts',
-        constraints: params.constraints || {},
+        constraints: {
+          ...(params.constraints || {}),
+          // Prefer explicit model when only one provider is selected.
+          // When multiple providers, per-provider caps are used below.
+          ...(providerSet.size === 1 && providerSet.has('codex') && codexModel
+            ? { model: codexModel }
+            : {}),
+          ...(providerSet.size === 1 && providerSet.has('claude') && claudeModel
+            ? { model: claudeModel }
+            : {}),
+          // Pass through explicit per-provider hints for backend to apply.
+          ...(codexModel ? { codexModel } : {}),
+          ...(claudeModel ? { claudeModel } : {}),
+        },
         caps: params.caps || {},
+        provider: providerLabel,
+        strategy: params.strategy ?? 'sequential-fallback',
+        ...(providersForInput ? { providers: providersForInput } : {}),
+        ...(params.install ? { install: params.install } : {}),
       },
       timeoutMs: 60_000, // 1 minute for code generation
       bind: [],
@@ -226,8 +340,17 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         const appStore = w?.__UICP_APP_STORE__;
         const disabled = Boolean(appStore?.getState?.().safeMode);
         if (disabled) {
-          writeProgress('Code generation disabled (Safe Mode)');
-          return { success: false, error: 'Code generation disabled (Safe Mode)' };
+          const openAgentSettingsCmd = 'ui.agent-settings.open';
+          const openAgentSettingsBtn = buildActionButton(
+            'Turn Off Safe Mode',
+            openAgentSettingsCmd,
+            'Open Agent Settings to toggle Safe Mode',
+          );
+          writeProgress('Safe Mode is on — code generation is disabled.', openAgentSettingsBtn);
+          return {
+            success: false,
+            error: 'Safe Mode is enabled. Open Agent Settings to allow code generation.',
+          };
         }
       } catch (safeModeError) {
         console.warn('needs.code safe mode check failed', safeModeError);

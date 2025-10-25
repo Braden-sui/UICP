@@ -1,8 +1,11 @@
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type MouseEvent as ReactMouseEvent } from 'react';
+import { motion } from 'motion/react';
 import clsx from 'clsx';
 import type { DesktopShortcutPosition } from '../state/app';
 import { useDynamicStyleRule } from '../hooks/useDynamicStyleRule';
 import { escapeForSelector } from '../lib/css/dynamicStyles';
+import { iconHoverScale, iconPressScale } from '../lib/ui/animation';
+import { useAppStore } from '../state/app';
 
 const ICON_WIDTH = 96; // Tailwind w-24
 const ICON_HEIGHT = 104; // Icon + label stack footprint
@@ -130,6 +133,11 @@ const DesktopIcon = ({
     [position.x, position.y],
   );
 
+  // Check if Motion is enabled for spring animations
+  const motionEnabled = useAppStore((state) => state.motionEnabled);
+  const [isHovered, setIsHovered] = useState(false);
+  const [isPressed, setIsPressed] = useState(false);
+
   return (
     <div
       role="button"
@@ -137,37 +145,86 @@ const DesktopIcon = ({
       aria-pressed={active}
       data-shortcut-id={id}
       className={clsx(
-        'desktop-icon pointer-events-auto absolute flex w-24 flex-col items-center gap-2 text-slate-700 transition-transform',
+        'desktop-icon pointer-events-auto absolute flex w-24 flex-col items-center gap-2 text-slate-700',
         dragging && 'scale-[1.02]',
         active && 'active',
       )}
       onDoubleClick={handleOpen}
       onKeyDown={handleKeyDown}
-      onPointerDown={handlePointerDown}
+      onPointerDown={(e) => {
+        setIsPressed(true);
+        handlePointerDown(e);
+      }}
       onPointerMove={handlePointerMove}
-      onPointerUp={endPointerTracking}
-      onPointerCancel={endPointerTracking}
+      onPointerUp={(e) => {
+        setIsPressed(false);
+        endPointerTracking(e);
+      }}
+      onPointerCancel={(e) => {
+        setIsPressed(false);
+        endPointerTracking(e);
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => {
+        setIsHovered(false);
+        setIsPressed(false);
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         if (typeof onContextMenu === 'function') onContextMenu(e);
       }}
     >
-      <div
+      <motion.div
         className={clsx(
           'desktop-icon-inner',
           'flex h-16 w-16 items-center justify-center',
           'rounded-2xl border border-slate-200/70',
           'bg-white/80 backdrop-blur-md',
           'shadow-xl',
-          'transition-all duration-300 ease-out',
+          !motionEnabled && 'transition-all duration-300 ease-out',
           active && 'ring-2 ring-indigo-400/60 bg-white/95',
-          !active && 'hover:shadow-2xl',
+          !active && !motionEnabled && 'hover:shadow-2xl',
         )}
+        animate={
+          motionEnabled
+            ? isPressed
+              ? iconPressScale
+              : isHovered
+                ? iconHoverScale
+                : { scale: 1, y: 0 }
+            : undefined
+        }
+        transition={
+          motionEnabled
+            ? {
+                type: 'spring',
+                stiffness: 400,
+                damping: 30,
+                mass: 0.8,
+              }
+            : undefined
+        }
       >
-        <div className="icon-content">
+        <motion.div
+          className="icon-content"
+          animate={
+            motionEnabled && isHovered && !isPressed
+              ? { scale: 1.15 }
+              : { scale: 1 }
+          }
+          transition={
+            motionEnabled
+              ? {
+                  type: 'spring',
+                  stiffness: 500,
+                  damping: 25,
+                }
+              : undefined
+          }
+        >
           {icon}
-        </div>
-      </div>
+        </motion.div>
+      </motion.div>
       <span
         className={clsx(
           'text-center text-xs font-semibold',

@@ -15,8 +15,8 @@ Key Points
   - `csv#run(jobId: string, input: string, hasHeader: bool) -> result<list<list<string>>, string>`
   - `table#run(jobId: string, rows: list<list<string>>, select: list<u32>, where?: (u32, string)) -> result<list<list<string>>, string>`
 - Imports today:
-  - `csv.parse@1.2.0` is pure: no host control imports and no wasi:logging dependency.
-  - `table.query@0.1.0` imports `wasi:logging/logging`, `wasi:io/streams`, `wasi:clocks/monotonic-clock`, and `uicp:host/control`.
+- `csv.parse@1.2.0` relies only on the Preview 2 core set exposed by `wasmtime-wasi` (`wasi:cli/*@0.2.3`, `wasi:io/{error,streams}@0.2.3`, `wasi:clocks/wall-clock@0.2.3`, `wasi:filesystem/{preopens,types}@0.2.3`); it does not import host control.
+- `table.query@0.1.0` extends that surface with `uicp:host/control@1.0.0`, `uicp:task-table-query/types@0.1.0`, `wasi:clocks/monotonic-clock@0.2.3`, and the streaming variants at `wasi:io/*@0.2.8`.
 
 Quick Scaffold (csv.parse)
 1) Create a component crate (outside of src-tauri):

@@ -1,0 +1,29 @@
+name: Code Ops
+
+on:
+  push:
+    paths:
+      - 'ops/code/**'
+      - '.github/workflows/code-ops.yml'
+  pull_request:
+    paths:
+      - 'ops/code/**'
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node -v
+      - name: Run ops/code tests
+        run: |
+          node ops/code/tests/validator.test.mjs
+          node ops/code/tests/diff.test.mjs
+          node ops/code/tests/claude.parse.test.mjs
+      - name: Assemble-only smoke
+        run: |
+          node ops/code/run-job.mjs --spec ops/code/examples/job.sample.json --assemble-only
+

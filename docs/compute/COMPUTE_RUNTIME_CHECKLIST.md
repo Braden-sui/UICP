@@ -16,6 +16,26 @@ Last updated: 2025-10-19
 
 -------------------------------------------------------------------------------
 
+## Provider CLI Test Matrix (fast, simulated)
+
+- Fresh machine (no PATH):
+  - `health('claude')` with bogus `UICP_CLAUDE_PATH` returns ProgramNotFound and lists search paths.
+  - `health('codex')` with PATH pointing at a stub prints version and succeeds.
+- Jail ON (httpjail):
+  - Login denied surfaces `E-UICP-1504 NetworkDenied`; broadening allowlist (simulated via stub) allows login to succeed.
+- macOS keychain locked (simulated):
+  - Claude health captures `E-UICP-1503 KeychainLocked` and adds unlock hint text.
+- Env override:
+  - Setting `UICP_CLAUDE_PATH` to a bogus path produces `ProgramNotFound` and shows all candidate paths tried.
+- Install/Update flow:
+  - Agent Settings → Code Providers → `Install / Update` (per provider) calls `provider_install` under the hood and re-runs health.
+
+Implementation: unit tests in `uicp/src-tauri/src/provider_cli.rs` create Unix shell stubs and manipulate `PATH`/env to avoid real network/OS dependencies. No external installs run; tests are fast and deterministic.
+
+Run (Rust only): `cargo test -p uicp --lib` (CI runs on Linux). On Windows/macOS, ensure a C toolchain is available for Rust.
+
+-------------------------------------------------------------------------------
+
 ## Execution cadence and time expectations
 
 - The agent works iteratively until each checklist item is delivered or explicitly descoped; there is no fixed "timebox" after which execution stops automatically.
@@ -25,7 +45,7 @@ Last updated: 2025-10-19
 ## Identifier hygiene
 
 - WIT packages, interfaces, functions, and fields use kebab-case (lowercase words separated by single hyphens). Examples: `uicp:host@1.0.0`, `uicp:task-csv-parse@1.2.0`, `has-header`.
-- Pin WIT import versions explicitly (e.g., `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`).
+- WIT import version policy: compare on major.minor only to avoid upstream patch drift breaking contracts (e.g., allow any `0.2.x`; encode as `@0.2`).
 - Cargo `package.metadata.component` sticks to cargo-component supported keys (`world`, `wit-path`).
 
 -------------------------------------------------------------------------------
@@ -242,7 +262,7 @@ Last updated: 2025-10-19
     - Next: wire CI release job with `STRICT_MODULES_VERIFY=1` and `UICP_MODULES_PUBKEY` so unsigned artifacts are rejected automatically.
 
 - [x] Component feature preflight
-  - `preflight_component_imports` inspects top-level component imports via Wasmtime and compares against per-task allowlists (csv.parse: none, table.query: `wasi:io/streams@0.2.8`, `wasi:clocks/monotonic-clock@0.2.0`, `uicp:host/control@1.0.0`). Violations raise `E-UICP-0230` before instantiation. Tests in `module_smoke.rs` cover allowed and mismatched policies.
+- `preflight_component_imports` inspects top-level component imports via Wasmtime and compares against per-task allowlists. csv.parse permits the Preview 2 core set exposed by `wasmtime-wasi` (`wasi:cli/{environment,exit,stdin,stdout,stderr}@0.2.3`, `wasi:io/{error,streams}@0.2.3`, `wasi:clocks/wall-clock@0.2.3`, `wasi:filesystem/{preopens,types}@0.2.3`). table.query extends that set with `uicp:host/control@1.0.0`, `uicp:task-table-query/types@0.1.0`, `wasi:clocks/monotonic-clock@0.2.3`, and `wasi:io/error@0.2.8` / `wasi:io/streams@0.2.8`. Violations raise `E-UICP-0230` before instantiation. Tests in `module_smoke.rs` cover allowed and mismatched policies.
 
 -------------------------------------------------------------------------------
 
@@ -253,6 +273,11 @@ Last updated: 2025-10-19
 
 - [x] Symlink and traversal protection for workspace files
   - Canonicalization and base-dir prefix assertion
+
+  - [x] Container firewall + caps controls (provider sandbox)
+    - Runtime flags enforced: `--memory`, `--memory-swap`, `--cpus`, `--pids-limit 256`, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`; tmpfs for `/tmp`, `/var/tmp`, `/run`, `/home/app`.
+    - Preferences store exposes toggles: **Disable container firewall** (`UICP_DISABLE_FIREWALL=1`, removes iptables + cap-add) and **Strict capability minimization** (`UICP_STRICT_CAPS=1`, omits `--cap-add` regardless of firewall).
+    - `with-firewall.sh` honors `DISABLE_FIREWALL=1` and logs when iptables is skipped; httpjail remains the secondary guard.
 
   - [x] WASI surface hardening
     - Host builds the component linker without inheriting stdio/args/env, only attaches deterministic shims (`uicp:host/control`, RNG, logging). Import-surface tests assert the linked capabilities, and network/filesystem access remains default-deny.

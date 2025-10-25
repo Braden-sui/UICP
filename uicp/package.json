@@ -33,7 +33,7 @@
     "modules:targets": "wac targets src-tauri/modules/csv.parse@1.2.0.wasm components/csv.parse/csv-parse/wit/world.wit && wac targets src-tauri/modules/table.query@0.1.0.wasm components/table.query/wit/world.wit",
     "dev:wasm": "node scripts/dev-wasm.mjs",
     "dev:wasm:runtime": "cross-env UICP_MODULES_DIR=src-tauri/modules TAURI_FEATURES=wasm_compute,uicp_wasi_enable,compute_harness tauri dev --features tauri2,wasm_compute,uicp_wasi_enable,compute_harness",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "pnpm run dev:wasm:runtime",
     "tauri:build": "tauri build",
     "postinstall": "node scripts/postinstall.cjs"
   },
@@ -46,6 +46,7 @@
     "clsx": "^2.1.1",
     "dompurify": "^3.3.0",
     "immer": "^10.1.3",
+    "motion": "^12.23.24",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.53.0",

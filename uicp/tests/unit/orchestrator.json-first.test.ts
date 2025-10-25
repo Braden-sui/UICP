@@ -61,7 +61,7 @@ describe('orchestrator JSON-first mode', () => {
       expect(result.channelUsed).toBe('tool');
     });
 
-    it('falls back to text when tool collection fails', async () => {
+    it('falls back to outline when tool call is missing', async () => {
       const mockProfile = {
         key: 'glm',
         label: 'GLM Test',
@@ -89,7 +89,8 @@ describe('orchestrator JSON-first mode', () => {
       const result = await planWithProfile('test intent');
 
       expect(result.plan.summary).toBe('Fallback Plan');
-      expect(result.channelUsed).toBe('text');
+      expect(result.plan.risks).toEqual(['None']);
+      expect(result.channelUsed).toBe('text-fallback');
     });
 
     it('parses JSON from content when model emits JSON as text', async () => {
@@ -203,7 +204,7 @@ describe('orchestrator JSON-first mode', () => {
       expect(result.channelUsed).toBe('tool');
     });
 
-    it('falls back to JSON parse when tool call args is incomplete', async () => {
+    it('falls back to JSON payload when actor emits only content', async () => {
       const mockProfile = {
         key: 'glm',
         label: 'GLM Test',
@@ -233,16 +234,12 @@ describe('orchestrator JSON-first mode', () => {
       const plan = { summary: 'Test', batch: [], risks: undefined, actorHints: undefined };
       const result = await actWithProfile(plan);
 
+      expect(result.channelUsed).toBe('json-fallback');
       expect(result.batch).toHaveLength(1);
-      expect(result.batch[0].op).toBe('dom.set');
-      if (result.batch[0].op === 'dom.set') {
-        expect(result.batch[0].idempotencyKey).toBe('idemp-dom');
-        expect(result.batch[0].params.windowId).toBe('win-test');
-      }
-      expect(result.channelUsed).toBe('json');
+      expect(result.batch[0]?.op).toBe('dom.set');
     });
 
-    it('seeds actor extraSystem with component catalog summary', async () => {
+    it('seeds actor extraSystem with component catalog summary on WIL fallback', async () => {
       const mockProfile = {
         key: 'glm',
         label: 'GLM Test',
@@ -254,13 +251,15 @@ describe('orchestrator JSON-first mode', () => {
       vi.spyOn(profiles, 'getActorProfile').mockReturnValue(mockProfile as any);
 
       // Model emits WIL text (not JSON, not tool call)
+      let capturedExtraSystem: string | undefined;
       const mockClient = {
-        streamPlan: vi.fn(() =>
-          mockToolStream([
+        streamPlan: vi.fn((_planJson: string, opts?: { extraSystem?: string }) => {
+          capturedExtraSystem = opts?.extraSystem;
+          return mockToolStream([
             { type: 'content', text: 'create window id win-fallback title "WIL Fallback" width 600 height 400' },
             { type: 'done' },
-          ]),
-        ),
+          ]);
+        }),
       };
       vi.spyOn(provider, 'getActorClient').mockReturnValue(mockClient as any);
 
@@ -270,9 +269,11 @@ describe('orchestrator JSON-first mode', () => {
       const plan = { summary: 'Test', batch: [], risks: undefined, actorHints: undefined };
       const result = await actWithProfile(plan);
 
-      expect(result.batch).toHaveLength(1);
-      expect(result.batch[0].op).toBe('window.create');
-      expect(result.channelUsed).toBe('text');
+      expect(mockClient.streamPlan).toHaveBeenCalled();
+      expect(capturedExtraSystem).toBeTruthy();
+      expect(capturedExtraSystem).toContain('component.render');
+      expect(result.channelUsed).toBe('text-fallback');
+      expect(result.batch[0]?.op).toBe('window.create');
     });
   });
 

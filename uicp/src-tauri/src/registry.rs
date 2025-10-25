@@ -417,6 +417,17 @@ pub fn find_module<R: Runtime>(
     let path = dir.join(&entry.filename);
     match verify_digest(&path, &entry.digest_sha256) {
         Ok(true) => {
+            if !strict_verify_enabled() && entry.signature.is_none() {
+                crate::emit_or_log(
+                    app,
+                    "registry-warning",
+                    serde_json::json!({
+                        "reason": "unsigned_module",
+                        "task": entry.task,
+                        "version": entry.version,
+                    }),
+                );
+            }
             // Strict mode: require a valid signature using UICP_MODULES_PUBKEY
             enforce_strict_signature(entry)?;
             #[cfg(feature = "wasm_compute")]
@@ -493,11 +504,63 @@ fn require_pubkey_from_env() -> AnyResult<[u8; 32]> {
     Ok(arr)
 }
 
+fn decode_pubkey_any(s: &str) -> AnyResult<[u8; 32]> {
+    let b64 = BASE64_STANDARD.decode(s.as_bytes()).ok();
+    let bytes = if let Some(v) = b64 { v } else { hex::decode(s).context("decode pubkey hex")? };
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("pubkey must be 32 bytes (Ed25519)"))?;
+    Ok(arr)
+}
+
+fn read_trust_store() -> AnyResult<Option<std::collections::HashMap<String, [u8; 32]>>> {
+    if let Ok(json_inline) = std::env::var("UICP_TRUST_STORE_JSON") {
+        let map: serde_json::Value = serde_json::from_str(&json_inline).context("parse UICP_TRUST_STORE_JSON")?;
+        let obj = map.as_object().ok_or_else(|| anyhow::anyhow!("trust store must be a JSON object"))?;
+        let mut out = std::collections::HashMap::new();
+        for (k, v) in obj.iter() {
+            if let Some(s) = v.as_str() {
+                let pk = decode_pubkey_any(s).with_context(|| format!("decode pubkey for keyid {}", k))?;
+                out.insert(k.to_string(), pk);
+            }
+        }
+        return Ok(Some(out));
+    }
+    if let Ok(path) = std::env::var("UICP_TRUST_STORE") {
+        let text = std::fs::read_to_string(&path).with_context(|| format!("read trust store: {}", path))?;
+        let map: serde_json::Value = serde_json::from_str(&text).context("parse trust store JSON")?;
+        let obj = map.as_object().ok_or_else(|| anyhow::anyhow!("trust store must be a JSON object"))?;
+        let mut out = std::collections::HashMap::new();
+        for (k, v) in obj.iter() {
+            if let Some(s) = v.as_str() {
+                let pk = decode_pubkey_any(s).with_context(|| format!("decode pubkey for keyid {}", k))?;
+                out.insert(k.to_string(), pk);
+            }
+        }
+        return Ok(Some(out));
+    }
+    Ok(None)
+}
+
+fn require_pubkey_for_entry(entry: &ModuleEntry) -> AnyResult<[u8; 32]> {
+    if let Some(keyid) = &entry.keyid {
+        if let Some(store) = read_trust_store()? {
+            if let Some(pk) = store.get(keyid) {
+                return Ok(*pk);
+            }
+            anyhow::bail!("STRICT_MODULES_VERIFY: trust store has no pubkey for keyid {}", keyid);
+        }
+        anyhow::bail!("STRICT_MODULES_VERIFY: UICP_TRUST_STORE or UICP_TRUST_STORE_JSON required for keyid {}", keyid);
+    }
+    // Fallback: single pubkey from UICP_MODULES_PUBKEY
+    require_pubkey_from_env()
+}
+
 fn enforce_strict_signature(entry: &ModuleEntry) -> AnyResult<()> {
     if !strict_verify_enabled() {
         return Ok(());
     }
-    let pk = require_pubkey_from_env()?;
+    let pk = require_pubkey_for_entry(entry)?;
     let sig_status = verify_entry_signature(entry, &pk)?;
     match sig_status {
         SignatureStatus::Verified => Ok(()),

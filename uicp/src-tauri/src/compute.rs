@@ -14,6 +14,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 #[cfg(feature = "wasm_compute")]
 use base64::Engine as _;
 use tauri::async_runtime::{spawn as tauri_spawn, JoinHandle};
+#[cfg(feature = "otel_spans")]
+use tracing::Instrument;
 use tauri::{Emitter, Manager, Runtime};
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -66,6 +68,7 @@ mod with_runtime {
     use ciborium::value::Value;
     use dashmap::DashMap;
     use once_cell::sync::Lazy;
+    use parking_lot::Mutex;
     use pollster::block_on;
     use serde_json;
     use sha2::{Digest, Sha256};
@@ -78,12 +81,9 @@ mod with_runtime {
         Arc,
     };
     use tauri::{AppHandle, Runtime};
-    use tokio::sync::{
-        mpsc::{
-            self,
-            error::{TryRecvError, TrySendError},
-        },
-        Mutex,
+    use tokio::sync::mpsc::{
+        self,
+        error::{TryRecvError, TrySendError},
     };
     use tokio::time::{sleep, Duration as TokioDuration};
     use wasmtime::{
@@ -289,7 +289,7 @@ mod with_runtime {
             loop {
                 let wait_for;
                 {
-                    let mut rl = self.logger_rate.blocking_lock();
+                    let mut rl = self.logger_rate.lock();
                     let avail = rl.available();
                     if avail >= total {
                         rl.consume(total);
@@ -470,7 +470,7 @@ mod with_runtime {
         async fn ready(&mut self) {
             loop {
                 let wait_for = {
-                    let mut rl = self.shared.partial_rate.lock().await;
+                    let mut rl = self.shared.partial_rate.lock();
                     if rl.try_take_event() {
                         return;
                     }
@@ -514,7 +514,7 @@ mod with_runtime {
         }
 
         fn check_write(&mut self) -> StreamResult<usize> {
-            if let Ok(mut rl) = self.shared.partial_rate.try_lock() {
+            if let Some(mut rl) = self.shared.partial_rate.try_lock() {
                 if rl.peek_tokens() >= 1.0 {
                     Ok(usize::MAX)
                 } else {
@@ -567,7 +567,7 @@ mod with_runtime {
             loop {
                 let wait_for;
                 {
-                    let mut rl = self.shared.log_rate.blocking_lock();
+                    let mut rl = self.shared.log_rate.lock();
                     let avail = rl.available();
                     if avail >= len {
                         rl.consume(len);
@@ -585,7 +585,7 @@ mod with_runtime {
                     std::thread::sleep(wait_for);
                 }
             }
-            let mut buf = self.shared.buf.blocking_lock();
+            let mut buf = self.shared.buf.lock();
             buf.extend_from_slice(bytes);
             // Emit one event per completed line
             loop {
@@ -1008,11 +1008,20 @@ mod with_runtime {
         permit: Option<OwnedSemaphorePermit>,
         queue_wait_ms: u64,
     ) -> JoinHandle<()> {
-        tauri_spawn(async move {
+        #[cfg(feature = "otel_spans")]
+        let span = tracing::info_span!(
+            "compute_spawn_job",
+            job_id = %spec.job_id,
+            task = %spec.task
+        );
+
+        let fut = async move {
             #[cfg(feature = "otel_spans")]
-            let _span =
-                tracing::info_span!("compute_spawn_job", job_id = %spec.job_id, task = %spec.task)
-                    .entered();
+            let _span = tracing::info_span!(
+                "compute_spawn_job_inner",
+                job_id = %spec.job_id,
+                task = %spec.task
+            );
             let _permit = permit;
             let started = Instant::now();
             // WHY: Feature-flag-ish env var to dump diagnostics about WASI + component at job start.
@@ -1146,10 +1155,18 @@ mod with_runtime {
                                 let _ = app_for_ui.emit("debug-log", v);
                             }
                             UiEvent::PartialEvent(e) => {
-                                crate::emit_or_log(&app_for_ui, "compute.result.partial", e);
+                                crate::emit_or_log(
+                                    &app_for_ui,
+                                    crate::events::EVENT_COMPUTE_RESULT_PARTIAL,
+                                    e,
+                                );
                             }
                             UiEvent::PartialJson(v) => {
-                                crate::emit_or_log(&app_for_ui, "compute.result.partial", v);
+                                crate::emit_or_log(
+                                    &app_for_ui,
+                                    crate::events::EVENT_COMPUTE_RESULT_PARTIAL,
+                                    v,
+                                );
                             }
                         }
                     }
@@ -1213,7 +1230,7 @@ mod with_runtime {
 
                         // stdout/stderr
                         {
-                            let mut rl = log_rate_c.lock().await;
+                            let mut rl = log_rate_c.lock();
                             let cur = rl.rate_per_sec();
                             if ewma_log >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
@@ -1225,7 +1242,7 @@ mod with_runtime {
                         }
                         // logger
                         {
-                            let mut rl = logger_rate_c.lock().await;
+                            let mut rl = logger_rate_c.lock();
                             let cur = rl.rate_per_sec();
                             if ewma_logger >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
@@ -1241,7 +1258,7 @@ mod with_runtime {
                         }
                         // partial events
                         {
-                            let mut rl = partial_rate_c.lock().await;
+                            let mut rl = partial_rate_c.lock();
                             let cur = rl.rate_per_sec();
                             if ewma_partial >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as u32;
@@ -1685,7 +1702,15 @@ mod with_runtime {
             let state: tauri::State<'_, crate::AppState> = app.state();
             state.compute_cancel.write().await.remove(&spec.job_id);
             crate::remove_compute_job(&app, &spec.job_id).await;
-        })
+        };
+
+        #[cfg(feature = "otel_spans")]
+        {
+            return tauri_spawn(fut.instrument(span));
+        }
+
+        #[cfg(not(feature = "otel_spans"))]
+        tauri_spawn(fut)
     }
 
     pub fn component_import_names(path: &Path) -> anyhow::Result<BTreeSet<String>> {
@@ -1702,19 +1727,81 @@ mod with_runtime {
             .collect())
     }
 
+    fn normalize_import_name(raw: &str) -> String {
+        // WHY: Upstream WASI WIT packages regularly bump patch versions (e.g., 0.2.3 -> 0.2.4)
+        // without semantic changes. We normalize import identifiers to ignore patch drift
+        // by collapsing versions like `name@X.Y.Z` to `name@X.Y`. Unversioned names are
+        // returned as-is.
+        if let Some((name, ver)) = raw.rsplit_once('@') {
+            if let Ok(v) = semver::Version::parse(ver) {
+                return format!("{}@{}.{}", name, v.major, v.minor);
+            }
+        }
+        raw.to_string()
+    }
+
     fn allowed_imports_for(task: &str) -> anyhow::Result<BTreeSet<String>> {
         let prefix = task.split('@').next().unwrap_or(task);
         match prefix {
-            "csv.parse" => Ok(BTreeSet::new()),
-            "table.query" => Ok([
-                "wasi:io/streams@0.2.8",
-                "wasi:clocks/monotonic-clock@0.2.0",
-                "uicp:host/control@1.0.0",
+            // NOTE: Allow any 0.2.x patch for core WASI packages by comparing on X.Y only.
+            "csv.parse" => Ok([
+                "wasi:cli/environment@0.2",
+                "wasi:cli/exit@0.2",
+                "wasi:cli/stderr@0.2",
+                "wasi:cli/stdin@0.2",
+                "wasi:cli/stdout@0.2",
+                "wasi:clocks/wall-clock@0.2",
+                "wasi:filesystem/preopens@0.2",
+                "wasi:filesystem/types@0.2",
+                "wasi:io/error@0.2",
+                "wasi:io/streams@0.2",
             ]
             .into_iter()
-            .map(|s| s.to_string())
+            .map(|s| normalize_import_name(s))
             .collect()),
-            "applet.quickjs" | "script.hello" => Ok(BTreeSet::new()),
+            "table.query" => Ok([
+                // Host control (accept versioned and unversioned names)
+                "uicp:host/control@1.0.0",
+                "uicp:host/control",
+                // Guest package types and core WASI packages
+                "uicp:task-table-query/types@0.1.0",
+                "wasi:cli/environment@0.2",
+                "wasi:cli/exit@0.2",
+                "wasi:cli/stderr@0.2",
+                "wasi:cli/stdin@0.2",
+                "wasi:cli/stdout@0.2",
+                "wasi:clocks/monotonic-clock@0.2",
+                "wasi:clocks/wall-clock@0.2",
+                "wasi:filesystem/preopens@0.2",
+                "wasi:filesystem/types@0.2",
+                "wasi:io/error@0.2",
+                "wasi:io/streams@0.2",
+                // Some builds import wasi:logging; allow both versioned and unversioned forms
+                "wasi:logging/logging@0.2",
+                "wasi:logging/logging",
+            ]
+            .into_iter()
+            .map(|s| normalize_import_name(s))
+            .collect()),
+            // Script demo component is permitted to have zero WASI imports.
+            "script.hello" => Ok(BTreeSet::new()),
+            "applet.quickjs" => Ok([
+                "wasi:cli/environment@0.2",
+                "wasi:cli/exit@0.2",
+                "wasi:cli/stderr@0.2",
+                "wasi:cli/stdin@0.2",
+                "wasi:cli/stdout@0.2",
+                "wasi:clocks/monotonic-clock@0.2",
+                "wasi:clocks/wall-clock@0.2",
+                "wasi:filesystem/preopens@0.2",
+                "wasi:filesystem/types@0.2",
+                "wasi:io/error@0.2",
+                "wasi:io/streams@0.2",
+                "wasi:random/random@0.2",
+            ]
+            .into_iter()
+            .map(|s| normalize_import_name(s))
+            .collect()),
             other => anyhow::bail!(
                 "E-UICP-0229: no component import policy registered for task '{other}'"
             ),
@@ -1722,16 +1809,18 @@ mod with_runtime {
     }
 
     pub fn preflight_component_imports(path: &Path, task: &str) -> anyhow::Result<()> {
-        if std::env::var("UICP_SKIP_CONTRACT_VERIFY")
-            .ok()
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
+        let actual_raw = component_import_names(path)?;
+        let allowed_raw = allowed_imports_for(task)?;
 
-        let actual = component_import_names(path)?;
-        let allowed = allowed_imports_for(task)?;
+        // Normalize both sides to collapse patch versions (X.Y.Z -> X.Y)
+        let actual: BTreeSet<String> = actual_raw
+            .into_iter()
+            .map(|s| normalize_import_name(&s))
+            .collect();
+        let allowed: BTreeSet<String> = allowed_raw
+            .into_iter()
+            .map(|s| normalize_import_name(&s))
+            .collect();
 
         let unexpected: Vec<String> = actual.difference(&allowed).cloned().collect();
         let missing: Vec<String> = allowed.difference(&actual).cloned().collect();
@@ -2106,23 +2195,48 @@ mod with_runtime {
         #[cfg(feature = "otel_spans")]
         tracing::error!(target = "uicp", job_id = %spec.job_id, task = %spec.task, code = %code, duration_ms = ms, "compute job failed");
         // Surface a debug-log entry for observability with a unique error code per event
-        let _ = app.emit(
-            "debug-log",
-            serde_json::json!({
-                "event": "compute_error",
-                "jobId": spec.job_id,
-                "task": spec.task,
-                "code": code,
-                "ts": chrono::Utc::now().timestamp_millis(),
-            }),
-        );
-        crate::emit_or_log(&app, "compute-result-final", payload.clone());
-        if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(
-                &spec.task,
-                &spec.input,
-                &spec.provenance.env_hash,
+        // Skip warmstart noise to keep Debug events clean
+        if spec.provenance.env_hash != "warmstart" {
+            let _ = app.emit(
+                "debug-log",
+                serde_json::json!({
+                    "event": "compute_error",
+                    "jobId": spec.job_id,
+                    "task": spec.task,
+                    "code": code,
+                    "ts": chrono::Utc::now().timestamp_millis(),
+                }),
             );
+        }
+        crate::emit_or_log(
+            &app,
+            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            payload.clone(),
+        );
+        if spec.replayable && spec.cache == "readwrite" {
+            let use_v2 = std::env::var("UICP_CACHE_V2")
+                .ok()
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+                .unwrap_or(false);
+            let module_meta = crate::registry::find_module(&app, &spec.task).ok().flatten();
+            let invariants = {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(m) = &module_meta {
+                    parts.push(format!("modsha={}", m.entry.digest_sha256));
+                    parts.push(format!("modver={}", m.entry.version));
+                    if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                        if !world.is_empty() { parts.push(format!("world={}", world)); }
+                    }
+                    parts.push("abi=wasi-p2".to_string());
+                }
+                if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+                parts.join("|")
+            };
+            let key = if use_v2 {
+                crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
+            } else {
+                crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
+            };
             let obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
             let _ = crate::compute_cache::store(
                 app,
@@ -2251,13 +2365,31 @@ mod with_runtime {
         };
         #[cfg(feature = "otel_spans")]
         tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "compute job completed with metrics");
-        crate::emit_or_log(&app, "compute.result.final", payload);
+        crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
         if spec.replayable && spec.cache == "readwrite" {
-            let key = crate::compute_cache::compute_key(
-                &spec.task,
-                &spec.input,
-                &spec.provenance.env_hash,
-            );
+            let use_v2 = std::env::var("UICP_CACHE_V2")
+                .ok()
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+                .unwrap_or(false);
+            let module_meta = crate::registry::find_module(&app, &spec.task).ok().flatten();
+            let invariants = {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(m) = &module_meta {
+                    parts.push(format!("modsha={}", m.entry.digest_sha256));
+                    parts.push(format!("modver={}", m.entry.version));
+                    if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                        if !world.is_empty() { parts.push(format!("world={}", world)); }
+                    }
+                    parts.push("abi=wasi-p2".to_string());
+                }
+                if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+                parts.join("|")
+            };
+            let key = if use_v2 {
+                crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
+            } else {
+                crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
+            };
             let mut obj = serde_json::json!({ "ok": true, "jobId": spec.job_id, "task": spec.task, "output": output });
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), metrics);
@@ -2293,15 +2425,15 @@ mod with_runtime {
         let (stdout_burst, stdout_rate, logger_burst, logger_rate, partial_burst, partial_rate) = {
             let ctx = store.data();
             let (stdout_burst, stdout_rate) = {
-                let rl = ctx.log_rate.blocking_lock();
+                let rl = ctx.log_rate.lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             let (logger_burst, logger_rate) = {
-                let rl = ctx.logger_rate.blocking_lock();
+                let rl = ctx.logger_rate.lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             let (partial_burst, partial_rate) = {
-                let rl = ctx.partial_rate.blocking_lock();
+                let rl = ctx.partial_rate.lock();
                 (rl.capacity(), rl.rate_per_sec())
             };
             (
@@ -2408,25 +2540,23 @@ mod with_runtime {
                 timeout_ms: Some(30_000),
                 fuel: None,
                 mem_limit_mb: None,
-                bind: vec![],
-                cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec {
-                    fs_read: vec!["ws:/files/**".into()],
-                    fs_write: vec![],
-                    net: vec![],
-                    long_run: false,
-                    mem_high: false,
-                },
-                workspace_id: "default".into(),
-                replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-                golden_key: None,
-                artifact_id: None,
-                expect_golden: false,
-            };
+            bind: vec![],
+            cache: "readwrite".into(),
+            capabilities: crate::ComputeCapabilitiesSpec {
+                fs_read: vec!["ws:/files/**".into()],
+                ..Default::default()
+            },
+            workspace_id: "default".into(),
+            replayable: true,
+            provenance: crate::ComputeProvenanceSpec {
+                env_hash: "dev".into(),
+                agent_trace_id: None,
+            },
+            token: None,
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        };
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
             spec.capabilities.fs_read = vec!["ws:/files/sub/file.txt".into()];
             assert!(fs_read_allowed(&spec, "ws:/files/sub/file.txt"));
@@ -2465,18 +2595,19 @@ mod with_runtime {
                 fuel: None,
                 mem_limit_mb: None,
                 bind: vec![],
-                cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec::default(),
-                workspace_id: "default".into(),
-                replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-                golden_key: None,
-                artifact_id: None,
-                expect_golden: false,
-            };
+            cache: "readwrite".into(),
+            capabilities: crate::ComputeCapabilitiesSpec::default(),
+            workspace_id: "default".into(),
+            replayable: true,
+            provenance: crate::ComputeProvenanceSpec {
+                env_hash: "dev".into(),
+                agent_trace_id: None,
+            },
+            token: None,
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        };
             let original = "data:text/csv,foo,bar";
             let resolved = resolve_csv_source(&spec, original).expect("passthrough");
             assert_eq!(resolved, original);
@@ -2501,21 +2632,22 @@ mod with_runtime {
                 fuel: None,
                 mem_limit_mb: None,
                 bind: vec![],
-                cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec {
-                    fs_read: vec!["ws:/files/**".into()],
-                    ..Default::default()
-                },
-                workspace_id: "default".into(),
-                replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
-                    env_hash: "dev".into(),
-                    agent_trace_id: None,
-                },
-                golden_key: None,
-                artifact_id: None,
-                expect_golden: false,
-            };
+            cache: "readwrite".into(),
+            capabilities: crate::ComputeCapabilitiesSpec {
+                fs_read: vec!["ws:/files/**".into()],
+                ..Default::default()
+            },
+            workspace_id: "default".into(),
+            replayable: true,
+            provenance: crate::ComputeProvenanceSpec {
+                env_hash: "dev".into(),
+                agent_trace_id: None,
+            },
+            token: None,
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        };
             let ws_path = "ws:/files/tests/resolve_csv_source.csv";
             let resolved = resolve_csv_source(&spec_ok, ws_path).expect("resolves");
             assert!(resolved.starts_with("data:text/csv;base64,"));
@@ -2684,11 +2816,11 @@ mod with_runtime {
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    self.debugs.blocking_lock().push(payload);
+                    self.debugs.lock().push(payload);
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, payload: serde_json::Value) {
-                    self.partials.blocking_lock().push(payload);
+                    self.partials.lock().push(payload);
                 }
             }
 
@@ -2738,10 +2870,7 @@ mod with_runtime {
             }
 
             // Verify a partial event was captured with expected fields
-            let part = captured_partials
-                .blocking_lock()
-                .pop()
-                .expect("one partial emitted");
+            let part = captured_partials.lock().pop().expect("one partial emitted");
             assert_eq!(part.get("kind").and_then(|v| v.as_str()), Some("log"));
             assert_eq!(
                 part.get("stream").and_then(|v| v.as_str()),
@@ -2809,8 +2938,6 @@ mod with_runtime {
             // Minimal job context
             let tele = Arc::new(TestEmitter::default());
             let tele_trait: Arc<dyn TelemetryEmitter> = tele.clone();
-            let limits = LimitsWithPeak::new(64 * 1024 * 1024);
-            let tele_exec = tele_trait.clone();
             let linker = linker;
             block_on(async move {
                 let mut store: Store<Ctx> = Store::new(
@@ -2818,7 +2945,7 @@ mod with_runtime {
                     Ctx {
                         wasi: WasiCtxBuilder::new().build(),
                         table: ResourceTable::new(),
-                        emitter: tele_exec,
+                        emitter: tele_trait.clone(),
                         job_id: "log-guest".into(),
                         task: "uicp:task-log-test".into(),
                         partial_seq: Arc::new(AtomicU64::new(0)),
@@ -2840,7 +2967,7 @@ mod with_runtime {
                         logger_throttle_waits: Arc::new(AtomicU64::new(0)),
                         partial_rate: Arc::new(Mutex::new(RateLimiterEvents::new(10, 10))),
                         partial_throttle_waits: Arc::new(AtomicU64::new(0)),
-                        limits,
+                        limits: LimitsWithPeak::new(64 * 1024 * 1024),
                     },
                 );
 
@@ -3077,7 +3204,7 @@ mod with_runtime {
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, payload: serde_json::Value) {
-                    self.debugs.blocking_lock().push(payload);
+                    self.debugs.lock().push(payload);
                 }
                 fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
@@ -3174,7 +3301,7 @@ mod no_runtime {
             tokio::select! {
                 _ = rx_cancel.changed() => {
                     let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: error_codes::CANCELLED.into(), message: "Job cancelled by user".into(), metrics: Some(serde_json::json!({"queueMs": queue_wait_ms})) };
-                    crate::emit_or_log(&app, "compute.result.final", payload);
+                    crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
                     #[cfg(feature = "otel_spans")]
@@ -3192,9 +3319,31 @@ mod no_runtime {
                         "jobId": spec.job_id,
                         "task": spec.task,
                     }));
-                    crate::emit_or_log(&app, "compute-result-final", payload.clone());
+                    crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
-                        let key = crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
+                        let use_v2 = std::env::var("UICP_CACHE_V2")
+                            .ok()
+                            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+                            .unwrap_or(false);
+                        let module_meta = crate::registry::find_module(&app, &spec.task).ok().flatten();
+                        let invariants = {
+                            let mut parts: Vec<String> = Vec::new();
+                            if let Some(m) = &module_meta {
+                                parts.push(format!("modsha={}", m.entry.digest_sha256));
+                                parts.push(format!("modver={}", m.entry.version));
+                                if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                                    if !world.is_empty() { parts.push(format!("world={}", world)); }
+                                }
+                                parts.push("abi=wasi-p2".to_string());
+                            }
+                            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+                            parts.join("|")
+                        };
+                        let key = if use_v2 {
+                            crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
+                        } else {
+                            crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
+                        };
                         let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
                         if let Some(map) = obj.as_object_mut() {
                             map.insert(

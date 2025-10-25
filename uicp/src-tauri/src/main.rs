@@ -17,15 +17,18 @@ use reqwest::{Client, Url};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
 use tauri::{
-    async_runtime::{spawn, spawn_blocking, JoinHandle},
+    async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
 };
+
 use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, Semaphore},
     time::{interval, timeout},
 };
+use rand::RngCore;
 use tokio_rusqlite::Connection as AsyncConn;
 use tokio_stream::StreamExt;
 
@@ -33,6 +36,7 @@ mod action_log;
 mod circuit;
 #[cfg(test)]
 mod circuit_tests;
+mod code_provider;
 mod codegen;
 #[cfg(feature = "wasm_compute")]
 mod component_bindings;
@@ -40,7 +44,9 @@ mod compute;
 mod compute_cache;
 mod compute_input;
 mod core;
+mod events;
 mod policy;
+mod provider_cli;
 mod registry;
 #[cfg(feature = "wasm_compute")]
 mod wasi_logging;
@@ -55,6 +61,7 @@ pub use policy::{
 
 use compute_input::canonicalize_task_input;
 use core::CircuitBreakerConfig;
+use provider_cli::{ProviderHealthResult, ProviderLoginResult};
 
 // Re-export shared core items so crate::... references in submodules remain valid
 pub use core::{
@@ -75,6 +82,89 @@ static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
 pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
     let state: State<'_, AppState> = app_handle.state();
     state.ongoing.write().await.remove(request_id);
+}
+
+/// Copy a workspace file (ws:/files/...) to a host destination path and return the final host path.
+#[tauri::command]
+async fn export_from_files(ws_path: String, dest_path: String) -> Result<String, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("export_from_files");
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    let src_buf: PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
+        Ok(p) => p,
+        Err(e) => return Err(format!("{}", e.message)),
+    };
+    if !src_buf.exists() {
+        return Err(format!("Source not found: {}", ws_path));
+    }
+    let meta = fs::symlink_metadata(&src_buf).map_err(|e| format!("stat failed: {e}"))?;
+    if !meta.file_type().is_file() {
+        return Err("Source must be a regular file".into());
+    }
+
+    let dest_input = Path::new(&dest_path);
+    let mut dest_final: PathBuf = if dest_input.is_dir() {
+        let fname = src_buf
+            .file_name()
+            .ok_or_else(|| "Invalid source file name".to_string())?
+            .to_string_lossy()
+            .to_string();
+        dest_input.join(fname)
+    } else {
+        dest_input.to_path_buf()
+    };
+
+    if let Some(parent) = dest_final.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            return Err(format!("Failed to create destination dir: {e}"));
+        }
+    }
+
+    if dest_final.exists() {
+        let stem = dest_final
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = dest_final
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let ts = chrono::Utc::now().timestamp();
+        let new_name = if ext.is_empty() {
+            format!("{}-{}", stem, ts)
+        } else {
+            format!("{}-{}.{}", stem, ts, ext)
+        };
+        let parent = dest_final.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        dest_final = parent.join(new_name);
+    }
+
+    fs::copy(&src_buf, &dest_final).map_err(|e| format!("Copy failed: {e}"))?;
+    Ok(dest_final.display().to_string())
+}
+
+#[tauri::command]
+async fn mint_job_token(
+    state: State<'_, AppState>,
+    job_id: String,
+    task: String,
+    workspace_id: String,
+    env_hash: String,
+) -> Result<String, String> {
+    let key = &state.job_token_key;
+    let mut mac: Hmac<Sha256> = Hmac::new_from_slice(key).map_err(|e| e.to_string())?;
+    mac.update(b"UICP-TOKENv1\x00");
+    mac.update(job_id.as_bytes());
+    mac.update(b"|");
+    mac.update(task.as_bytes());
+    mac.update(b"|");
+    mac.update(workspace_id.as_bytes());
+    mac.update(b"|");
+    mac.update(env_hash.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    Ok(hex::encode(tag))
 }
 
 // CircuitState and CircuitBreakerConfig now defined in core module; configure_sqlite re-exported
@@ -140,8 +230,7 @@ async fn compute_call(
         job_id = %spec.job_id,
         task = %spec.task,
         cache = %spec.cache
-    )
-    .entered();
+    );
     // Reject duplicate job ids
     if state
         .compute_ongoing
@@ -171,9 +260,51 @@ async fn compute_call(
 
     let app_handle = window.app_handle().clone();
 
+    let require_tokens = match std::env::var("UICP_REQUIRE_TOKENS") {
+        Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"),
+        Err(_) => false,
+    };
+    if require_tokens {
+        let expected = {
+            let key = &state.job_token_key;
+            let mut mac: Hmac<Sha256> = Hmac::new_from_slice(key).map_err(|e| e.to_string())?;
+            mac.update(b"UICP-TOKENv1\x00");
+            mac.update(spec.job_id.as_bytes());
+            mac.update(b"|");
+            mac.update(spec.task.as_bytes());
+            mac.update(b"|");
+            mac.update(spec.workspace_id.as_bytes());
+            mac.update(b"|");
+            mac.update(spec.provenance.env_hash.as_bytes());
+            let tag = mac.finalize().into_bytes();
+            hex::encode(tag)
+        };
+        let provided = spec.token.as_deref().unwrap_or("");
+        if provided != expected {
+            let payload = ComputeFinalErr {
+                ok: false,
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                code: "Compute.CapabilityDenied".into(),
+                message: "E-UICP-0701: missing or invalid job token".into(),
+                metrics: None,
+            };
+            emit_or_log(
+                &window.app_handle(),
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
+            return Ok(());
+        }
+    }
+
     // --- Policy enforcement (Non-negotiables v1) ---
     if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log(&app_handle, "compute-result-final", &deny);
+        emit_or_log(
+            &app_handle,
+            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            &deny,
+        );
         return Ok(());
     }
 
@@ -188,16 +319,80 @@ async fn compute_call(
                 message: err.message,
                 metrics: None,
             };
-            emit_or_log(&app_handle, "compute-result-final", &payload);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
             return Ok(());
         }
     };
 
+    // Provider decision telemetry (host-owned)
+    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+        .ok()
+        .flatten()
+        .is_some();
+    let provider_kind = if crate::codegen::is_codegen_task(&spec.task) {
+        "codegen"
+    } else if is_module_task {
+        "wasm"
+    } else {
+        "local"
+    };
+    emit_or_log(
+        &app_handle,
+        "provider-decision",
+        serde_json::json!({
+            "jobId": spec.job_id.clone(),
+            "task": spec.task.clone(),
+            "provider": provider_kind,
+            "workspaceId": spec.workspace_id.clone(),
+            "policyVersion": std::env::var("UICP_POLICY_VERSION").unwrap_or_default(),
+            "caps": {
+                "fsRead": &spec.capabilities.fs_read,
+                "fsWrite": &spec.capabilities.fs_write,
+                "net": &spec.capabilities.net,
+                "time": spec.capabilities.time,
+                "random": spec.capabilities.random,
+                "longRun": spec.capabilities.long_run,
+                "memHigh": spec.capabilities.mem_high
+            },
+            "limits": {
+                "memLimitMb": spec.mem_limit_mb,
+                "timeoutMs": spec.timeout_ms,
+                "fuel": spec.fuel
+            },
+            "cacheMode": spec.cache.clone(),
+        }),
+    );
+
     // Content-addressed cache lookup when enabled (normalize policy casing)
     let cache_mode = spec.cache.to_lowercase();
     if cache_mode == "readwrite" || cache_mode == "readonly" {
-        let key =
-            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash);
+        let use_v2 = std::env::var("UICP_CACHE_V2")
+            .ok()
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+            .unwrap_or(false);
+        let module_meta = crate::registry::find_module(&app_handle, &spec.task).ok().flatten();
+        let invariants = {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(m) = &module_meta {
+                parts.push(format!("modsha={}", m.entry.digest_sha256));
+                parts.push(format!("modver={}", m.entry.version));
+                if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                    if !world.is_empty() { parts.push(format!("world={}", world)); }
+                }
+                parts.push("abi=wasi-p2".to_string());
+            }
+            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+            parts.join("|")
+        };
+        let key = if use_v2 {
+            compute_cache::compute_key_v2_plus(&spec, &normalized_input, &invariants)
+        } else {
+            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash)
+        };
         if let Ok(Some(mut cached)) =
             compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
         {
@@ -216,7 +411,11 @@ async fn compute_call(
                     *metrics = serde_json::json!({ "cacheHit": true });
                 }
             }
-            emit_or_log(&app_handle, "compute.result.final", cached);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                cached,
+            );
             return Ok(());
         } else if cache_mode == "readonly" {
             let payload = ComputeFinalErr {
@@ -227,19 +426,36 @@ async fn compute_call(
                 message: "Cache miss under ReadOnly cache policy".into(),
                 metrics: None,
             };
-            emit_or_log(&app_handle, "compute.result.final", &payload);
+            emit_or_log(
+                &app_handle,
+                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                &payload,
+            );
             return Ok(());
         }
     }
 
-    // Spawn the job via compute host (feature-gated implementation), respecting concurrency cap.
+    // Spawn the job via compute host (feature-gated implementation), respecting concurrency caps per provider.
     let queued_at = Instant::now();
-    let permit = state
-        .compute_sem
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| e.to_string())?;
+    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+        .ok()
+        .flatten()
+        .is_some();
+    let permit = if is_module_task {
+        state
+            .wasm_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        state
+            .compute_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?
+    };
     let queue_wait_ms = queued_at
         .elapsed()
         .as_millis()
@@ -458,7 +674,7 @@ async fn test_api_key(
 #[tauri::command]
 async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("persist_command", id = %cmd.id, tool = %cmd.tool).entered();
+    let _span = tracing::info_span!("persist_command", id = %cmd.id, tool = %cmd.tool);
     // Freeze writes in Safe Mode
     if *state.safe_mode.read().await {
         return Ok(());
@@ -466,7 +682,8 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
     let id = cmd.id.clone();
     let tool = cmd.tool.clone();
     let args_json = serde_json::to_string(&cmd.args).map_err(|e| format!("{e}"))?;
-    let _started = Instant::now();
+    #[cfg(feature = "otel_spans")]
+    let started = Instant::now();
     let res = state
         .db_rw
         .call(move |conn| -> tokio_rusqlite::Result<()> {
@@ -497,8 +714,9 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
 #[tauri::command]
 async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<CommandRequest>, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("load_commands").entered();
-    let _started = Instant::now();
+    let _span = tracing::info_span!("load_commands");
+    #[cfg(feature = "otel_spans")]
+    let started = Instant::now();
     let res = state
         .db_ro
         .call(|conn| -> tokio_rusqlite::Result<Vec<CommandRequest>> {
@@ -546,7 +764,7 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
 #[tauri::command]
 async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("clear_commands").entered();
+    let _span = tracing::info_span!("clear_commands");
     #[cfg(feature = "otel_spans")]
     let _started = Instant::now(); // WHY: Silence dead_code when spans disabled; still track duration where enabled.
     let res = state
@@ -580,7 +798,7 @@ async fn delete_window_commands(
     window_id: String,
 ) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("delete_window_commands", window_id = %window_id).entered();
+    let _span = tracing::info_span!("delete_window_commands", window_id = %window_id);
     state
         .db_rw
         .call(move |conn| {
@@ -851,10 +1069,9 @@ async fn chat_completion(
         return Err("No API key configured".into());
     }
 
-    let requested_model = model.unwrap_or_else(|| {
-        // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
-        std::env::var("ACTOR_MODEL").unwrap_or_else(|_| "qwen3-coder:480b".into())
-    });
+    // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
+    // Avoid reading .env here; the UI selects the model per Agent Settings.
+    let requested_model = model.unwrap_or_else(|| "qwen3-coder:480b".into());
     // Normalize to colon-delimited tags for both Cloud and local.
     // If the input had a "-cloud" suffix, preserve it on local to aid routing.
     let resolved_model = normalize_model_name(&requested_model, use_cloud);
@@ -1728,11 +1945,10 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             }
 
             #[cfg(feature = "otel_spans")]
-            let span = tracing::info_span!(
+            let _span = tracing::info_span!(
                 "db_maintenance",
                 run_vacuum = ticks_since_vacuum >= ticks_per_vacuum
-            )
-            .entered();
+            );
             #[cfg(feature = "otel_spans")]
             let started = Instant::now();
 
@@ -1799,7 +2015,9 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
             }
 
             #[cfg(feature = "otel_spans")]
-            drop(span);
+            {
+                let _ = &started; // preserve instrumentation variable usage guard
+            }
         }
     });
 }
@@ -1898,6 +2116,36 @@ fn main() {
         eprintln!("E-UICP-0660: failed to append boot action-log entry: {err:?}");
     }
 
+    let job_token_key: [u8; 32] = {
+        if let Ok(hex_key) = std::env::var("UICP_JOB_TOKEN_KEY_HEX") {
+            if let Ok(bytes) = hex::decode(hex_key.trim()) {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                } else {
+                    let mut arr = [0u8; 32];
+                    rand::thread_rng().fill_bytes(&mut arr);
+                    arr
+                }
+            } else {
+                let mut arr = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut arr);
+                arr
+            }
+        } else {
+            let mut arr = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut arr);
+            arr
+        }
+    };
+
+    let wasm_conc = std::env::var("UICP_WASM_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n >= 1 && n <= 64)
+        .unwrap_or(2);
+
     let state = AppState {
         db_path: db_path.clone(),
         db_ro,
@@ -1919,12 +2167,15 @@ fn main() {
         ongoing: RwLock::new(HashMap::new()),
         compute_ongoing: RwLock::new(HashMap::new()),
         compute_sem: Arc::new(Semaphore::new(2)),
+        codegen_sem: Arc::new(Semaphore::new(2)),
+        wasm_sem: Arc::new(Semaphore::new(wasm_conc)),
         compute_cancel: RwLock::new(HashMap::new()),
         safe_mode: RwLock::new(false),
         safe_reason: RwLock::new(None),
         circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
         circuit_config: CircuitBreakerConfig::from_env(),
         action_log,
+        job_token_key,
     };
 
     if let Err(err) = load_env_key(&state) {
@@ -1971,7 +2222,7 @@ fn main() {
             #[cfg(feature = "wasm_compute")]
             {
                 let handle = app.handle().clone();
-                let _ = spawn_blocking(move || {
+                let _ = tauri::async_runtime::spawn_blocking(move || {
                     if let Err(err) = crate::compute::prewarm_quickjs(&handle) {
                         eprintln!("quickjs prewarm failed: {err:?}");
                     }
@@ -2075,6 +2326,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_paths,
             copy_into_files,
+            export_from_files,
             get_modules_info,
             get_modules_registry,
             get_action_log_stats,
@@ -2102,8 +2354,19 @@ fn main() {
             cancel_chat,
             compute_call,
             compute_cancel,
+            mint_job_token,
             debug_circuits,
-            frontend_ready
+            kill_container,
+            set_env_var,
+            save_provider_api_key,
+            provider_pull_image,
+            provider_login,
+            provider_health,
+            provider_resolve,
+            provider_install,
+            frontend_ready,
+            check_container_runtime,
+            check_network_capabilities
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2122,6 +2385,237 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+
+/// Set or unset a process environment variable for subsequent provider operations.
+/// ERROR: E-UICP-9201 invalid name
+/// Check if container runtime (Docker/Podman) is available
+#[tauri::command]
+async fn check_container_runtime() -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("check_container_runtime");
+    use std::process::Command;
+    
+    // Check for Docker
+    if let Ok(output) = Command::new("docker").arg("version").arg("--format").arg("{{.Server.Version}}").output() {
+        if output.status.success() {
+            #[cfg(feature = "otel_spans")]
+            tracing::info!(target = "uicp", runtime = "docker", "container runtime detected");
+            return Ok(serde_json::json!({
+                "available": true,
+                "runtime": "docker",
+                "version": String::from_utf8_lossy(&output.stdout).trim()
+            }));
+        }
+    }
+    
+    // Check for Podman
+    if let Ok(output) = Command::new("podman").arg("version").arg("--format").arg("{{.Server.Version}}").output() {
+        if output.status.success() {
+            #[cfg(feature = "otel_spans")]
+            tracing::info!(target = "uicp", runtime = "podman", "container runtime detected");
+            return Ok(serde_json::json!({
+                "available": true,
+                "runtime": "podman",
+                "version": String::from_utf8_lossy(&output.stdout).trim()
+            }));
+        }
+    }
+    
+    #[cfg(feature = "otel_spans")]
+    tracing::warn!(target = "uicp", "no container runtime found");
+    Ok(serde_json::json!({
+        "available": false,
+        "error": "No container runtime found (Docker or Podman required)"
+    }))
+}
+
+/// Check network capabilities and restrictions.
+/// WHY: Avoid misleading telemetry; report actual network gate.
+/// INVARIANT: Network is disabled unless `UICP_ALLOW_NET` is explicitly enabled.
+#[tauri::command]
+async fn check_network_capabilities() -> Result<serde_json::Value, String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!("check_network_capabilities");
+
+    // Gate network with an explicit env flag.
+    // Accept common truthy forms: 1,true,yes,on (case-insensitive).
+    fn parse_env_flag(value: &str) -> bool {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
+
+    let has_network = std::env::var("UICP_ALLOW_NET")
+        .ok()
+        .map(|v| parse_env_flag(&v))
+        .unwrap_or(false);
+
+    // If network is enabled, it's still constrained by provider allowlists via httpjail.
+    // Keep reason explicit for operators.
+    let (restricted, reason) = if has_network {
+        (
+            true,
+            Some(
+                "enabled by UICP_ALLOW_NET; provider calls restricted by httpjail allowlists"
+                    .to_string(),
+            ),
+        )
+    } else {
+        (
+            true,
+            Some("network disabled by policy; set UICP_ALLOW_NET=1 to enable".to_string()),
+        )
+    };
+
+    // Load a concise httpjail allowlist summary (best-effort).
+    fn allowlist_path() -> std::path::PathBuf {
+        if let Some(override_os) = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST") {
+            let p = std::path::PathBuf::from(&override_os);
+            if !p.as_os_str().is_empty() {
+                return p;
+            }
+        }
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("ops")
+            .join("code")
+            .join("network")
+            .join("allowlist.json")
+    }
+
+    let policy_path = allowlist_path();
+    let allowlist_summary: Option<serde_json::Value> = match std::fs::read_to_string(&policy_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(v) => {
+                let mut providers_obj = serde_json::Map::new();
+                if let Some(providers) = v.get("providers").and_then(|x| x.as_object()) {
+                    for (name, entry) in providers {
+                        let hosts = entry
+                            .get("hosts")
+                            .and_then(|h| h.as_array())
+                            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        let methods = entry
+                            .get("methods")
+                            .and_then(|m| m.as_array())
+                            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        let block_post = entry
+                            .get("blockPost")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(true);
+
+                        let sample_hosts: Vec<&str> = hosts.iter().copied().take(3).collect();
+                        let provider_json = serde_json::json!({
+                            "hostsCount": hosts.len(),
+                            "hostsSample": sample_hosts,
+                            "methods": methods,
+                            "blockPost": block_post,
+                        });
+                        providers_obj.insert(name.clone(), provider_json);
+                    }
+                }
+                Some(serde_json::json!({
+                    "source": policy_path.display().to_string(),
+                    "providers": providers_obj,
+                }))
+            }
+            Err(err) => Some(serde_json::json!({
+                "error": format!("E-UICP-9301: allowlist parse failed: {}", err),
+                "source": policy_path.display().to_string(),
+            })),
+        },
+        Err(err) => Some(serde_json::json!({
+            "error": format!("E-UICP-9300: allowlist read failed: {}", err),
+            "source": policy_path.display().to_string(),
+        })),
+    };
+
+    let json = serde_json::json!({
+        "hasNetwork": has_network,
+        "restricted": restricted,
+        "reason": reason,
+        "allowlist": allowlist_summary
+    });
+
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(target = "uicp", has_network, restricted, "network capabilities returned");
+    Ok(json)
+}
+
+#[tauri::command]
+async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> {
+    let key = name.trim();
+    if key.is_empty() || key.contains('\0') || key.contains('=') {
+        return Err("E-UICP-9201: invalid env var name".into());
+    }
+    match value {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    Ok(())
+}
+
+/// Save a provider API key to the OS keyring.
+/// provider: "openai" or "anthropic"
+/// ERROR: E-UICP-9202 invalid provider; E-UICP-9203 keyring error
+#[tauri::command]
+async fn save_provider_api_key(provider: String, key: String) -> Result<(), String> {
+    let account = match provider.trim().to_ascii_lowercase().as_str() {
+        "openai" => "openai_api_key",
+        "anthropic" => "anthropic_api_key",
+        other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
+    };
+    let key_trimmed = key.trim().to_string();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let entry = Entry::new("UICP", account)
+            .map_err(|e| format!("E-UICP-9203: keyring access failed: {e}"))?;
+        entry
+            .set_password(&key_trimmed)
+            .map_err(|e| format!("E-UICP-9203: keyring store failed: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))??;
+    Ok(())
+}
+
+/// Pull the container image for a provider (docker or podman). Returns the image name.
+/// ERROR: E-UICP-9204 runtime missing; E-UICP-9205 pull failed
+#[tauri::command]
+async fn provider_pull_image(provider: String) -> Result<serde_json::Value, String> {
+    fn try_pull(bin: &str, image: &str) -> Result<(), String> {
+        let out = std::process::Command::new(bin)
+            .arg("pull")
+            .arg(image)
+            .output()
+            .map_err(|e| format!("E-UICP-9204: spawn {bin} failed: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "E-UICP-9205: {bin} pull exited {}: {}",
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(())
+    }
+
+    let normalized = provider.trim().to_ascii_lowercase();
+    let image = match normalized.as_str() {
+        "codex" => std::env::var("CODEX_IMAGE").unwrap_or_else(|_| "uicp/codex-cli:latest".into()),
+        "claude" => std::env::var("CLAUDE_IMAGE").unwrap_or_else(|_| "uicp/claude-code:latest".into()),
+        other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
+    };
+    match try_pull("docker", &image) {
+        Ok(_) => Ok(serde_json::json!({ "image": image, "runtime": "docker" })),
+        Err(_e1) => match try_pull("podman", &image) {
+            Ok(_) => Ok(serde_json::json!({ "image": image, "runtime": "podman" })),
+            Err(e2) => Err(e2),
+        },
+    }
+}
+
 /// Get debug information for all circuit breakers.
 /// Returns per-host state including failures, open status, and telemetry counters.
 ///
@@ -2135,11 +2629,82 @@ async fn debug_circuits(
     Ok(info)
 }
 
+/// Stop a running container by name using docker or podman.
+/// ERROR: E-UICP-9101 spawn failed; E-UICP-9102 runtime missing
+#[tauri::command]
+async fn kill_container(container_name: String) -> Result<(), String> {
+    fn try_stop(bin: &str, name: &str) -> Result<(), String> {
+        let out = std::process::Command::new(bin)
+            .arg("stop")
+            .arg(name)
+            .output()
+            .map_err(|e| format!("E-UICP-9101: spawn {bin} failed: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "E-UICP-9101: {bin} stop exited {}: {}",
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(())
+    }
+
+    // Try docker then podman
+    match try_stop("docker", &container_name) {
+        Ok(_) => Ok(()),
+        Err(_e1) => match try_stop("podman", &container_name) {
+            Ok(_) => Ok(()),
+            Err(e2) => Err(format!(
+                "E-UICP-9102: container runtime missing or stop failed: {e2}"
+            )),
+        },
+    }
+}
+
+#[tauri::command]
+async fn provider_login(provider: String) -> Result<ProviderLoginResult, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    provider_cli::login(&normalized).await
+}
+
+#[tauri::command]
+async fn provider_health(provider: String) -> Result<ProviderHealthResult, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    provider_cli::health(&normalized).await
+}
+
+#[tauri::command]
+async fn provider_resolve(provider: String) -> Result<serde_json::Value, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    let res = provider_cli::resolve(&normalized)?;
+    Ok(serde_json::json!({ "exe": res.exe, "via": res.via }))
+}
+
+#[tauri::command]
+async fn provider_install(
+    provider: String,
+    version: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    match provider_cli::install(&normalized, version.as_deref()).await {
+        Ok(r) => Ok(serde_json::json!({
+            "ok": r.ok,
+            "provider": r.provider,
+            "exe": r.exe,
+            "via": r.via,
+            "detail": r.detail,
+        })),
+        Err(e) => Err(e),
+    }
+}
+
+// Removed unused proxy env commands (get_proxy_env, set_proxy_env) to avoid dead code.
+
 /// Verify that all module entries listed in the manifest exist and match their digests.
 #[tauri::command]
 async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("verify_modules").entered();
+    let _span = tracing::info_span!("verify_modules");
     use crate::registry::{load_manifest, modules_dir};
     let dir = modules_dir(&app);
     let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
@@ -2231,7 +2796,7 @@ async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 #[tauri::command]
 async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<String, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("copy_into_files").entered();
+    let _span = tracing::info_span!("copy_into_files");
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -2288,7 +2853,7 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
 #[tauri::command]
 async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_modules_registry").entered();
+    let _span = tracing::info_span!("get_modules_registry");
     let dir = crate::registry::modules_dir(&app);
     let manifest = crate::registry::load_manifest(&app).map_err(|e| e.to_string())?;
 
@@ -2311,16 +2876,33 @@ async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value
         }));
     }
 
+    // Security posture: strict mode + trust store source for UI surfacing
+    let strict = std::env::var("STRICT_MODULES_VERIFY")
+        .ok()
+        .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    let trust_store = if std::env::var("UICP_TRUST_STORE_JSON").is_ok() {
+        "inline"
+    } else if std::env::var("UICP_TRUST_STORE").is_ok() {
+        "file"
+    } else if std::env::var("UICP_MODULES_PUBKEY").is_ok() {
+        "single_key"
+    } else {
+        "none"
+    };
+
     Ok(serde_json::json!({
         "dir": dir.display().to_string(),
         "modules": modules,
+        "strict": strict,
+        "trustStore": trust_store,
     }))
 }
 
 #[tauri::command]
 async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_modules_info").entered();
+    let _span = tracing::info_span!("get_modules_info");
     let dir = crate::registry::modules_dir(&app);
     let manifest = dir.join("manifest.json");
     let exists = manifest.exists();
@@ -2345,14 +2927,14 @@ async fn get_action_log_stats(
     state: State<'_, AppState>,
 ) -> Result<crate::action_log::ActionLogStatsSnapshot, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_action_log_stats").entered();
+    let _span = tracing::info_span!("get_action_log_stats");
     Ok(state.action_log.stats_snapshot())
 }
 
 #[tauri::command]
 async fn open_path(path: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("open_path").entered();
+    let _span = tracing::info_span!("open_path");
     use std::process::Command;
     let p = std::path::Path::new(&path);
     if !p.exists() {
@@ -2403,7 +2985,7 @@ async fn health_quick_check(app: tauri::AppHandle) -> Result<serde_json::Value, 
 
 async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<serde_json::Value> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("health_quick_check").entered();
+    let _span = tracing::info_span!("health_quick_check");
     let state: State<'_, AppState> = app.state();
     let status = state
         .db_ro
@@ -2436,7 +3018,7 @@ async fn clear_compute_cache(
     workspace_id: Option<String>,
 ) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("clear_compute_cache", workspace = %workspace_id.as_deref().unwrap_or("default")).entered();
+    let _span = tracing::info_span!("clear_compute_cache", workspace = %workspace_id.as_deref().unwrap_or("default"));
     let ws = workspace_id.unwrap_or_else(|| "default".into());
     let state: State<'_, AppState> = app.state();
     state
@@ -2480,7 +3062,7 @@ async fn set_safe_mode(
 #[tauri::command]
 async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("save_checkpoint", hash_len = hash.len()).entered();
+    let _span = tracing::info_span!("save_checkpoint", hash_len = hash.len());
     let state: State<'_, AppState> = app.state();
     if *state.safe_mode.read().await {
         return Ok(());
@@ -2528,8 +3110,7 @@ async fn determinism_probe(
         "determinism_probe",
         n = n,
         has_hash = recomputed_hash.is_some()
-    )
-    .entered();
+    );
     let state: State<'_, AppState> = app.state();
     let limit = n as i64;
     let samples = state
@@ -2570,7 +3151,7 @@ async fn determinism_probe(
 #[tauri::command]
 async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_action", kind = %kind).entered();
+    let _span = tracing::info_span!("recovery_action", kind = %kind);
     let emit = |app: &tauri::AppHandle, action: &str, outcome: &str, payload: serde_json::Value| {
         let _ = app.emit(
             "replay-issue",
@@ -2680,7 +3261,7 @@ async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), Stri
 #[tauri::command]
 async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_auto").entered();
+    let _span = tracing::info_span!("recovery_auto");
     let mut attempts: Vec<serde_json::Value> = Vec::new();
     let mut status: &str = "failed";
     let mut failed_reason: Option<String> = None;
@@ -2742,7 +3323,7 @@ async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
 #[tauri::command]
 async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_export").entered();
+    let _span = tracing::info_span!("recovery_export");
     let state: State<'_, AppState> = app.state();
     let logs_dir = LOGS_DIR.clone();
     let integrity = reindex_and_integrity(&app).await.unwrap_or(false);
@@ -2782,7 +3363,7 @@ async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, Str
 
 async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("reindex_and_integrity").entered();
+    let _span = tracing::info_span!("reindex_and_integrity");
     let state: State<'_, AppState> = app.state();
     let status = state
         .db_rw
@@ -2806,7 +3387,7 @@ async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
 
 async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64>> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("last_checkpoint_ts").entered();
+    let _span = tracing::info_span!("last_checkpoint_ts");
     let state: State<'_, AppState> = app.state();
     let ts = state
         .db_rw
@@ -2828,7 +3409,7 @@ async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64
 
 async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compact_log_after_last_checkpoint").entered();
+    let _span = tracing::info_span!("compact_log_after_last_checkpoint");
     let Some(since) = last_checkpoint_ts(app).await? else {
         return Ok(0);
     };
@@ -2849,7 +3430,7 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
 
 async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("rollback_to_last_checkpoint").entered();
+    let _span = tracing::info_span!("rollback_to_last_checkpoint");
     let Some(since) = last_checkpoint_ts(app).await? else {
         return Ok(0);
     };

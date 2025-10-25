@@ -29,10 +29,19 @@ export default defineConfig({
     include: includePatterns,
   },
   resolve: {
-    alias: {
+    alias: [
       // Map Tauri FS calls to a test stub so adapter logic keeps working in jsdom.
-      "@tauri-apps/plugin-fs": resolve(__dirname, "tests/stubs/tauri-fs.ts"),
-      "@liquidglass/react": resolve(__dirname, "tests/stubs/liquidglass-react.tsx"),
+      { find: "@tauri-apps/plugin-fs", replacement: resolve(__dirname, "tests/stubs/tauri-fs.ts") },
+      { find: "@liquidglass/react", replacement: resolve(__dirname, "tests/stubs/liquidglass-react.tsx") },
+      { find: "@ops/lib/httpjail", replacement: resolve(__dirname, "../ops/code/lib/httpjail.mjs") },
+      { find: "@ops/lib/claude-tools", replacement: resolve(__dirname, "../ops/code/lib/claude-tools.mjs") },
+      // No bridge/tauri alias: tests rely on real module with @tauri-apps mocks
+      // No explicit bridge aliases: rely on @tauri-apps mocks + __TAURI_MOCKS__
+    ],
+  },
+  server: {
+    fs: {
+      allow: [resolve(__dirname, ".."), resolve(__dirname, "../ops"), resolve(__dirname, "../ops/code")],
     },
   },
 });

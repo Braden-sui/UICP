@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { readDir, readTextFile } from '@tauri-apps/plugin-fs';
 import { summarizeComputeJobs, useComputeStore } from '../state/compute';
 import { hasTauriBridge, inv } from '../lib/bridge/tauri';
 
@@ -38,6 +39,10 @@ const formatMs = (value?: number | null) => (value == null ? 'n/a' : `${Math.rou
 // Accessibility: treat as a lightweight dialog with ESC to close and focus management.
 const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
   const jobs = useComputeStore((s) => s.jobs);
+  const [tab, setTab] = useState<'compute' | 'code'>('compute');
+  const [codeJobs, setCodeJobs] = useState<Array<{ key: string; provider?: string; durationMs?: number; tokens?: string; risk?: string; containerName?: string }>>([]);
+  const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
+  const [selectedJobDetail, setSelectedJobDetail] = useState<{ artifact?: unknown; diffs?: { files: string[] } | null; transcript?: string; state?: { containerName?: string } | null } | null>(null);
   const [open, setOpen] = useState<boolean>(defaultOpen ?? false);
   const rootRef = useRef<HTMLDivElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
@@ -73,6 +78,104 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
+
+  // Load ops/code jobs (tmp/codejobs) periodically when Jobs tab is active
+  useEffect(() => {
+    if (!open || tab !== 'code') return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const dir = await readDir('tmp/codejobs').catch(() => []);
+        const entries = Array.isArray(dir) ? dir : [];
+        const keys = entries
+          .filter((e: unknown) => {
+            const rec = e as { path?: unknown; isDirectory?: unknown };
+            return typeof rec.path === 'string' && rec.isDirectory === true;
+          })
+          .map((e: unknown) => {
+            const rec = e as { name?: unknown; path?: unknown };
+            const name = typeof rec.name === 'string' ? rec.name : undefined;
+            const path = typeof rec.path === 'string' ? rec.path : '';
+            const baseName = path ? path.split(/[\\/]/).pop() : '';
+            return String(name ?? baseName);
+          })
+          .sort()
+          .reverse();
+        const next: Array<{ key: string; provider?: string; durationMs?: number; tokens?: string; risk?: string; containerName?: string }> = [];
+        for (const key of keys.slice(0, 20)) {
+          const base = `tmp/codejobs/${key}`;
+          const artifactTxt = await readTextFile(`${base}/artifact.json`).catch(() => '');
+          let provider: string | undefined;
+          let durationMs: number | undefined;
+          let tokensSummary: string | undefined;
+          if (artifactTxt) {
+            try {
+              const a = JSON.parse(artifactTxt);
+              provider = a?.metrics?.provider ?? a?.provider;
+              durationMs = a?.metrics?.durationMs;
+              const t = a?.metrics?.tokens;
+              if (t && (typeof t.input === 'number' || typeof t.output === 'number')) {
+                tokensSummary = `${t.input ?? 0}/${t.output ?? 0}`;
+              }
+            } catch (err) {
+              console.warn('devtools: parse artifact.json failed', err);
+            }
+          }
+          const stateTxt = await readTextFile(`${base}/state.json`).catch(() => '');
+          let containerName: string | undefined;
+          if (stateTxt) {
+            try { const s = JSON.parse(stateTxt); containerName = s?.containerName; } catch (err) { console.warn('devtools: parse state.json failed', err); }
+          }
+          const riskTxt = await readTextFile(`${base}/provider.raw.txt`).catch(() => '');
+          let risk: string | undefined;
+          if (riskTxt && riskTxt.includes('httpjail')) risk = undefined; // optimistic
+          next.push({ key, provider, durationMs, tokens: tokensSummary, risk, containerName });
+        }
+        if (!cancelled) setCodeJobs(next);
+      } catch (err) {
+        console.warn('devtools: load code jobs failed', err);
+      }
+    };
+    void load();
+    const id = window.setInterval(load, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, tab]);
+
+  const loadCodeJobDetail = async (key: string) => {
+    try {
+      const base = `tmp/codejobs/${key}`;
+      const [artifactTxt, diffsTxt, transcriptTxt, stateTxt] = await Promise.all([
+        readTextFile(`${base}/artifact.json`).catch(() => ''),
+        readTextFile(`${base}/diffs.json`).catch(() => ''),
+        readTextFile(`${base}/transcript.jsonl`).catch(() => ''),
+        readTextFile(`${base}/state.json`).catch(() => ''),
+      ]);
+      const detail: { artifact?: unknown; diffs?: { files: string[] } | null; transcript?: string; state?: { containerName?: string } | null } = {};
+      if (artifactTxt) try { detail.artifact = JSON.parse(artifactTxt); } catch (err) { console.warn('devtools: parse artifact.json failed', err); }
+      if (diffsTxt) try { detail.diffs = JSON.parse(diffsTxt); } catch { detail.diffs = null; }
+      if (transcriptTxt) detail.transcript = transcriptTxt.split('\n').slice(-200).join('\n');
+      if (stateTxt) try { detail.state = JSON.parse(stateTxt); } catch { detail.state = null; }
+      setSelectedJobKey(key);
+      setSelectedJobDetail(detail);
+    } catch (err) {
+      console.warn('devtools: load job detail failed', err);
+    }
+  };
+
+  const killSelectedJob = async () => {
+    if (!selectedJobDetail?.state?.containerName) return;
+    const name = selectedJobDetail.state.containerName as string;
+    const res = await inv<unknown>('kill_container', { container_name: name });
+    if (!res.ok) {
+      console.error('kill_container failed', res.error);
+      return;
+    }
+    // Trigger a refresh
+    setTimeout(() => void loadCodeJobDetail(selectedJobKey!), 1000);
+  };
 
   // Move focus to the panel when it opens for assistive tech. Restore by letting user control subsequent focus.
   useEffect(() => {
@@ -263,7 +366,23 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
           Close
         </button>
       </div>
-      {indicatorChips.length > 0 && (
+      <div className="mb-2 flex items-center gap-2 text-[11px]">
+        <button
+          className={`rounded border px-2 py-1 ${tab === 'compute' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 text-slate-700'}`}
+          aria-pressed={tab === 'compute'}
+          onClick={() => setTab('compute')}
+        >
+          Compute
+        </button>
+        <button
+          className={`rounded border px-2 py-1 ${tab === 'code' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 text-slate-700'}`}
+          aria-pressed={tab === 'code'}
+          onClick={() => setTab('code')}
+        >
+          Jobs
+        </button>
+      </div>
+      {tab === 'compute' && indicatorChips.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
           {indicatorChips.map((chip) => (
             <span
@@ -276,7 +395,7 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
           ))}
         </div>
       )}
-      {actionLogStats && (
+      {tab === 'compute' && actionLogStats && (
         <div className="mb-3 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
           <div className="rounded border border-slate-200 bg-slate-50/80 p-2">
             <div className="text-[9px] uppercase tracking-wide text-slate-500">Backpressure</div>
@@ -302,7 +421,7 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
           </div>
         </div>
       )}
-      {entries.length === 0 ? (
+      {tab === 'compute' && (entries.length === 0 ? (
         <div className="text-xs text-slate-500">No jobs yet.</div>
       ) : (
         <table className="w-full table-fixed border-collapse text-xs">
@@ -323,6 +442,7 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
               const loggerWaits = j.loggerThrottleWaits ?? 0;
               const partialWaits = j.partialThrottleWaits ?? 0;
               const durationLabel = formatMs(j.durationMs);
+              const queueWaitLabel = formatMs(j.queueWaitMs);
               const deadlineLabel = formatMs(j.deadlineMs);
               const remainingLabel = formatMs(j.remainingMsAtFinish);
               // INVARIANT: Wait counters default to zero so the panel never hides an overloaded channel.
@@ -386,8 +506,9 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
                           <div className="font-mono text-[10px] text-slate-700">partial: {partialWaits}</div>
                         </div>
                         <div className="rounded border border-amber-200 bg-amber-50/70 p-1">
-                          <div className="text-[9px] uppercase tracking-wide text-amber-600">Deadline</div>
+                          <div className="text-[9px] uppercase tracking-wide text-amber-600">Timing</div>
                           <div className="font-mono text-[10px] text-amber-700">target: {deadlineLabel}</div>
+                          <div className="font-mono text-[10px] text-amber-700">queue: {queueWaitLabel}</div>
                           <div className="font-mono text-[10px] text-amber-700">ran: {durationLabel}</div>
                           <div className="font-mono text-[10px] text-amber-700">remaining: {remainingLabel}</div>
                         </div>
@@ -399,8 +520,8 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
             })}
           </tbody>
         </table>
-      )}
-      {(
+      ))}
+      {tab === 'compute' && (
         logs.length > 0 || filterJobId || filterLevel
       ) && (
         <div className="mt-3 rounded border border-slate-200 bg-white">
@@ -464,6 +585,70 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+      {tab === 'code' && (
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="rounded border border-slate-200 bg-white p-2">
+            <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">Jobs</div>
+            {codeJobs.length === 0 ? (
+              <div className="text-xs text-slate-500">No code jobs found in tmp/codejobs.</div>
+            ) : (
+              <ul className="max-h-56 space-y-1 overflow-auto">
+                {codeJobs.map((j) => (
+                  <li key={j.key} className={`flex items-center justify-between gap-2 rounded border px-2 py-1 ${selectedJobKey === j.key ? 'border-slate-400 bg-slate-50' : 'border-slate-200 bg-white'}`}>
+                    <button className="truncate text-left text-[11px] text-slate-800" onClick={() => void loadCodeJobDetail(j.key)}>
+                      <div className="font-mono text-[10px] text-slate-500">{j.key.slice(0, 16)}</div>
+                      <div className="text-[11px]">{j.provider ?? 'unknown'} · {j.durationMs ? `${Math.round(j.durationMs)} ms` : '—'} · {j.tokens ?? '—'}</div>
+                    </button>
+                    {j.containerName && (
+                      <button className="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] text-rose-700 hover:bg-rose-100" onClick={() => void inv('kill_container', { container_name: j.containerName })}>
+                        KILL
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="rounded border border-slate-200 bg-white p-2">
+            <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500">
+              <span>Details</span>
+              {selectedJobDetail?.state?.containerName && (
+                <button className="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] text-rose-700 hover:bg-rose-100" onClick={killSelectedJob}>
+                  KILL
+                </button>
+              )}
+            </div>
+            {!selectedJobKey ? (
+              <div className="text-xs text-slate-500">Select a job to view details.</div>
+            ) : (
+              <div className="space-y-2">
+                {selectedJobDetail?.artifact !== undefined && selectedJobDetail?.artifact !== null && (
+                  <div className="rounded border border-slate-200 bg-slate-50 p-2">
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">artifact.json</div>
+                    <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] text-slate-800">{JSON.stringify(selectedJobDetail.artifact, null, 2)}</pre>
+                  </div>
+                )}
+                {selectedJobDetail?.diffs && (
+                  <div className="rounded border border-slate-200 bg-slate-50 p-2">
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">diffs.json</div>
+                    <ul className="list-disc pl-4 text-[11px] text-slate-800">
+                      {selectedJobDetail.diffs.files?.map((f) => (
+                        <li key={f}>{f}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {selectedJobDetail?.transcript && (
+                  <div className="rounded border border-slate-200 bg-slate-50 p-2">
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">transcript.jsonl (tail)</div>
+                    <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] text-slate-800">{selectedJobDetail.transcript}</pre>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

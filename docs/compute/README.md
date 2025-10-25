@@ -28,6 +28,12 @@
 - Clear Compute Cache UI is available in `uicp/src/components/AgentSettingsWindow.tsx` (invokes `clear_compute_cache`).
 - JavaScript execution path is production-ready: `applet.quickjs@0.1.0` loads bundled sources via `UICP_SCRIPT_SOURCE_B64`, `script.panel` manages state/view keys, integration coverage lives in `uicp/src-tauri/tests/integration_compute/quickjs_applet.rs`, the counter example ships in `examples/counter-applet/`, and `docs/compute/JS_EXECUTION_PATH.md` captures full architecture and constraints.
 
+## Code Providers
+
+- Contract for `needs.code` specs used by Codex/Claude: `docs/compute/CODE_PROVIDER_CONTRACT.md`
+
+ 
+
 ## Track C: Code Generation with Golden Cache (V2)
 
 - **Purpose**: Support deterministic code generation workflows with bit-exact output verification.
@@ -43,8 +49,8 @@
 
 | Task | WIT package | Export | Imports | Notes |
 | ---- | ----------- | ------ | ------- | ----- |
-| `csv.parse@1.2.0` | `uicp:task-csv-parse@1.2.0` (`components/csv.parse/csv-parse/wit/world.wit`) | `func run(job-id: string, input: string, has-header: bool) -> result<list<list<string>>, string>` | _None_ | Pure parser. Input is a `data:` URI (CSV text). Returns rows or a string error. |
-| `table.query@0.1.0` | `uicp:task-table-query@0.1.0` (`components/table.query/wit/world.wit`) | `func run(job-id: string, rows: list<list<string>>, select: list<u32>, where?: record { col: u32, needle: string }) -> result<list<list<string>>, string>` | `uicp:host/control`, `wasi:io/streams`, `wasi:clocks/monotonic-clock` | Relies on host control for partial logging/cancel checks. No filesystem or network imports are linked. |
+| `csv.parse@1.2.0` | `uicp:task-csv-parse@1.2.0` (`components/csv.parse/csv-parse/wit/world.wit`) | `func run(job-id: string, input: string, has-header: bool) -> result<list<list<string>>, string>` | `wasi:cli/{environment,exit,stdin,stdout,stderr}@0.2.3`, `wasi:io/{error,streams}@0.2.3`, `wasi:clocks/wall-clock@0.2.3`, `wasi:filesystem/{preopens,types}@0.2.3` | Pure parser. Input is a `data:` URI (CSV text). Returns rows or a string error. |
+| `table.query@0.1.0` | `uicp:task-table-query@0.1.0` (`components/table.query/wit/world.wit`) | `func run(job-id: string, rows: list<list<string>>, select: list<u32>, where?: record { col: u32, needle: string }) -> result<list<list<string>>, string>` | csv.parse set + `uicp:host/control@1.0.0`, `uicp:task-table-query/types@0.1.0`, `wasi:clocks/monotonic-clock@0.2.3`, `wasi:io/error@0.2.8`, `wasi:io/streams@0.2.8` | Relies on host control for partial logging/cancel checks. Streams API is used for partial progress frames. |
 | `script.*@x.y.z` | `uicp:applet-script@0.1.0` (`src-tauri/wit/script.world.wit`) | `render(state) -> result<string,string>`, `on-event(action,payload,state) -> result<string,string>`, `init() -> result<string,string>` | _None_ | Backed by in-process JS runtime (`script.hello` stub or `applet.quickjs@0.1.0`). Bundled JS must assign exports to `globalThis.__uicpApplet` (use `pnpm run bundle:applet`). |
 
 
@@ -52,12 +58,13 @@ Host shims:
 
 - `uicp:host/control` exposes `should_cancel(job)`, `deadline_ms(job)`, `remaining_ms(job)`, and `open_partial_sink(job)` for structured log frames.
 - `wasi:logging/logging` is mapped to `compute-result-partial` events with rate limiting.
-- `wasi:io/streams` is limited to the stream returned by `open_partial_sink`; no other stdio is linked.
-- `wasi:clocks/monotonic-clock` provides a deterministic `now` view—exposed via the host deadline tracker.
+- `wasi:cli/*` is wired through `wasmtime-wasi`; stdio pipes default to empty handles and exit traps back into the host.
+- `wasi:io/streams` is limited to the partial sink handle opened via `uicp:host/control`; component stdio sees inert pipes unless the host binds sinks explicitly.
+- `wasi:clocks/monotonic-clock` provides a deterministic `now` view via the host deadline tracker.
 
 Capability guardrails:
 
-- No ambient filesystem (`wasi:filesystem`) or network (`wasi:http`) imports are linked in V1; granting those requires explicit policy updates and new component versions.
+- Filesystem imports are linked but no directories are preopened, so guests observe an empty namespace. Network (`wasi:http`) remains unavailable.
 - Modules must execute within 30 s by default (`timeoutMs` gate) and 256 MB of linear memory unless `capabilities.longRun` / `capabilities.memHigh` are set.
 - The host derives a stable RNG seed per `(jobId, envHash)` and reports it via `metrics.rngSeedHex`; repeated runs with identical inputs must yield identical `outputHash` values.
 
@@ -248,6 +255,12 @@ Safety and guardrails:
   - Command: `clear_compute_cache(workspace_id?: String)`.
   - UI: Agent Settings → "Clear Cache" (clears `default`).
 
+## Operator configuration: job tokens
+
+- Enforcement is operator-managed. Enable verification via `UICP_REQUIRE_TOKENS=1` in production environments.
+- Set `UICP_JOB_TOKEN_KEY_HEX` to a 32-byte hex key to keep tokens valid across restarts. If unset, the host generates a random ephemeral key at boot (tokens from prior runs won't verify after restart).
+- The frontend already mints tokens when `provenance.envHash` is provided; no UI changes are needed. Tokens are verified early in `compute_call` and failures surface as `Compute.CapabilityDenied` with code `E-UICP-0701`.
+
 ## Troubleshooting
 
 - See `docs/compute/troubleshooting.md` for errors such as `Task.NotFound`, digest mismatches, and `CapabilityDenied`.
@@ -265,8 +278,47 @@ Safety and guardrails:
 
 - Wasmtime 37 notes and validation checklist: `docs/compute/WASMTIME_UPGRADE_STATUS.md`.
 
-
 ## Code Provider Sandbox and Router
 
 Operational artifacts live under `ops/code/`: provider container configs, egress allowlist (for httpjail), policy matrix, a Node orchestrator (`ops/code/run-job.mjs`), a JS/TS validator, and an assembler that bundles to `applet.quickjs@0.1.0`. Default network is off; Linux runners recommended for httpjail.
 
+### Container hardening (baseline)
+
+- Runtime flags enforced by the orchestrator (`buildContainerCmd`): `--memory`, `--memory-swap`, `--cpus`, `--pids-limit 256`, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`.
+- Minimal capabilities are only added when the firewall is active: `--cap-add NET_ADMIN --cap-add NET_RAW` (iptables needs both).
+- Writable tmpfs mounts injected by default for read-only rootfs operation: `/tmp` (mode 1777), `/var/tmp` (mode 1777), `/run` (xtables lock), `/home/app` (uid/gid 10001, mode 0700).
+- Images run as non-root user `app` (uid/gid 10001); HOME is `/home/app`.
+
+### Firewall toggle + strict capability mode
+
+- Desktop Agent Settings → **Container Security** exposes two persisted preferences (Zustand store):
+  - **Disable container firewall (iptables)** → sets `UICP_DISABLE_FIREWALL=1`, propagates to orchestrator and injects `DISABLE_FIREWALL=1` into the container entrypoint. Result: iptables skip + no `--cap-add`.
+  - **Strict capability minimization** → sets `UICP_STRICT_CAPS=1`, ensuring NET_ADMIN/NET_RAW are never added even if firewall is enabled (for external egress control or alternate network policies).
+- CLI/CI overrides use the same env vars (`UICP_DISABLE_FIREWALL`, `UICP_STRICT_CAPS`).
+- Entry script `with-firewall.sh` logs whenever the firewall is skipped (env toggle or missing permissions) so operators can confirm enforcement.
+
+### httpjail + allowlists
+
+- httpjail remains the application-layer allowlist guard. When the firewall is disabled, httpjail still constrains outbound requests to the authorized hosts + methods defined in provider configs.
+- Providers without httpjail still run under read-only rootfs and capability drops; use the firewall toggle judiciously.
+
+### UI in-app egress guard (process-level)
+
+- The desktop UI enforces an in-app network guard for egress originating from the application itself (fetch/XMLHttpRequest/WebSocket/EventSource/sendBeacon).
+- Defaults: blocks metadata IPs (e.g., 169.254.169.254), common DoH domains (dns.google, cloudflare-dns.com, etc.), IPv6 fd00:ec2::254, and port 853 (DoT/QUIC).
+- Environment (Vite, read at build/runtime):
+  - `VITE_NET_GUARD_ENABLED` (default 1) — enable/disable guard.
+  - `VITE_NET_GUARD_MONITOR` (default 0) — monitor-only; logs and toasts but does not block.
+  - `VITE_GUARD_VERBOSE` (default 0) — verbose logging of blocks.
+  - `VITE_GUARD_ALLOW_DOMAINS`, `VITE_GUARD_BLOCK_DOMAINS` — CSV of domains.
+  - `VITE_GUARD_ALLOW_IPS`, `VITE_GUARD_BLOCK_IPS` — CSV of IPs.
+- Observability: emits `ui-debug-log` events with `net_guard_block` details and pushes a rate-limited toast per unique block key.
+
+### Provider network gating
+
+- Provider egress is disabled unless `UICP_ALLOW_NET=1` (truthy forms accepted). When enabled, provider traffic remains constrained by httpjail allowlists.
+- Allowlist location override: `UICP_HTTPJAIL_ALLOWLIST`.
+
+### Ops-only firewall scripts (clarification)
+
+- Any host-level firewall scripts and configs under `ops/code/network/` are for operators/CI only and are not executed by the desktop app by default.

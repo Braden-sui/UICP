@@ -142,12 +142,15 @@ impl ComputeTestHarness {
             ongoing: RwLock::new(std::collections::HashMap::new()),
             compute_ongoing: RwLock::new(std::collections::HashMap::new()),
             compute_sem: Arc::new(Semaphore::new(2)),
+            codegen_sem: Arc::new(Semaphore::new(2)),
+            wasm_sem: Arc::new(Semaphore::new(2)),
             compute_cancel: RwLock::new(std::collections::HashMap::new()),
             safe_mode: RwLock::new(false),
             safe_reason: RwLock::new(None),
             circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
             circuit_config: crate::core::CircuitBreakerConfig::from_env(),
             action_log,
+            job_token_key: [0u8; 32],
         };
 
         // database initialized above
@@ -193,21 +196,25 @@ impl ComputeTestHarness {
         let handler_job_id = job_id.clone();
         let handler_tx = Arc::clone(&tx_arc);
 
-        let listener_id = self.app.listen("compute-result-final", move |event| {
-            if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
-                if value
-                    .get("jobId")
-                    .and_then(|v| v.as_str())
-                    .map(|id| id == handler_job_id)
-                    .unwrap_or(false)
-                {
-                    if let Some(sender) = handler_tx.lock().ok().and_then(|mut guard| guard.take())
-                    {
-                        let _ = sender.send(value);
+        let listener_id =
+            self.app
+                .listen(crate::events::EVENT_COMPUTE_RESULT_FINAL, move |event| {
+                    if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
+                        let job_matches = value
+                            .get("jobId")
+                            .or_else(|| value.get("job_id"))
+                            .and_then(|v| v.as_str())
+                            .map(|id| id == handler_job_id)
+                            .unwrap_or(false);
+                        if job_matches {
+                            if let Some(sender) =
+                                handler_tx.lock().ok().and_then(|mut guard| guard.take())
+                            {
+                                let _ = sender.send(value);
+                            }
+                        }
                     }
-                }
-            }
-        });
+                });
 
         let state: tauri::State<'_, AppState> = self.app.state();
         if let Err(err) =
@@ -226,12 +233,7 @@ impl ComputeTestHarness {
         self.app.unlisten(listener_id);
 
         match result {
-            Ok(Ok(value)) => {
-                if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                    eprintln!("compute-result-final (error): {value}");
-                }
-                Ok(value)
-            }
+            Ok(Ok(value)) => Ok(value),
             Ok(Err(err)) => Err(err),
             Err(err) => Err(err),
         }

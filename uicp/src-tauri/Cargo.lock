@@ -6023,6 +6023,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "cc",
  "chrono",
  "ciborium",
  "dashmap",
@@ -6032,6 +6033,7 @@ dependencies = [
  "embed-resource 2.5.2",
  "filetime",
  "hex",
+ "hmac",
  "keyring",
  "once_cell",
  "parking_lot",
@@ -6060,6 +6062,7 @@ dependencies = [
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppSelector } from '../state/app';
-import { createId } from '../lib/utils';
+import { newUuid } from '../lib/utils';
 import { useComputeStore } from '../state/compute';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
 import { getComputeBridge } from '../lib/bridge/globals';
@@ -59,7 +59,7 @@ const ComputeDemoWindow = () => {
         return;
       }
       const csv = 'name,qty\nalpha,1\nbravo,2\ncharlie,3\n';
-      const jobId = createId('job');
+      const jobId = newUuid();
       setLastJobId(jobId);
       const spec: JobSpec = {
         jobId,
@@ -99,7 +99,7 @@ const ComputeDemoWindow = () => {
         ['bob', 'boston'],
         ['carol', 'chicago'],
       ];
-      const jobId = createId('job');
+      const jobId = newUuid();
       setLastJobId(jobId);
       const spec: JobSpec = {
         jobId,
@@ -133,7 +133,7 @@ const ComputeDemoWindow = () => {
         setLast({ ok: false, message: 'Bridge unavailable' });
         return;
       }
-      const jobId = createId('job');
+      const jobId = newUuid();
       setLastJobId(jobId);
       const spec: JobSpec = {
         jobId,
@@ -173,13 +173,46 @@ const ComputeDemoWindow = () => {
     try {
       const selected = await openDialog({ multiple: false });
       if (!selected || Array.isArray(selected)) return;
-      const path = String(selected);
-      setWsPath(path.startsWith('ws:') ? path : `ws:/files/${path.split(/[\\/]/).pop()}`);
+      const srcPath = String(selected);
+      if (!hasTauriBridge()) {
+        // Fallback: if no Tauri, just show a hint path (does not actually import)
+        setWsPath(srcPath.startsWith('ws:') ? srcPath : `ws:/files/${srcPath.split(/[\\/]/).pop()}`);
+        pushToast({ variant: 'info', message: 'Bridge unavailable: path set but file not imported' });
+        return;
+      }
+      const wsRef = await tauriInvoke<string>('copy_into_files', { srcPath });
+      if (typeof wsRef === 'string' && wsRef.startsWith('ws:/')) {
+        setWsPath(wsRef);
+        pushToast({ variant: 'success', message: `Imported to ${wsRef}` });
+      } else {
+        pushToast({ variant: 'error', message: 'Import failed: invalid response' });
+      }
     } catch (err) {
       pushToast({ variant: 'error', message: `Import failed: ${(err as Error)?.message ?? String(err)}` });
     }
   }, [setWsPath, pushToast]);
 
+  const exportWorkspaceFile = useCallback(async () => {
+    try {
+      if (!wsPath || !wsPath.startsWith('ws:/files/')) {
+        pushToast({ variant: 'error', message: 'Set a ws:/files path first' });
+        return;
+      }
+      // Pick a destination path using save dialog
+      const dlg = await import('@tauri-apps/plugin-dialog');
+      const baseName = wsPath.split('/').pop() ?? 'export.dat';
+      const destPath = await dlg.save({ defaultPath: baseName });
+      if (!destPath || Array.isArray(destPath)) return;
+      if (!hasTauriBridge()) {
+        pushToast({ variant: 'error', message: 'Export requires the Tauri runtime' });
+        return;
+      }
+      const finalPath = await tauriInvoke<string>('export_from_files', { wsPath, destPath });
+      pushToast({ variant: 'success', message: `Exported to ${finalPath}` });
+    } catch (err) {
+      pushToast({ variant: 'error', message: `Export failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [wsPath, pushToast]);
 
   return (
     <DesktopWindow
@@ -237,6 +270,13 @@ const ComputeDemoWindow = () => {
             onClick={openFilesFolder}
           >
             Open Files Folder
+          </button>
+          <button
+            type="button"
+            className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+            onClick={exportWorkspaceFile}
+          >
+            Export ws:/ file…
           </button>
           <button
             type="button"

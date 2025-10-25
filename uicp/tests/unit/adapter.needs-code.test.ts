@@ -7,11 +7,16 @@ vi.mock('../../src/lib/telemetry', () => ({
 import type { CommandExecutorDeps } from '../../src/lib/uicp/adapters/adapter.commands';
 import { createCommandTable } from '../../src/lib/uicp/adapters/adapter.commands';
 import { emitTelemetryEvent } from '../../src/lib/telemetry';
+import { useProviderStore } from '../../src/state/providers';
 
 describe('needs.code executor', () => {
   afterEach(() => {
     delete (window as unknown as { uicpComputeCall?: unknown }).uicpComputeCall;
     vi.clearAllMocks();
+    const store = useProviderStore.getState();
+    store.setEnableBoth(true);
+    store.setDefaultProvider('auto');
+    store.resetAll();
   });
 
   it('persists artifact state and renders install panel on success', async () => {
@@ -34,9 +39,11 @@ describe('needs.code executor', () => {
     }));
 
     let dispatchedJobId: string | undefined;
+    let dispatchedSpec: any;
 
     (window as any).uicpComputeCall = vi.fn(async (spec: any) => {
       dispatchedJobId = spec.jobId;
+      dispatchedSpec = spec;
       setTimeout(() => {
         window.dispatchEvent(
           new CustomEvent('uicp-compute-final', {
@@ -71,7 +78,7 @@ describe('needs.code executor', () => {
           stateKey: 'panels.panel-demo.view',
         },
       },
-    } as unknown as import('../../src/lib/schema').Envelope;
+    } as unknown as import('../../src/lib/schema').Envelope<'needs.code'>;
 
     const result = await executor.execute(command, { runId: 'run-1' }, {
       executeDomSet,
@@ -83,6 +90,18 @@ describe('needs.code executor', () => {
     expect(result.success).toBe(true);
     expect(window.uicpComputeCall).toHaveBeenCalledTimes(1);
     expect(dispatchedJobId).toBeDefined();
+    expect(dispatchedSpec.input.provider).toBe('auto');
+    expect(dispatchedSpec.input.strategy).toBe('sequential-fallback');
+    expect(dispatchedSpec.input.install).toEqual({
+      panelId: 'panel-demo',
+      windowId: 'app-window',
+      target: '#root',
+      stateKey: 'panels.panel-demo.view',
+    });
+    expect(dispatchedSpec.capabilities.net).toEqual([
+      'https://api.openai.com',
+      'https://api.anthropic.com',
+    ]);
 
     // Allow final handler to settle
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -132,4 +151,109 @@ describe('needs.code executor', () => {
       }),
     );
   });
+
+  it('applies provider-specific network allowlists', async () => {
+    const table = createCommandTable();
+    const executor = table['needs.code'];
+    const baselineCommand = {
+      op: 'needs.code',
+      params: {
+        spec: 'Generate widget',
+        language: 'ts',
+      },
+    } as unknown as import('../../src/lib/schema').Envelope<'needs.code'>;
+
+    const dispatches: any[] = [];
+    (window as any).uicpComputeCall = vi.fn(async (spec: any) => {
+      dispatches.push(spec);
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('uicp-compute-final', {
+            detail: {
+              ok: false,
+              jobId: spec.jobId,
+              task: spec.task,
+              code: 'Compute.Cancelled',
+              message: 'cancelled for test',
+            },
+          }),
+        );
+      }, 0);
+    });
+
+    await executor.execute(
+      ({
+        ...baselineCommand,
+        params: { ...baselineCommand.params, provider: 'codex' },
+      } as unknown) as import('../../src/lib/schema').Envelope<'needs.code'>,
+      {},
+      {},
+    );
+    await executor.execute(
+      ({
+        ...baselineCommand,
+        params: { ...baselineCommand.params, provider: 'claude', providers: ['claude'] },
+      } as unknown) as import('../../src/lib/schema').Envelope<'needs.code'>,
+      {},
+      {},
+    );
+    await executor.execute(
+      ({
+        ...baselineCommand,
+        params: {
+          ...baselineCommand.params,
+          providers: ['codex', 'claude'],
+          caps: { net: ['https://api.openai.com/v1/chat', 'https://malicious.example.com'] },
+        },
+      } as unknown) as import('../../src/lib/schema').Envelope<'needs.code'>,
+      {},
+      {},
+    );
+
+    expect(dispatches).toHaveLength(3);
+    expect(dispatches[0].capabilities.net).toEqual(['https://api.openai.com']);
+    expect(dispatches[1].capabilities.net).toEqual(['https://api.anthropic.com']);
+    expect(dispatches[2].capabilities.net).toEqual(['https://api.openai.com/v1/chat', 'https://api.anthropic.com']);
+  });
+  it('respects provider store defaults when planner leaves provider unset', async () => {
+    const table = createCommandTable();
+    const executor = table['needs.code'];
+    const baselineCommand = {
+      op: 'needs.code',
+      params: {
+        spec: 'Generate widget',
+        language: 'ts',
+      },
+    } as unknown as import('../../src/lib/schema').Envelope<'needs.code'>;
+
+    const store = useProviderStore.getState();
+    store.setEnableBoth(false);
+    store.setDefaultProvider('claude');
+    store.resetAll();
+
+    const dispatches: any[] = [];
+    (window as any).uicpComputeCall = vi.fn(async (spec: any) => {
+      dispatches.push(spec);
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('uicp-compute-final', {
+            detail: {
+              ok: false,
+              jobId: spec.jobId,
+              task: spec.task,
+              code: 'Compute.Cancelled',
+              message: 'cancelled for test',
+            },
+          }),
+        );
+      }, 0);
+    });
+
+    await executor.execute(baselineCommand, {}, {});
+
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].input.provider).toBe('claude');
+    expect(dispatches[0].capabilities.net).toEqual(['https://api.anthropic.com']);
+  });
 });
+

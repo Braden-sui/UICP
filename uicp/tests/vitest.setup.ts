@@ -1,4 +1,4 @@
-﻿// Extend Vitest expect with Testing Library matchers.
+// Extend Vitest expect with Testing Library matchers.
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, vi } from "vitest";
 
@@ -52,3 +52,6 @@ beforeEach(() => {
     }
   }
 });
+
+// Note: We do not mock the tauri bridge module here; instead we mock @tauri-apps
+// and provide window.__TAURI__ so hasTauriBridge() returns true during tests.

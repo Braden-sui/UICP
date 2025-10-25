@@ -58,7 +58,7 @@ const DesktopMenuBar = ({ menus }: DesktopMenuBarProps) => {
   return (
     <div
       ref={barRef}
-      className="pointer-events-auto absolute left-0 right-0 top-0 z-50 flex items-center gap-2 bg-white/80 px-4 py-2 text-xs font-semibold text-slate-600 shadow-sm backdrop-blur"
+      className="pointer-events-auto absolute left-0 right-0 top-0 z-50 flex items-center gap-2 border-b border-white/20 bg-white/10 px-4 py-2 text-xs font-semibold text-slate-900 shadow-sm backdrop-blur-xl backdrop-saturate-150"
       role="menubar"
     >
       {menus.map((menu) => {
@@ -68,8 +68,8 @@ const DesktopMenuBar = ({ menus }: DesktopMenuBarProps) => {
             <button
               type="button"
               className={clsx(
-                'rounded px-2 py-1 transition-all duration-200 hover:bg-white/80 active:scale-95 focus:outline-none focus:ring-2 focus:ring-slate-300',
-                expanded && 'bg-white/80',
+                'rounded-lg px-2 py-1 transition-all duration-200 hover:bg-white/25 active:scale-95 focus:outline-none focus:ring-2 focus:ring-white/30 drop-shadow-sm',
+                expanded && 'bg-white/25',
               )}
               aria-haspopup="true"
               aria-expanded={expanded}
@@ -80,7 +80,7 @@ const DesktopMenuBar = ({ menus }: DesktopMenuBarProps) => {
             {expanded && (
               <div
                 role="menu"
-                className="absolute left-0 top-full mt-1 min-w-[160px] rounded-lg border border-slate-200 bg-white/95 p-1 text-slate-700 shadow-xl"
+                className="absolute left-0 top-full mt-1 min-w-[160px] rounded-2xl border border-white/30 bg-white/15 backdrop-blur-xl backdrop-saturate-150 p-1 text-slate-900 shadow-xl"
               >
                 {menu.actions.map((action) => (
                   <button
@@ -90,10 +90,10 @@ const DesktopMenuBar = ({ menus }: DesktopMenuBarProps) => {
                     disabled={action.disabled}
                     onClick={() => handleAction(menu.id, action.id)}
                     className={clsx(
-                      'flex w-full items-center justify-between rounded px-3 py-1 text-left text-xs transition-all duration-200',
+                      'flex w-full items-center justify-between rounded-xl px-3 py-1 text-left text-xs transition-all duration-200 drop-shadow-sm',
                       action.disabled
-                        ? 'cursor-not-allowed text-slate-300'
-                        : 'hover:bg-slate-100 hover:text-slate-900 active:scale-95',
+                        ? 'cursor-not-allowed text-slate-400'
+                        : 'hover:bg-white/25 hover:text-slate-900 active:scale-95',
                     )}
                   >
                     <span>{action.label}</span>

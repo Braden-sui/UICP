@@ -11,6 +11,17 @@ import {
 } from '../lib/llm/profiles';
 import type { PlannerProfileKey, ActorProfileKey, ReasoningEffort } from '../lib/llm/profiles';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
+import {
+  useProviderSelector,
+  type ProviderHealthPayload,
+  type ProviderLoginPayload,
+  type ProviderName,
+  type ProviderStatus,
+} from '../state/providers';
+import {
+  usePreferencesStore,
+  type CodegenDefaultProvider,
+} from '../state/preferences';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -19,6 +30,48 @@ const REASONING_OPTIONS: ReadonlyArray<{ value: ReasoningEffort; label: string; 
   { value: 'medium', label: 'Medium', helper: 'Balanced reasoning depth and latency.' },
   { value: 'high', label: 'High', helper: 'Deepest reasoning (default).' },
 ];
+
+const PROVIDER_INFO: Record<
+  ProviderName,
+  { label: string; description: string; connectLabel: string; healthLabel: string }
+> = {
+  codex: {
+    label: 'OpenAI Codex CLI',
+    description: 'Uses codex CLI login or OPENAI_API_KEY when available.',
+    connectLabel: 'Connect Codex',
+    healthLabel: 'Check Codex',
+  },
+  claude: {
+    label: 'Anthropic Claude CLI',
+    description: 'Relies on claude CLI with keychain login when no API key is set.',
+    connectLabel: 'Connect Claude',
+    healthLabel: 'Check Claude',
+  },
+};
+
+const describeStatus = (
+  status: ProviderStatus,
+): { label: string; className: string } => {
+  switch (status.state) {
+    case 'connected':
+      return { label: 'Connected', className: 'text-emerald-600' };
+    case 'connecting':
+      return { label: 'Connecting...', className: 'text-slate-600' };
+    case 'checking':
+      return { label: 'Checking...', className: 'text-slate-600' };
+    case 'error':
+      return { label: 'Not connected', className: 'text-rose-600' };
+    default:
+      return { label: 'Not checked', className: 'text-slate-500' };
+  }
+};
+
+const normalizeDetail = (detail?: string): string | undefined => {
+  if (!detail) return undefined;
+  const trimmed = detail.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > 220 ? `${trimmed.slice(0, 217)}...` : trimmed;
+};
 
 const AgentSettingsWindow = () => {
   const agentSettingsOpen = useAppSelector((state) => state.agentSettingsOpen);
@@ -35,9 +88,243 @@ const AgentSettingsWindow = () => {
   const setPlannerTwoPhaseEnabled = useAppSelector((state) => state.setPlannerTwoPhaseEnabled);
   const safeMode = useAppSelector(selectSafeMode);
   const setSafeMode = useAppSelector((state) => state.setSafeMode);
+  const defaultProviderPreference = usePreferencesStore((state) => state.defaultProvider);
+  const setDefaultProviderPreference = usePreferencesStore((state) => state.setDefaultProvider);
+  const runBothByDefault = usePreferencesStore((state) => state.runBothByDefault);
+  const setRunBothByDefault = usePreferencesStore((state) => state.setRunBothByDefault);
+  const firewallDisabled = usePreferencesStore((state) => state.firewallDisabled);
+  const setFirewallDisabledPref = usePreferencesStore((state) => state.setFirewallDisabled);
+  const strictCaps = usePreferencesStore((state) => state.strictCaps);
+  const setStrictCapsPref = usePreferencesStore((state) => state.setStrictCaps);
+  const codexStatus = useProviderSelector((state) => state.statuses.codex);
+  const claudeStatus = useProviderSelector((state) => state.statuses.claude);
+  const codexModel = useProviderSelector((state) => state.settings.codexModel);
+  const claudeModel = useProviderSelector((state) => state.settings.claudeModel);
+  const beginConnect = useProviderSelector((state) => state.beginConnect);
+  const completeConnect = useProviderSelector((state) => state.completeConnect);
+  const beginHealthCheck = useProviderSelector((state) => state.beginHealthCheck);
+  const completeHealthCheck = useProviderSelector((state) => state.completeHealthCheck);
+  const failProvider = useProviderSelector((state) => state.fail);
+  const setCodexModel = useProviderSelector((state) => state.setCodexModel);
+  const setClaudeModel = useProviderSelector((state) => state.setClaudeModel);
+  const bridgeAvailable = hasTauriBridge();
+  const devMode = import.meta.env.DEV === true;
+  const [installingProvider, setInstallingProvider] = useState<ProviderName | null>(null);
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
+
+  // Proxy settings
+  const [proxyHttps, setProxyHttps] = useState<string>('');
+  const [proxyNoProxy, setProxyNoProxy] = useState<string>('');
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    (async () => {
+      try {
+        const res = (await tauriInvoke('get_proxy_env')) as { https?: string; http?: string; noProxy?: string };
+        setProxyHttps(res?.https ?? '');
+        setProxyNoProxy(res?.noProxy ?? '');
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+
+  // Keep container security env in sync with preferences
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    (async () => {
+      try {
+        await tauriInvoke('set_env_var', { name: 'UICP_DISABLE_FIREWALL', value: firewallDisabled ? '1' : null });
+        await tauriInvoke('set_env_var', { name: 'UICP_STRICT_CAPS', value: strictCaps ? '1' : null });
+      } catch {
+        // ignore in UI; toggles still apply on change
+      }
+    })();
+  }, [firewallDisabled, strictCaps]);
+
+  const handleFirewallToggle = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const disabled = event.target.checked;
+      setFirewallDisabledPref(disabled);
+      if (!hasTauriBridge()) return;
+      try {
+        await tauriInvoke('set_env_var', { name: 'UICP_DISABLE_FIREWALL', value: disabled ? '1' : null });
+        useAppStore.getState().pushToast({ variant: 'info', message: disabled ? 'Container firewall disabled' : 'Container firewall enabled' });
+      } catch (err) {
+        useAppStore.getState().pushToast({ variant: 'error', message: `Toggle failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [setFirewallDisabledPref],
+  );
+
+  const handleStrictCapsToggle = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const enabled = event.target.checked;
+      setStrictCapsPref(enabled);
+      if (!hasTauriBridge()) return;
+      try {
+        await tauriInvoke('set_env_var', { name: 'UICP_STRICT_CAPS', value: enabled ? '1' : null });
+        useAppStore.getState().pushToast({ variant: 'info', message: enabled ? 'Strict capability minimization enabled' : 'Strict capability minimization disabled' });
+      } catch (err) {
+        useAppStore.getState().pushToast({ variant: 'error', message: `Toggle failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [setStrictCapsPref],
+  );
+  const handleApplyProxy = useCallback(async () => {
+    if (!hasTauriBridge()) {
+      useAppStore.getState().pushToast({ variant: 'error', message: 'Proxy apply requires the desktop runtime' });
+      return;
+    }
+    try {
+      await tauriInvoke('set_proxy_env', { https: proxyHttps, no_proxy: proxyNoProxy });
+      useAppStore.getState().pushToast({ variant: 'success', message: 'Proxy settings applied' });
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Apply failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [proxyHttps, proxyNoProxy]);
+
+  // Resolved paths (dev-only UI)
+  const [resolvedPaths, setResolvedPaths] = useState<Record<ProviderName, { exe?: string; via?: string }>>({} as Record<ProviderName, { exe?: string; via?: string }>);
+  const refreshResolved = useCallback(async (provider: ProviderName) => {
+    if (!hasTauriBridge()) return;
+    try {
+      const res = (await tauriInvoke('provider_resolve', { provider })) as { exe?: string; via?: string };
+      setResolvedPaths((prev) => ({ ...prev, [provider]: { exe: res?.exe, via: res?.via } }));
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Resolve failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, []);
+  useEffect(() => {
+    if (!devMode || !hasTauriBridge()) return;
+    void refreshResolved('codex');
+    void refreshResolved('claude');
+  }, [devMode, refreshResolved]);
+
+  // Wizard: API key inputs
+  const [openaiKey, setOpenaiKey] = useState<string>("");
+  const [anthropicKey, setAnthropicKey] = useState<string>("");
+  const saveProviderKey = useCallback(
+    async (provider: 'openai' | 'anthropic', key: string) => {
+      if (!hasTauriBridge()) {
+        useAppStore.getState().pushToast({ variant: 'error', message: 'Saving keys requires the desktop runtime' });
+        return;
+      }
+      try {
+        await tauriInvoke('save_provider_api_key', { provider, key });
+        useAppStore.getState().pushToast({ variant: 'success', message: `${provider} key saved to OS keychain` });
+      } catch (err) {
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `Save failed: ${(err as Error)?.message ?? String(err)}` });
+      }
+    },
+    [],
+  );
+
+  const handleProviderHealth = useCallback(
+    async (provider: ProviderName) => {
+      const info = PROVIDER_INFO[provider];
+      if (!hasTauriBridge()) {
+        failProvider(provider, 'Desktop bridge unavailable');
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} health check requires the desktop runtime` });
+        return;
+      }
+      beginHealthCheck(provider);
+      try {
+        const raw = (await tauriInvoke('provider_health', { provider })) as ProviderHealthPayload | undefined;
+        const payload: ProviderHealthPayload = {
+          ok: !!raw?.ok,
+          version:
+            typeof raw?.version === 'string' && raw.version.trim().length > 0
+              ? raw.version.trim()
+              : undefined,
+          detail: typeof raw?.detail === 'string' ? raw.detail : undefined,
+        };
+        completeHealthCheck(provider, payload);
+        useAppStore.getState().pushToast(
+          payload.ok
+            ? {
+                variant: 'success',
+                message: `${info.label} health check succeeded${payload.version ? ` (${payload.version})` : ''}`,
+              }
+            : {
+                variant: 'error',
+                message:
+                  payload.detail && payload.detail.trim().length > 0
+                    ? `${info.label} health check failed: ${payload.detail}`
+                    : `${info.label} health check failed`,
+              },
+        );
+      } catch (error) {
+        const message = (error as Error)?.message ?? String(error);
+        failProvider(provider, message);
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} health check failed: ${message}` });
+      }
+    },
+    [beginHealthCheck, completeHealthCheck, failProvider],
+  );
+
+  const handleStrictHealth = useCallback(async () => {
+    if (!hasTauriBridge()) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: 'Health check requires the desktop runtime' });
+      return;
+    }
+    try {
+      await tauriInvoke('set_env_var', { name: 'UICP_HEALTH_STRICT', value: '1' });
+      await handleProviderHealth('codex');
+      await handleProviderHealth('claude');
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Strict health failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [handleProviderHealth]);
+
+  const handleStandardHealth = useCallback(async () => {
+    if (!hasTauriBridge()) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: 'Health check requires the desktop runtime' });
+      return;
+    }
+    try {
+      // Unset strict mode and run non-strict provider health checks
+      await tauriInvoke('set_env_var', { name: 'UICP_HEALTH_STRICT', value: null });
+      await handleProviderHealth('codex');
+      await handleProviderHealth('claude');
+    } catch (err) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: `Standard health failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, [handleProviderHealth]);
+
+  const handlePullImage = useCallback(async (provider: ProviderName) => {
+    if (!hasTauriBridge()) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: 'Image pull requires the desktop runtime' });
+      return;
+    }
+    try {
+      const res = (await tauriInvoke('provider_pull_image', { provider })) as { image?: string; runtime?: string };
+      const image = res?.image || '<unknown>';
+      const runtime = res?.runtime || '<runtime>';
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'success', message: `Pulled ${image} via ${runtime}` });
+    } catch (err) {
+      useAppStore
+        .getState()
+        .pushToast({ variant: 'error', message: `Pull failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, []);
 
   const handlePlannerChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
@@ -72,6 +359,107 @@ const AgentSettingsWindow = () => {
     [setActorReasoningEffort],
   );
 
+  const handleEnableBothChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setRunBothByDefault(event.target.checked);
+    },
+    [setRunBothByDefault],
+  );
+
+  const handleDefaultProviderChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      setDefaultProviderPreference(event.target.value as CodegenDefaultProvider);
+    },
+    [setDefaultProviderPreference],
+  );
+
+  const handleProviderConnect = useCallback(
+    async (provider: ProviderName) => {
+      const info = PROVIDER_INFO[provider];
+      if (!hasTauriBridge()) {
+        failProvider(provider, 'Desktop bridge unavailable');
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} login requires the desktop runtime` });
+        return;
+      }
+      beginConnect(provider);
+      try {
+        const raw = (await tauriInvoke('provider_login', { provider })) as ProviderLoginPayload | undefined;
+        const payload: ProviderLoginPayload = {
+          ok: !!raw?.ok,
+          detail: typeof raw?.detail === 'string' ? raw.detail : undefined,
+        };
+        completeConnect(provider, payload);
+        useAppStore.getState().pushToast(
+          payload.ok
+            ? { variant: 'success', message: `${info.label} login completed` }
+            : {
+                variant: 'error',
+                message:
+                  payload.detail && payload.detail.trim().length > 0
+                    ? `${info.label} login reported: ${payload.detail}`
+                    : `${info.label} login reported an error`,
+              },
+        );
+      } catch (error) {
+        const message = (error as Error)?.message ?? String(error);
+        failProvider(provider, message);
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} login failed: ${message}` });
+      }
+    },
+    [beginConnect, completeConnect, failProvider],
+  );
+
+  
+
+  const handleProviderInstall = useCallback(
+    async (provider: ProviderName) => {
+      const info = PROVIDER_INFO[provider];
+      if (!hasTauriBridge()) {
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} install requires the desktop runtime` });
+        return;
+      }
+      setInstallingProvider(provider);
+      try {
+        const res = (await tauriInvoke('provider_install', { provider })) as
+          | { ok?: boolean; exe?: string; via?: string; detail?: string }
+          | undefined;
+        if (res?.ok) {
+          const via = res?.via ? ` via ${res.via}` : '';
+          const exe = res?.exe ? ` (${res.exe})` : '';
+          useAppStore
+            .getState()
+            .pushToast({ variant: 'success', message: `${info.label} updated${via}${exe}` });
+          void handleProviderHealth(provider);
+          if (devMode) {
+            void refreshResolved(provider);
+          }
+        } else {
+          const detail = res?.detail?.trim();
+          useAppStore
+            .getState()
+            .pushToast({
+              variant: 'error',
+              message: detail && detail.length > 0 ? `${info.label} install failed: ${detail}` : `${info.label} install failed`,
+            });
+        }
+      } catch (err) {
+        const message = (err as Error)?.message ?? String(err);
+        useAppStore
+          .getState()
+          .pushToast({ variant: 'error', message: `${info.label} install failed: ${message}` });
+      } finally {
+        setInstallingProvider((current) => (current === provider ? null : current));
+      }
+    },
+    [devMode, handleProviderHealth, refreshResolved],
+  );
+
   const handleSafeModeToggle = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const enabled = event.target.checked;
@@ -94,6 +482,15 @@ const AgentSettingsWindow = () => {
   );
 
   const handleClose = useCallback(() => setAgentSettingsOpen(false), [setAgentSettingsOpen]);
+
+  const providerEntries = useMemo(
+    () =>
+      (['codex', 'claude'] as ProviderName[]).map((provider) => ({
+        provider,
+        status: provider === 'codex' ? codexStatus : claudeStatus,
+      })),
+    [codexStatus, claudeStatus],
+  );
 
   // Modules directory info (Wasm compute)
   const [modulesDir, setModulesDir] = useState<string>('');
@@ -186,8 +583,8 @@ const AgentSettingsWindow = () => {
     >
       <div className="flex flex-col gap-4">
         <p className="text-sm text-slate-600">
-          Select which model profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). The defaults now
-          target GLM 4.6; you can switch profiles here when you need a different pairing.
+          Select which profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). Profiles are model-agnostic
+          and can be paired with any compatible LLM provider. Switch profiles here to change reasoning and execution behavior.
         </p>
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-2 text-sm text-slate-600">
@@ -282,6 +679,286 @@ const AgentSettingsWindow = () => {
           </label>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Connect Providers (Wizard)</div>
+          <div className="grid grid-cols-1 gap-2 text-xs text-slate-600">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Step 1:</span>
+              <span>Detect CLI and version with strict policy (httpjail required unless using container)</span>
+              <button
+                type="button"
+                onClick={handleStrictHealth}
+                disabled={!bridgeAvailable}
+                className="ml-auto rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Run Strict Health
+              </button>
+              <button
+                type="button"
+                onClick={handleStandardHealth}
+                disabled={!bridgeAvailable}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Run Standard Health
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Step 2:</span>
+              <span>Optional: Install via container images (safer defaults)</span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handlePullImage('codex')}
+                  disabled={!bridgeAvailable}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Pull Codex Image
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePullImage('claude')}
+                  disabled={!bridgeAvailable}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Pull Claude Image
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Step 3:</span>
+              <span>Save API keys to OS keychain</span>
+            </div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-slate-500">OPENAI_API_KEY</span>
+                <input
+                  type="password"
+                  value={openaiKey}
+                  onChange={(e) => setOpenaiKey(e.target.value)}
+                  placeholder="sk-..."
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                />
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => saveProviderKey('openai', openaiKey)}
+                    disabled={!bridgeAvailable || !openaiKey.trim()}
+                    className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Save Key
+                  </button>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-slate-500">ANTHROPIC_API_KEY</span>
+                <input
+                  type="password"
+                  value={anthropicKey}
+                  onChange={(e) => setAnthropicKey(e.target.value)}
+                  placeholder="anthropic-..."
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                />
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => saveProviderKey('anthropic', anthropicKey)}
+                    disabled={!bridgeAvailable || !anthropicKey.trim()}
+                    className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Save Key
+                  </button>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Container Security</div>
+          <label className="flex items-center gap-3 rounded border border-slate-200 bg-white/80 p-3 text-sm">
+            <input
+              type="checkbox"
+              checked={firewallDisabled}
+              onChange={handleFirewallToggle}
+              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-slate-700">Disable container firewall (iptables)</span>
+              <span className="text-xs text-slate-500">Skips iptables egress rules and removes cap-adds. httpjail host/method allowlist remains in effect.</span>
+            </div>
+          </label>
+          <label className="mt-2 flex items-center gap-3 rounded border border-slate-200 bg-white/80 p-3 text-sm">
+            <input
+              type="checkbox"
+              checked={strictCaps}
+              onChange={handleStrictCapsToggle}
+              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-slate-700">Strict capability minimization</span>
+              <span className="text-xs text-slate-500">Never add NET_ADMIN/NET_RAW to containers. Use when firewall is disabled or external egress control is enforced.</span>
+            </div>
+          </label>
+        </div>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Code Providers</div>
+          <div className="flex flex-col gap-3">
+            {providerEntries.map(({ provider, status }) => {
+              const info = PROVIDER_INFO[provider];
+              const meta = describeStatus(status);
+              const detail = normalizeDetail(status.detail);
+              const installing = installingProvider === provider;
+              const connecting = status.state === 'connecting' || installing;
+              const checking = status.state === 'checking' || installing;
+              return (
+                <div key={provider} className="rounded border border-slate-200 bg-white/80 p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-semibold text-slate-700">{info.label}</span>
+                      <span className="text-xs text-slate-500">{info.description}</span>
+                    </div>
+                    <span className={`text-[11px] font-semibold uppercase tracking-wide ${meta.className}`}>
+                      {meta.label}
+                    </span>
+                  </div>
+                  {status.version && (
+                    <div className="mt-2 text-xs text-slate-500">
+                      Version: <span className="font-mono">{status.version}</span>
+                    </div>
+                  )}
+                  {detail && <div className="mt-1 text-xs text-slate-500">{detail}</div>}
+                  <div className="mt-2 text-xs">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-semibold uppercase tracking-wide text-slate-500">Model Override</span>
+                      <input
+                        type="text"
+                        value={provider === 'codex' ? (codexModel ?? '') : (claudeModel ?? '')}
+                        onChange={(e) =>
+                          provider === 'codex' ? setCodexModel(e.target.value) : setClaudeModel(e.target.value)
+                        }
+                        placeholder={provider === 'codex' ? 'e.g. gpt-5-codex' : 'e.g. claude-3.5' }
+                        className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                      />
+                      <span className="text-slate-500">Applies via CLI <code>--model</code>; leave blank to use defaults.</span>
+                    </label>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleProviderInstall(provider)}
+                      disabled={installing || !bridgeAvailable}
+                      className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Install / Update
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleProviderConnect(provider)}
+                      disabled={connecting || !bridgeAvailable}
+                      className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {info.connectLabel}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleProviderHealth(provider)}
+                      disabled={checking || !bridgeAvailable}
+                      className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {info.healthLabel}
+                    </button>
+                    {devMode && (
+                      <button
+                        type="button"
+                        onClick={() => refreshResolved(provider)}
+                        disabled={!bridgeAvailable || installing}
+                        className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Show Resolved Path
+                      </button>
+                    )}
+                  </div>
+                  {devMode && resolvedPaths?.[provider]?.exe && (
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Path: <span className="font-mono">{resolvedPaths[provider]?.exe}</span>
+                      {resolvedPaths[provider]?.via ? (
+                        <span> (via {resolvedPaths[provider]?.via})</span>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex flex-col gap-2 text-xs text-slate-600">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={runBothByDefault}
+                onChange={handleEnableBothChange}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span>Allow needs.code to try both providers before falling back</span>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="font-semibold uppercase tracking-wide text-slate-500">Default provider</span>
+              <select
+                value={defaultProviderPreference}
+                onChange={handleDefaultProviderChange}
+                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={runBothByDefault}
+              >
+                <option value="auto">Auto (planner preference)</option>
+                <option value="codex">OpenAI Codex</option>
+                <option value="claude">Anthropic Claude</option>
+              </select>
+              <span>
+                {runBothByDefault
+                  ? 'Auto mode is active while both providers are allowed.'
+                  : 'When a single provider is enabled, needs.code will request this provider.'}
+              </span>
+            </label>
+            {!bridgeAvailable && (
+              <span className="text-slate-500">
+                Provider commands require the desktop runtime. Buttons stay disabled in browser preview.
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-white/60 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Network (Proxy)</div>
+          <div className="flex flex-col gap-2 text-xs text-slate-600">
+            <label className="flex flex-col gap-1">
+              <span className="font-semibold uppercase tracking-wide text-slate-500">HTTPS Proxy</span>
+              <input
+                type="text"
+                value={proxyHttps}
+                onChange={(e) => setProxyHttps(e.target.value)}
+                placeholder="http://host:port"
+                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="font-semibold uppercase tracking-wide text-slate-500">No Proxy</span>
+              <input
+                type="text"
+                value={proxyNoProxy}
+                onChange={(e) => setProxyNoProxy(e.target.value)}
+                placeholder="localhost,127.0.0.1"
+                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+              />
+            </label>
+            <div>
+              <button
+                type="button"
+                onClick={handleApplyProxy}
+                disabled={!bridgeAvailable}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Apply Proxy
+              </button>
+              <span className="ml-2 text-slate-500">Affects new CLI runs (login/health/jobs)</span>
+            </div>
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <label className="flex items-center gap-3 text-sm">
             <input
               type="checkbox"
@@ -341,9 +1018,9 @@ const AgentSettingsWindow = () => {
             Close
           </button>
         </div>
-      </div>
     </DesktopWindow>
   );
 };
 
 export default AgentSettingsWindow;
+

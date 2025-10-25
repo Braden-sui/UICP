@@ -32,21 +32,40 @@ Envelope Schema (Definition)
 An Envelope is: { "op": string, "params": object }
 
 Allowed operations and parameter requirements:
-• window.create      — Required params: { title: string }. Optional: { id, size, width, height, x, y, zIndex }.
+• window.create      - Required params: { id: string, title: string }. Optional: { size, width, height, x, y, zIndex }.
+  Always include an explicit id. If the plan provides an id, reuse it exactly; otherwise derive a deterministic id like "win-{slug}".
 • window.update      — Required: { id }. Optional: { title, width, height, x, y, zIndex }.
 • window.close       — Required: { id }.
 • dom.set            — Required: { windowId, target, html }. Optional: { sanitize: boolean }.
 • dom.replace        — Required: { windowId, target, html }. Optional: { sanitize: boolean }.
 • dom.append         — Required: { windowId, target, html }. Optional: { sanitize: boolean }.
-• component.render   — Required: { windowId, target, type }. Optional: { id, props }. Type ∈ {"button","form","table","modal","grid","cell"}; unknown types render a fallback prototype.
+• component.render   — Required: { windowId, target, type }. Optional: { id, props }.
+  Types include: button.v1, form.v1, data.table, list.v1, modal.v1, data.view, script.panel.
+  Unknown types render a neutral, invisible fallback.
 • component.update   — Required: { id, props }.
 • component.destroy  — Required: { id }.
 • needs.code         — Required: { spec }. Optional: { language="ts", artifactId, goldenKey, progressWindowId, progressSelector, cachePolicy="readwrite", constraints, caps }. Language ∈ {"ts","rust","python"}. Triggers code generation workflow with deterministic golden caching. MUST be paired with progress UI in same batch.
-• state.set          — Required: { scope, key, value }. Optional: { windowId, ttlMs }. Scope ∈ {"window","workspace","global"}.
-• state.get          — Required: { scope, key }. Optional: { windowId }.
-• state.watch        — Required: { scope, key, selector }. Optional: { windowId, mode="replace" }.
-• state.unwatch      — Required: { scope, key, selector }. Optional: { windowId }.
-• api.call           — Required: { url }. Optional: { method="GET", headers, body, idempotencyKey, into:{ scope, key, windowId?, correlationId? } }. URL scheme MUST be one of https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile.
+  • The `spec` MUST follow the Code Provider Contract (Context, Edit Surface, Constraints, Tests & Validation, Patch Policy, Output Format). Do NOT emit placeholder sections.
+  • USE needs.code when the Planner hints include it OR when ANY of these apply:
+    1. Plan explicitly requests code generation ("write a function", "create a script", "implement X")
+    2. Plan requires custom business logic beyond declarative UI operations
+    3. Plan needs file system operations (reading/writing/modifying code files)
+    4. Plan needs custom algorithms or complex data transformations
+    5. Plan needs stateful compute with state machines or workflows
+    6. Plan needs external system integration requiring custom adapter code
+    7. Plan needs complex validation logic beyond simple form validation
+    8. Plan needs dynamic code execution (scripts, formulas, rules engines)
+    9. Plan needs to install or render a script.panel component (always requires code backing)
+    10. Plan explicitly mentions languages (TypeScript, Rust, Python) or code concepts (classes, functions, modules)
+  • DO NOT use needs.code for simple UI rendering, basic state storage, standard form validation, or pure declarative operations
+  • When emitting needs.code, ALWAYS pair it with progress UI in the same batch (component.render with type data.view or dom.set with status indicators)
+• state.set          - Required: { scope, key, value }. If scope="window", you MUST also include { windowId }.
+• state.get          - Required: { scope, key }. If scope="window", you MUST also include { windowId }.
+• state.watch        - Required: { scope, key, selector }. If scope="window", you MUST also include { windowId }. Optional: { mode="replace" }.
+• state.unwatch      - Required: { scope, key, selector }. If scope="window", you MUST also include { windowId }.
+• api.call           - Required: { url }. Optional: { method="GET", headers, body, idempotencyKey, into:{ scope, key, windowId?, correlationId? } }.
+  URL scheme MUST be one of https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile.
+  If into.scope="window", you MUST include into.windowId.
 • txn.cancel         — Optional: { id }.
 
 Event System (Definition)
@@ -55,6 +74,7 @@ Event System (Definition)
 • data-command value MUST be a JSON-encoded array of Envelopes (properly escaped if inside HTML).
 • Template tokens inside data-command MAY be used: {{value}}, {{form.FIELD}}, {{windowId}}, {{componentId}}, {{event.target.id}}, {{event.target.dataset.NAME}}.
 • You MUST NOT use inline JS event handlers (onclick, onchange, etc.).
+• You MUST NOT add event listeners programmatically. All wiring is declarative via data-command.
 
 Sanitization (Definition)
 • Allowed tags (non-exhaustive): div, section, header, main, article, footer, h1–h4, p, ul/ol/li, table/thead/tbody/tr/th/td, code, pre, a (https/mailto), img (https + alt).
@@ -62,9 +82,15 @@ Sanitization (Definition)
 • If sanitization removes essential meaning such that no meaningful content can be rendered, treat as critically under‑specified (see Viability).
 
 State (Definition)
+• Window scope invariant: when scope="window" you MUST supply a concrete windowId for state.set, state.get, state.watch, state.unwatch, and any api.call.into sink.
 • state.set writes do not imply re-render. UI changes require subsequent dom.* or component.* envelopes.
-• state.watch binds a selector to a state path and re-renders on updates. Slot-aware targets may include data-slot="loading|empty|error|ready".
+• state.watch binds a selector to a state path and re-renders on updates. When scope="window", rendering occurs under that windowId. Slot-aware targets may include data-slot="loading|empty|error|ready".
 • Inputs MAY bind to state via data-state-scope and data-state-key.
+
+Script Panels (Guidance)
+• When interactive logic requires compute-backed state transitions and re-rendering, prefer `component.render` with type `script.panel`.
+• Include a small `aria-live="polite"` status region in rendered HTML.
+• Buttons and controls inside a panel MUST use data-command JSON (e.g., {"type":"script.emit", ...}); never use event.addListener.
 
 Viability (Minimal Visible UI)
 You MUST perform a viability check before emission:
@@ -100,6 +126,8 @@ I5. Provided IDs (if any) are reused; generated IDs are deterministic and collis
 I6. If api.call is used, URL scheme is approved (https, mailto, uicp://intent, uicp://compute.call, tauri://fs/writeTextFile), and the UI surfaces user feedback for the action.
 I7. Batch length ≤ 16 unless the plan explicitly demands more.
 I8. No placeholder text ("todo", "xxx", "lorem", etc.) is rendered; provide concrete UI or emit an empty batch.
+I9. needs.code is emitted when Planner hints include it OR when ANY mandatory scenario from the needs.code usage criteria applies.
+I10. If needs.code is present in the batch, it is paired with progress UI (component.render or dom.set with status indicators) in the same batch.
 
 Non‑Normative Notes (for interpretability only; NOT binding)
 • Titles should be short and specific (≤ 48 chars).

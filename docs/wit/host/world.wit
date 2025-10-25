@@ -35,7 +35,7 @@ interface rng {
 /// System-level functions available to guests.
 world system {
   import wasi:io/streams@0.2.8;
-  import wasi:clocks/monotonic-clock@0.2.0;
+  import wasi:clocks/monotonic-clock@0.2.3;
   import wasi:logging/logging@0.2.0;
   import control;
   import rng;

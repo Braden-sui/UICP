@@ -2,17 +2,21 @@ version: 1
 name: claude-cli
 description: Anthropic Claude Code CLI inside hardened devcontainer
 container:
-  image: ${CLAUDE_IMAGE:-ghcr.io/anthropics/devcontainers/claude-code:latest}
+  image: ${CLAUDE_IMAGE:-uicp/claude-code:latest}
   runtime: auto  # docker|podman|auto
   workdir: /workspace
   mounts:
     - source: ${WORKSPACE_DIR}
       target: /workspace
       type: bind
-  network: none  # default deny; httpjail may allowlist egress
+  network: bridge  # firewall script enforces default deny + allowlist
   env:
     - name: ANTHROPIC_API_KEY
       from_env: ANTHROPIC_API_KEY
+    - name: PROVIDER_KEY
+      value: claude
+    - name: ALLOWLIST_JSON
+      value: /workspace/ops/code/network/allowlist.json
   entry: ["/usr/local/bin/claude"]
 defaults:
   output_format: stream-json
@@ -28,6 +32,8 @@ hardening:
   flags:
     - "--dangerously-skip-permissions"  # only safe inside this container with firewall
 notes:
-  - Only enable --dangerously-skip-permissions inside the devcontainer.
-  - The container’s firewall script should enforce default-deny with allowlisted domains.
-
+  - Only enable --dangerously-skip-permissions inside this container with firewall.
+  - Build image with: docker build -t uicp/claude-code:latest ops/code/images/claude-code
+  - Firewall: ENTRYPOINT runs with-firewall.sh; method filtering is enforced by httpjail wrapper.
+  - Runtime hardening: containers run as non-root user 'app' with read-only rootfs and tmpfs mounts for /tmp, /var/tmp, /run, /home/app.
+  - Container flags enforced by runner: --memory, --memory-swap, --cpus, --pids-limit 256, --read-only, --cap-drop ALL, --security-opt no-new-privileges, --cap-add NET_ADMIN --cap-add NET_RAW (for iptables).

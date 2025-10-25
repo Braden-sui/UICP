@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -6,6 +6,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs;
 use tokio::io::AsyncWriteExt as _;
@@ -17,9 +18,24 @@ const ERR_PROVIDER_IO: &str = "E-UICP-1402";
 const ERR_PROVIDER_EXIT: &str = "E-UICP-1403";
 const ERR_PROVIDER_PARSE: &str = "E-UICP-1404";
 const ERR_PROVIDER_SESSION: &str = "E-UICP-1405";
+const WARN_HTTPJAIL_DISABLED: &str = "E-UICP-1406";
 
 static PROVIDER_TMP_ROOT: Lazy<PathBuf> =
     Lazy::new(|| std::env::temp_dir().join("uicp-code-providers"));
+
+const HTTPJAIL_ENV_FLAG: &str = "UICP_HTTPJAIL";
+const DEFAULT_HTTP_METHODS: &[&str] = &["GET", "HEAD", "OPTIONS"];
+
+const CODEX_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "required": ["code", "language"],
+  "additionalProperties": true,
+  "properties": {
+    "code": { "type": "string" },
+    "language": { "type": "string" },
+    "meta": { "type": "object" }
+  }
+}"#;
 
 #[derive(Debug, Clone)]
 pub struct CodeProviderJob {
@@ -74,6 +90,7 @@ pub struct ProviderContext {
 pub struct ProviderRun {
     pub stdout: String,
     pub stderr: String,
+    #[allow(dead_code)]
     pub exit_status: ExitStatus,
     pub events: Vec<Value>,
     pub aggregated_output: Option<String>,
@@ -185,6 +202,489 @@ impl CommandRunner for SystemCommandRunner {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct HttpjailPolicy {
+    providers: HashMap<String, HttpjailProviderPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HttpjailProviderPolicy {
+    #[serde(default)]
+    hosts: Vec<String>,
+    #[serde(default)]
+    methods: Vec<String>,
+    #[serde(default, alias = "blockPost", alias = "block_post")]
+    block_post: Option<bool>,
+}
+
+struct HttpjailGuard {
+    exe: String,
+    predicate: String,
+}
+
+impl HttpjailGuard {
+    async fn new(provider: &str) -> Result<Self, String> {
+        let exe = find_httpjail_binary()?;
+        let predicate = load_httpjail_predicate(provider).await?;
+        Ok(Self { exe, predicate })
+    }
+
+    fn wrap(&self, base_program: String, base_args: Vec<String>) -> (String, Vec<String>) {
+        let mut args = Vec::with_capacity(base_args.len() + 4);
+        args.push("--js".to_string());
+        args.push(self.predicate.clone());
+        args.push("--".to_string());
+        args.push(base_program);
+        args.extend(base_args);
+        (self.exe.clone(), args)
+    }
+}
+
+async fn maybe_wrap_with_httpjail(
+    provider_key: &str,
+    base_program: &str,
+    base_args: Vec<String>,
+    env: &HashMap<String, String>,
+) -> (String, Vec<String>) {
+    // Resolve provider executable to an absolute path when possible.
+    #[cfg(not(test))]
+    let resolved_program = resolve_provider_exe(base_program, provider_key, env);
+    #[cfg(test)]
+    let resolved_program = base_program.to_string();
+    if !httpjail_requested(env) {
+        return (resolved_program, base_args);
+    }
+
+    match HttpjailGuard::new(provider_key).await {
+        Ok(guard) => {
+            log_httpjail_applied(provider_key);
+            guard.wrap(resolved_program, base_args)
+        }
+        Err(reason) => {
+            log_httpjail_skipped(provider_key, &reason);
+            (resolved_program, base_args)
+        }
+    }
+}
+
+fn httpjail_requested(env: &HashMap<String, String>) -> bool {
+    env.get(HTTPJAIL_ENV_FLAG)
+        .map(|value| parse_env_flag(value))
+        .or_else(|| {
+            std::env::var(HTTPJAIL_ENV_FLAG)
+                .ok()
+                .map(|value| parse_env_flag(&value))
+        })
+        .unwrap_or(false)
+}
+
+fn parse_env_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn is_executable_candidate(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            return meta.permissions().mode() & 0o111 != 0;
+        }
+        return false;
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn find_httpjail_binary() -> Result<String, String> {
+    let path_var = std::env::var_os("PATH").ok_or_else(|| "PATH not set".to_string())?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join("httpjail");
+        if is_executable_candidate(&candidate) {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+        let candidate_exe = dir.join("httpjail.exe");
+        if is_executable_candidate(&candidate_exe) {
+            return Ok(candidate_exe.to_string_lossy().into_owned());
+        }
+    }
+    Err("httpjail binary not found on PATH".to_string())
+}
+
+async fn load_httpjail_predicate(provider: &str) -> Result<String, String> {
+    let policy_path = httpjail_policy_path();
+    let content = fs::read_to_string(&policy_path)
+        .await
+        .map_err(|err| format!("failed to read {}: {err}", policy_path.display()))?;
+    let policy: HttpjailPolicy = serde_json::from_str(&content)
+        .map_err(|err| format!("failed to parse {}: {err}", policy_path.display()))?;
+    let entry = policy.providers.get(provider).ok_or_else(|| {
+        format!(
+            "provider '{provider}' not present in {}",
+            policy_path.display()
+        )
+    })?;
+
+    let hosts = normalize_hosts(&entry.hosts);
+    let methods_source = if entry.methods.is_empty() {
+        DEFAULT_HTTP_METHODS
+            .iter()
+            .map(|method| method.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        entry.methods.clone()
+    };
+    let methods = normalize_methods(&methods_source);
+    let block_post = entry.block_post.unwrap_or(true);
+    Ok(build_httpjail_predicate(&hosts, &methods, block_post))
+}
+
+fn httpjail_policy_path() -> PathBuf {
+    if let Some(override_os) = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST") {
+        let override_path = PathBuf::from(&override_os);
+        if !override_path.as_os_str().is_empty() {
+            return override_path;
+        }
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("ops")
+        .join("code")
+        .join("network")
+        .join("allowlist.json")
+}
+
+fn normalize_hosts(hosts: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for host in hosts {
+        let trimmed = host.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.clone()) {
+            normalized.push(trimmed);
+        }
+    }
+    normalized
+}
+
+fn normalize_methods(methods: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for method in methods {
+        let upper = method.trim().to_ascii_uppercase();
+        if upper.is_empty() {
+            continue;
+        }
+        if seen.insert(upper.clone()) {
+            normalized.push(upper);
+        }
+    }
+    normalized
+}
+
+fn build_httpjail_predicate(hosts: &[String], methods: &[String], block_post: bool) -> String {
+    let hosts_json = serde_json::to_string(hosts).unwrap_or_else(|_| "[]".to_string());
+    let methods_json = serde_json::to_string(methods).unwrap_or_else(|_| "[]".to_string());
+    let block_literal = if block_post { "true" } else { "false" };
+
+    let mut predicate = String::from("(()=>{");
+    predicate.push_str(&format!("const hosts={hosts_json};"));
+    predicate.push_str(&format!("const methods={methods_json};"));
+    predicate.push_str(&format!("const blockPost={block_literal};"));
+    predicate.push_str("const reqHost=(r.host||\"\").toLowerCase();");
+    predicate.push_str("const reqMethod=(r.method||\"\").toUpperCase();");
+    predicate.push_str(
+        "const hostAllowed=hosts.length===0||hosts.some((pattern)=>{\
+         if(pattern===\"*\") return true;\
+         if(pattern.startsWith(\"*.\")){\
+           const suffix=pattern.slice(1);\
+           const bare=pattern.slice(2);\
+           if(bare && reqHost===bare) return true;\
+           return reqHost.endsWith(suffix);\
+         }\
+         return reqHost===pattern;\
+        });",
+    );
+    predicate.push_str("if(!hostAllowed) return false;");
+    predicate.push_str("if(blockPost && reqMethod===\"POST\") return false;");
+    predicate.push_str("if(methods.length && !methods.includes(reqMethod)) return false;");
+    predicate.push_str("return true;");
+    predicate.push_str("})()");
+    predicate
+}
+
+fn log_httpjail_applied(provider: &str) {
+    #[cfg(feature = "otel_spans")]
+    tracing::info!(
+        target = "uicp",
+        provider = provider,
+        "httpjail allowlist enforced"
+    );
+    #[cfg(not(feature = "otel_spans"))]
+    {
+        eprintln!("[uicp] httpjail allowlist enforced for provider {provider}");
+    }
+}
+
+fn log_httpjail_skipped(provider: &str, reason: &str) {
+    #[cfg(feature = "otel_spans")]
+    tracing::warn!(
+        target = "uicp",
+        provider = provider,
+        code = WARN_HTTPJAIL_DISABLED,
+        error = %reason,
+        "httpjail requested but not enforced"
+    );
+    #[cfg(not(feature = "otel_spans"))]
+    {
+        eprintln!(
+            "[uicp:{}] httpjail requested but not enforced for provider {provider}: {reason}",
+            WARN_HTTPJAIL_DISABLED
+        );
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
+    if cfg!(debug_assertions) {
+        #[cfg(feature = "otel_spans")]
+        tracing::info!(
+            target = "uicp",
+            provider = provider,
+            exe = %path.display(),
+            source = source,
+            os = %std::env::consts::OS,
+            arch = %std::env::consts::ARCH,
+            "provider executable resolved"
+        );
+        #[cfg(not(feature = "otel_spans"))]
+        {
+            eprintln!(
+                "[uicp] provider {provider} executable resolved via {source}: {} (os={}, arch={})",
+                path.display(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+        }
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn resolve_provider_exe(
+    default_prog: &str,
+    provider_key: &str,
+    env: &HashMap<String, String>,
+) -> String {
+    // 1) Env override (process env or job env)
+    let override_keys: &[&str] = match provider_key {
+        "claude" => &["UICP_CLAUDE_PATH", "UICP_CLAUDE_BIN"],
+        "codex" => &["UICP_CODEX_PATH", "UICP_CODEX_BIN"],
+        _ => &[],
+    };
+    for key in override_keys {
+        if let Some(val) = env.get(*key).cloned().or_else(|| std::env::var(key).ok()) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                if is_executable_candidate(&p) {
+                    log_provider_bin(provider_key, &p, "env");
+                    return p.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
+    // 2) Managed install locations
+    for cand in managed_install_candidates(default_prog) {
+        if is_executable_candidate(&cand) {
+            log_provider_bin(provider_key, &cand, "managed");
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+
+    // 3) PATH search (respect PATHEXT on Windows)
+    if let Some(found) = search_in_path(default_prog) {
+        log_provider_bin(provider_key, &found, "PATH");
+        return found.to_string_lossy().into_owned();
+    }
+
+    // 4) Common install locations
+    for cand in common_install_candidates(default_prog) {
+        if is_executable_candidate(&cand) {
+            log_provider_bin(provider_key, &cand, "common");
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+
+    default_prog.to_string()
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var_os("PATHEXT")
+            .map(|v| {
+                v.to_string_lossy()
+                    .split(';')
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![".EXE".into(), ".CMD".into(), ".BAT".into(), ".COM".into()])
+    } else {
+        Vec::new()
+    };
+    let path_var = match std::env::var_os("PATH") {
+        Some(v) => v,
+        None => return None,
+    };
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        if let Some(p) = candidate_in_dir(&dir, program, &exts) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn candidate_in_dir(
+    dir: &std::path::Path,
+    program: &str,
+    exts: &[String],
+) -> Option<std::path::PathBuf> {
+    if cfg!(windows) {
+        if program.contains('.') {
+            let p = dir.join(program);
+            if is_executable_candidate(&p) {
+                return Some(p);
+            }
+        } else {
+            for ext in exts {
+                let p = dir.join(format!("{program}{ext}"));
+                if is_executable_candidate(&p) {
+                    return Some(p);
+                }
+            }
+        }
+    } else {
+        let p = dir.join(program);
+        if is_executable_candidate(&p) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        out.push(PathBuf::from("/opt/homebrew/bin").join(program));
+        out.push(PathBuf::from("/usr/local/bin").join(program));
+        if let Some(h) = home.as_ref() {
+            out.push(h.join(".local/bin").join(program));
+            out.push(h.join("Library/pnpm").join(program));
+            out.push(h.join(".npm-global/bin").join(program));
+        }
+    } else if cfg!(target_os = "linux") {
+        out.push(PathBuf::from("/usr/local/bin").join(program));
+        out.push(PathBuf::from("/usr/bin").join(program));
+        if let Some(h) = home.as_ref() {
+            out.push(h.join(".local/bin").join(program));
+            out.push(h.join(".npm-global/bin").join(program));
+            out.push(h.join(".local/share/pnpm").join(program));
+        }
+    } else if cfg!(target_os = "windows") {
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            let up = PathBuf::from(userprofile);
+            out.push(
+                up.join("AppData/Roaming/npm")
+                    .join(format!("{program}.cmd")),
+            );
+            out.push(
+                up.join("AppData/Roaming/npm")
+                    .join(format!("{program}.exe")),
+            );
+            out.push(up.join("nodejs").join(program));
+            out.push(up.join("nodejs").join(format!("{program}.cmd")));
+            out.push(up.join("nodejs").join(format!("{program}.exe")));
+        }
+        out.push(PathBuf::from("C:/Program Files/nodejs").join(program));
+        out.push(PathBuf::from("C:/Program Files/nodejs").join(format!("{program}.cmd")));
+        out.push(PathBuf::from("C:/Program Files/nodejs").join(format!("{program}.exe")));
+    }
+    out
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn managed_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let base = managed_bin_base();
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "unknown"
+    };
+    if let Some(base) = base {
+        out.push(base.join(program));
+        out.push(base.join(os).join(arch).join(program));
+        if cfg!(windows) {
+            out.push(base.join(format!("{program}.exe")));
+            out.push(base.join(format!("{program}.cmd")));
+            out.push(base.join(os).join(arch).join(format!("{program}.exe")));
+            out.push(base.join(os).join(arch).join(format!("{program}.cmd")));
+        }
+    }
+    out
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn managed_bin_base() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if cfg!(target_os = "windows") {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let base = PathBuf::from(appdata).join("UICP").join("bin");
+            return Some(base);
+        }
+        None
+    } else if cfg!(target_os = "macos") {
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        Some(
+            home.join("Library")
+                .join("Application Support")
+                .join("UICP")
+                .join("bin"),
+        )
+    } else {
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        Some(home.join(".local").join("share").join("UICP").join("bin"))
+    }
+}
+
 #[async_trait]
 pub trait CodeProvider: Send + Sync {
     fn name(&self) -> &'static str;
@@ -218,6 +718,7 @@ impl ClaudeProvider {
         }
     }
 
+    #[cfg(any(test, feature = "compute_harness"))]
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             runner,
@@ -246,17 +747,16 @@ impl CodeProvider for ClaudeProvider {
             )
         })?;
 
-        let api_key = job
+        let mut env = job.extra_env.clone();
+        if let Some(api_key) = job
             .extra_env
             .get("ANTHROPIC_API_KEY")
             .cloned()
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-            .ok_or_else(|| {
-                CodeProviderError::new(ERR_PROVIDER_CONFIG, "ANTHROPIC_API_KEY is not set")
-            })?;
-
-        let mut env = job.extra_env.clone();
-        env.entry("ANTHROPIC_API_KEY".into()).or_insert(api_key);
+            .filter(|value| !value.trim().is_empty())
+        {
+            env.entry("ANTHROPIC_API_KEY".into()).or_insert(api_key);
+        }
         env.entry("CLAUDE_TELEMETRY_OPTOUT".into())
             .or_insert_with(|| String::from("1"));
         env.entry("CLAUDE_HEADLESS".into())
@@ -293,11 +793,14 @@ impl CodeProvider for ClaudeProvider {
             args.push(model.clone());
         }
 
+        let (program, final_args) =
+            maybe_wrap_with_httpjail(self.name(), "claude", args, &ctx.env).await;
+
         let exec = self
             .runner
             .run(
-                "claude",
-                &args,
+                &program,
+                &final_args,
                 &ctx.working_dir,
                 &ctx.env,
                 Some(job.prompt.as_str()),
@@ -375,6 +878,8 @@ impl CodeProvider for ClaudeProvider {
         ctx: ProviderContext,
         run: ProviderRun,
     ) -> Result<ProviderArtifacts, CodeProviderError> {
+        // Ensure summary is observed in non-test builds to avoid dead-field warnings
+        let _ = run.summary.as_deref();
         // WHY: Claude CLI writes all relevant information to stdout; finalize is a passthrough wrapper.
         let _ = fs::remove_dir_all(&ctx.working_dir).await;
         Ok(ProviderArtifacts {
@@ -389,6 +894,7 @@ impl CodeProvider for ClaudeProvider {
 pub struct CodexProvider {
     runner: Arc<dyn CommandRunner>,
     pub allow_write: bool,
+    model: Option<String>,
 }
 
 impl CodexProvider {
@@ -396,14 +902,22 @@ impl CodexProvider {
         Self {
             runner: Arc::new(SystemCommandRunner),
             allow_write: true,
+            model: None,
         }
     }
 
+    #[cfg(any(test, feature = "compute_harness"))]
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             runner,
             allow_write: true,
+            model: None,
         }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
     }
 
     fn codex_home() -> Result<PathBuf, CodeProviderError> {
@@ -433,6 +947,13 @@ impl CodeProvider for CodexProvider {
 
     async fn prepare(&self, job: &CodeProviderJob) -> Result<ProviderContext, CodeProviderError> {
         let workdir = job.workspace_root.clone();
+        fs::create_dir_all(&workdir).await.map_err(|err| {
+            CodeProviderError::new(
+                ERR_PROVIDER_IO,
+                format!("create Codex workspace failed: {err}"),
+            )
+        })?;
+
         let env = job.extra_env.clone();
 
         if env.contains_key("CODEX_API_KEY") || std::env::var("CODEX_API_KEY").is_ok() {
@@ -451,16 +972,39 @@ impl CodeProvider for CodexProvider {
         job: &CodeProviderJob,
         ctx: &ProviderContext,
     ) -> Result<ProviderRun, CodeProviderError> {
-        let mut args = vec!["exec".to_string()];
+        let schema_path = ctx.working_dir.join("schema.json");
+        tokio::fs::write(&schema_path, CODEX_OUTPUT_SCHEMA)
+            .await
+            .map_err(|err| {
+                CodeProviderError::new(
+                    ERR_PROVIDER_IO,
+                    format!("write Codex output schema failed: {err}"),
+                )
+            })?;
+
+        let mut args = vec![
+            "exec".to_string(),
+            "--json".to_string(),
+            "--output-schema".to_string(),
+            schema_path.to_string_lossy().to_string(),
+        ];
+
+        if let Some(model) = &self.model {
+            args.push("--model".to_string());
+            args.push(model.clone());
+        }
         if self.allow_write {
             args.push("--full-auto".to_string());
         }
 
         args.push(job.prompt.clone());
 
+        let (program, final_args) =
+            maybe_wrap_with_httpjail(self.name(), "codex", args, &ctx.env).await;
+
         let exec = self
             .runner
-            .run("codex", &args, &ctx.working_dir, &ctx.env, None)
+            .run(&program, &final_args, &ctx.working_dir, &ctx.env, None)
             .await?;
 
         if !exec.status.success() {
@@ -475,13 +1019,52 @@ impl CodeProvider for CodexProvider {
             ));
         }
 
+        let mut events = Vec::new();
+        let mut aggregated = String::new();
+        let mut parsed: Option<Value> = None;
+
+        for raw_line in exec.stdout.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Value>(line) {
+                Ok(value) => {
+                    collect_codex_text(&value, &mut aggregated);
+                    if parsed.is_none() {
+                        parsed = extract_codex_json(&value);
+                    }
+                    events.push(value);
+                }
+                Err(_) => {
+                    aggregated.push_str(line);
+                    aggregated.push('\n');
+                }
+            }
+        }
+
+        if parsed.is_none() {
+            let trimmed = aggregated.trim();
+            if !trimmed.is_empty() {
+                if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                    parsed = Some(val);
+                }
+            }
+        }
+
+        let aggregated_output = if aggregated.trim().is_empty() {
+            None
+        } else {
+            Some(aggregated)
+        };
+
         Ok(ProviderRun {
             stdout: exec.stdout.clone(),
             stderr: exec.stderr,
             exit_status: exec.status,
-            events: Vec::new(),
-            aggregated_output: None,
-            parsed_output: None,
+            events,
+            aggregated_output,
+            parsed_output: parsed,
             summary: Some(exec.stdout),
         })
     }
@@ -492,6 +1075,8 @@ impl CodeProvider for CodexProvider {
         ctx: ProviderContext,
         run: ProviderRun,
     ) -> Result<ProviderArtifacts, CodeProviderError> {
+        // Ensure summary is observed in non-test builds to avoid dead-field warnings
+        let _ = run.summary.as_deref();
         let session_root = self.sessions_root()?;
         let session_path = find_latest_session(&session_root, ctx.started_at).await?;
 
@@ -617,11 +1202,89 @@ fn extract_codex_diff(event: &Value) -> Option<ProviderDiff> {
     })
 }
 
+fn collect_codex_text(value: &Value, out: &mut String) {
+    if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+        out.push_str(text);
+    }
+    if let Some(delta) = value.get("delta") {
+        if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+            out.push_str(text);
+        }
+        if let Some(json_str) = delta.get("json").and_then(|v| v.as_str()) {
+            out.push_str(json_str);
+        }
+    }
+    if let Some(payload) = value.get("payload") {
+        if let Some(content) = payload.get("content").and_then(|v| v.as_array()) {
+            for item in content {
+                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                    out.push_str(text);
+                }
+                if let Some(json_str) = item.get("json").and_then(|v| v.as_str()) {
+                    out.push_str(json_str);
+                }
+            }
+        }
+    }
+}
+
+fn extract_codex_json(value: &Value) -> Option<Value> {
+    if let Some(payload) = value.get("payload") {
+        if let Some(content) = payload.get("content").and_then(|v| v.as_array()) {
+            for item in content {
+                if let Some(kind) = item.get("type").and_then(|v| v.as_str()) {
+                    match kind {
+                        "output_json" => {
+                            if let Some(obj) = item.get("object") {
+                                return Some(obj.clone());
+                            }
+                            if let Some(json_str) = item.get("json").and_then(|v| v.as_str()) {
+                                if let Ok(parsed) = serde_json::from_str(json_str) {
+                                    return Some(parsed);
+                                }
+                            }
+                        }
+                        "output_text" | "text" => {
+                            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                                if let Ok(parsed) = serde_json::from_str(text) {
+                                    return Some(parsed);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if let Some(delta) = value.get("delta") {
+        if let Some(json_str) = delta.get("json").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = serde_json::from_str(json_str) {
+                return Some(parsed);
+            }
+        }
+        if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = serde_json::from_str(text) {
+                return Some(parsed);
+            }
+        }
+    }
+    if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+        if let Ok(parsed) = serde_json::from_str(text) {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
     use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
@@ -630,14 +1293,153 @@ mod tests {
 
     static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+    #[cfg(not(target_os = "windows"))]
+    fn write_exec(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().expect("exec parent")).expect("create dirs");
+        std::fs::write(path, content).expect("write stub");
+        #[cfg(unix)]
+        {
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn httpjail_policy_path_honors_env_override() {
+        let _guard = TEST_MUTEX.lock();
+        let temp = tempfile::NamedTempFile::new().expect("temp allowlist");
+        let prev = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST");
+        std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", temp.path());
+        let resolved = httpjail_policy_path();
+        if let Some(v) = prev {
+            std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", v);
+        } else {
+            std::env::remove_var("UICP_HTTPJAIL_ALLOWLIST");
+        }
+        assert_eq!(resolved, temp.path());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn resolve_prefers_managed_over_path() {
+        let _guard = TEST_MUTEX.lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+        let prev_path = std::env::var_os("PATH");
+        let prev_override = std::env::var_os("UICP_CLAUDE_PATH");
+        let prev_bin = std::env::var_os("UICP_CLAUDE_BIN");
+        std::env::remove_var("UICP_CLAUDE_PATH");
+        std::env::remove_var("UICP_CLAUDE_BIN");
+
+        let managed_base = managed_bin_base().expect("managed base");
+        let managed_stub = managed_base.join("claude");
+        write_exec(&managed_stub, "#!/usr/bin/env bash\necho managed\n");
+
+        let path_dir = temp.path().join("pathbin");
+        write_exec(&path_dir.join("claude"), "#!/usr/bin/env bash\necho path\n");
+        std::env::set_var("PATH", path_dir.as_os_str());
+
+        let env = HashMap::new();
+        let resolved = resolve_provider_exe("claude", "claude", &env);
+
+        if let Some(v) = prev_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(v) = prev_path {
+            std::env::set_var("PATH", v);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        if let Some(v) = prev_override {
+            std::env::set_var("UICP_CLAUDE_PATH", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_PATH");
+        }
+        if let Some(v) = prev_bin {
+            std::env::set_var("UICP_CLAUDE_BIN", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_BIN");
+        }
+
+        assert_eq!(std::path::PathBuf::from(&resolved), managed_stub);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn resolve_skips_non_executable_candidates() {
+        let _guard = TEST_MUTEX.lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+        let prev_path = std::env::var_os("PATH");
+        let prev_override = std::env::var_os("UICP_CLAUDE_PATH");
+        let prev_bin = std::env::var_os("UICP_CLAUDE_BIN");
+        std::env::remove_var("UICP_CLAUDE_PATH");
+        std::env::remove_var("UICP_CLAUDE_BIN");
+
+        let path_dir = temp.path().join("pathbin");
+        std::fs::create_dir_all(&path_dir).expect("path dir");
+        let path_stub = path_dir.join("claude");
+        std::fs::write(&path_stub, "#!/usr/bin/env bash\necho path\n").expect("write stub");
+        let mut perms = std::fs::metadata(&path_stub).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path_stub, perms).unwrap();
+        std::env::set_var("PATH", path_dir.as_os_str());
+
+        let env = HashMap::new();
+        let resolved = resolve_provider_exe("claude", "claude", &env);
+
+        if let Some(v) = prev_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(v) = prev_path {
+            std::env::set_var("PATH", v);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        if let Some(v) = prev_override {
+            std::env::set_var("UICP_CLAUDE_PATH", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_PATH");
+        }
+        if let Some(v) = prev_bin {
+            std::env::set_var("UICP_CLAUDE_BIN", v);
+        } else {
+            std::env::remove_var("UICP_CLAUDE_BIN");
+        }
+
+        assert_eq!(resolved, "claude");
+    }
+
     fn success_status() -> ExitStatus {
         #[cfg(unix)]
         {
+            use std::os::unix::process::ExitStatusExt;
             ExitStatus::from_raw(0)
         }
         #[cfg(windows)]
         {
             ExitStatus::from_raw(0)
+        }
+    }
+
+    fn exit_status(code: i32) -> ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            ExitStatus::from_raw((code as i32) << 8)
+        }
+        #[cfg(windows)]
+        {
+            ExitStatus::from_raw(code as u32)
         }
     }
 
@@ -660,6 +1462,16 @@ mod tests {
                 observed_args: Mutex::new(Vec::new()),
                 observed_input: Mutex::new(None),
             }
+        }
+
+        fn with_stderr(mut self, stderr: &str) -> Self {
+            self.stderr = stderr.to_string();
+            self
+        }
+
+        fn with_exit_code(mut self, code: i32) -> Self {
+            self.status = exit_status(code);
+            self
         }
     }
 
@@ -727,6 +1539,264 @@ mod tests {
             );
         });
         std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn claude_provider_runs_without_api_key_when_cli_logged_in() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
+        let stream = r#"
+{"type":"message_start","message":{"id":"msg_2","model":"claude-3.5"}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"code\":\"console.log(2)\", "}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\"language\":\"ts\"}"}}
+{"type":"message_stop"}
+"#;
+
+        let runner = Arc::new(StubRunner::new("claude", stream));
+        let provider = ClaudeProvider::with_runner(runner);
+        let rt = Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let job = CodeProviderJob::new(
+                "job-claude-loginless",
+                "Generate code",
+                std::env::current_dir().unwrap(),
+            );
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            assert!(
+                ctx.env.get("ANTHROPIC_API_KEY").is_none(),
+                "prepare should not inject API key when absent"
+            );
+            let run = provider.run(&job, &ctx).await.expect("run");
+            assert!(
+                run.parsed_output.is_some(),
+                "parsed output should be available without API key when CLI session exists"
+            );
+        });
+    }
+
+    #[test]
+    fn claude_provider_wraps_with_httpjail_when_available() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let temp_home = tempfile::tempdir().expect("temp home");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("USERPROFILE", temp_home.path());
+        let prev_allowlist = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST");
+        let allowlist = tempfile::NamedTempFile::new().expect("allowlist");
+        std::fs::write(
+            allowlist.path(),
+            r#"{"providers":{"claude":{"hosts":["api.anthropic.com"],"methods":["GET","POST"]}}}"#,
+        )
+        .expect("write allowlist");
+        std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", allowlist.path());
+        let httpjail_path = if cfg!(windows) {
+            temp_dir.path().join("httpjail.exe")
+        } else {
+            temp_dir.path().join("httpjail")
+        };
+        std::fs::write(&httpjail_path, b"stub").expect("httpjail stub");
+        #[cfg(unix)]
+        {
+            let mut perms = std::fs::metadata(&httpjail_path)
+                .expect("httpjail metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&httpjail_path, perms).expect("set permissions");
+        }
+
+        let previous_path = std::env::var_os("PATH");
+        let mut segments = vec![temp_dir.path().to_path_buf()];
+        if let Some(existing) = previous_path.clone() {
+            segments.extend(std::env::split_paths(&existing));
+        }
+        let joined = std::env::join_paths(segments).expect("join paths");
+        std::env::set_var("PATH", &joined);
+
+        let stream = r#"
+{"type":"message_start","message":{"id":"msg_1","model":"claude-3.5"}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"code\":\"console.log(1)\", "}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\"language\":\"ts\"}"}}
+{"type":"message_stop"}
+"#;
+        let runner = Arc::new(StubRunner::new(&httpjail_path.to_string_lossy(), stream));
+        let provider = ClaudeProvider::with_runner(runner.clone());
+        let rt = Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let mut job = CodeProviderJob::new(
+                "job-httpjail-claude",
+                "Generate code",
+                std::env::current_dir().unwrap(),
+            );
+            job.extra_env
+                .insert(HTTPJAIL_ENV_FLAG.to_string(), "1".to_string());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            let _ = provider.run(&job, &ctx).await.expect("run");
+        });
+
+        let observed = runner.observed_args.lock().clone();
+
+        if let Some(existing) = previous_path {
+            std::env::set_var("PATH", existing);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        if let Some(v) = prev_userprofile {
+            std::env::set_var("USERPROFILE", v);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+        if let Some(v) = prev_allowlist {
+            std::env::set_var("UICP_HTTPJAIL_ALLOWLIST", v);
+        } else {
+            std::env::remove_var("UICP_HTTPJAIL_ALLOWLIST");
+        }
+
+        assert!(
+            observed.len() >= 4,
+            "expected httpjail wrapper arguments to be present"
+        );
+        assert_eq!(observed[0], "--js");
+        assert!(
+            observed[1].contains("api.anthropic.com"),
+            "predicate should include Anthropics hosts"
+        );
+        assert_eq!(observed[2], "--");
+        assert_eq!(observed[3], "claude");
+    }
+
+    #[test]
+    fn codex_provider_degrades_without_httpjail() {
+        let _guard = TEST_MUTEX.lock();
+
+        let previous_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", "");
+
+        let temp_workspace = tempfile::tempdir().expect("tempdir");
+        let runner = Arc::new(StubRunner::new(
+            "codex",
+            r#"{"type":"message","text":"done"}"#,
+        ));
+        let provider = CodexProvider::with_runner(runner.clone());
+        let rt = Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let mut job = CodeProviderJob::new(
+                "job-httpjail-codex",
+                "Inspect changes",
+                temp_workspace.path(),
+            );
+            job.extra_env
+                .insert(HTTPJAIL_ENV_FLAG.to_string(), "1".to_string());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            let _ = provider.run(&job, &ctx).await.expect("run");
+        });
+
+        let observed = runner.observed_args.lock().clone();
+
+        if let Some(existing) = previous_path {
+            std::env::set_var("PATH", existing);
+        } else {
+            std::env::remove_var("PATH");
+        }
+
+        assert!(
+            !observed.is_empty(),
+            "expected codex arguments to be captured"
+        );
+        assert_eq!(
+            observed[0], "exec",
+            "command should execute without httpjail wrapper when binary missing"
+        );
+    }
+
+    #[test]
+    fn codex_provider_runs_without_api_key_when_cli_logged_in() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("CODEX_API_KEY");
+
+        let temp_workspace = tempfile::tempdir().expect("tempdir");
+        let temp_bin = tempfile::tempdir().expect("temp bin");
+        let codex_exe = if cfg!(windows) {
+            temp_bin.path().join("codex.cmd")
+        } else {
+            temp_bin.path().join("codex")
+        };
+        std::fs::write(&codex_exe, b"stub").expect("codex stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&codex_exe)
+                .expect("codex metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&codex_exe, perms).expect("set permissions");
+        }
+
+        let prev_override = std::env::var_os("UICP_CODEX_PATH");
+        std::env::set_var("UICP_CODEX_PATH", codex_exe.as_os_str());
+
+        let stream = r#"
+{"type":"message","payload":{"content":[{"type":"output_json","json":"{\"code\":\"export const render = () => ({ html: '<div></div>' });\",\"language\":\"ts\"}"}]}}
+"#;
+        let runner = Arc::new(StubRunner::new("codex", stream));
+        let provider = CodexProvider::with_runner(runner);
+        let rt = Runtime::new().expect("runtime");
+
+        rt.block_on(async {
+            let job =
+                CodeProviderJob::new("job-codex-login", "Inspect changes", temp_workspace.path());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            assert!(
+                ctx.env.get("CODEX_API_KEY").is_none(),
+                "prepare should not inject CODEX_API_KEY when unset"
+            );
+            let run = provider.run(&job, &ctx).await.expect("run");
+            assert!(
+                run.parsed_output.is_some(),
+                "parsed output should surface CLI data without explicit API key"
+            );
+        });
+        if let Some(v) = prev_override {
+            std::env::set_var("UICP_CODEX_PATH", v);
+        } else {
+            std::env::remove_var("UICP_CODEX_PATH");
+        }
+    }
+
+    #[test]
+    fn codex_provider_surfaces_login_errors_without_key() {
+        let _guard = TEST_MUTEX.lock();
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("CODEX_API_KEY");
+
+        let temp_workspace = tempfile::tempdir().expect("tempdir");
+        let runner = Arc::new(
+            StubRunner::new("codex", "")
+                .with_exit_code(1)
+                .with_stderr("Please run `codex login`"),
+        );
+        let provider = CodexProvider::with_runner(runner);
+        let rt = Runtime::new().expect("runtime");
+
+        rt.block_on(async {
+            let job =
+                CodeProviderJob::new("job-codex-error", "Inspect changes", temp_workspace.path());
+            let ctx = provider.prepare(&job).await.expect("prepare");
+            let err = provider.run(&job, &ctx).await.expect_err("run should fail");
+            assert_eq!(err.code, ERR_PROVIDER_EXIT);
+            assert!(
+                err.message.contains("codex exited with"),
+                "failure should report CLI exit status"
+            );
+            assert!(
+                err.message.contains("codex login"),
+                "CLI guidance should be surfaced to the caller"
+            );
+        });
     }
 
     #[test]

@@ -159,7 +159,9 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
         recordDecision('deny', { op: env.op, reason: 'invalid_params' });
         return 'deny';
       }
+
       const params = env.params;
+
       const methodRaw = params.method;
       const urlRaw = params.url;
       const method = typeof methodRaw === 'string' ? methodRaw.toUpperCase() : 'GET';
@@ -326,4 +328,26 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
 
   // Unknown op → deny by default
   return 'deny';
+}
+
+export async function setApiPolicyDecision(method: string, origin: string, decision: Decision, duration: 'session' | 'forever'): Promise<void> {
+  try {
+    const key = `api:${String(method || 'GET').toUpperCase()}:${origin}` as PolicyKey;
+    const entry: PolicyEntry = {
+      decision,
+      duration,
+      createdAt: Date.now(),
+    };
+    if (duration === 'session') {
+      entry.sessionOnly = true;
+      sessionPolicies[key] = entry;
+      return;
+    }
+    if (duration === 'forever') {
+      const nextPolicy = await readPolicy();
+      nextPolicy[key] = entry;
+      await writePolicy(nextPolicy);
+      return;
+    }
+  } catch { /* non-fatal */ }
 }

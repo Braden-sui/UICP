@@ -1,3 +1,5 @@
+use std::fs;
+
 #[cfg(target_os = "windows")]
 fn compile_windows_resources() {
     // WHY: Embed v6 common-controls manifest so TaskDialogIndirect resolves when tests run standalone.
@@ -10,20 +12,13 @@ fn compile_windows_resources() {
 fn compile_windows_resources() {}
 
 #[cfg(target_os = "windows")]
-use std::env;
-use std::fs;
-
-#[cfg(target_os = "windows")]
 fn add_delayload_for_tests_and_harness() {
     // WHY: On some Windows hosts the loader picks comctl32 v5.82; delay-loading avoids process-start failure
-    // when the symbol is never called (our harness doesn't show native dialogs).
-    let is_harness = env::var("CARGO_FEATURE_COMPUTE_HARNESS").is_ok();
-    let is_test = env::var("CARGO_CFG_TEST").is_ok();
-    if is_harness || is_test {
-        // Target only test executables and the harness binary; avoid leaking delay-load into the main app binary.
-        println!("cargo:rustc-link-arg-tests=/DELAYLOAD:comctl32.dll");
-        println!("cargo:rustc-link-arg-bin=compute_harness=/DELAYLOAD:comctl32.dll");
-    }
+    // when the symbol is never called (our harness doesn't show native dialogs). Safe for production binaries.
+    println!("cargo:rerun-if-changed=build/windows/delayload_stub.c");
+    cc::Build::new()
+        .file("build/windows/delayload_stub.c")
+        .compile("uicp_delayload_stub");
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -77,3 +72,6 @@ fn main() {
     .expect("validate table.query host WIT");
     tauri_build::build();
 }
+
+#[cfg(not(target_os = "windows"))]
+fn add_delayload_for_tests_and_harness() {}

@@ -7,16 +7,38 @@ React + Tailwind client for the UICP generative desktop. DockChat is the only us
 ```bash
 cd uicp
 pnpm install
+
+# Full desktop with Tauri (recommended)
+pnpm run tauri:dev
+
+# UI-only preview (no Tauri bridge functionality)
 pnpm run dev
 ```
 
+> `pnpm run dev` only launches the Vite server. Provider logins, compute bridge actions, keychain access, and other desktop features require `pnpm run tauri:dev`.
+
 The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Tauri uses the same build when running `pnpm run tauri:dev`.
+
+## Connect Providers (optional)
+
+You can connect provider CLIs and verify access from the desktop.
+
+- Open Agent Settings:
+  - Click the gear shortcut on the Desktop, or
+  - Use the menu bar: Desktop → Agent Settings.
+- For each provider you want to use:
+  - Click "Connect Codex" or "Connect Claude" to run the provider CLI login flow.
+  - Click "Check Codex" or "Check Claude" to run a health check (CLI on PATH and usable account). Success shows a green toast; failures include detail text when available.
+- Notes
+  - Buttons are disabled without the desktop runtime. Run `pnpm run tauri:dev`.
+  - Codex: uses the `codex` CLI when present, or `OPENAI_API_KEY` if set.
+  - Claude: uses the `claude` CLI; when no API key is set it relies on the CLI’s login and OS keychain.
 
 ## Scripts
 
 | script              | purpose                                           |
 | ------------------- | ------------------------------------------------- |
-| `pnpm run dev`       | Start Vite dev server                             |
+| `pnpm run dev`       | Start Vite dev server (UI only)                   |
 | `pnpm run build`     | Typecheck + bundle for production                 |
 | `pnpm run lint`      | ESLint (flat config) over `src/`                  |
 | `pnpm run typecheck` | `tsc --noEmit`                                    |
@@ -25,12 +47,17 @@ The dev server is pinned to `http://127.0.0.1:1420` (see `vite.config.ts`). Taur
 
 ## Environment
 
-| variable                  | default  | description                                                        |
-| ------------------------- | -------- | ------------------------------------------------------------------ |
-| `VITE_DEV_MODE`           | `true`   | Enables dev-only UX touches                                        |
-| `E2E_ORCHESTRATOR`        | unset    | When `1`, opt-in E2E spec for orchestrator (requires real backend) |
-| `VITE_PLANNER_TIMEOUT_MS` | `120000` | Planner stream timeout (ms); early-stop parses sooner              |
-| `VITE_ACTOR_TIMEOUT_MS`   | `180000` | Actor stream timeout (ms); early-stop parses sooner                |
+| variable                  | default                      | description                                                                                     |
+| ------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `VITE_UICP_MODE`          | derived (`dev`/`test`/`prod`) | One of `dev`, `test`, `pilot`, `prod`. Selects one of four default configurations only.          |
+| `VITE_DEV_MODE`           | mode-based                   | Overrides dev-only UX toggles from `VITE_UICP_MODE` (true in `dev`, false otherwise by default) |
+| `E2E_ORCHESTRATOR`        | unset                        | When `1`, opt-in E2E spec for orchestrator (requires real backend)                              |
+| `VITE_PLANNER_TIMEOUT_MS` | mode-based (180000)          | Planner stream timeout (ms); env overrides mode defaults                                        |
+| `VITE_ACTOR_TIMEOUT_MS`   | mode-based (180000)          | Actor stream timeout (ms); env overrides mode defaults                                          |
+
+Notes
+- Only four default configurations exist via `VITE_UICP_MODE`: `dev`, `test`, `pilot`, `prod`.
+- Individual env vars still override these defaults on the user’s machine.
 
 ## Architecture Highlights
 

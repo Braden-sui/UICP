@@ -26,7 +26,7 @@ import { createComponentRenderer } from './componentRenderer';
 import type { ComponentRenderer } from './componentRenderer';
 import { createPermissionGate } from './permissionGate';
 import { createAdapterTelemetry, AdapterEvents } from './adapter.telemetry';
-import { createId } from '../../utils';
+import { createId, newUuid } from '../../utils';
 import { getComputeBridge } from '../../bridge/globals';
 import type { ComputeFinalEvent, JobSpec } from '../../../compute/types';
 import { routeApiCall } from './adapter.api';
@@ -214,10 +214,8 @@ const resolveScriptSource = (
 };
 
 const nextJobId = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return createId('job');
+  // INVARIANT: jobId must be a bare UUID to satisfy zod schemas (no prefix)
+  return newUuid();
 };
 
 const waitForComputeFinalEvent = (jobId: string, timeoutMs = 60_000): Promise<ComputeFinalEvent> => {
@@ -977,6 +975,19 @@ export const registerWorkspaceRoot = (element: HTMLElement): void => {
     }
   });
 
+  registerCommandHandler('ui.agent-settings.open', async () => {
+    try {
+      const win = typeof window === 'undefined' ? undefined : window;
+      const appStore = win?.__UICP_APP_STORE__;
+      const setter = appStore?.getState?.().setAgentSettingsOpen;
+      if (typeof setter === 'function') {
+        setter(true);
+      }
+    } catch (err) {
+      console.warn('[uicp] ui.agent-settings.open handler failed', err);
+    }
+  });
+
   // Register compute.cancel bridge (kill running compute job by id)
   registerCommandHandler('compute.cancel', async (cmd, _ctx) => {
     try {
@@ -1628,6 +1639,7 @@ const routeOperation = async (
 
         const watchEnvelope: Envelope<'state.watch'> = {
           op: 'state.watch',
+          // Use mode: 'replace' so the wrapper element remains and inner HTML updates in place
           params: { scope: 'workspace', key: stateKey, selector, windowId: params.windowId, mode: 'replace' },
           windowId: params.windowId,
         };

@@ -20,10 +20,34 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@5d458579430fc14a04a08a1e7d3694f545e91ce6
+        with:
+          toolchain: stable
+      - name: Install component tools
+        run: |
+          command -v wit-component || cargo install wit-component --locked
+      - name: Enforce component import policy
+        run: |
+          set -euo pipefail
+          for f in uicp/src-tauri/modules/*.wasm; do
+            echo "Checking imports for $f";
+            out="$(wit-component wit "$f" 2>/dev/null || true)";
+            # Require logging import for observability (optional: relax if not needed)
+            if ! echo "$out" | grep -q 'wasi:logging'; then
+              echo "missing logging import in $f"; exit 1; fi
+            # Forbid network imports by policy
+            if echo "$out" | grep -Eq 'wasi:http|wasi:sockets'; then
+              echo "network imports forbidden: $f"; exit 1; fi
+          done
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20.19.5'
-      - name: Verify modules
+      - name: Verify modules (digest + signature)
+        env:
+          STRICT_MODULES_VERIFY: '1'
+          # Single-key mode for CI; prefer UICP_TRUST_STORE_JSON when using per-entry keyid
+          UICP_MODULES_PUBKEY: ih4HBWNN6fqiMx8ee5NICPwDUzu/4ORtUjo7OTVu4wg=
         run: |
           node uicp/scripts/verify-modules.mjs --manifest uicp/src-tauri/modules/manifest.json --dir uicp/src-tauri/modules

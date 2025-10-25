@@ -2,7 +2,7 @@
 
 Purpose: Migrate planner/actor from WIL text to JSON tool calling with safe fallbacks, observability, and tests. This is the authoritative checklist and spec for the transition.
 
-Status: Planner = tool-first (JSON). Actor = tool-only (strict JSON) with orchestrator spawn guarantee backups.
+Status: Planner = tool-first (JSON) with cascaded fallbacks. Actor = tool-first (JSON) with JSON text and WIL text fallbacks; orchestrator enforces a spawn guarantee so users never see a blank desktop.
 
 ---
 
@@ -13,7 +13,7 @@ Status: Planner = tool-first (JSON). Actor = tool-only (strict JSON) with orches
 - Frontend stream listener is `uicp/src/lib/llm/ollama.ts`.
 - Planner/Actor orchestrator is `uicp/src/lib/llm/orchestrator.ts`.
 - Provider wiring (messages, tools, response_format) is `uicp/src/lib/llm/provider.ts`.
-- Streaming apply aggregator is `uicp/src/lib/uicp/stream.ts` (WIL today; JSON extension described below).
+- Streaming aggregator is `uicp/src/lib/uicp/stream.ts` (supports tools + json + WIL in priority order).
 
 ---
 
@@ -40,8 +40,12 @@ Status: Planner = tool-first (JSON). Actor = tool-only (strict JSON) with orches
 ## Environment Flags
 
 - `VITE_WIL_ONLY` (boolean)
-  - true → WIL-only (current default in `uicp/src/lib/config.ts`)
-  - false → JSON-first, WIL-fallback
+  - true → Planner uses the text-only path (no tool calls); Actor remains JSON-first; aggregator still buffers commentary for WIL parsing.
+  - false → JSON-first with cascaded fallbacks (tool → json → WIL).
+- `VITE_PLANNER_MODEL` (string)
+  - Model identifier used by the planner client (e.g., `deepseek-v3.1:671b`, `glm-4.6:cloud`).
+- `VITE_ACTOR_MODEL` (string)
+  - Model identifier used by the actor client (e.g., `qwen3-coder:480b`, `glm-4.6:cloud`).
 - `FALLBACK_CLOUD_MODEL`
   - e.g., `kimi-k2:1t`; used by backend on 4xx/5xx to retry once with an alternate model.
 - Proposed (optional future)
@@ -49,11 +53,13 @@ Status: Planner = tool-first (JSON). Actor = tool-only (strict JSON) with orches
 
 ---
 
-## Profiles (per-model capability)
+## Profiles (capability-based, model-agnostic)
 
 - File: `uicp/src/lib/llm/profiles.ts`
-- Set `capabilities.supportsTools: true` on planner/actor profiles that can use tool calling (GLM default; DeepSeek/Kimi/Qwen/GPT-OSS optional alternates).
-- Add dedicated profiles (e.g., `kimi-tools`, `qwen-tools`) to roll out per model without breaking existing profiles.
+- Profiles define capabilities (channels, tool support) and prompt formatting only; they are completely model-agnostic.
+- Model selection is handled at runtime via `options.model` parameter passed to `streamIntent()` and `streamPlan()`.
+- Planner profiles: `glm`, `gpt-oss`, `deepseek`, `kimi`, `qwen` support tools; `wil` is text-only.
+- Actor profiles: `glm`, `gpt-oss`, `qwen`, `kimi`, `deepseek` support tools.
 
 ---
 
@@ -111,26 +117,24 @@ These prompts are treated as source of truth; any deviation is caught by orchest
 
 - File: `uicp/src/lib/llm/orchestrator.ts`
 - Planner (`planWithProfile`):
-  1) When the selected profile supports tools, collect the `emit_plan` tool call and normalise via `normalizePlanJson()`.
-  2) If the model emits JSON content (no tool_call), reuse `normalizePlanJson()` to validate and coerce aliases.
-  3) As a last resort, parse the legacy outline sections (only used by the deterministic `wil` planner or older models).
-  4) On schema issues we retry once with a structured system message that reiterates the JSON contract.
+  1) If the selected profile supports tools, collect the `emit_plan` tool call.
+  2) If missing, attempt JSON parse from text content; if still missing, fall back to outline parsing (Summary/Steps/Risks/ActorHints).
+  3) On schema issues we retry once with a structured system message reiterating the contract.
 - Actor (`actWithProfile`):
-  1) For all tool-capable profiles, require a valid `emit_batch` call; plain text or WIL triggers an error and a structured retry message.
-  2) Tests can still enable WIL parsing via `MODE === 'test'`, but production ignores WIL text.
-  3) If the actor still returns nothing actionable, the orchestrator injects the spawn-guarantee window so the user is never left with a blank desktop.
+  1) Prefer a valid `emit_batch` tool call and validate.
+  2) If missing, attempt JSON parse from text; if still missing, parse WIL text.
+  3) If nothing actionable after fallback, emit a structured retry message; on final failure, inject the spawn-guarantee `window.create` + `dom.set`.
 - Clarifier flow and metadata stamping remain unchanged.
 
 ---
 
 ## Streaming Aggregator (Apply path)
 
-- Current: `uicp/src/lib/uicp/stream.ts` aggregates text → WIL via `parseWILBatch()`.
-- JSON extension:
-  - Accumulate `json` channel text; on `flush()`, normalise via `normalizeBatchJson()` and enqueue.
-  - Accumulate `tool_call` deltas for `emit_batch`, then run `normalizeBatchJson()` on the merged payload.
-  - Gate by: `supportsTools && !cfg.wilOnly`.
-- Bridge integration: `uicp/src/lib/bridge/tauri.ts` chooses aggregator; keep WIL aggregator for fallback and tests.
+- Current: ``uicp/src/lib/uicp/stream.ts`` accumulates in priority order and applies on flush.
+  - Tool-first: accumulate ``tool_call`` deltas for ``emit_batch``, merge segments, then normalise via ``normalizeBatchJson()``.
+  - JSON channel: accumulate ``json`` channel text as a structured secondary path.
+  - Commentary/text: always buffer and parse as WIL fallback at flush.
+- Bridge integration: ``uicp/src/lib/bridge/tauri.ts`` uses this aggregator; cancellation and error propagation are unchanged.
 
 ---
 
@@ -150,7 +154,14 @@ These prompts are treated as source of truth; any deviation is caught by orchest
 
 - UI Debug events (frontend): `ui-debug-log`
   - Request lifecycle: `llm_request_started`, `llm_delta`, `llm_complete`, `llm_error`.
-  - Planner/Actor source: `planner_source=tool|json|text`, `actor_source=tool|json|text` (add when implementing JSON-first).
+  - Sources recorded on orchestrator finish events:
+    - `channels.planner = tool | json | json-fallback | text | text-fallback`
+    - `channels.actor = tool | json-fallback | text | text-fallback`
+  - Telemetry events of interest (frontend):
+    - `planner_start` / `planner_finish` with `{ traceId, durationMs, channel, fallback, summary }`
+    - `actor_start` / `actor_finish` with `{ traceId, durationMs, channel, batchSize, plannerFallback }`
+    - `tool_args_parsed` with `{ span, status, reason, target, attempt, preview? }`
+    - `collect_timeout` with `{ span, targetToolName, timeoutMs }`
 - Backend debug: `request_started`, `response_status`, `response_failure`, `stream_eof`, `completed`, `retry_backoff`, `no_fallback_configured`.
 - Metrics to watch:
   - Tool success rate, JSON parse errors, WIL fallback rate
@@ -219,26 +230,33 @@ Rollback: set `VITE_WIL_ONLY=true` and/or revert `supportsTools` to false in pro
 
 ---
 
-## Implementation Checklist
+## Implementation Status
 
-- [ ] Flip `supportsTools: true` on chosen profiles in `uicp/src/lib/llm/profiles.ts`.
-- [x] Add tool-args collector (by index) for planner/actor streams. (`collectToolArgs.ts`, `collectWithFallback.ts`)
-- [x] Update `planWithProfile`/`actWithProfile` to JSON-first; keep fallbacks. (orchestrator.ts updated)
-- [ ] Extend aggregator to accept `json` channel or tool-call final args; gate by capability. (deferred - needs bridge work)
-- [x] Add source metrics (planner/actor: tool|json|text) to the UI debug bus. (`channelUsed` field in results)
-- [ ] Update prompts copy to mention tool calling when enabled; keep WIL prompts for fallback.
-- [x] Add tests listed above; keep WIL tests. (15 new tests, 176/179 total passing)
-- [ ] Add CI matrix jobs: WIL-only and Hybrid.
-- [ ] Document `FALLBACK_CLOUD_MODEL` and env flags in README/User Guide.
-- [ ] Decide go/no-go for `VITE_TOOLS_ONLY` once metrics are healthy.
+**Architecture Decision: JSON-first with cascaded fallbacks enabled by default**
 
----
+- Default profiles provide tools; planner/actor attempt tool calls first.
+- Aggregator accepts all channels: tool calls, JSON, and WIL text.
+- Profile `supportsTools` controls which tools are provided to the model.
+- `VITE_WIL_ONLY` (when enabled) forces planner text-only; actor remains JSON-first; aggregator remains unchanged.
+- Fallback chain: tool call → JSON content → WIL text → error.
+
+**Completed:**
+- [x] Tool-args collector for planner/actor streams (`collectToolArgs.ts`, `collectWithFallback.ts`)
+- [x] Orchestrator always uses JSON-first with cascading fallbacks
+- [x] Aggregator accepts all channels (tools, json, wil) without gating
+- [x] Source metrics (`channelUsed` field tracks: tool|json|text)
+- [x] Prompts emphasize tool calling; WIL prompt for `wil` profile
+- [x] Tests cover tool collection and fallback paths
+
+**Deferred:**
+- [ ] Add CI matrix jobs for different profiles
+
 
 ## Quick Commands
 
 - Run unit tests: `cd uicp && pnpm run test`
 - Focused test (example): `./node_modules/.bin/vitest run tests/unit/ollama/error-propagation.test.ts`
-- Dev: set `FALLBACK_CLOUD_MODEL` and `VITE_WIL_ONLY=false` in `.env` (restart Vite/Tauri dev server).
+- Dev: Tool calling is always enabled; use `VITE_PLANNER_MODEL` and `VITE_ACTOR_MODEL` to select models.
 
 ---
 
@@ -247,3 +265,24 @@ Rollback: set `VITE_WIL_ONLY=true` and/or revert `supportsTools` to false in pro
 - Keep the WIL path until JSON success rate is proven with metrics and tests.
 - Avoid dual-mode ambiguity in prompts: be explicit per profile (tools-on vs WIL).
 - Ensure streaming cancel/timeout paths are symmetric across JSON and WIL.
+
+---
+
+## Appendix: PR Description Template (JSON-first changes)
+
+PLAN
+
+- Goal and why now
+- Key assumptions and confidence
+- Selected Tier and rationale; rollback plan
+
+DIFF SUMMARY
+
+- What changed (orchestrator, provider, prompts, aggregator)
+- Deleted code inventory (if any)
+
+VALIDATION
+
+- Tests added/updated and what they prove (tool, JSON fallback, WIL fallback)
+- Manual steps (if any)
+- Observability added (events, `channelUsed` tracking)

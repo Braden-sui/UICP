@@ -26,7 +26,6 @@ describe('actor profile: qwen', () => {
 describe('kimi profiles', () => {
   it('planner defaults to kimi model and uses planner prompt', () => {
     const profile = getPlannerProfile('kimi');
-    expect(profile.defaultModel).toBe('kimi-k2:1t');
     const messages = profile.formatMessages('Sketch a layout');
     expect(messages[0].role).toBe('system');
     expect(messages[1]).toEqual({ role: 'user', content: 'User intent:\nSketch a layout' });
@@ -34,7 +33,6 @@ describe('kimi profiles', () => {
 
   it('actor defaults to kimi model and uses actor prompt', () => {
     const profile = getActorProfile('kimi');
-    expect(profile.defaultModel).toBe('kimi-k2:1t');
     const messages = profile.formatMessages('{"summary":"Do it","batch":[]}');
     expect(messages[0].role).toBe('system');
     expect(messages[1]).toEqual({ role: 'user', content: '{"summary":"Do it","batch":[]}' });

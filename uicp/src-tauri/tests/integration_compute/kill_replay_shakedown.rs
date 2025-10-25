@@ -41,6 +41,7 @@ fn build_job(job_id: &str, env_hash: &str) -> ComputeJobSpec {
             env_hash: env_hash.to_string(),
             agent_trace_id: None,
         },
+        token: None,
         golden_key: None,
         artifact_id: None,
         expect_golden: false,

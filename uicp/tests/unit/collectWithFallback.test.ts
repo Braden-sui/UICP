@@ -54,7 +54,7 @@ describe('collectWithFallback', () => {
     expect(result.toolResult?.args).toEqual({ summary: 'Plan', batch: [] });
   });
 
-  it('parses textual JSON batches when no tool call arrives', async () => {
+  it('records text content when no tool call arrives', async () => {
     const jsonPayload = `{"batch":[{"op":"window.create","params":{"title":"Game"}}]}`;
     const events: StreamEvent[] = [
       {
@@ -66,7 +66,7 @@ describe('collectWithFallback', () => {
 
     const result = await collectWithFallback(mockStream(events), 'emit_batch', 5000);
 
-    expect(result.toolResult?.name).toBe('emit_batch');
-    expect(result.toolResult?.args).toEqual({ batch: [{ op: 'window.create', params: { title: 'Game' } }] });
+    expect(result.toolResult).toBeUndefined();
+    expect(result.textContent).toBe(jsonPayload);
   });
 });

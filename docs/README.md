@@ -15,7 +15,7 @@
 ### Implementation
 
 - **[IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)** - Major milestones and changes
-- **[USER_GUIDE.md#setup](USER_GUIDE.md#setup)** - Development environment setup
+- **[setup.md](setup.md)** - Development environment setup
 
 ### Technical
 
@@ -31,6 +31,7 @@
 - **[PROPOSALS.md](PROPOSALS.md)** - Potential future work (non-committal)
 - **[MODEL_INTEGRATION.md](MODEL_INTEGRATION.md)** - Provider integration and verification
 - **[MODEL_CHOICES.md](MODEL_CHOICES.md)** - LLM model selection
+- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** - Current known issues and workarounds
 - This page serves as the docs index
 
 ---
@@ -41,9 +42,10 @@ UICP is a local-first desktop environment that you build through natural languag
 
 - **Windows**: Containers for displaying content
 - **Commands**: Safe, validated operations (window create, DOM set, component render)
-- **Planner**: AI that determines the steps needed (GLM 4.6)
-- **Actor**: AI that generates precise commands (GLM 4.6)
+- **Planner**: AI that determines the steps needed
+- **Actor**: AI that generates precise commands
 - **Full Control Mode**: Approve plans before execution
+- **Model-Agnostic Profiles**: Switch between different LLM providers without code changes
 
 ---
 
@@ -67,7 +69,7 @@ UICP is a local-first desktop environment that you build through natural languag
 
 ### Tool Calling (Active)
 - JSON-first with WIL fallback
-- GLM 4.6 default for planner and actor
+- Model-agnostic profiles (select at runtime)
 - `supportsTools: true` for structured output
 - >90% tool success rate
 

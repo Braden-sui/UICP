@@ -1,6 +1,7 @@
 import { readBooleanEnv, readNumberEnv } from './env/values';
+import { getAppMode, getModeDefaults } from './mode';
 
-const isTestMode = typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test';
+const modeDefaults = getModeDefaults(getAppMode());
 
 export const cfg = {
   // Planner/Actor caps
@@ -10,9 +11,9 @@ export const cfg = {
   actorBatchHard: readNumberEnv('ACTOR_BATCH_HARD', 200, { min: 1 }),
   appWallclockMs: readNumberEnv('APP_WALLCLOCK_MS', 5000, { min: 1 }),
   appMemMb: readNumberEnv('APP_MEM_MB', 128, { min: 1 }),
-  // Feature toggles (JSON-first enabled for production pilot)
+  // Feature toggles
   wilOnly: readBooleanEnv('VITE_WIL_ONLY', false),
-  wilDebug: readBooleanEnv('VITE_WIL_DEBUG', false),
+  wilDebug: readBooleanEnv('VITE_WIL_DEBUG', modeDefaults.wilDebug),
   wilMaxBufferKb: readNumberEnv('VITE_WIL_MAX_BUFFER_KB', 256, { min: 1 }),
-  plannerTwoPhase: readBooleanEnv('VITE_PLANNER_TWO_PHASE', !isTestMode),
+  plannerTwoPhase: readBooleanEnv('VITE_PLANNER_TWO_PHASE', modeDefaults.plannerTwoPhase),
 };
