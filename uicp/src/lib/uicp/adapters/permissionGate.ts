@@ -66,7 +66,14 @@ export const createPermissionGate = (): PermissionGate => {
       }
 
       // State ops and txn.cancel are benign
-      if (op === 'state.set' || op === 'state.get' || op === 'state.patch' || op === 'txn.cancel') {
+      if (
+        op === 'state.set' ||
+        op === 'state.get' ||
+        op === 'state.patch' ||
+        op === 'state.watch' ||
+        op === 'state.unwatch' ||
+        op === 'txn.cancel'
+      ) {
         return 'granted';
       }
 

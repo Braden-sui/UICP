@@ -1,6 +1,8 @@
 import type { StreamEvent } from './ollama';
 import { LLMError, LLMErrorCode } from './errors';
 
+const withErrorCode = (code: string, message: string): string => `${code}: ${message}`;
+
 /**
  * Accumulates tool_call arguments from a stream of events.
  * Tool calls may arrive as deltas (incremental JSON strings) or complete payloads.
@@ -36,12 +38,17 @@ export async function collectToolArgs(
 ): Promise<CollectedToolArgs | null> {
   const accumulators = new Map<number, ToolCallAccumulator>();
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(
-      () => reject(new LLMError(LLMErrorCode.ToolCollectionTimeout, `Tool collection timeout after ${timeoutMs}ms`)),
-      timeoutMs,
-    ),
-  );
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(
+        new LLMError(
+          LLMErrorCode.ToolCollectionTimeout,
+          withErrorCode(LLMErrorCode.ToolCollectionTimeout, `Tool collection timeout after ${timeoutMs}ms`),
+        ),
+      );
+    }, timeoutMs);
+  });
 
   try {
     const result = await Promise.race([
@@ -81,7 +88,7 @@ export async function collectToolArgs(
             } catch (err) {
               throw new LLMError(
                 LLMErrorCode.ToolArgsParseFailed,
-                `Failed to parse tool args for ${targetName}`,
+                withErrorCode(LLMErrorCode.ToolArgsParseFailed, `Failed to parse tool args for ${targetName}`),
                 undefined,
                 err,
               );
@@ -95,10 +102,19 @@ export async function collectToolArgs(
     ]);
     return result;
   } catch (err) {
-    if (err instanceof LLMError && err.code === LLMErrorCode.ToolCollectionTimeout) {
+    if (err instanceof LLMError) {
       throw err;
     }
-    throw new LLMError(LLMErrorCode.ToolCollectionFailed, 'Tool collection failed', undefined, err);
+    throw new LLMError(
+      LLMErrorCode.ToolCollectionFailed,
+      withErrorCode(LLMErrorCode.ToolCollectionFailed, 'Tool collection failed'),
+      undefined,
+      err,
+    );
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
   }
 }
 
@@ -112,12 +128,17 @@ export async function collectAllToolCalls(
 ): Promise<CollectedToolArgs[]> {
   const accumulators = new Map<number, ToolCallAccumulator>();
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(
-      () => reject(new LLMError(LLMErrorCode.ToolCollectionAllTimeout, `Tool collection timeout after ${timeoutMs}ms`)),
-      timeoutMs,
-    ),
-  );
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(
+        new LLMError(
+          LLMErrorCode.ToolCollectionAllTimeout,
+          withErrorCode(LLMErrorCode.ToolCollectionAllTimeout, `Tool collection timeout after ${timeoutMs}ms`),
+        ),
+      );
+    }, timeoutMs);
+  });
 
   try {
     await Promise.race([
@@ -148,10 +169,19 @@ export async function collectAllToolCalls(
       timeoutPromise,
     ]);
   } catch (err) {
-    if (err instanceof LLMError && err.code === LLMErrorCode.ToolCollectionAllTimeout) {
+    if (err instanceof LLMError) {
       throw err;
     }
-    throw new LLMError(LLMErrorCode.ToolCollectionAllFailed, 'Tool collection failed', undefined, err);
+    throw new LLMError(
+      LLMErrorCode.ToolCollectionAllFailed,
+      withErrorCode(LLMErrorCode.ToolCollectionAllFailed, 'Tool collection failed'),
+      undefined,
+      err,
+    );
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
   }
 
   // Parse all accumulated buffers

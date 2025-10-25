@@ -1307,20 +1307,23 @@ const installWSGuard = () => {
       emitBlockEvent({ url: sanitizeForLog(u), reason: 'path_forbidden', api: 'ws', blocked: !(cfg?.monitorOnly) });
       if (!(cfg?.monitorOnly)) throw createSecurityError();
     }
+    let cachedVerdict: ReturnType<typeof getUrlhausCachedVerdict> = null;
     try {
-      const v = getUrlhausCachedVerdict(u);
-      if (v === 'malicious') {
-        if (cfg?.verbose) console.warn('[net-guard] ws blocked (urlhaus_flagged)', sanitizeForLog(u));
-        emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'ws', blocked: !(cfg?.monitorOnly) });
-        if (!(cfg?.monitorOnly)) throw createSecurityError();
-      }
-      const hostLower = u.hostname.toLowerCase();
-      if (urlhausMaliciousHosts.has(hostLower)) {
-        if (cfg?.verbose) console.warn('[net-guard] ws blocked (urlhaus_flagged:host)', sanitizeForLog(u));
-        emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'ws', blocked: !(cfg?.monitorOnly) });
-        if (!(cfg?.monitorOnly)) throw createSecurityError();
-      }
-    } catch { /* non-fatal */ }
+      cachedVerdict = getUrlhausCachedVerdict(u);
+    } catch (err) {
+      if (cfg?.verbose) console.warn('[net-guard] ws urlhaus cache lookup failed', sanitizeForLog(u), err);
+    }
+    if (cachedVerdict === 'malicious') {
+      if (cfg?.verbose) console.warn('[net-guard] ws blocked (urlhaus_flagged)', sanitizeForLog(u));
+      emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'ws', blocked: !(cfg?.monitorOnly) });
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
+    }
+    const hostLower = u.hostname.toLowerCase();
+    if (urlhausMaliciousHosts.has(hostLower)) {
+      if (cfg?.verbose) console.warn('[net-guard] ws blocked (urlhaus_flagged:host)', sanitizeForLog(u));
+      emitBlockEvent({ url: sanitizeForLog(u), reason: 'urlhaus_flagged', api: 'ws', blocked: !(cfg?.monitorOnly) });
+      if (!(cfg?.monitorOnly)) throw createSecurityError();
+    }
     const res = shouldBlockHost(u.hostname, u.port);
     if (res.block) {
       if (cfg?.verbose) console.warn('[net-guard] ws blocked', sanitizeForLog(u), res.reason);
