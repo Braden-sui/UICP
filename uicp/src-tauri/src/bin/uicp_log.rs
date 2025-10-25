@@ -7,7 +7,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("uicp-log: {err:?}");
+            tracing::error!("uicp-log: {err:?}");
             ExitCode::FAILURE
         }
     }
@@ -90,7 +90,7 @@ fn emit_report(report: ActionLogVerifyReport, sig_checked: bool) {
 }
 
 fn print_usage() {
-    eprintln!("Usage:");
-    eprintln!("  uicp-log verify [--db path/to/data.db] [--pubkey HEX_OR_B64]");
-    eprintln!("  uicp-log --help");
+    tracing::warn!("Usage:");
+    tracing::warn!("  uicp-log verify [--db path/to/data.db] [--pubkey HEX_OR_B64]");
+    tracing::warn!("  uicp-log --help");
 }

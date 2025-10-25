@@ -434,7 +434,7 @@ fn log_httpjail_applied(provider: &str) {
     );
     #[cfg(not(feature = "otel_spans"))]
     {
-        eprintln!("[uicp] httpjail allowlist enforced for provider {provider}");
+        tracing::info!("[uicp] httpjail allowlist enforced for provider {provider}");
     }
 }
 
@@ -449,7 +449,7 @@ fn log_httpjail_skipped(provider: &str, reason: &str) {
     );
     #[cfg(not(feature = "otel_spans"))]
     {
-        eprintln!(
+        tracing::warn!(
             "[uicp:{}] httpjail requested but not enforced for provider {provider}: {reason}",
             WARN_HTTPJAIL_DISABLED
         );
@@ -471,7 +471,7 @@ fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
         );
         #[cfg(not(feature = "otel_spans"))]
         {
-            eprintln!(
+            tracing::info!(
                 "[uicp] provider {provider} executable resolved via {source}: {} (os={}, arch={})",
                 path.display(),
                 std::env::consts::OS,

@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
+    io::{self, Write},
     path::PathBuf,
-    sync::Arc,
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Once},
     time::{Duration, Instant},
 };
 
@@ -13,6 +14,7 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager, Runtime, State};
+use tracing::Level;
 use tokio::sync::{RwLock, Semaphore};
 use tokio_rusqlite::Connection as AsyncConn;
 
@@ -34,6 +36,10 @@ pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
 
 pub static LOGS_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("logs"));
 pub static FILES_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("files"));
+
+static TRACING_INIT_ONCE: Once = Once::new();
+static TRACING_READY: AtomicBool = AtomicBool::new(false);
+static STDERR_FALLBACK_EMITTED: AtomicBool = AtomicBool::new(false);
 
 pub fn files_dir_path() -> &'static std::path::Path {
     &FILES_DIR
@@ -93,6 +99,8 @@ pub struct CircuitState {
     pub last_failure_at: Option<Instant>,
     pub total_failures: u64,
     pub total_successes: u64,
+    pub half_open: bool,
+    pub half_open_probe_in_flight: bool,
 }
 
 pub struct AppState {
@@ -436,17 +444,13 @@ pub fn emit_or_log<R: Runtime, T>(app_handle: &tauri::AppHandle<R>, event: &str,
 where
     T: serde::Serialize + Clone,
 {
-    // WHY: Tauri v2 restricts event names (avoid dots). We normalize
-    // names by replacing '.' with '-' before emitting so callers may
-    // use either form. Prefer dashed names in new code and docs.
-    // INVARIANT: All emitted event names are dash-normalized.
-    let evt = if event.contains('.') {
-        event.replace('.', "-")
-    } else {
-        event.to_string()
-    };
-    if let Err(err) = app_handle.emit(&evt, payload) {
-        eprintln!("Failed to emit {event}: {err}");
+    if let Err(err) = app_handle.emit(event, payload.clone()) {
+        log_warn(format!("emit_or_log fallback for {event}: {err:?}"));
+        if let Err(fallback_err) = app_handle.emit("uicp-host-debug", payload) {
+            log_error(format!(
+                "emit_or_log fallback emit failed for {event}: {fallback_err:?}"
+            ));
+        }
     }
 }
 

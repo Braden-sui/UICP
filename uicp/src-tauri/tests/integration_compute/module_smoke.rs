@@ -30,7 +30,7 @@ fn csv_parse_preflight_allows_empty_imports() {
     skip_contract_verify();
     let module = modules_dir().join("csv.parse@1.2.0.wasm");
     if !module.exists() {
-        eprintln!("skipping csv.parse preflight test (module missing)");
+        tracing::warn!("skipping csv.parse preflight test (module missing)");
         return;
     }
     preflight_component_imports(&module, "csv.parse@1.2.0").expect("csv.parse preflight");
@@ -41,7 +41,7 @@ fn table_query_preflight_allows_expected_imports() {
     skip_contract_verify();
     let module = modules_dir().join("table.query@0.1.0.wasm");
     if !module.exists() {
-        eprintln!("skipping table.query preflight test (module missing)");
+        tracing::warn!("skipping table.query preflight test (module missing)");
         return;
     }
     preflight_component_imports(&module, "table.query@0.1.0").expect("table.query preflight");
@@ -52,7 +52,7 @@ fn preflight_rejects_mismatched_policy() {
     skip_contract_verify();
     let module = modules_dir().join("table.query@0.1.0.wasm");
     if !module.exists() {
-        eprintln!("skipping preflight mismatch test (module missing)");
+        tracing::warn!("skipping preflight mismatch test (module missing)");
         return;
     }
     assert!(
@@ -82,7 +82,7 @@ async fn csv_parse_smoke_when_module_present() {
             match wasmtime::component::Component::from_file(&engine, &m.path) {
                 Ok(_) => true,
                 Err(e) => {
-                    eprintln!("skipping csv.parse smoke (component not loadable): {e}");
+                    tracing::warn!("skipping csv.parse smoke (component not loadable): {e}");
                     false
                 }
             }
@@ -90,7 +90,7 @@ async fn csv_parse_smoke_when_module_present() {
         _ => false,
     };
     if !found {
-        eprintln!("skipping csv.parse smoke (module not present)");
+        tracing::warn!("skipping csv.parse smoke (module not present)");
         return;
     }
 
@@ -141,7 +141,7 @@ async fn table_query_smoke_when_module_present() {
             match wasmtime::component::Component::from_file(&engine, &m.path) {
                 Ok(_) => true,
                 Err(e) => {
-                    eprintln!("skipping table.query smoke (component not loadable): {e}");
+                    tracing::warn!("skipping table.query smoke (component not loadable): {e}");
                     false
                 }
             }
@@ -149,7 +149,7 @@ async fn table_query_smoke_when_module_present() {
         _ => false,
     };
     if !found {
-        eprintln!("skipping table.query smoke (module not present)");
+        tracing::warn!("skipping table.query smoke (module not present)");
         return;
     }
 

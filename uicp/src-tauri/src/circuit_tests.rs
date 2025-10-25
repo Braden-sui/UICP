@@ -84,7 +84,7 @@ async fn test_circuit_transitions_to_half_open_after_timeout() {
         max_failures: 2,
         open_duration_ms: 100, // Short timeout for testing
     };
-    let (_, emit) = create_telemetry_sink();
+    let (events, emit) = create_telemetry_sink();
     let host = "api.example.com";
 
     // Open circuit
@@ -106,13 +106,66 @@ async fn test_circuit_transitions_to_half_open_after_timeout() {
         "circuit should transition to half-open after timeout"
     );
 
-    // Verify consecutive failures reset
+    // Verify half-open state and probe flags
     let guard = circuits.read().await;
     let state = guard.get(host).expect("circuit state should exist");
     assert_eq!(
         state.consecutive_failures, 0,
         "consecutive failures should be reset after timeout"
     );
+    assert!(state.half_open, "circuit should mark half_open after timeout");
+    assert!(
+        !state.half_open_probe_in_flight,
+        "half-open probe flag should be clear until a probe is issued"
+    );
+}
+
+#[tokio::test]
+async fn test_half_open_failure_reopens_immediately() {
+    let circuits = new_circuits();
+    let config = CircuitBreakerConfig {
+        max_failures: 2,
+        open_duration_ms: 50,
+    };
+    let (_, emit) = create_telemetry_sink();
+    let host = "api.example.com";
+
+    for _ in 0..2 {
+        circuit_record_failure(&circuits, host, &config, emit.clone()).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let is_open_after_timeout = circuit_is_open(&circuits, host).await;
+    assert!(is_open_after_timeout.is_none());
+
+    {
+        let mut guard = circuits.write().await;
+        let state = guard.get_mut(host).expect("state exists");
+        state.half_open = true;
+        state.half_open_probe_in_flight = true;
+    }
+
+    // Failure while half-open should immediately reopen
+    let reopened = circuit_record_failure(&circuits, host, &config, emit.clone())
+        .await
+        .expect("should reopen");
+    assert!(reopened > Instant::now());
+
+    let guard = circuits.read().await;
+    let state = guard.get(host).expect("state exists");
+    assert!(state.opened_until.is_some());
+    assert!(!state.half_open, "half_open should be cleared after failure");
+    assert!(
+        !state.half_open_probe_in_flight,
+        "probe in flight flag should reset after failure"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let events_guard = events.read().await;
+    assert!(events_guard
+        .iter()
+        .any(|(evt, _)| evt == "circuit-open"), "half-open failure should emit circuit-open");
 }
 
 #[tokio::test]

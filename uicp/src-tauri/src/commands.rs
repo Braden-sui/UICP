@@ -329,7 +329,7 @@ pub async fn copy_into_files<R: Runtime>(
         dest = dest_dir.join(new_name);
     }
 
-    eprintln!(
+    tracing::info!(
         "copy_into_files: src={} -> dest={}",
         p.display(),
         dest.display()

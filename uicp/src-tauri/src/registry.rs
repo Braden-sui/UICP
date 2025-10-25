@@ -149,7 +149,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                 #[cfg(feature = "otel_spans")]
                 tracing::info!(target = "uicp", from = %src.display(), to = %target.display(), "modules installed from bundle");
                 if let Err(err) = verify_installed_modules(&target) {
-                    eprintln!("bundled modules verification failed: {err:#}");
+                    tracing::error!("bundled modules verification failed: {err:#}");
                 }
             }
         }
@@ -181,7 +181,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     let manifest = parse_manifest(&text)?;
     for entry in manifest.entries {
         if !is_clean_filename(&entry.filename) {
-            eprintln!(
+            tracing::error!(
                 "invalid module filename (must be basename only): {}",
                 entry.filename
             );
@@ -200,7 +200,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                         if candidate.exists() {
                             let tmp = path.with_extension("tmp");
                             if let Err(err) = fs::copy(&candidate, &tmp) {
-                                eprintln!(
+                                tracing::error!(
                                     "modules copy repair failed {} -> {}: {}",
                                     candidate.display(),
                                     tmp.display(),
@@ -208,7 +208,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                                 );
                             } else if let Ok(true) = verify_digest(&tmp, &entry.digest_sha256) {
                                 if let Err(err) = replace_file(&tmp, &path) {
-                                    eprintln!(
+                                    tracing::error!(
                                         "modules repair replace failed {} -> {}: {}",
                                         tmp.display(),
                                         path.display(),
@@ -237,7 +237,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
             if candidate.exists() {
                 if let Some(parent) = path.parent() {
                     if let Err(e) = fs::create_dir_all(parent) {
-                        eprintln!("modules mkdir failed: {e}");
+                        tracing::error!("modules mkdir failed: {e}");
                     }
                 }
                 // Atomic copy-then-rename with digest verification before publish
@@ -246,7 +246,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                     Ok(_) => match verify_digest(&tmp, &entry.digest_sha256) {
                         Ok(true) => {
                             if let Err(e) = replace_file(&tmp, &path) {
-                                eprintln!(
+                                tracing::error!(
                                     "modules rename failed {} -> {}: {}",
                                     tmp.display(),
                                     path.display(),
@@ -256,7 +256,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                             }
                         }
                         Ok(false) => {
-                            eprintln!(
+                            tracing::error!(
                                 "bundled digest mismatch for {} (expected {}, tmp at {})",
                                 entry.filename,
                                 entry.digest_sha256,
@@ -265,12 +265,12 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                             let _ = fs::remove_file(&tmp);
                         }
                         Err(err) => {
-                            eprintln!("digest verify error for {}: {}", entry.filename, err);
+                            tracing::error!("digest verify error for {}: {}", entry.filename, err);
                             let _ = fs::remove_file(&tmp);
                         }
                     },
                     Err(e) => {
-                        eprintln!(
+                        tracing::error!(
                             "modules copy failed {} -> {}: {}",
                             candidate.display(),
                             tmp.display(),
@@ -736,7 +736,7 @@ mod tests {
         let enforce = std::env::var("UICP_CI_PUBKEY_ENFORCE").unwrap_or_default();
         let enforce = matches!(enforce.as_str(), "1" | "true" | "TRUE" | "yes" | "on");
         if !enforce {
-            eprintln!(
+            tracing::warn!(
                 "skipping bundled manifest signature enforcement (UICP_CI_PUBKEY_ENFORCE not set)"
             );
             return;
@@ -852,7 +852,7 @@ fn verify_installed_modules(target: &Path) -> Result<()> {
     let manifest = parse_manifest(&text)?;
     for entry in manifest.entries {
         if !is_clean_filename(&entry.filename) {
-            eprintln!(
+            tracing::warn!(
                 "skipping digest check for invalid filename {}",
                 entry.filename
             );
@@ -868,14 +868,14 @@ fn verify_installed_modules(target: &Path) -> Result<()> {
         match verify_digest(&path, &entry.digest_sha256) {
             Ok(true) => {}
             Ok(false) => {
-                eprintln!(
+                tracing::error!(
                     "removing module {} due to digest mismatch after install",
                     entry.filename
                 );
                 let _ = fs::remove_file(&path);
             }
             Err(err) => {
-                eprintln!("failed verifying digest for {}: {err:#}", entry.filename);
+                tracing::error!("failed verifying digest for {}: {err:#}", entry.filename);
                 let _ = fs::remove_file(&path);
             }
         }
@@ -947,7 +947,7 @@ fn select_manifest_entry<'a>(
             match semver::Version::parse(&entry.version) {
                 Ok(v) => parsed.push((*entry, v)),
                 Err(err) => {
-                    eprintln!(
+                    tracing::warn!(
                         "skipping module {} due to invalid semver {}: {err}",
                         entry.task, entry.version
                     );
@@ -971,11 +971,11 @@ fn is_regular_file(path: &Path) -> bool {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_file() => true,
         Ok(_) => {
-            eprintln!("skip non-regular candidate: {}", path.display());
+            tracing::warn!("skip non-regular candidate: {}", path.display());
             false
         }
         Err(err) => {
-            eprintln!(
+            tracing::warn!(
                 "skip candidate {} due to metadata error: {}",
                 path.display(),
                 err

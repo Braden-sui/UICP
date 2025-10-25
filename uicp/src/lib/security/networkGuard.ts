@@ -733,7 +733,8 @@ const installFetchGuard = () => {
           const host = url.hostname.toLowerCase();
           const isIp4 = isIPv4(host);
           const isIp6 = !isIp4 && isIPv6(host);
-          const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+          const isLocalhostLabel = host === 'localhost' || host.endsWith('.localhost');
+          const isLoopback = isLocalhostLabel || host === '127.0.0.1' || host === '::1';
           if (!isLoopback && !isIp4 && !isIp6) {
             if (cfg?.verbose) console.warn('[net-guard] fetch blocked (https_only)', sanitizeForLog(url));
             if (cfg?.monitorOnly) {

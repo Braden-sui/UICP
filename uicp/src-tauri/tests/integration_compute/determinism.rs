@@ -73,11 +73,11 @@ async fn deterministic_runs_match_for_same_env_hash() {
         cfg.wasm_component_model(true);
         let engine = wasmtime::Engine::new(&cfg).expect("engine");
         if wasmtime::component::Component::from_file(&engine, &m.path).is_err() {
-            eprintln!("skipping determinism (component not loadable)");
+            tracing::warn!("skipping determinism (component not loadable)");
             return;
         }
     } else {
-        eprintln!("skipping determinism (table.query module not available)");
+        tracing::warn!("skipping determinism (table.query module not available)");
         return;
     }
     let harness = ComputeTestHarness::new_async().await.expect("harness");
@@ -151,11 +151,11 @@ async fn different_env_hash_changes_seed_dependent_output() {
         cfg.wasm_component_model(true);
         let engine = wasmtime::Engine::new(&cfg).expect("engine");
         if wasmtime::component::Component::from_file(&engine, &m.path).is_err() {
-            eprintln!("skipping determinism variant (component not loadable)");
+            tracing::warn!("skipping determinism variant (component not loadable)");
             return;
         }
     } else {
-        eprintln!("skipping determinism variant (table.query module not available)");
+        tracing::warn!("skipping determinism variant (table.query module not available)");
         return;
     }
     let harness = ComputeTestHarness::new_async().await.expect("harness");

@@ -161,17 +161,17 @@ impl ComputeTestHarness {
             .plugin(tauri_plugin_fs::init())
             .setup(|app| {
                 if let Err(err) = std::fs::create_dir_all(&*DATA_DIR) {
-                    eprintln!("create data dir failed: {err:?}");
+                    tracing::error!("create data dir failed: {err:?}");
                 }
                 if let Err(err) = std::fs::create_dir_all(&*LOGS_DIR) {
-                    eprintln!("create logs dir failed: {err:?}");
+                    tracing::error!("create logs dir failed: {err:?}");
                 }
                 if let Err(err) = std::fs::create_dir_all(&*FILES_DIR) {
-                    eprintln!("create files dir failed: {err:?}");
+                    tracing::error!("create files dir failed: {err:?}");
                 }
                 let handle = app.handle();
                 if let Err(err) = crate::registry::install_bundled_modules_if_missing(&handle) {
-                    eprintln!("install modules failed: {err:?}");
+                    tracing::error!("install modules failed: {err:?}");
                 }
                 Ok(())
             });

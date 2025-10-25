@@ -243,8 +243,8 @@ Fixed `size` parameter handling in WIL parser for window operations.
 
 ### Circuit Module (`circuit.rs`)
 - `circuit_is_open()`: Fast-path read with lazy cleanup
-- `circuit_record_success()`: Resets state, emits `circuit-close` event
-- `circuit_record_failure()`: Increments failures, opens circuit, emits `circuit-open` event
+- `circuit_record_success()`: Resets state, handles half-open probes, emits `circuit-close`/`circuit-half-open-success`
+- `circuit_record_failure()`: Increments failures, handles half-open re-open, emits `circuit-open`
 - `get_circuit_debug_info()`: Returns per-host state for debugging
 
 ### Debug Command

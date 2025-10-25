@@ -141,7 +141,7 @@ impl ActionLogService {
                     &mut rx,
                     metrics_for_worker,
                 ) {
-                    eprintln!("action_log worker terminated with error: {err:?}");
+                    tracing::error!("action_log worker terminated with error: {err:?}");
                 }
                 Ok(())
             })();
@@ -153,7 +153,7 @@ impl ActionLogService {
 
         tauri::async_runtime::spawn(async move {
             if let Err(err) = worker_join.await {
-                eprintln!("action_log worker join failed: {err:?}");
+                tracing::error!("action_log worker join failed: {err:?}");
             }
         });
 

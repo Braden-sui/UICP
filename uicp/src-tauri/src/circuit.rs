@@ -23,6 +23,7 @@ pub struct CircuitDebugInfo {
     pub total_failures: u64,
     pub total_successes: u64,
     pub state: String,
+    pub half_open_probe_in_flight: bool,
 }
 
 /// Check if circuit is open for the given host.
@@ -43,6 +44,9 @@ pub async fn circuit_is_open(
                     return Some(until);
                 }
             }
+            if state.half_open {
+                return None;
+            }
         }
     }
     // Upgrade to write only to clear expired state
@@ -52,6 +56,8 @@ pub async fn circuit_is_open(
             if now >= until {
                 state.opened_until = None;
                 state.consecutive_failures = 0;
+                state.half_open = true;
+                state.half_open_probe_in_flight = false;
             } else {
                 return Some(until);
             }
@@ -70,14 +76,28 @@ pub async fn circuit_record_success(
     let mut guard = circuits.write().await;
     let entry = guard.entry(host.to_string()).or_default();
     let was_open = entry.opened_until.is_some();
+    let was_half_open = entry.half_open;
     let had_failures = entry.consecutive_failures > 0;
+
+    if entry.half_open {
+        entry.half_open = false;
+        entry.half_open_probe_in_flight = false;
+    }
 
     entry.consecutive_failures = 0;
     entry.opened_until = None;
     entry.total_successes = entry.total_successes.saturating_add(1);
 
-    // Emit circuit.close event if transitioning from open/degraded to healthy
-    if was_open || had_failures {
+    if was_half_open {
+        emit_telemetry(
+            "circuit-half-open-success",
+            serde_json::json!({
+                "host": host,
+                "totalFailures": entry.total_failures,
+                "totalSuccesses": entry.total_successes,
+            }),
+        );
+    } else if was_open || had_failures {
         emit_telemetry(
             "circuit-close",
             serde_json::json!({
@@ -100,11 +120,13 @@ pub async fn circuit_record_failure(
 ) -> Option<Instant> {
     let mut guard = circuits.write().await;
     let entry = guard.entry(host.to_string()).or_default();
-    entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
     entry.total_failures = entry.total_failures.saturating_add(1);
     entry.last_failure_at = Some(Instant::now());
 
-    if entry.consecutive_failures >= config.max_failures {
+    if entry.half_open {
+        entry.half_open_probe_in_flight = false;
+        entry.half_open = false;
+        entry.consecutive_failures = config.max_failures;
         let until = Instant::now() + Duration::from_millis(config.open_duration_ms);
         entry.opened_until = Some(until);
 
@@ -121,7 +143,23 @@ pub async fn circuit_record_failure(
 
         Some(until)
     } else {
-        None
+        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+        if entry.consecutive_failures >= config.max_failures {
+            let until = Instant::now() + Duration::from_millis(config.open_duration_ms);
+            entry.opened_until = Some(until);
+            emit_telemetry(
+                "circuit-open",
+                serde_json::json!({
+                    "host": host,
+                    "consecutiveFailures": entry.consecutive_failures,
+                    "openDurationMs": config.open_duration_ms,
+                    "totalFailures": entry.total_failures,
+                }),
+            );
+            Some(until)
+        } else {
+            None
+        }
     }
 }
 
@@ -150,6 +188,8 @@ pub async fn get_circuit_debug_info(
 
             let state_str = if state.opened_until.is_some() && opened_until_ms.is_some() {
                 "open"
+            } else if state.half_open {
+                "half-open"
             } else if state.consecutive_failures > 0 {
                 "degraded"
             } else {
@@ -164,6 +204,7 @@ pub async fn get_circuit_debug_info(
                 total_failures: state.total_failures,
                 total_successes: state.total_successes,
                 state: state_str.to_string(),
+                half_open_probe_in_flight: state.half_open_probe_in_flight,
             }
         })
         .collect()

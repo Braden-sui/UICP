@@ -60,11 +60,11 @@ async fn kill_replay_produces_identical_output_hash() {
         cfg.wasm_component_model(true);
         let engine = wasmtime::Engine::new(&cfg).expect("engine");
         if wasmtime::component::Component::from_file(&engine, &m.path).is_err() {
-            eprintln!("skipping kill/replay (component not loadable)");
+            tracing::warn!("skipping kill/replay (component not loadable)");
             return;
         }
     } else {
-        eprintln!("skipping kill/replay (csv.parse module not available)");
+        tracing::warn!("skipping kill/replay (csv.parse module not available)");
         return;
     }
 

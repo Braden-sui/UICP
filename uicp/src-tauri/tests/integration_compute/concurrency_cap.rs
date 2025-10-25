@@ -67,11 +67,11 @@ mod wasm_tests {
             cfg.wasm_component_model(true);
             let engine = wasmtime::Engine::new(&cfg).expect("engine");
             if wasmtime::component::Component::from_file(&engine, &m.path).is_err() {
-                eprintln!("skipping concurrency cap (component not loadable)");
+                tracing::warn!("skipping concurrency cap (component not loadable)");
                 return;
             }
         } else {
-            eprintln!("skipping concurrency cap (csv.parse module not available)");
+            tracing::warn!("skipping concurrency cap (csv.parse module not available)");
             return;
         }
         let harness = ComputeTestHarness::new_async()

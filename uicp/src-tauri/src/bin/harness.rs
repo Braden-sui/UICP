@@ -233,7 +233,7 @@ async fn cmd_compact_log(db: &PathBuf) -> anyhow::Result<i32> {
 }
 
 fn usage() -> ! {
-    eprintln!("Usage:\n  harness init-db <db_path>\n  harness persist <db_path> <id> <tool> <args_json>\n  harness log-hash <db_path>\n  harness save-checkpoint <db_path> <hash>\n  harness compact-log <db_path>\n  harness materialize <db_path> <key>\n  harness count-missing <db_path>\n  harness quick-check <db_path>\n  harness fk-check <db_path>");
+    tracing::error!("Usage:\n  harness init-db <db_path>\n  harness persist <db_path> <id> <tool> <args_json>\n  harness log-hash <db_path>\n  harness save-checkpoint <db_path> <hash>\n  harness compact-log <db_path>\n  harness materialize <db_path> <key>\n  harness count-missing <db_path>\n  harness quick-check <db_path>\n  harness fk-check <db_path>");
     std::process::exit(2)
 }
 
@@ -288,7 +288,7 @@ async fn main() {
     match code {
         Ok(_) => {}
         Err(err) => {
-            eprintln!("error: {err:?}");
+            tracing::error!("error: {err:?}");
             std::process::exit(1);
         }
     }

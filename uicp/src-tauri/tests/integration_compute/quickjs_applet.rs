@@ -70,7 +70,7 @@ fn quickjs_preflight_allows_empty_imports() {
     skip_contract_verify();
     let module = modules_dir().join("applet.quickjs@0.1.0.wasm");
     if !module.exists() {
-        eprintln!("skipping applet.quickjs preflight test (module missing)");
+        tracing::warn!("skipping applet.quickjs preflight test (module missing)");
         return;
     }
     preflight_component_imports(&module, "applet.quickjs@0.1.0").expect("quickjs.preflight");
@@ -80,7 +80,7 @@ fn quickjs_preflight_allows_empty_imports() {
 async fn quickjs_init_returns_initial_state() {
     skip_contract_verify();
     if cfg!(windows) {
-        eprintln!("skipping applet.quickjs init test (quickjs runtime unsupported on Windows)");
+        tracing::warn!("skipping applet.quickjs init test (quickjs runtime unsupported on Windows)");
         return;
     }
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
@@ -97,7 +97,7 @@ async fn quickjs_init_returns_initial_state() {
             match wasmtime::component::Component::from_file(&engine, &m.path) {
                 Ok(_) => true,
                 Err(e) => {
-                    eprintln!("skipping applet.quickjs smoke (component not loadable): {e}");
+                    tracing::warn!("skipping applet.quickjs smoke (component not loadable): {e}");
                     false
                 }
             }
@@ -106,7 +106,7 @@ async fn quickjs_init_returns_initial_state() {
     };
 
     if !found {
-        eprintln!("skipping applet.quickjs smoke (module not present)");
+        tracing::warn!("skipping applet.quickjs smoke (module not present)");
         return;
     }
 
@@ -153,7 +153,7 @@ async fn quickjs_init_returns_initial_state() {
 async fn quickjs_render_produces_html() {
     skip_contract_verify();
     if cfg!(windows) {
-        eprintln!("skipping applet.quickjs render test (quickjs runtime unsupported on Windows)");
+        tracing::warn!("skipping applet.quickjs render test (quickjs runtime unsupported on Windows)");
         return;
     }
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
@@ -167,7 +167,7 @@ async fn quickjs_render_produces_html() {
         .flatten()
         .is_none()
     {
-        eprintln!("skipping applet.quickjs render test (module not present)");
+        tracing::warn!("skipping applet.quickjs render test (module not present)");
         return;
     }
 
@@ -215,7 +215,7 @@ async fn quickjs_render_produces_html() {
 async fn quickjs_on_event_updates_state() {
     skip_contract_verify();
     if cfg!(windows) {
-        eprintln!("skipping applet.quickjs onEvent test (quickjs runtime unsupported on Windows)");
+        tracing::warn!("skipping applet.quickjs onEvent test (quickjs runtime unsupported on Windows)");
         return;
     }
     std::env::set_var("UICP_MODULES_DIR", modules_dir());
@@ -229,7 +229,7 @@ async fn quickjs_on_event_updates_state() {
         .flatten()
         .is_none()
     {
-        eprintln!("skipping applet.quickjs onEvent test (module not present)");
+        tracing::warn!("skipping applet.quickjs onEvent test (module not present)");
         return;
     }
 
@@ -292,7 +292,7 @@ async fn quickjs_rejects_missing_source() {
         .flatten()
         .is_none()
     {
-        eprintln!("skipping applet.quickjs validation test (module not present)");
+        tracing::warn!("skipping applet.quickjs validation test (module not present)");
         return;
     }
 

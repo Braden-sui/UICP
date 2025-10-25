@@ -1232,30 +1232,83 @@ async fn chat_completion(
                 .and_then(|u| u.host_str().map(|h| h.to_string()))
                 .or_else(|| base_host.clone());
 
+            let mut half_open_probe = false;
             if let Some(host) = host_for_attempt.as_deref() {
-                if let Some(until) = circuit::circuit_is_open(&circuit_breakers, host).await {
-                    let wait_ms =
-                        until.saturating_duration_since(Instant::now()).as_millis() as u64;
-                    if debug_on {
-                        let ev = serde_json::json!({
-                            "ts": Utc::now().timestamp_millis(),
-                            "event": "circuit_blocked",
-                            "requestId": rid_for_task,
-                            "host": host,
-                            "retryMs": wait_ms,
-                        });
-                        tokio::spawn(append_trace(ev.clone()));
-                        tokio::spawn(emit_debug(ev));
+                match circuit::circuit_is_open(&circuit_breakers, host).await {
+                    Some(until) => {
+                        let wait_ms =
+                            until.saturating_duration_since(Instant::now()).as_millis() as u64;
+                        if debug_on {
+                            let ev = serde_json::json!({
+                                "ts": Utc::now().timestamp_millis(),
+                                "event": "circuit_blocked",
+                                "requestId": rid_for_task,
+                                "host": host,
+                                "retryMs": wait_ms,
+                            });
+                            tokio::spawn(append_trace(ev.clone()));
+                            tokio::spawn(emit_debug(ev));
+                        }
+                        emit_problem_detail(
+                            &app_handle,
+                            &rid_for_task,
+                            503,
+                            "CircuitOpen",
+                            "Remote temporarily unavailable",
+                            Some(wait_ms),
+                        );
+                        break;
                     }
-                    emit_problem_detail(
-                        &app_handle,
-                        &rid_for_task,
-                        503,
-                        "CircuitOpen",
-                        "Remote temporarily unavailable",
-                        Some(wait_ms),
-                    );
-                    break;
+                    None => {
+                        let mut guard = circuit_breakers.write().await;
+                        if let Some(state) = guard.get_mut(host) {
+                            if state.half_open && !state.half_open_probe_in_flight {
+                                state.half_open_probe_in_flight = true;
+                                half_open_probe = true;
+                                if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "circuit_probe",
+                                        "requestId": rid_for_task,
+                                        "host": host,
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
+                                emit_or_log(
+                                    &app_handle,
+                                    "circuit-half-open-probe",
+                                    serde_json::json!({
+                                        "requestId": rid_for_task,
+                                        "host": host,
+                                    }),
+                                );
+                            } else if state.half_open && state.half_open_probe_in_flight {
+                                let wait_ms = circuit_config.open_duration_ms;
+                                if debug_on {
+                                    let ev = serde_json::json!({
+                                        "ts": Utc::now().timestamp_millis(),
+                                        "event": "circuit_probe_skipped",
+                                        "requestId": rid_for_task,
+                                        "host": host,
+                                        "retryMs": wait_ms,
+                                    });
+                                    tokio::spawn(append_trace(ev.clone()));
+                                    tokio::spawn(emit_debug(ev));
+                                }
+                                emit_problem_detail(
+                                    &app_handle,
+                                    &rid_for_task,
+                                    503,
+                                    "CircuitHalfOpen",
+                                    "Probe already in flight",
+                                    Some(wait_ms),
+                                );
+                                break;
+                            }
+                        }
+                        drop(guard);
+                    }
                 }
             }
 
@@ -1298,6 +1351,12 @@ async fn chat_completion(
                             emit_circuit_telemetry,
                         )
                         .await;
+                        if half_open_probe {
+                            let mut guard = circuit_breakers.write().await;
+                            if let Some(state) = guard.get_mut(host) {
+                                state.half_open_probe_in_flight = false;
+                            }
+                        }
                     }
                     if attempt_local < max_attempts {
                         let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
@@ -1725,6 +1784,12 @@ async fn chat_completion(
                             emit_circuit_telemetry,
                         )
                         .await;
+                        if half_open_probe {
+                            let mut guard = circuit_breakers.write().await;
+                            if let Some(state) = guard.get_mut(host) {
+                                state.half_open_probe_in_flight = false;
+                            }
+                        }
                     }
 
                     if debug_on {
@@ -1782,7 +1847,7 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
     } else {
         // still load default .env if present elsewhere
         if let Err(err) = dotenv() {
-            eprintln!("Failed to load fallback .env: {err:?}");
+            tracing::warn!("Failed to load fallback .env: {err:?}");
         }
         env_api_key = std::env::var("OLLAMA_API_KEY").ok();
         if let Ok(val) = std::env::var("USE_DIRECT_CLOUD") {
@@ -1794,11 +1859,11 @@ fn load_env_key(state: &AppState) -> anyhow::Result<()> {
     // Migration: if API key was in .env but not in keyring, migrate it
     if !key_from_keyring {
         if let Some(key_value) = env_api_key {
-            eprintln!("Migrating OLLAMA_API_KEY from .env to secure keyring...");
+            tracing::info!("Migrating OLLAMA_API_KEY from .env to secure keyring...");
             if let Err(e) = entry.set_password(&key_value) {
-                eprintln!("Warning: Failed to migrate API key to keyring: {e}");
+                tracing::warn!("Failed to migrate API key to keyring: {e}");
             } else {
-                eprintln!("Successfully migrated API key to keyring. You can now remove OLLAMA_API_KEY from .env");
+                tracing::info!("Successfully migrated API key to keyring. You can now remove OLLAMA_API_KEY from .env");
             }
             state.ollama_key.blocking_write().replace(key_value);
         }
@@ -1991,7 +2056,7 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Database maintenance failed: {e:?}");
+                    tracing::error!("Database maintenance failed: {e:?}");
                     #[cfg(feature = "otel_spans")]
                     {
                         let ms = started.elapsed().as_millis() as i64;
@@ -2032,18 +2097,18 @@ fn main() {
         tracing::info!(target = "uicp", "tracing initialized");
     }
     if let Err(err) = dotenv() {
-        eprintln!("Failed to load .env: {err:?}");
+        tracing::warn!("Failed to load .env: {err:?}");
     }
 
     let db_path = DB_PATH.clone();
 
     // Initialize database and ensure directory exists BEFORE opening connections
     if let Err(err) = init_database(&db_path) {
-        eprintln!("Failed to initialize database: {err:?}");
+        tracing::error!("Failed to initialize database: {err:?}");
         std::process::exit(1);
     }
     if let Err(err) = ensure_default_workspace(&db_path) {
-        eprintln!("Failed to ensure default workspace: {err:?}");
+        tracing::error!("Failed to ensure default workspace: {err:?}");
         std::process::exit(1);
     }
 
@@ -2101,7 +2166,7 @@ fn main() {
     let action_log = match action_log::ActionLogService::start(&db_path) {
         Ok(handle) => handle,
         Err(err) => {
-            eprintln!("Failed to start action log service: {err:?}");
+            tracing::error!("Failed to start action log service: {err:?}");
             std::process::exit(1);
         }
     };
@@ -2113,7 +2178,7 @@ fn main() {
             "ts": chrono::Utc::now().timestamp(),
         }),
     ) {
-        eprintln!("E-UICP-0660: failed to append boot action-log entry: {err:?}");
+        tracing::error!("E-UICP-0660: failed to append boot action-log entry: {err:?}");
     }
 
     let job_token_key: [u8; 32] = {
@@ -2179,7 +2244,7 @@ fn main() {
     };
 
     if let Err(err) = load_env_key(&state) {
-        eprintln!("Failed to load environment keys: {err:?}");
+        tracing::error!("Failed to load environment keys: {err:?}");
         std::process::exit(1);
     }
 
@@ -2203,17 +2268,17 @@ fn main() {
         .setup(|app| {
             // Ensure base data directories exist
             if let Err(e) = std::fs::create_dir_all(&*DATA_DIR) {
-                eprintln!("create data dir failed: {e:?}");
+                tracing::error!("create data dir failed: {e:?}");
             }
             if let Err(e) = std::fs::create_dir_all(&*LOGS_DIR) {
-                eprintln!("create logs dir failed: {e:?}");
+                tracing::error!("create logs dir failed: {e:?}");
             }
             if let Err(e) = std::fs::create_dir_all(&*FILES_DIR) {
-                eprintln!("create files dir failed: {e:?}");
+                tracing::error!("create files dir failed: {e:?}");
             }
             // Ensure bundled compute modules are installed into the user modules dir
             if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
-                eprintln!("module install failed: {err:?}");
+                tracing::error!("module install failed: {err:?}");
             }
             spawn_autosave(app.handle().clone());
             // Periodic DB maintenance to keep WAL and stats tidy
@@ -2224,7 +2289,7 @@ fn main() {
                 let handle = app.handle().clone();
                 let _ = tauri::async_runtime::spawn_blocking(move || {
                     if let Err(err) = crate::compute::prewarm_quickjs(&handle) {
-                        eprintln!("quickjs prewarm failed: {err:?}");
+                        tracing::warn!("quickjs prewarm failed: {err:?}");
                     }
                 });
             }
@@ -2296,7 +2361,7 @@ fn main() {
                 .visible(true)
                 .build();
             if let Err(err) = splash_try_app {
-                eprintln!("splash app:// failed, falling back to data URL: {err:?}");
+                tracing::warn!("splash app:// failed, falling back to data URL: {err:?}");
                 let data_url = format!("data:text/html;base64,{}", BASE64_ENGINE.encode(splash_html));
                 let splash_fallback = tauri::WebviewWindowBuilder::new(app, "splash", WebviewUrl::External(
                     Url::parse(&data_url).expect("valid data url")
@@ -2309,7 +2374,7 @@ fn main() {
                     .visible(true)
                     .build();
                 if let Err(err2) = splash_fallback {
-                    eprintln!("failed to create splash window (data URL fallback): {err2:?}");
+                    tracing::error!("failed to create splash window (data URL fallback): {err2:?}");
                 }
             }
 
@@ -2318,7 +2383,7 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = health_quick_check_internal(&handle).await {
-                    eprintln!("health_quick_check failed: {err:?}");
+                    tracing::error!("health_quick_check failed: {err:?}");
                 }
             });
             Ok(())

@@ -28,7 +28,7 @@ fn script_preflight_allows_empty_imports() {
     skip_contract_verify();
     let module = modules_dir().join("script.hello@0.1.0.wasm");
     if !module.exists() {
-        eprintln!("skipping script preflight test (module missing)");
+        tracing::warn!("skipping script preflight test (module missing)");
         return;
     }
     preflight_component_imports(&module, "script.hello@0.1.0").expect("script.preflight");
@@ -52,7 +52,7 @@ async fn script_render_smoke_when_module_present() {
             match wasmtime::component::Component::from_file(&engine, &m.path) {
                 Ok(_) => true,
                 Err(e) => {
-                    eprintln!("skipping script.hello smoke (component not loadable): {e}");
+                    tracing::warn!("skipping script.hello smoke (component not loadable): {e}");
                     false
                 }
             }
@@ -60,7 +60,7 @@ async fn script_render_smoke_when_module_present() {
         _ => false,
     };
     if !found {
-        eprintln!("skipping script.hello smoke (module not present)");
+        tracing::warn!("skipping script.hello smoke (module not present)");
         return;
     }
 

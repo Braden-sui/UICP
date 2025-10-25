@@ -70,7 +70,7 @@ mod wasm_tests {
             });
 
             if !has_csv_parse {
-                eprintln!("Warning: csv.parse module not found in manifest - smoke test will need module build");
+                tracing::warn!("csv.parse module not found in manifest - smoke test will need module build");
             }
         }
     }

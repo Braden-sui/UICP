@@ -784,9 +784,13 @@ fn log_login_wrap(provider: &str, policy_key: &str, enabled: bool) {
     );
     #[cfg(not(feature = "otel_spans"))]
     {
-        eprintln!(
-            "[uicp] httpjail login wrap: provider={}, policyKey={}, policyVersionOrHash={}, enabled={}",
-            provider, policy_key, policy_version, enabled
+        tracing::info!(
+            target = "uicp",
+            provider = provider,
+            policyKey = policy_key,
+            policyVersionOrHash = %policy_version,
+            enabled = enabled,
+            "httpjail login wrap"
         );
     }
 }
@@ -805,11 +809,14 @@ fn log_resolved(provider: &str, path: &Path, source: &str) {
         );
         #[cfg(not(feature = "otel_spans"))]
         {
-            eprintln!(
-                "[uicp] provider {provider} executable resolved via {source}: {} (os={}, arch={})",
-                path.display(),
-                std::env::consts::OS,
-                std::env::consts::ARCH
+            tracing::info!(
+                target = "uicp",
+                provider = provider,
+                exe = %path.display(),
+                source = source,
+                os = %std::env::consts::OS,
+                arch = %std::env::consts::ARCH,
+                "provider executable resolved"
             );
         }
     }
