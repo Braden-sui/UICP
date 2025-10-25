@@ -5,10 +5,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime, State};
 
+use crate::compute_input::sanitize_ws_files_path;
 use crate::core::log_warn;
 use crate::AppState;
 use crate::ComputeJobSpec;
-use crate::compute_input::sanitize_ws_files_path;
 use blake3::Hasher as Blake3;
 
 /// Canonicalize JSON deterministically (keys sorted, stable formatting).
@@ -90,8 +90,6 @@ pub fn compute_key(task: &str, input: &Value, env_hash: &str) -> String {
     let digest = hasher.finalize();
     hex::encode(digest)
 }
-
- 
 
 fn collect_ws_inputs(value: &Value, acc: &mut Vec<String>) {
     match value {
@@ -185,7 +183,6 @@ pub fn compute_key_v2_plus(spec: &ComputeJobSpec, input: &Value, invariants: &st
     let digest = hasher.finalize();
     hex::encode(digest)
 }
-
 
 /// Golden artifact lookup result.
 #[derive(Debug, Clone, PartialEq)]
@@ -363,7 +360,7 @@ mod tests {
     #[test]
     fn compute_key_v2_plus_includes_invariants() {
         use crate::policy::ComputeJobSpec;
-        
+
         let spec = ComputeJobSpec {
             job_id: "job1".to_string(),
             task: "test.task".to_string(),
@@ -387,31 +384,43 @@ mod tests {
             artifact_id: None,
             expect_golden: false,
         };
-        
+
         let input = serde_json::json!({"x": 1});
-        
+
         // Key without invariants
         let key_v2 = compute_key_v2(&spec, &input);
-        
+
         // Key with module invariants
         let invariants = "modsha=abc123|modver=1.0.0";
         let key_v2_plus = compute_key_v2_plus(&spec, &input, invariants);
-        
+
         // Keys must differ when invariants are included
-        assert_ne!(key_v2, key_v2_plus, "v2_plus key must differ from v2 when invariants present");
-        
+        assert_ne!(
+            key_v2, key_v2_plus,
+            "v2_plus key must differ from v2 when invariants present"
+        );
+
         // Keys with same invariants must be identical (cache consistency)
         let key_v2_plus_dup = compute_key_v2_plus(&spec, &input, invariants);
-        assert_eq!(key_v2_plus, key_v2_plus_dup, "v2_plus keys with identical invariants must match");
-        
+        assert_eq!(
+            key_v2_plus, key_v2_plus_dup,
+            "v2_plus keys with identical invariants must match"
+        );
+
         // Keys with different invariants must differ
         let different_invariants = "modsha=xyz789|modver=2.0.0";
         let key_v2_plus_diff = compute_key_v2_plus(&spec, &input, different_invariants);
-        assert_ne!(key_v2_plus, key_v2_plus_diff, "v2_plus keys with different invariants must differ");
-        
+        assert_ne!(
+            key_v2_plus, key_v2_plus_diff,
+            "v2_plus keys with different invariants must differ"
+        );
+
         // Empty invariants should match v2 key
         let key_v2_plus_empty = compute_key_v2_plus(&spec, &input, "");
-        assert_eq!(key_v2, key_v2_plus_empty, "v2_plus with empty invariants should match v2");
+        assert_eq!(
+            key_v2, key_v2_plus_empty,
+            "v2_plus with empty invariants should match v2"
+        );
     }
 }
 

@@ -446,7 +446,10 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
             Ok(httpjail) => {
                 let pred = load_httpjail_predicate("claude").unwrap_or_else(|_| "".into());
                 if pred.is_empty() {
-                    (exe.clone(), base_args.iter().map(|s| s.to_string()).collect())
+                    (
+                        exe.clone(),
+                        base_args.iter().map(|s| s.to_string()).collect(),
+                    )
                 } else {
                     let mut owned: Vec<String> = Vec::new();
                     owned.push("--js".into());
@@ -468,7 +471,10 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
             }
         }
     } else {
-        (exe.clone(), base_args.iter().map(|s| s.to_string()).collect())
+        (
+            exe.clone(),
+            base_args.iter().map(|s| s.to_string()).collect(),
+        )
     };
 
     let output = match run_command_timeout_owned(

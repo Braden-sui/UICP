@@ -15,9 +15,9 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::{async_runtime::spawn as tauri_spawn, AppHandle, Manager, Runtime, State};
+use tokio::sync::OwnedSemaphorePermit;
 #[cfg(feature = "otel_spans")]
 use tracing::Instrument;
-use tokio::sync::OwnedSemaphorePermit;
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
 use uuid::Uuid;
@@ -2599,15 +2599,15 @@ mod tests {
             temperature: 0.1,
             max_output_tokens: 128,
             mock_response: None,
-        mock_error: None,
-        golden_key: "abc".into(),
-        provider_label: "auto".into(),
-        providers: vec![],
-        strategy: ExecutionStrategy::SequentialFallback,
-        install: None,
-        codex_model: None,
-        claude_model: None,
-    };
+            mock_error: None,
+            golden_key: "abc".into(),
+            provider_label: "auto".into(),
+            providers: vec![],
+            strategy: ExecutionStrategy::SequentialFallback,
+            install: None,
+            codex_model: None,
+            claude_model: None,
+        };
         let raw = json!({
             "code": "def render():\n    return {}\n\ndef on_event():\n    return {}",
             "language": "python",
@@ -2806,14 +2806,14 @@ export function onEvent(action: string, payload: string, state: string) {
             capabilities: ComputeCapabilitiesSpec::default(),
             replayable: true,
             workspace_id: "default".into(),
-        provenance: ComputeProvenanceSpec {
-            env_hash: "test-env".into(),
-            agent_trace_id: None,
-        },
-        token: None,
-        golden_key: None,
-        artifact_id: None,
-        expect_golden: false,
+            provenance: ComputeProvenanceSpec {
+                env_hash: "test-env".into(),
+                agent_trace_id: None,
+            },
+            token: None,
+            golden_key: None,
+            artifact_id: None,
+            expect_golden: false,
+        }
     }
-}
 }

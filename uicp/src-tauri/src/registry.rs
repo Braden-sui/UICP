@@ -267,8 +267,7 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                         Err(err) => {
                             log_error(format!(
                                 "digest verify error for {}: {}",
-                                entry.filename,
-                                err
+                                entry.filename, err
                             ));
                             let _ = fs::remove_file(&tmp);
                         }
@@ -511,7 +510,11 @@ fn require_pubkey_from_env() -> AnyResult<[u8; 32]> {
 
 fn decode_pubkey_any(s: &str) -> AnyResult<[u8; 32]> {
     let b64 = BASE64_STANDARD.decode(s.as_bytes()).ok();
-    let bytes = if let Some(v) = b64 { v } else { hex::decode(s).context("decode pubkey hex")? };
+    let bytes = if let Some(v) = b64 {
+        v
+    } else {
+        hex::decode(s).context("decode pubkey hex")?
+    };
     let arr: [u8; 32] = bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("pubkey must be 32 bytes (Ed25519)"))?;
@@ -520,25 +523,34 @@ fn decode_pubkey_any(s: &str) -> AnyResult<[u8; 32]> {
 
 fn read_trust_store() -> AnyResult<Option<std::collections::HashMap<String, [u8; 32]>>> {
     if let Ok(json_inline) = std::env::var("UICP_TRUST_STORE_JSON") {
-        let map: serde_json::Value = serde_json::from_str(&json_inline).context("parse UICP_TRUST_STORE_JSON")?;
-        let obj = map.as_object().ok_or_else(|| anyhow::anyhow!("trust store must be a JSON object"))?;
+        let map: serde_json::Value =
+            serde_json::from_str(&json_inline).context("parse UICP_TRUST_STORE_JSON")?;
+        let obj = map
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("trust store must be a JSON object"))?;
         let mut out = std::collections::HashMap::new();
         for (k, v) in obj.iter() {
             if let Some(s) = v.as_str() {
-                let pk = decode_pubkey_any(s).with_context(|| format!("decode pubkey for keyid {}", k))?;
+                let pk = decode_pubkey_any(s)
+                    .with_context(|| format!("decode pubkey for keyid {}", k))?;
                 out.insert(k.to_string(), pk);
             }
         }
         return Ok(Some(out));
     }
     if let Ok(path) = std::env::var("UICP_TRUST_STORE") {
-        let text = std::fs::read_to_string(&path).with_context(|| format!("read trust store: {}", path))?;
-        let map: serde_json::Value = serde_json::from_str(&text).context("parse trust store JSON")?;
-        let obj = map.as_object().ok_or_else(|| anyhow::anyhow!("trust store must be a JSON object"))?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("read trust store: {}", path))?;
+        let map: serde_json::Value =
+            serde_json::from_str(&text).context("parse trust store JSON")?;
+        let obj = map
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("trust store must be a JSON object"))?;
         let mut out = std::collections::HashMap::new();
         for (k, v) in obj.iter() {
             if let Some(s) = v.as_str() {
-                let pk = decode_pubkey_any(s).with_context(|| format!("decode pubkey for keyid {}", k))?;
+                let pk = decode_pubkey_any(s)
+                    .with_context(|| format!("decode pubkey for keyid {}", k))?;
                 out.insert(k.to_string(), pk);
             }
         }
@@ -553,7 +565,10 @@ fn require_pubkey_for_entry(entry: &ModuleEntry) -> AnyResult<[u8; 32]> {
             if let Some(pk) = store.get(keyid) {
                 return Ok(*pk);
             }
-            anyhow::bail!("STRICT_MODULES_VERIFY: trust store has no pubkey for keyid {}", keyid);
+            anyhow::bail!(
+                "STRICT_MODULES_VERIFY: trust store has no pubkey for keyid {}",
+                keyid
+            );
         }
         anyhow::bail!("STRICT_MODULES_VERIFY: UICP_TRUST_STORE or UICP_TRUST_STORE_JSON required for keyid {}", keyid);
     }

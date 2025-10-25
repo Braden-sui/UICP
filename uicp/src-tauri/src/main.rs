@@ -11,24 +11,24 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use chrono::Utc;
 use dotenvy::dotenv;
+use hmac::{Hmac, Mac};
 use keyring::Entry;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Url};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use hmac::{Hmac, Mac};
 use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State, WebviewUrl,
 };
 
+use rand::RngCore;
 use tokio::{
     io::AsyncWriteExt,
     sync::{RwLock, Semaphore},
     time::{interval, timeout},
 };
-use rand::RngCore;
 use tokio_rusqlite::Connection as AsyncConn;
 use tokio_stream::StreamExt;
 
@@ -137,7 +137,10 @@ async fn export_from_files(ws_path: String, dest_path: String) -> Result<String,
         } else {
             format!("{}-{}.{}", stem, ts, ext)
         };
-        let parent = dest_final.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        let parent = dest_final
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
         dest_final = parent.join(new_name);
     }
 
@@ -374,18 +377,26 @@ async fn compute_call(
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
             .unwrap_or(false);
-        let module_meta = crate::registry::find_module(&app_handle, &spec.task).ok().flatten();
+        let module_meta = crate::registry::find_module(&app_handle, &spec.task)
+            .ok()
+            .flatten();
         let invariants = {
             let mut parts: Vec<String> = Vec::new();
             if let Some(m) = &module_meta {
                 parts.push(format!("modsha={}", m.entry.digest_sha256));
                 parts.push(format!("modver={}", m.entry.version));
                 if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
-                    if !world.is_empty() { parts.push(format!("world={}", world)); }
+                    if !world.is_empty() {
+                        parts.push(format!("world={}", world));
+                    }
                 }
                 parts.push("abi=wasi-p2".to_string());
             }
-            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") {
+                if !pver.is_empty() {
+                    parts.push(format!("policy={}", pver));
+                }
+            }
             parts.join("|")
         };
         let key = if use_v2 {
@@ -2455,7 +2466,6 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-
 /// Set or unset a process environment variable for subsequent provider operations.
 /// ERROR: E-UICP-9201 invalid name
 /// Check if container runtime (Docker/Podman) is available
@@ -2464,12 +2474,21 @@ async fn check_container_runtime() -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("check_container_runtime");
     use std::process::Command;
-    
+
     // Check for Docker
-    if let Ok(output) = Command::new("docker").arg("version").arg("--format").arg("{{.Server.Version}}").output() {
+    if let Ok(output) = Command::new("docker")
+        .arg("version")
+        .arg("--format")
+        .arg("{{.Server.Version}}")
+        .output()
+    {
         if output.status.success() {
             #[cfg(feature = "otel_spans")]
-            tracing::info!(target = "uicp", runtime = "docker", "container runtime detected");
+            tracing::info!(
+                target = "uicp",
+                runtime = "docker",
+                "container runtime detected"
+            );
             return Ok(serde_json::json!({
                 "available": true,
                 "runtime": "docker",
@@ -2477,12 +2496,21 @@ async fn check_container_runtime() -> Result<serde_json::Value, String> {
             }));
         }
     }
-    
+
     // Check for Podman
-    if let Ok(output) = Command::new("podman").arg("version").arg("--format").arg("{{.Server.Version}}").output() {
+    if let Ok(output) = Command::new("podman")
+        .arg("version")
+        .arg("--format")
+        .arg("{{.Server.Version}}")
+        .output()
+    {
         if output.status.success() {
             #[cfg(feature = "otel_spans")]
-            tracing::info!(target = "uicp", runtime = "podman", "container runtime detected");
+            tracing::info!(
+                target = "uicp",
+                runtime = "podman",
+                "container runtime detected"
+            );
             return Ok(serde_json::json!({
                 "available": true,
                 "runtime": "podman",
@@ -2490,7 +2518,7 @@ async fn check_container_runtime() -> Result<serde_json::Value, String> {
             }));
         }
     }
-    
+
     #[cfg(feature = "otel_spans")]
     tracing::warn!(target = "uicp", "no container runtime found");
     Ok(serde_json::json!({
@@ -2610,7 +2638,12 @@ async fn check_network_capabilities() -> Result<serde_json::Value, String> {
     });
 
     #[cfg(feature = "otel_spans")]
-    tracing::info!(target = "uicp", has_network, restricted, "network capabilities returned");
+    tracing::info!(
+        target = "uicp",
+        has_network,
+        restricted,
+        "network capabilities returned"
+    );
     Ok(json)
 }
 
@@ -2674,7 +2707,9 @@ async fn provider_pull_image(provider: String) -> Result<serde_json::Value, Stri
     let normalized = provider.trim().to_ascii_lowercase();
     let image = match normalized.as_str() {
         "codex" => std::env::var("CODEX_IMAGE").unwrap_or_else(|_| "uicp/codex-cli:latest".into()),
-        "claude" => std::env::var("CLAUDE_IMAGE").unwrap_or_else(|_| "uicp/claude-code:latest".into()),
+        "claude" => {
+            std::env::var("CLAUDE_IMAGE").unwrap_or_else(|_| "uicp/claude-code:latest".into())
+        }
         other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
     };
     match try_pull("docker", &image) {
@@ -2949,7 +2984,12 @@ async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value
     // Security posture: strict mode + trust store source for UI surfacing
     let strict = std::env::var("STRICT_MODULES_VERIFY")
         .ok()
-        .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|s| {
+            matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     let trust_store = if std::env::var("UICP_TRUST_STORE_JSON").is_ok() {
         "inline"

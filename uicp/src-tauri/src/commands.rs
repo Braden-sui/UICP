@@ -105,18 +105,26 @@ pub async fn compute_call<R: Runtime>(
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
             .unwrap_or(false);
-        let module_meta = crate::registry::find_module(&app_handle, &spec.task).ok().flatten();
+        let module_meta = crate::registry::find_module(&app_handle, &spec.task)
+            .ok()
+            .flatten();
         let invariants = {
             let mut parts: Vec<String> = Vec::new();
             if let Some(m) = &module_meta {
                 parts.push(format!("modsha={}", m.entry.digest_sha256));
                 parts.push(format!("modver={}", m.entry.version));
                 if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
-                    if !world.is_empty() { parts.push(format!("world={}", world)); }
+                    if !world.is_empty() {
+                        parts.push(format!("world={}", world));
+                    }
                 }
                 parts.push("abi=wasi-p2".to_string());
             }
-            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") {
+                if !pver.is_empty() {
+                    parts.push(format!("policy={}", pver));
+                }
+            }
             parts.join("|")
         };
         let key = if use_v2 {

@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     io::{self, Write},
     path::PathBuf,
-    sync::{atomic::{AtomicBool, Ordering}, Arc, Once},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Once,
+    },
     time::{Duration, Instant},
 };
 
@@ -14,9 +17,9 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager, Runtime, State};
-use tracing::Level;
 use tokio::sync::{RwLock, Semaphore};
 use tokio_rusqlite::Connection as AsyncConn;
+use tracing::Level;
 
 // ----------------------------------------------------------------------------
 // Constants and paths
@@ -109,7 +112,7 @@ pub struct AppState {
     pub db_ro: AsyncConn,
     pub db_rw: AsyncConn,
     pub last_save_ok: RwLock<bool>,
-    pub ollama_key: RwLock<Option<String>>, 
+    pub ollama_key: RwLock<Option<String>>,
     pub use_direct_cloud: RwLock<bool>,
     pub debug_enabled: RwLock<bool>,
     pub http: Client,
@@ -120,7 +123,7 @@ pub struct AppState {
     pub wasm_sem: Arc<Semaphore>,
     pub compute_cancel: RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>,
     pub safe_mode: RwLock<bool>,
-    pub safe_reason: RwLock<Option<String>>, 
+    pub safe_reason: RwLock<Option<String>>,
     pub circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
     pub circuit_config: CircuitBreakerConfig,
     pub action_log: action_log::ActionLogHandle,
@@ -334,9 +337,19 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
     }
 
     // Ensure the legacy table has the workspace column before we attempt to rebuild the PK.
-            }
+    let mut pk_columns: Vec<String> = Vec::new();
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(compute_cache)")
+        .context("inspect compute_cache schema")?;
+    let mut rows = stmt.query([]).context("query table_info")?;
+    while let Some(row) = rows.next()? {
+        let pk: i64 = row.get(5)?; // pk column (1 if part of primary key)
+        if pk == 1 {
+            let name: String = row.get(1)?;
+            pk_columns.push(name);
         }
     }
+
     pk_columns.sort();
     if pk_columns == ["key".to_string(), "workspace_id".to_string()] {
         // Migration already complete, just update version tracking
