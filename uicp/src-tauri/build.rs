@@ -72,6 +72,3 @@ fn main() {
     .expect("validate table.query host WIT");
     tauri_build::build();
 }
-
-#[cfg(not(target_os = "windows"))]
-fn add_delayload_for_tests_and_harness() {}
