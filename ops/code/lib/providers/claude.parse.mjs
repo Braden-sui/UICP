@@ -5,12 +5,12 @@ export function parseStreamJson(text) {
 
 export function extractPatchesFromEvents(events) {
   // Prefer known content fields; fall back to generic string scan
-  const blocks = [];
+  const blocks = new Set();
   const re = (/\*\*\* Begin Patch[\s\S]*?\*\*\* End Patch/g);
   const tryScan = (s) => {
     if (typeof s !== "string" || !s) return;
     let m; const copy = s;
-    while ((m = re.exec(copy)) !== null) blocks.push(m[0]);
+    while ((m = re.exec(copy)) !== null) blocks.add(m[0]);
   };
   for (const ev of events || []) {
     if (!ev || typeof ev !== "object") continue;
@@ -24,7 +24,7 @@ export function extractPatchesFromEvents(events) {
       if (typeof v === "string") tryScan(v);
     }
   }
-  return blocks;
+  return Array.from(blocks);
 }
 
 export function usageFromEvents(events) {
