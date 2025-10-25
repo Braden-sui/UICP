@@ -1,22 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import vm from 'node:vm';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../../..');
 
 let buildHttpJailPredicate: ((opts: { hosts?: string[]; methods?: string[]; blockPost?: boolean }) => string) | null =
   null;
 let buildClaudeAllowedTools: ((commands?: string[]) => string[]) | null = null;
 let loadError: unknown;
 try {
-  ({ buildHttpJailPredicate } = await import(
-    /* @vite-ignore */ pathToFileURL(path.resolve(repoRoot, 'ops/code/lib/httpjail.mjs')).href
-  ));
-  ({ buildClaudeAllowedTools } = await import(
-    /* @vite-ignore */ pathToFileURL(path.resolve(repoRoot, 'ops/code/lib/claude-tools.mjs')).href
-  ));
+  ({ buildHttpJailPredicate } = await import('@ops/lib/httpjail'));
+  ({ buildClaudeAllowedTools } = await import('@ops/lib/claude-tools'));
 } catch (err) {
   loadError = err;
   buildHttpJailPredicate = null;

@@ -73,7 +73,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
   'gpt-oss': {
     key: 'gpt-oss',
     label: 'GPT-OSS 120B',
-    description: 'Open-source GPT model with 120B parameters.',
+      description: 'Advanced opensource model by OpenAI',
     defaultModel: 'gpt-oss:120b',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent: string, opts) => [
@@ -102,7 +102,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
   deepseek: {
     key: 'deepseek',
     label: 'DeepSeek V3.1',
-    description: 'Planner profile tuned for DeepSeek V3.1 (optional alt).',
+    description: 'Planner profile tuned for DeepSeek V3.1.',
     defaultModel: 'deepseek-v3.1:671b',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent, opts) => [
@@ -131,7 +131,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
   kimi: {
     key: 'kimi',
     label: 'Kimi K2',
-    description: 'Planner profile for Kimi-k2:1t (optional alt).',
+    description: 'Planner profile for Kimi-k2:1t.',
     defaultModel: 'kimi-k2:1t',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent, opts) => [
@@ -160,7 +160,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
   qwen: {
     key: 'qwen',
     label: 'Qwen3-Coder 480B',
-    description: 'Planner prompt for Qwen3-Coder).',
+    description: 'Planner profile for Qwen3-Coder:480B by Alibaba.',
     defaultModel: 'qwen3-coder:480b',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent, opts) => [
@@ -192,8 +192,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   glm: {
     key: 'glm',
     label: 'GLM 4.6',
-    description: 'Advanced agentic, reasoning and coding capabilities with 198K context window.',
-    defaultModel: 'glm-4.6:cloud',
+    description: 'Advanced agentic reasoning and coding capabilities.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson: string) => [
       { role: 'system', content: actorPrompt.trim() },
@@ -203,8 +202,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   'gpt-oss': {
     key: 'gpt-oss',
     label: 'GPT-OSS 120B',
-    description: 'Open-source GPT model with 120B parameters.',
-    defaultModel: 'gpt-oss:120b',
+    description: 'Open-source GPT model with advanced reasoning capabilities.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson: string) => [
       { role: 'system', content: actorPrompt.trim() },
@@ -214,8 +212,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   qwen: {
     key: 'qwen',
     label: 'Qwen3-Coder 480B',
-    description: 'Actor profile tuned for Qwen tool calling (optional alt).',
-    defaultModel: 'qwen3-coder:480b',
+    description: 'Coding and reasoning-focused execution profile.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
@@ -225,8 +222,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   kimi: {
     key: 'kimi',
     label: 'Kimi K2',
-    description: 'Actor profile for Kimi-k2:1t (optional alt).',
-    defaultModel: 'kimi-k2:1t',
+    description: 'Multilingual reasoning and execution profile.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson) => [
       { role: 'system', content: actorPrompt.trim() },
@@ -236,8 +232,7 @@ const actorProfiles: Record<ActorProfileKey, ActorProfile> = {
   deepseek: {
     key: 'deepseek',
     label: 'DeepSeek V3.1',
-    description: 'Actor profile tuned for DeepSeek tool calling.',
-    defaultModel: 'deepseek-v3.1:671b',
+    description: 'High-performance reasoning and execution profile.',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (planJson: string) => [
       { role: 'system', content: actorPrompt.trim() },

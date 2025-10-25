@@ -6033,6 +6033,7 @@ dependencies = [
  "embed-resource 2.5.2",
  "filetime",
  "hex",
+ "hmac",
  "keyring",
  "once_cell",
  "parking_lot",

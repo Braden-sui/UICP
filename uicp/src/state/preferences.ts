@@ -35,6 +35,12 @@ export type PreferencesState = {
   setDefaultProvider: (provider: CodegenDefaultProvider) => void;
   runBothByDefault: boolean;
   setRunBothByDefault: (value: boolean) => void;
+
+  // Container security toggles for provider runs
+  firewallDisabled: boolean; // when true, skip container firewall and remove cap-add
+  setFirewallDisabled: (value: boolean) => void;
+  strictCaps: boolean; // when true, do not add any capabilities (no NET_ADMIN/NET_RAW)
+  setStrictCaps: (value: boolean) => void;
 };
 
 // Font size scale mapping
@@ -81,6 +87,12 @@ export const usePreferencesStore = create<PreferencesState>()(
           console.warn('[preferences] setRunBothByDefault sync failed', error);
         }
       },
+
+      // Container security toggles
+      firewallDisabled: false,
+      setFirewallDisabled: (firewallDisabled) => set({ firewallDisabled }),
+      strictCaps: false,
+      setStrictCaps: (strictCaps) => set({ strictCaps }),
     }),
     {
       name: 'uicp-preferences',
@@ -95,6 +107,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         const runBoth = snapshot?.runBothByDefault ?? true;
         providerStore.setDefaultProvider(defaultProvider);
         providerStore.setEnableBoth(runBoth);
+        // Persist middleware will hydrate firewallDisabled and strictCaps; avoid referencing the store during initialization
       },
     }
   )

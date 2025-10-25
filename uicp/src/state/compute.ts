@@ -180,6 +180,10 @@ export type ComputeSummary = {
   durationP50: number | null;
   durationP95: number | null;
   memPeakP95: number | null;
+  goldenVerified: number;
+  goldenMismatched: number;
+  determinismRatio: number; // verified / (verified + mismatched)
+  backpressureWaits: number; // sum of all throttle waits
   recent: ComputeJob[];
 };
 
@@ -223,6 +227,8 @@ export const summarizeComputeJobs = (
   let partialThrottleWaits = 0;
   let fuelUsed = 0;
   let active = 0;
+  let goldenVerified = 0;
+  let goldenMismatched = 0;
 
   const durations: number[] = [];
   const memPeaks: number[] = [];
@@ -275,6 +281,11 @@ export const summarizeComputeJobs = (
     partialThrottleWaits += job.partialThrottleWaits ?? 0;
     fuelUsed += job.fuelUsed ?? 0;
 
+    if (typeof job.goldenMatched === 'boolean') {
+      if (job.goldenMatched) goldenVerified += 1;
+      else goldenMismatched += 1;
+    }
+
     const duration = job.durationMs ?? 0;
     if (duration > 0) {
       durations.push(duration);
@@ -291,6 +302,9 @@ export const summarizeComputeJobs = (
   const durationP95 = percentile(durations, 0.95);
   const memPeakP95 = percentile(memPeaks, 0.95);
   const cacheRatio = done > 0 ? Math.round((doneWithCache / done) * 100) : 0;
+  const determinismDenom = goldenVerified + goldenMismatched;
+  const determinismRatio = determinismDenom > 0 ? Math.round((goldenVerified / determinismDenom) * 100) : 0;
+  const backpressureWaits = logThrottleWaits + loggerThrottleWaits + partialThrottleWaits;
   const recent = recentCandidates
     .filter((job) => job != null)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
@@ -319,6 +333,10 @@ export const summarizeComputeJobs = (
     loggerThrottleWaits,
     partialThrottleWaits,
     fuelUsed,
+    goldenVerified,
+    goldenMismatched,
+    determinismRatio,
+    backpressureWaits,
     durationP50: durationP50 ?? null,
     durationP95: durationP95 ?? null,
     memPeakP95: memPeakP95 ?? null,

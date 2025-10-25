@@ -11,7 +11,6 @@ const ERR_PROGRAM_NOT_FOUND: &str = "E-UICP-1501"; // ProgramNotFound
 const ERR_NOT_AUTHENTICATED: &str = "E-UICP-1502"; // NotAuthenticated
 const ERR_KEYCHAIN_LOCKED: &str = "E-UICP-1503"; // KeychainLocked (macOS)
 const ERR_NETWORK_DENIED: &str = "E-UICP-1504"; // NetworkDenied (jail)
-const ERR_VERSION_MISMATCH: &str = "E-UICP-1505"; // VersionMismatch
 const ERR_TIMEOUT: &str = "E-UICP-1506"; // Timeout
 const ERR_SPAWN: &str = "E-UICP-1507"; // Spawn/exec failure
 
@@ -368,9 +367,27 @@ fn build_httpjail_predicate(hosts: &[String], methods: &[String], block_post: bo
     predicate
 }
 
+fn health_strict_requested() -> bool {
+    parse_env_flag(&std::env::var("UICP_HEALTH_STRICT").unwrap_or_default())
+}
+
+fn httpjail_available() -> bool {
+    find_httpjail_binary().is_ok()
+}
+
 async fn codex_health() -> Result<ProviderHealthResult, String> {
+    // Strict mode: require httpjail presence to claim connected (local host only)
+    if health_strict_requested() && !httpjail_available() {
+        return Ok(ProviderHealthResult {
+            ok: false,
+            version: None,
+            detail: Some("httpjail binary not found on PATH".into()),
+            code: Some(ERR_NETWORK_DENIED.into()),
+            search_paths: None,
+        });
+    }
     let exe = resolve_provider_exe("codex", provider_program("codex"));
-    let output = match run_command_timeout(&exe, &["--version"], &[], Some(15_000)).await {
+    let output = match run_command_timeout(&exe, &["--version"], &[], Some(2_000)).await {
         Ok(o) => o,
         Err(e) => {
             let (msg, code, paths) = format_spawn_error("codex", &exe, e);
@@ -421,17 +438,50 @@ async fn codex_health() -> Result<ProviderHealthResult, String> {
 
 async fn claude_health() -> Result<ProviderHealthResult, String> {
     let exe = resolve_provider_exe("claude", provider_program("claude"));
-    let output = match run_command_timeout(
-        &exe,
-        &["-p", "ping", "--output-format", "json"],
+    // Build base args for headless ping
+    let base_args = vec!["-p", "ping", "--output-format", "json"];
+    // In strict mode, require httpjail and wrap the ping with provider policy
+    let (program, arg_list): (String, Vec<String>) = if health_strict_requested() {
+        match find_httpjail_binary() {
+            Ok(httpjail) => {
+                let pred = load_httpjail_predicate("claude").unwrap_or_else(|_| "".into());
+                if pred.is_empty() {
+                    (exe.clone(), base_args.iter().map(|s| s.to_string()).collect())
+                } else {
+                    let mut owned: Vec<String> = Vec::new();
+                    owned.push("--js".into());
+                    owned.push(pred);
+                    owned.push("--".into());
+                    owned.push(exe.clone());
+                    owned.extend(base_args.iter().map(|s| s.to_string()));
+                    (httpjail, owned)
+                }
+            }
+            Err(_) => {
+                return Ok(ProviderHealthResult {
+                    ok: false,
+                    version: None,
+                    detail: Some("httpjail binary not found on PATH".into()),
+                    code: Some(ERR_NETWORK_DENIED.into()),
+                    search_paths: None,
+                })
+            }
+        }
+    } else {
+        (exe.clone(), base_args.iter().map(|s| s.to_string()).collect())
+    };
+
+    let output = match run_command_timeout_owned(
+        &program,
+        arg_list,
         &[("CLAUDE_HEADLESS", "1")],
-        Some(15_000),
+        Some(2_000),
     )
     .await
     {
         Ok(o) => o,
         Err(e) => {
-            let (msg, code, paths) = format_spawn_error("claude", &exe, e);
+            let (msg, code, paths) = format_spawn_error("claude", &program, e);
             return Ok(ProviderHealthResult {
                 ok: false,
                 version: None,
@@ -485,40 +535,6 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
         code,
         search_paths: None,
     })
-}
-
-fn extract_host_from_error(detail: &Option<String>) -> Option<String> {
-    if let Some(d) = detail {
-        let lower = d.to_ascii_lowercase();
-        // Look for common host patterns in error messages
-        if let Some(start) = lower.find("host") {
-            let after_host = &lower[start..];
-            if let Some(colon) = after_host.find(':') {
-                let host_part = &after_host[..colon];
-                let trimmed = host_part.trim_matches(|c| c == ' ' || c == '\'' || c == '"');
-                if !trimmed.is_empty() && trimmed != "null" {
-                    return Some(trimmed.to_string());
-                }
-            }
-        }
-        // Look for URLs in error messages
-        for line in lower.lines() {
-            if line.contains("://") {
-                let parts: Vec<&str> = line.split("://").collect();
-                if parts.len() >= 2 {
-                    let host_part = parts[1];
-                    if let Some(slash) = host_part.find('/') {
-                        let host = &host_part[..slash];
-                        let trimmed = host.trim_matches(|c| c == ' ' || c == '\'' || c == '"');
-                        if !trimmed.is_empty() && trimmed != "null" {
-                            return Some(trimmed.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 fn merge_streams(stdout: &str, stderr: &str) -> Option<String> {
@@ -962,8 +978,7 @@ mod tests {
     use std::io::Write as _;
     #[cfg(not(target_os = "windows"))]
     use tempfile::tempdir;
-    #[cfg(target_os = "windows")]
-    use tempfile::tempdir as _; // silence unused warning when tests are disabled
+    // Windows tests don't require tempdir; no-op import on Windows.
 
     static TEST_MUTEX: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 

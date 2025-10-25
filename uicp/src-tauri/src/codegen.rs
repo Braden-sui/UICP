@@ -15,6 +15,8 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::{async_runtime::spawn as tauri_spawn, AppHandle, Manager, Runtime, State};
+#[cfg(feature = "otel_spans")]
+use tracing::Instrument;
 use tokio::sync::OwnedSemaphorePermit;
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
@@ -150,6 +152,9 @@ struct CodegenPlan {
     strategy: ExecutionStrategy,
     #[allow(dead_code)]
     install: Option<InstallPlan>,
+    // Optional per-provider model overrides (frontend may pass constraints.codexModel/claudeModel)
+    codex_model: Option<String>,
+    claude_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,13 +307,22 @@ impl CodegenFailure {
 }
 
 /// Entry-point for spawning codegen jobs (host-side implementation).
+#[cfg_attr(feature = "otel_spans", tracing::instrument(level = "info", skip(app, spec, permit), fields(job_id = %spec.job_id, task = %spec.task)))]
 pub fn spawn_job<R: Runtime>(
     app: AppHandle<R>,
     mut spec: ComputeJobSpec,
     permit: Option<OwnedSemaphorePermit>,
     queue_wait_ms: u64,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    tauri_spawn(async move {
+    #[cfg(feature = "otel_spans")]
+    let span = tracing::info_span!(
+        "codegen_spawn_job",
+        job_id = %spec.job_id,
+        task = %spec.task
+    );
+
+    #[cfg(feature = "otel_spans")]
+    let fut = async move {
         let _permit = permit;
         let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
         {
@@ -365,9 +379,77 @@ pub fn spawn_job<R: Runtime>(
             state.compute_cancel.write().await.remove(&spec.job_id);
         }
         remove_compute_job(&app, &spec.job_id).await;
-    })
+    };
+
+    #[cfg(feature = "otel_spans")]
+    {
+        return tauri_spawn(fut.instrument(span));
+    }
+
+    #[cfg(not(feature = "otel_spans"))]
+    {
+        tauri_spawn(async move {
+            let _permit = permit;
+            let (tx_cancel, mut rx_cancel) = tokio::sync::watch::channel(false);
+            {
+                let state: State<'_, AppState> = app.state();
+                state
+                    .compute_cancel
+                    .write()
+                    .await
+                    .insert(spec.job_id.clone(), tx_cancel);
+            }
+
+            let started = Instant::now();
+            let outcome = tokio::select! {
+                _ = rx_cancel.changed() => {
+                    emit_error(
+                        &app,
+                        &spec,
+                        crate::compute::error_codes::CANCELLED,
+                        "E-UICP-1304: codegen job cancelled",
+                        started.elapsed().as_millis() as u64,
+                        queue_wait_ms,
+                    ).await;
+                    {
+                        let state: State<'_, AppState> = app.state();
+                        state.compute_cancel.write().await.remove(&spec.job_id);
+                    }
+                    remove_compute_job(&app, &spec.job_id).await;
+                    return;
+                },
+                result = run_codegen(&app, &mut spec, queue_wait_ms) => result,
+            };
+
+            match outcome {
+                Ok(ok) => {
+                    emit_final_ok(&app, &spec, ok).await;
+                }
+                Err(err) => {
+                    let duration_ms = started.elapsed().as_millis() as u64;
+                    let message = err.message();
+                    emit_error(
+                        &app,
+                        &spec,
+                        err.compute_code(),
+                        &message,
+                        duration_ms,
+                        queue_wait_ms,
+                    )
+                    .await;
+                }
+            }
+
+            {
+                let state: State<'_, AppState> = app.state();
+                state.compute_cancel.write().await.remove(&spec.job_id);
+            }
+            remove_compute_job(&app, &spec.job_id).await;
+        })
+    }
 }
 
+#[cfg_attr(feature = "otel_spans", tracing::instrument(level = "info", skip(app, spec), fields(job_id = %spec.job_id, task = %spec.task)))]
 async fn run_codegen<R: Runtime>(
     app: &AppHandle<R>,
     spec: &mut ComputeJobSpec,
@@ -665,6 +747,18 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
     hasher.update(canonical.as_bytes());
     let golden_key = hex::encode(hasher.finalize());
 
+    // Extract optional per-provider model hints from constraints
+    let codex_model = constraints
+        .get("codexModel")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let claude_model = constraints
+        .get("claudeModel")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     Ok(CodegenPlan {
         spec_text: input.spec,
         language,
@@ -680,6 +774,8 @@ fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
         providers,
         strategy,
         install,
+        codex_model,
+        claude_model,
     })
 }
 
@@ -1389,6 +1485,10 @@ async fn run_codex_cli<R: Runtime>(
         extra_env.insert("CODEX_API_KEY".into(), key);
     }
 
+    let mut extra_env: HashMap<String, String> = extra_env;
+    // Enforce httpjail on local runs to align with provider health policy
+    extra_env.insert("UICP_HTTPJAIL".into(), "1".into());
+
     let job = CodeProviderJob::new(&spec.job_id, plan.spec_text.clone(), workspace)
         .with_allowed_tools(extract_allowed_tools(plan))
         .with_extra_env(extra_env)
@@ -1396,7 +1496,11 @@ async fn run_codex_cli<R: Runtime>(
             "language": plan.language.as_str(),
         }));
 
-    let provider = CodexProvider::new().with_model(plan.model_id.clone());
+    let provider_model = plan
+        .codex_model
+        .clone()
+        .unwrap_or_else(|| plan.model_id.clone());
+    let provider = CodexProvider::new().with_model(provider_model);
     let ctx = provider
         .prepare(&job)
         .await
@@ -1424,6 +1528,10 @@ async fn run_claude_cli<R: Runtime>(
         extra_env.insert("ANTHROPIC_API_KEY".into(), key);
     }
 
+    let mut extra_env: HashMap<String, String> = extra_env;
+    // Enforce httpjail on local runs to align with provider health policy
+    extra_env.insert("UICP_HTTPJAIL".into(), "1".into());
+
     let job = CodeProviderJob::new(&spec.job_id, plan.spec_text.clone(), workspace)
         .with_allowed_tools(extract_allowed_tools(plan))
         .with_extra_env(extra_env)
@@ -1431,7 +1539,11 @@ async fn run_claude_cli<R: Runtime>(
             "language": plan.language.as_str(),
         }));
 
-    let provider = ClaudeProvider::new();
+    let provider_model = plan
+        .claude_model
+        .clone()
+        .unwrap_or_else(|| plan.model_id.clone());
+    let provider = ClaudeProvider::new().with_model(provider_model);
     let ctx = provider
         .prepare(&job)
         .await
@@ -2487,13 +2599,15 @@ mod tests {
             temperature: 0.1,
             max_output_tokens: 128,
             mock_response: None,
-            mock_error: None,
-            golden_key: "abc".into(),
-            provider_label: "auto".into(),
-            providers: vec![],
-            strategy: ExecutionStrategy::SequentialFallback,
-            install: None,
-        };
+        mock_error: None,
+        golden_key: "abc".into(),
+        provider_label: "auto".into(),
+        providers: vec![],
+        strategy: ExecutionStrategy::SequentialFallback,
+        install: None,
+        codex_model: None,
+        claude_model: None,
+    };
         let raw = json!({
             "code": "def render():\n    return {}\n\ndef on_event():\n    return {}",
             "language": "python",
@@ -2692,13 +2806,14 @@ export function onEvent(action: string, payload: string, state: string) {
             capabilities: ComputeCapabilitiesSpec::default(),
             replayable: true,
             workspace_id: "default".into(),
-            provenance: ComputeProvenanceSpec {
-                env_hash: "test-env".into(),
-                agent_trace_id: None,
-            },
-            golden_key: None,
-            artifact_id: None,
-            expect_golden: false,
-        }
+        provenance: ComputeProvenanceSpec {
+            env_hash: "test-env".into(),
+            agent_trace_id: None,
+        },
+        token: None,
+        golden_key: None,
+        artifact_id: None,
+        expect_golden: false,
     }
+}
 }

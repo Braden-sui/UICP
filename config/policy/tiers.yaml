@@ -1,0 +1,44 @@
+version: 1
+r_formula: "(impact * irreversibility) / confidence"
+mapping:
+  - range: [0, 2]     # inclusive lower, exclusive upper
+    tier: T0
+  - range: [2, 4]
+    tier: T1
+  - range: [4, 7]
+    tier: T2
+  - range: [7, 10]
+    tier: T3
+  - range: [10, 10]
+    tier: T4
+gates:
+  T0:
+    required:
+      - build
+      - lint
+      - tests
+  T1:
+    required:
+      - contract_tests
+      - smoke_e2e
+  T2:
+    required:
+      - migration_dry_run
+      - backup_or_snapshot
+      - dual_write_or_shadow_read
+      - logs_metrics_traces
+      - staged_canary
+      - kill_switch
+      - attach_proofs
+  T3:
+    required:
+      - policy_token_or_approval
+      - sandbox_plan
+      - blue_green_or_1_10_100_canary
+      - guard_metrics_alerts
+      - auto_rollback_script
+  T4:
+    required:
+      - t3_all
+      - restore_rehearsal_prod_like
+      - propose_only_if_not_reversible

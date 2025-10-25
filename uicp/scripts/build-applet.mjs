@@ -65,6 +65,7 @@ if (!entry) {
 
 const resolvedEntry = resolve(process.cwd(), entry);
 
+// P1: Enhanced esbuild configuration with capability enforcement
 const result = await build({
   entryPoints: [resolvedEntry],
   bundle: true,
@@ -75,6 +76,27 @@ const result = await build({
   write: false,
   sourcemap: false,
   logLevel: 'silent',
+  // P1: Add capability-aware transforms
+  plugins: [{
+    name: 'capability-enforcement',
+    setup(build) {
+      build.onLoad({ filter: /.*/ }, async (args) => {
+        const contents = await require('fs').promises.readFile(args.path, 'utf8');
+        
+        // P1: Inject capability stubs based on manifest caps
+        const transformed = contents
+          // Block dynamic import at bundler level
+          .replace(/\bimport\s*\(/g, '/* BLOCKED: dynamic import */ (() => { throw new Error("Dynamic import blocked") })(')
+          // Block globalThis.fetch when caps.net is false
+          .replace(/\bglobalThis\.fetch\b/g, '/* BLOCKED: globalThis.fetch */ (() => { throw new Error("globalThis.fetch blocked") })')
+          // Block DOM sinks when caps.fs is false
+          .replace(/\bdocument\.write\s*\(/g, '/* BLOCKED: document.write */ (() => { throw new Error("document.write blocked") })(')
+          .replace(/\.innerHTML\s*=/g, '/* BLOCKED: innerHTML */ (() => { throw new Error("innerHTML assignment blocked") }) =');
+        
+        return { contents: transformed, loader: 'js' };
+      });
+    }
+  }]
 });
 
 if (!result.outputFiles?.length) {

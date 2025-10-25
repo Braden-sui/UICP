@@ -4,7 +4,7 @@ import { err, Errors } from "../errors.mjs";
 import { buildContainerCmd, shellWrap } from "../container.mjs";
 import { harvestCodexSession } from "../providers/codex.harvest.mjs";
 
-export async function runCodex({ prompt, model, container, provCfg, allowlistCfg, extraArgs = [], timeoutMs, memoryMb }) {
+export async function runCodex({ prompt, model, container, provCfg, allowlistCfg, extraArgs = [], timeoutMs, memoryMb, cpus }) {
   const baseArgs = ["exec", prompt];
   if (model) baseArgs.push("--model", model);
   baseArgs.push(...extraArgs);
@@ -16,7 +16,7 @@ export async function runCodex({ prompt, model, container, provCfg, allowlistCfg
   let httpjailApplied = false;
   if (container) {
     containerName = `codejob-${Date.now().toString(36)}`;
-    const containerCmd = await buildContainerCmd(provCfg, { name: containerName, memoryMb });
+    const containerCmd = await buildContainerCmd(provCfg, { name: containerName, memoryMb, cpus });
     let inner = ["codex", ...baseArgs];
     if (allowlistCfg) {
       const predicate = await policyPredicateForProvider({

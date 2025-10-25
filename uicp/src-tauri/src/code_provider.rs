@@ -247,13 +247,10 @@ async fn maybe_wrap_with_httpjail(
     env: &HashMap<String, String>,
 ) -> (String, Vec<String>) {
     // Resolve provider executable to an absolute path when possible.
-    #[allow(unused_mut)]
-    let mut resolved_program = resolve_provider_exe(base_program, provider_key, env);
+    #[cfg(not(test))]
+    let resolved_program = resolve_provider_exe(base_program, provider_key, env);
     #[cfg(test)]
-    {
-        // Preserve plain program name in tests for StubRunner expectations.
-        resolved_program = base_program.to_string();
-    }
+    let resolved_program = base_program.to_string();
     if !httpjail_requested(env) {
         return (resolved_program, base_args);
     }
@@ -459,6 +456,7 @@ fn log_httpjail_skipped(provider: &str, reason: &str) {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
     if cfg!(debug_assertions) {
         #[cfg(feature = "otel_spans")]
@@ -483,6 +481,7 @@ fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn resolve_provider_exe(
     default_prog: &str,
     provider_key: &str,
@@ -532,6 +531,7 @@ fn resolve_provider_exe(
     default_prog.to_string()
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var_os("PATHEXT")
@@ -560,6 +560,7 @@ fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn candidate_in_dir(
     dir: &std::path::Path,
     program: &str,
@@ -588,6 +589,7 @@ fn candidate_in_dir(
     None
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -629,6 +631,7 @@ fn common_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     out
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn managed_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let base = managed_bin_base();
@@ -659,6 +662,7 @@ fn managed_install_candidates(program: &str) -> Vec<std::path::PathBuf> {
     out
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn managed_bin_base() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if cfg!(target_os = "windows") {
@@ -714,11 +718,17 @@ impl ClaudeProvider {
         }
     }
 
+    #[cfg(any(test, feature = "compute_harness"))]
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             runner,
             model: None,
         }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
     }
 }
 
@@ -868,6 +878,8 @@ impl CodeProvider for ClaudeProvider {
         ctx: ProviderContext,
         run: ProviderRun,
     ) -> Result<ProviderArtifacts, CodeProviderError> {
+        // Ensure summary is observed in non-test builds to avoid dead-field warnings
+        let _ = run.summary.as_deref();
         // WHY: Claude CLI writes all relevant information to stdout; finalize is a passthrough wrapper.
         let _ = fs::remove_dir_all(&ctx.working_dir).await;
         Ok(ProviderArtifacts {
@@ -894,6 +906,7 @@ impl CodexProvider {
         }
     }
 
+    #[cfg(any(test, feature = "compute_harness"))]
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             runner,
@@ -1062,6 +1075,8 @@ impl CodeProvider for CodexProvider {
         ctx: ProviderContext,
         run: ProviderRun,
     ) -> Result<ProviderArtifacts, CodeProviderError> {
+        // Ensure summary is observed in non-test builds to avoid dead-field warnings
+        let _ = run.summary.as_deref();
         let session_root = self.sessions_root()?;
         let session_path = find_latest_session(&session_root, ctx.started_at).await?;
 

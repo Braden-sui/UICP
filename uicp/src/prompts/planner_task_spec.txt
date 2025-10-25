@@ -111,6 +111,37 @@ Registry Conformance
 - Params must match the registry hints; never invent tools or params.
 - If no registry tool fits, set actions to [].
 
+When to Use needs.code (CRITICAL)
+You MUST include a needs.code action when ANY of these conditions apply:
+
+MANDATORY needs.code scenarios:
+1. User explicitly requests code generation ("write a function", "create a script", "implement X", "build a component")
+2. Request requires custom business logic that cannot be expressed through declarative UI operations
+3. Request needs file system operations (reading/writing/modifying code files, not just UI state)
+4. Request needs custom algorithms or data transformations beyond simple state.set
+5. Request needs stateful compute with complex state machines or workflows
+6. Request needs integration with external systems requiring custom adapter code
+7. Request needs complex validation logic with rules that cannot be expressed in simple form validation
+8. Request needs dynamic code execution (e.g., user-provided scripts, formulas, or rules engines)
+9. Request needs to install or render a script.panel component (always requires code backing)
+10. Request explicitly mentions languages (TypeScript, Rust, Python) or code concepts (classes, functions, modules)
+
+DO NOT use needs.code when:
+- Simple UI rendering with existing components suffices
+- Only state.set/state.get for basic data storage is needed
+- Standard form validation is sufficient
+- Pure declarative operations (window.create, dom.set, component.render with static props) can achieve the goal
+- api.call to existing endpoints can handle the requirement without custom code
+
+When needs.code is required:
+- Include it in actions array with comprehensive spec conforming to Code Provider Contract
+- The spec MUST include: Context (goal, risk tier, invariants), Edit Surface (files/symbols), Constraints (language style, error codes, security), Tests & Validation (commands + acceptance criteria), Patch Policy (minimal diff), Output Format
+- Set appropriate language field (ts|rust|python; default: ts)
+- Specify artifactId for workspace artifact storage
+- Designate progressWindowId and progressSelector for progress UI binding
+- Consider cachePolicy (readwrite for normal operation, bypass for forced regeneration)
+- Document the code generation requirement in implementation_phases with clear deliverables
+
 Canonical Action Order (if actions present)
 1. window.create or update
 2. state.set
@@ -259,18 +290,23 @@ PHASE 7: ASSUMPTIONS & AMBIGUITY CHECK
      - What are multiple valid interpretations?
 
 PHASE 8: ACTION SEQUENCING
-8.1) Map request to available tools (consult registry below).
-8.2) Design action sequence following canonical ordering:
+8.1) Check needs.code requirement FIRST using the "When to Use needs.code" criteria above:
+     - If ANY mandatory scenario applies, include needs.code action with complete spec
+     - If code generation is needed, design the spec following Code Provider Contract
+     - Identify artifactId, language, and progress UI binding requirements
+8.2) Map request to available tools (consult registry below).
+8.3) Design action sequence following canonical ordering:
      1. window.create or window.update (establish container)
      2. state.set for initial state defaults
      3. dom.set or dom.replace for scaffolding/layout
      4. component.render for interactive widgets
-     5. api.call for data loads (with idempotencyKey)
-     6. dom.replace or component.update for loaded data
-     7. state.watch or txn.cancel if needed
-8.3) Ensure deterministic ids: lowercase, hyphenated, replay-safe.
-8.4) Use only tools from registry; if none fit, leave actions empty.
-8.5) Params must match registry hints; no invented params.
+     5. needs.code for code generation (with progress UI paired in same sequence)
+     6. api.call for data loads (with idempotencyKey)
+     7. dom.replace or component.update for loaded data
+     8. state.watch or txn.cancel if needed
+8.4) Ensure deterministic ids: lowercase, hyphenated, replay-safe.
+8.5) Use only tools from registry; if none fit, leave actions empty.
+8.6) Params must match registry hints; no invented params.
 
 PHASE 9: ACCEPTANCE CRITERIA
 9.1) Create binary, machine-verifiable checks:
@@ -338,3 +374,5 @@ C7. Actions use only registry tools; params match registry hints; no invented to
 C8. Acceptance has at least one idempotency check when UI mutations are involved.
 C9. No placeholders (todo, xxx, lorem, tbd); no unsafe constructs.
 C10. Complexity classification and phases consistent with described work.
+C11. needs.code is included in actions if ANY mandatory scenario from "When to Use needs.code" applies.
+C12. If needs.code is present, spec conforms to Code Provider Contract with all required fields.

@@ -1,4 +1,4 @@
-﻿## 0.2.0 - Generative desktop shell
+## 0.2.0 - Generative desktop shell
 - Replace the legacy inspector UI with a clean empty desktop canvas and DockChat surface.
 - Add DockChat planner pipeline with full control gating and STOP lockout.
 - Ship UICP batch adapter, schemas, and Tauri event transport for agent-driven control.
@@ -6,6 +6,7 @@
 - Add Vitest + Playwright coverage and CI workflow enforcing lint, typecheck, unit, e2e, and build.
 
 ## Unreleased
+- Default security preset is now Open (permissive). New installs default to Open for a frictionless experience. To revert: set `UICP_POLICY=balanced`. Emergency lockdown: set `UICP_SAFE_MODE=1`.
 - Add WASI applet world `uicp:applet-script@0.1.0` with host bindgen and compute dispatch.
 - New compute input parser for script modes: `render`, `on-event`, `init`.
 - Registry supports loading `script.*@version` modules; import preflight registered.

@@ -264,13 +264,30 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
           ? Array.from(providerSet)
           : undefined;
     
+    // Reuse providerSettings snapshot captured above to avoid duplicate declarations
+    const codexModel = providerSettings.codexModel;
+    const claudeModel = providerSettings.claudeModel;
+
     const jobSpec = {
       jobId,
       task,
       input: {
         spec: params.spec,
         language: params.language || 'ts',
-        constraints: params.constraints || {},
+        constraints: {
+          ...(params.constraints || {}),
+          // Prefer explicit model when only one provider is selected.
+          // When multiple providers, per-provider caps are used below.
+          ...(providerSet.size === 1 && providerSet.has('codex') && codexModel
+            ? { model: codexModel }
+            : {}),
+          ...(providerSet.size === 1 && providerSet.has('claude') && claudeModel
+            ? { model: claudeModel }
+            : {}),
+          // Pass through explicit per-provider hints for backend to apply.
+          ...(codexModel ? { codexModel } : {}),
+          ...(claudeModel ? { claudeModel } : {}),
+        },
         caps: params.caps || {},
         provider: providerLabel,
         strategy: params.strategy ?? 'sequential-fallback',

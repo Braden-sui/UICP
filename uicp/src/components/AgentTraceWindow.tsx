@@ -23,11 +23,27 @@ const TraceSection = ({ traceId, summary, events }: TraceSectionProps) => {
     return Array.from(spans.entries());
   }, [events]);
 
+  const provider = useAppSelector((state) => state.traceProviders[traceId] ?? null);
+
   return (
     <section className="rounded-md border border-slate-200 bg-white/80 p-2 shadow-sm">
       <header className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase text-slate-500">
         <span>Trace {traceId}</span>
-        {summary && <span className="line-clamp-1 text-[10px] font-normal normal-case text-slate-400"> {summary}</span>}
+        <div className="flex items-center gap-2">
+          {provider && (
+            <span className={`rounded px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+              provider === 'wasm'
+                ? 'bg-emerald-50 text-emerald-700'
+                : provider === 'codegen'
+                  ? 'bg-amber-50 text-amber-700'
+                  : provider === 'llm'
+                    ? 'bg-indigo-50 text-indigo-700'
+                    : 'bg-slate-100 text-slate-600'
+            }`}
+            >{provider}</span>
+          )}
+          {summary && <span className="line-clamp-1 text-[10px] font-normal normal-case text-slate-400"> {summary}</span>}
+        </div>
       </header>
       {grouped.length === 0 ? (
         <p className="text-[11px] text-slate-400">No events recorded.</p>

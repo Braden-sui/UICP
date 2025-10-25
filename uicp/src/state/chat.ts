@@ -583,6 +583,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const prompt = content.trim();
     if (!prompt) return;
 
+    // Guard against double-submit: if already sending, ignore
+    if (get().sending) {
+      console.warn('[chat] sendMessage ignored: already sending');
+      return;
+    }
+
     const app = useAppStore.getState();
     if (handleFullControlLocked(app, set)) {
       return;
@@ -604,6 +610,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   async applyPendingPlan() {
     const plan = get().pendingPlan;
     if (!plan) return;
+
+    // Guard against double-apply: check if already applying
+    const currentStreaming = useAppStore.getState().streaming;
+    if (currentStreaming) {
+      console.warn('[chat] applyPendingPlan ignored: already applying');
+      return;
+    }
+
     const app = useAppStore.getState();
     if (!app.fullControl || app.fullControlLocked) {
       app.pushToast({ variant: "error", message: "Enable full control before applying." });
@@ -755,6 +769,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     app.setStreaming(false);
     set((state) => ({
+      sending: false, // Reset sending state so send button becomes enabled again
       pendingPlan: undefined,
       messages: [
         ...state.messages,

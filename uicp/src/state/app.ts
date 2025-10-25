@@ -30,10 +30,16 @@ import {
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 export type ToastVariant = 'info' | 'success' | 'error';
 
+export type ToastAction = {
+  label: string;
+  run: () => void;
+};
+
 export type Toast = {
   id: string;
   message: string;
   variant: ToastVariant;
+  actions?: ToastAction[];
 };
 
 export type DesktopShortcutPosition = {
@@ -199,11 +205,19 @@ export type AppState = {
   computeDemoOpen: boolean;
   moduleRegistryOpen: boolean;
   agentTraceOpen: boolean;
+  policyViewerOpen: boolean;
+  networkInspectorOpen: boolean;
+  // When opening the Policy Viewer from a toast or inspector, seed the rule input
+  policyViewerSeedRule: string | null;
+  firstRunPermissionsReviewed: boolean;
+  filesystemScopesOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
   plannerReasoningEffort: ReasoningEffort;
   actorReasoningEffort: ReasoningEffort;
   plannerTwoPhaseEnabled: boolean;
+  // Feature flag: Enable Motion-powered animations for windows/panels/icons
+  motionEnabled: boolean;
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Pinned workspace windows exposed as desktop shortcuts by windowId -> meta
@@ -215,6 +229,7 @@ export type AppState = {
   traceEvents: Record<string, TraceEvent[]>;
   traceOrder: string[];
   traceEventVersion: number;
+  traceProviders: Record<string, string>;
   devtoolsAnalytics: DevtoolsAnalyticsEvent[];
   devtoolsAssumedOpen: boolean;
   toasts: Toast[];
@@ -237,11 +252,17 @@ export type AppState = {
   setComputeDemoOpen: (value: boolean) => void;
   setModuleRegistryOpen: (value: boolean) => void;
   setAgentTraceOpen: (value: boolean) => void;
+  setPolicyViewerOpen: (value: boolean) => void;
+  setPolicyViewerSeedRule: (rule: string | null) => void;
+  setNetworkInspectorOpen: (value: boolean) => void;
+  setFirstRunPermissionsReviewed: (value: boolean) => void;
+  setFilesystemScopesOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
   setPlannerReasoningEffort: (effort: ReasoningEffort) => void;
   setActorReasoningEffort: (effort: ReasoningEffort) => void;
   setPlannerTwoPhaseEnabled: (value: boolean) => void;
+  setMotionEnabled: (value: boolean) => void;
   ensureDesktopShortcut: (id: string, fallback: DesktopShortcutPosition) => void;
   setDesktopShortcutPosition: (id: string, position: DesktopShortcutPosition) => void;
   removeDesktopShortcut: (id: string) => void;
@@ -256,6 +277,8 @@ export type AppState = {
   clearTelemetry: () => void;
   recordTraceEvent: (event: TraceEvent) => void;
   clearTraceEvents: (traceId?: string) => void;
+  setTraceProvider: (traceId: string, provider: string) => void;
+  clearTraceProvider: (traceId: string) => void;
   recordDevtoolsAnalytics: (payload: DevtoolsAnalyticsPayload) => void;
   clearDevtoolsAnalytics: () => void;
   setDevtoolsAssumedOpen: (value: boolean) => void;
@@ -295,11 +318,17 @@ export const useAppStore = create<AppState>()(
       computeDemoOpen: false,
       moduleRegistryOpen: false,
       agentTraceOpen: false,
+      policyViewerOpen: false,
+      policyViewerSeedRule: null,
+      networkInspectorOpen: false,
+      firstRunPermissionsReviewed: false,
+      filesystemScopesOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
       plannerReasoningEffort: 'high',
       actorReasoningEffort: 'high',
       plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', getModeDefaults(getAppMode()).plannerTwoPhase),
+      motionEnabled: true, // Start with Motion enabled by default
       desktopShortcuts: {},
       pinnedWindows: {},
       workspaceWindows: {},
@@ -308,6 +337,7 @@ export const useAppStore = create<AppState>()(
       traceEvents: {},
       traceOrder: [],
       traceEventVersion: 0,
+      traceProviders: {},
       devtoolsAnalytics: [],
       devtoolsAssumedOpen: false,
       toasts: [],
@@ -356,6 +386,11 @@ export const useAppStore = create<AppState>()(
       setComputeDemoOpen: (value) => set({ computeDemoOpen: value }),
       setModuleRegistryOpen: (value) => set({ moduleRegistryOpen: value }),
       setAgentTraceOpen: (value) => set({ agentTraceOpen: value }),
+      setPolicyViewerOpen: (value) => set({ policyViewerOpen: value }),
+      setPolicyViewerSeedRule: (rule) => set({ policyViewerSeedRule: rule }),
+      setNetworkInspectorOpen: (value) => set({ networkInspectorOpen: value }),
+      setFirstRunPermissionsReviewed: (value) => set({ firstRunPermissionsReviewed: value }),
+      setFilesystemScopesOpen: (value) => set({ filesystemScopesOpen: value }),
       setPlannerProfileKey: (key) => {
         setSelectedPlannerProfileKey(key);
         set({ plannerProfileKey: key });
@@ -367,6 +402,7 @@ export const useAppStore = create<AppState>()(
       setPlannerReasoningEffort: (effort) => set({ plannerReasoningEffort: effort }),
       setActorReasoningEffort: (effort) => set({ actorReasoningEffort: effort }),
       setPlannerTwoPhaseEnabled: (value) => set({ plannerTwoPhaseEnabled: value }),
+      setMotionEnabled: (value) => set({ motionEnabled: value }),
       ensureDesktopShortcut: (id, fallback) =>
         set((state) => {
           if (state.desktopShortcuts[id]) {
@@ -432,7 +468,7 @@ export const useAppStore = create<AppState>()(
         }),
       pushToast: (toast) =>
         set((state) => ({
-          toasts: [...state.toasts, { id: crypto.randomUUID(), ...toast }],
+          toasts: [...state.toasts, { id: createId('toast'), ...toast }],
         })),
       dismissToast: (id) =>
         set((state) => ({
@@ -552,6 +588,8 @@ export const useAppStore = create<AppState>()(
         }),
       recordTraceEvent: (event) =>
         set((state) => {
+          if (!event?.traceId) return {};
+
           const existing = state.traceEvents[event.traceId] ?? [];
           const appended = [...existing, event];
           if (appended.length > TRACE_EVENTS_PER_TRACE) {
@@ -567,19 +605,42 @@ export const useAppStore = create<AppState>()(
           let trimmedOrder = updatedOrder;
           let trimmedEvents = nextTraceEvents;
 
+          let trimmedProviders = state.traceProviders;
           if (updatedOrder.length > TRACE_TRACE_CAPACITY) {
             const keep = updatedOrder.slice(0, TRACE_TRACE_CAPACITY);
             trimmedOrder = keep;
             trimmedEvents = {};
+            trimmedProviders = {};
             for (const id of keep) {
               trimmedEvents[id] = nextTraceEvents[id] ?? [];
+              const provider = state.traceProviders[id];
+              if (provider) {
+                trimmedProviders[id] = provider;
+              }
             }
           }
+
+          // Capture provider decisions into map for quick lookup
+          const providerNext = (() => {
+            if (event.name !== 'provider_decision') return trimmedProviders;
+            const data = (event.data ?? {}) as Record<string, unknown>;
+            const direct = typeof data['provider'] === 'string' ? (data['provider'] as string) : undefined;
+            const decision = data['decision'] as Record<string, unknown> | undefined;
+            const kind = typeof decision?.kind === 'string' ? (decision.kind as string) : undefined;
+            const provider = direct ?? kind;
+            if (!provider) return trimmedProviders;
+            if (trimmedProviders[event.traceId] === provider) return trimmedProviders;
+            return {
+              ...trimmedProviders,
+              [event.traceId]: provider,
+            };
+          })();
 
           return {
             traceEvents: trimmedEvents,
             traceOrder: trimmedOrder,
             traceEventVersion: state.traceEventVersion + 1,
+            traceProviders: providerNext,
           };
         }),
       clearTraceEvents: (traceId) =>
@@ -590,6 +651,7 @@ export const useAppStore = create<AppState>()(
               traceEvents: {},
               traceOrder: [],
               traceEventVersion: state.traceEventVersion + 1,
+              traceProviders: {},
             };
           }
           if (!state.traceEvents[traceId]) {
@@ -597,11 +659,33 @@ export const useAppStore = create<AppState>()(
           }
           const next = { ...state.traceEvents };
           delete next[traceId];
+          const nextProviders = { ...state.traceProviders };
+          delete nextProviders[traceId];
           return {
             traceEvents: next,
             traceOrder: state.traceOrder.filter((id) => id !== traceId),
             traceEventVersion: state.traceEventVersion + 1,
+            traceProviders: nextProviders,
           };
+        }),
+      setTraceProvider: (traceId, provider) =>
+        set((state) => {
+          if (!traceId || !provider) return {};
+          const prev = state.traceProviders[traceId];
+          if (prev === provider) return {};
+          return {
+            traceProviders: {
+              ...state.traceProviders,
+              [traceId]: provider,
+            },
+          };
+        }),
+      clearTraceProvider: (traceId) =>
+        set((state) => {
+          if (!traceId || !state.traceProviders[traceId]) return {};
+          const next = { ...state.traceProviders };
+          delete next[traceId];
+          return { traceProviders: next };
         }),
       recordDevtoolsAnalytics: (payload) =>
         set((state) => {
@@ -687,11 +771,13 @@ export const useAppStore = create<AppState>()(
         plannerReasoningEffort: state.plannerReasoningEffort,
         actorReasoningEffort: state.actorReasoningEffort,
         plannerTwoPhaseEnabled: state.plannerTwoPhaseEnabled,
+        motionEnabled: state.motionEnabled,
         agentSettingsOpen: state.agentSettingsOpen,
         computeDemoOpen: state.computeDemoOpen,
         moduleRegistryOpen: state.moduleRegistryOpen,
         safeMode: state.safeMode,
         safeReason: state.safeReason,
+        firstRunPermissionsReviewed: state.firstRunPermissionsReviewed,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

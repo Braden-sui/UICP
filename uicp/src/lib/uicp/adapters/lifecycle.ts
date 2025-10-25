@@ -26,7 +26,7 @@ import { createComponentRenderer } from './componentRenderer';
 import type { ComponentRenderer } from './componentRenderer';
 import { createPermissionGate } from './permissionGate';
 import { createAdapterTelemetry, AdapterEvents } from './adapter.telemetry';
-import { createId } from '../../utils';
+import { createId, newUuid } from '../../utils';
 import { getComputeBridge } from '../../bridge/globals';
 import type { ComputeFinalEvent, JobSpec } from '../../../compute/types';
 import { routeApiCall } from './adapter.api';
@@ -1639,6 +1639,7 @@ const routeOperation = async (
 
         const watchEnvelope: Envelope<'state.watch'> = {
           op: 'state.watch',
+          // Use mode: 'replace' so the wrapper element remains and inner HTML updates in place
           params: { scope: 'workspace', key: stateKey, selector, windowId: params.windowId, mode: 'replace' },
           windowId: params.windowId,
         };

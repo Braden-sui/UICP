@@ -4,7 +4,7 @@ import { err, Errors } from "../errors.mjs";
 import { buildContainerCmd, shellWrap, quote } from "../container.mjs";
 import { buildClaudeAllowedTools } from "../claude-tools.mjs";
 
-export async function runClaude({ prompt, tools, acceptEdits, dangerSkipPerms, container, provCfg, allowlistCfg, timeoutMs, memoryMb }) {
+export async function runClaude({ prompt, tools, acceptEdits, dangerSkipPerms, container, provCfg, allowlistCfg, timeoutMs, memoryMb, cpus }) {
   const normalizedTools = tools?.length ? buildClaudeAllowedTools(tools) : [];
   const baseArgs = ["-p", prompt, "--output-format", "stream-json"];
   if (normalizedTools.length) baseArgs.push("--allowedTools", normalizedTools.join(","));
@@ -17,7 +17,7 @@ export async function runClaude({ prompt, tools, acceptEdits, dangerSkipPerms, c
   let httpjailApplied = false;
   if (container) {
     containerName = `codejob-${Date.now().toString(36)}`;
-    const containerCmd = await buildContainerCmd(provCfg, { name: containerName, memoryMb });
+    const containerCmd = await buildContainerCmd(provCfg, { name: containerName, memoryMb, cpus });
     // Build inner command, optionally wrapped with httpjail
     let inner = ["claude", ...baseArgs];
     if (dangerSkipPerms) inner.push("--dangerously-skip-permissions");

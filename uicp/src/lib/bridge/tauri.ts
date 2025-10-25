@@ -12,6 +12,8 @@ import { ComputeError } from '../compute/errors';
 import { asStatePath, type Batch, type ApplyOutcome } from '../uicp/adapters/schemas';
 import { OrchestratorEvent } from '../orchestrator/state-machine';
 import { type Result, createBridgeUnavailableError, toUICPError, UICPErrorCode } from './result';
+import { policyDecide } from '../provider/router';
+import { emitTelemetryEvent } from '../telemetry';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -60,7 +62,7 @@ export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>
   if (!hasTauriBridge()) {
     return { ok: false, error: createBridgeUnavailableError(command) };
   }
-  
+ 
   try {
     const value = await invoke<T>(command, args as never);
     return { ok: true, value };
@@ -69,12 +71,22 @@ export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>
   }
 };
 
-type InvOverride = <T>(command: string, args?: unknown) => Promise<Result<T>>;
-
 export const setInvOverride = (impl: InvOverride | null): void => {
   const store = globalThis as Record<string, unknown>;
   store[INV_OVERRIDE_KEY] = impl ?? null;
 };
+
+type InvOverride = <T>(command: string, args?: unknown) => Promise<Result<T>>;
+
+// Open a native browser window (WebView) to an external URL inside the app shell.
+// Returns { ok, label, url, safe } or a typed UICP error via Result.
+export async function openBrowserWindow(url: string, opts?: { label?: string; safe?: boolean }) {
+  return inv<{ ok: true; label: string; url: string; safe: boolean }>('open_browser_window', {
+    url,
+    label: opts?.label,
+    safe: opts?.safe,
+  });
+}
 
 type OllamaEvent = {
   done?: boolean;
@@ -103,6 +115,7 @@ export async function initializeTauriBridge() {
           detail: { ts: Date.now(), event, ...(extra || {}) },
         }),
       );
+
     } catch (error) {
       console.error(`Failed to emit ui-debug-log event ${event}:`, error instanceof Error ? error.message : String(error));
     }
@@ -112,6 +125,7 @@ export async function initializeTauriBridge() {
   const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
   let lastPendingPrune = 0;
   const pendingBinds = new Map<string, { task: string; binds: { toStatePath: string }[]; ts: number }>();
+  const jobTraceIds = new Map<string, string>();
   const prunePending = () => {
     const now = Date.now();
     // Avoid frequent scans
@@ -135,7 +149,9 @@ export async function initializeTauriBridge() {
     } catch (error) {
       console.error('Failed to dispatch uicp-compute-final event', error);
     }
-  };
+};
+
+// (removed) openBrowserWindow helper; external browser integration deferred.
 
   function applyFinalEvent(final: ComputeFinalEvent) {
     const entry = pendingBinds.get(final.jobId);
@@ -169,6 +185,7 @@ export async function initializeTauriBridge() {
         final.code,
       );
       pendingBinds.delete(final.jobId);
+      jobTraceIds.delete(final.jobId);
       dispatchComputeFinal(final);
       return;
     }
@@ -287,7 +304,83 @@ export async function initializeTauriBridge() {
       prunePending();
       useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
       const finalSpec: JobSpec = { ...spec, workspaceId: spec.workspaceId ?? 'default' };
-      await invoke('compute_call', { spec: finalSpec });
+      try {
+        const traceId =
+          typeof finalSpec.provenance?.agentTraceId === 'string'
+            ? finalSpec.provenance.agentTraceId
+            : null;
+        if (traceId) {
+          jobTraceIds.set(finalSpec.jobId, traceId);
+        }
+        const op = String(finalSpec.task ?? '').split('@')[0];
+        const params =
+          finalSpec.input && typeof finalSpec.input === 'object' && !Array.isArray(finalSpec.input)
+            ? (finalSpec.input as Record<string, unknown>)
+            : undefined;
+        const decision = policyDecide({ operation: op, params, workspaceId: finalSpec.workspaceId });
+        if (traceId) {
+          emitTelemetryEvent('provider_decision', {
+            traceId,
+            data: { op, task: finalSpec.task, workspaceId: finalSpec.workspaceId, decision },
+          });
+        }
+      } catch (routerError) {
+        if (import.meta.env.DEV) {
+          console.warn('[router] provider decision telemetry failed', routerError);
+        }
+      }
+      let routedSpec: JobSpec = finalSpec;
+      const isOperation = typeof finalSpec.task === 'string' && finalSpec.task.indexOf('@') === -1;
+      if (isOperation) {
+        try {
+          const op = String(finalSpec.task ?? '').split('@')[0];
+          const params =
+            finalSpec.input && typeof finalSpec.input === 'object' && !Array.isArray(finalSpec.input)
+              ? (finalSpec.input as Record<string, unknown>)
+              : undefined;
+          const decision = policyDecide({ operation: op, params, workspaceId: finalSpec.workspaceId });
+          if (decision.kind === 'wasm') {
+            const mergeArray = (a?: string[], b?: string[]) => Array.from(new Set([...(a ?? []), ...(b ?? [])]));
+            const baseCaps = (finalSpec.capabilities ?? {}) as Record<string, unknown> & { fsRead?: string[]; fsWrite?: string[]; net?: string[] };
+            const decCaps = (decision.capabilities ?? {}) as { fsRead?: string[]; fsWrite?: string[]; net?: string[] };
+            const mergedCaps = {
+              ...baseCaps,
+              ...(decCaps.fsRead ? { fsRead: mergeArray(baseCaps.fsRead, decCaps.fsRead) } : {}),
+              ...(decCaps.fsWrite ? { fsWrite: mergeArray(baseCaps.fsWrite, decCaps.fsWrite) } : {}),
+              ...(decCaps.net ? { net: mergeArray(baseCaps.net, decCaps.net) } : {}),
+            } as JobSpec['capabilities'];
+            const cacheMode = decision.cacheMode === 'bypass' ? 'bypass' : 'readwrite';
+            routedSpec = {
+              ...finalSpec,
+              task: decision.moduleId,
+              memLimitMb: finalSpec.memLimitMb ?? decision.limits.memLimitMb,
+              timeoutMs: finalSpec.timeoutMs ?? decision.limits.timeoutMs ?? finalSpec.timeoutMs,
+              fuel: finalSpec.fuel ?? decision.limits.fuel,
+              cache: finalSpec.cache ?? cacheMode,
+              capabilities: mergedCaps,
+            };
+          }
+        } catch (err) {
+          console.warn('[router] provider decision for operation failed', err);
+        }
+      }
+      try {
+        const envHash = typeof finalSpec.provenance?.envHash === 'string' ? finalSpec.provenance.envHash : undefined;
+        if (envHash) {
+          const token: string = await invoke('mint_job_token', {
+            jobId: routedSpec.jobId,
+            task: routedSpec.task,
+            workspaceId: routedSpec.workspaceId,
+            envHash,
+          } as never);
+          if (typeof token === 'string' && token.length > 0) {
+            routedSpec = { ...routedSpec, token } as JobSpec;
+          }
+        }
+      } catch (err) {
+        console.warn('[tauri] mint_job_token failed', err);
+      }
+      await invoke('compute_call', { spec: routedSpec });
     } catch (error) {
       pendingBinds.delete(spec.jobId);
       useComputeStore.getState().markFinal(spec.jobId, false, undefined, undefined, ComputeError.CapabilityDenied);
@@ -548,12 +641,12 @@ export async function initializeTauriBridge() {
   unsubs.push(offApplied);
 
   unsubs.push(
-    await listen('save-indicator', (event) => {
-      const payload = event.payload as { ok?: boolean; timestamp?: number } | undefined;
+    await listen('registry-warning', (event) => {
+      const payload = event.payload as { reason?: string; task?: string; version?: string } | undefined;
       if (!payload) return;
-      if (payload.ok === false) {
-        useAppStore.getState().pushToast({ variant: 'error', message: 'Autosave failed. Changes may not persist.' });
-      }
+      const reason = payload.reason ?? 'warning';
+      const mod = payload.task && payload.version ? `${payload.task}@${payload.version}` : 'module';
+      useAppStore.getState().pushToast({ variant: 'error', message: `Registry ${reason}: ${mod}` });
     }),
   );
 
@@ -711,6 +804,30 @@ export async function initializeTauriBridge() {
         return;
       }
       await applyFinalEvent(parsed.data);
+    }),
+  );
+
+  // Provider decisions emitted by backend (JSON payload)
+  unsubs.push(
+    await listen('provider-decision', (event) => {
+      try {
+        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        let traceId = typeof payload['traceId'] === 'string' ? (payload['traceId'] as string) : undefined;
+        if (!traceId) {
+          const jobId = typeof payload['jobId'] === 'string' ? (payload['jobId'] as string) : undefined;
+          if (jobId && jobTraceIds.has(jobId)) {
+            traceId = jobTraceIds.get(jobId)!;
+          }
+        }
+        const provider = typeof payload['provider'] === 'string' ? (payload['provider'] as string) : undefined;
+        if (!traceId || !provider) return;
+        const setTraceProvider = useAppStore.getState().setTraceProvider;
+        if (typeof setTraceProvider === 'function') {
+          setTraceProvider(traceId, provider);
+        }
+      } catch (error) {
+        console.error('Failed to process provider-decision payload', error);
+      }
     }),
   );
 

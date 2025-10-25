@@ -100,7 +100,7 @@ pub struct AppState {
     pub db_ro: AsyncConn,
     pub db_rw: AsyncConn,
     pub last_save_ok: RwLock<bool>,
-    pub ollama_key: RwLock<Option<String>>,
+    pub ollama_key: RwLock<Option<String>>, 
     pub use_direct_cloud: RwLock<bool>,
     pub debug_enabled: RwLock<bool>,
     pub http: Client,
@@ -108,12 +108,14 @@ pub struct AppState {
     pub compute_ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
     pub compute_sem: Arc<Semaphore>,
     pub codegen_sem: Arc<Semaphore>,
+    pub wasm_sem: Arc<Semaphore>,
     pub compute_cancel: RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>,
     pub safe_mode: RwLock<bool>,
-    pub safe_reason: RwLock<Option<String>>,
+    pub safe_reason: RwLock<Option<String>>, 
     pub circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
     pub circuit_config: CircuitBreakerConfig,
     pub action_log: action_log::ActionLogHandle,
+    pub job_token_key: [u8; 32],
 }
 
 // ----------------------------------------------------------------------------

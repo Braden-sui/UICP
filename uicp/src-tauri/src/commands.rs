@@ -16,7 +16,7 @@ pub async fn compute_call<R: Runtime>(
     spec: ComputeJobSpec,
 ) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compute_call", job_id = %spec.job_id, task = %spec.task, cache = %spec.cache).entered();
+    let _span = tracing::info_span!("compute_call", job_id = %spec.job_id, task = %spec.task, cache = %spec.cache);
     // Reject duplicate job ids
     if state
         .compute_ongoing
@@ -59,11 +59,71 @@ pub async fn compute_call<R: Runtime>(
         }
     };
 
+    // Provider decision telemetry (host-owned for harness)
+    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+        .ok()
+        .flatten()
+        .is_some();
+    let provider_kind = if crate::codegen::is_codegen_task(&spec.task) {
+        "codegen"
+    } else if is_module_task {
+        "wasm"
+    } else {
+        "local"
+    };
+    emit_or_log(
+        &app_handle,
+        "provider-decision",
+        serde_json::json!({
+            "jobId": spec.job_id.clone(),
+            "task": spec.task.clone(),
+            "provider": provider_kind,
+            "workspaceId": spec.workspace_id.clone(),
+            "policyVersion": std::env::var("UICP_POLICY_VERSION").unwrap_or_default(),
+            "caps": {
+                "fsRead": &spec.capabilities.fs_read,
+                "fsWrite": &spec.capabilities.fs_write,
+                "net": &spec.capabilities.net,
+                "time": spec.capabilities.time,
+                "random": spec.capabilities.random,
+                "longRun": spec.capabilities.long_run,
+                "memHigh": spec.capabilities.mem_high
+            },
+            "limits": {
+                "memLimitMb": spec.mem_limit_mb,
+                "timeoutMs": spec.timeout_ms,
+                "fuel": spec.fuel
+            },
+            "cacheMode": spec.cache.clone(),
+        }),
+    );
+
     // Cache lookup when enabled
     let cache_mode = spec.cache.to_lowercase();
     if cache_mode == "readwrite" || cache_mode == "readonly" {
-        let key =
-            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash);
+        let use_v2 = std::env::var("UICP_CACHE_V2")
+            .ok()
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
+            .unwrap_or(false);
+        let module_meta = crate::registry::find_module(&app_handle, &spec.task).ok().flatten();
+        let invariants = {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(m) = &module_meta {
+                parts.push(format!("modsha={}", m.entry.digest_sha256));
+                parts.push(format!("modver={}", m.entry.version));
+                if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
+                    if !world.is_empty() { parts.push(format!("world={}", world)); }
+                }
+                parts.push("abi=wasi-p2".to_string());
+            }
+            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") { if !pver.is_empty() { parts.push(format!("policy={}", pver)); } }
+            parts.join("|")
+        };
+        let key = if use_v2 {
+            compute_cache::compute_key_v2_plus(&spec, &normalized_input, &invariants)
+        } else {
+            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash)
+        };
         if let Ok(Some(mut cached)) =
             compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
         {
@@ -104,14 +164,27 @@ pub async fn compute_call<R: Runtime>(
         }
     }
 
-    // Spawn the job respecting concurrency cap
+    // Spawn the job respecting concurrency cap (route wasm tasks through wasm_sem)
     let queued_at = Instant::now();
-    let permit = state
-        .compute_sem
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| e.to_string())?;
+    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+        .ok()
+        .flatten()
+        .is_some();
+    let permit = if is_module_task {
+        state
+            .wasm_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        state
+            .compute_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?
+    };
     let queue_wait_ms = queued_at
         .elapsed()
         .as_millis()

@@ -1,0 +1,46 @@
+# Scoring rubric used in Step 4
+version: 1
+criteria:
+  - key: risk
+    label: Delivery risk
+    weight: 0.30
+    guidance:
+      high: "New infra or invasive refactor. Fragile interfaces. Unknown unknowns."
+      medium: "Contained changes. Some migration risk."
+      low: "Mechanical or well-trodden pattern."
+  - key: time_to_value
+    label: Time to value
+    weight: 0.25
+    guidance:
+      high: "Value lands within one iteration."
+      medium: "Two to three iterations."
+      low: "Multi-phase or gated on external changes."
+  - key: maintainability
+    label: Maintainability
+    weight: 0.25
+    guidance:
+      high: "Simplifies code, fewer branches, clearer boundaries, better tests."
+      medium: "Neutral impact."
+      low: "Adds complexity or tech debt."
+  - key: strategic_alignment
+    label: Strategic alignment
+    weight: 0.20
+    guidance:
+      high: "Directly advances platform goals and standards."
+      medium: "Incidental progress."
+      low: "One-off patch that does not generalize."
+scale:
+  min: 1
+  max: 5
+requirements:
+  min_sources: 3         # Web sources required in Step 2
+  cite_urls: true
+  tests_required: true   # Changes must include or update tests
+decision_rule:
+  threshold: 3.5
+  tie_breakers:
+    - strategic_alignment
+    - maintainability
+output:
+  comparison_table: true
+  per_option_notes: true

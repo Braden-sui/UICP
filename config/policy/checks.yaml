@@ -1,0 +1,43 @@
+version: 1
+stop_files:
+  - "/.haltagent"
+error_code_prefix: "E-<REPO>-####"
+required_outputs:
+  - PLAN
+  - DIFF SUMMARY
+  - VALIDATION
+validation_workflow:
+  - recon
+  - reproduce
+  - inspect
+  - verify_external_claims
+  - patch
+  - prove
+  - clean
+testing_policy:
+  unit: required
+  contract: required_for_public_api
+  integration: when_service_boundaries
+  e2e: critical_journeys_only
+  migration: when_schema_changes
+  negative: always
+  differential: when_replacing_paths
+observability:
+  traces: required_on_changed_paths
+  logs: structured_with_ids
+  metrics: success_error_rates_and_latency
+  tiers:
+    T2plus: dashboards_and_alert
+    T3plus: slos_and_error_budget
+security_supply_chain:
+  secrets_in_code: forbid
+  lockfiles: pin
+  sbom: update_on_dep_change
+  sast: run
+  dep_scan: run
+performance:
+  hot_paths: measure_and_budget
+docs_hygiene:
+  ascii_only: true
+  cite_sources_for_facts: true
+  update_in_place: true

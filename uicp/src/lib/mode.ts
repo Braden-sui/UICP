@@ -6,19 +6,26 @@ export type AppMode = 'dev' | 'test' | 'pilot' | 'prod';
 function readEnv(name: string): string | undefined {
   // Vite exposes import.meta.env; Node scripts/tests can use process.env
   try {
-    if (typeof import.meta !== 'undefined' && (import.meta as any)?.env) {
-      const v = ((import.meta as any).env[name] as string | undefined) ?? undefined;
-      if (v != null) return String(v);
+    if (typeof import.meta !== 'undefined') {
+      const meta = import.meta as unknown;
+      if (typeof meta === 'object' && meta !== null) {
+        const envRecord = (meta as { env?: Record<string, unknown> }).env;
+        const raw = envRecord?.[name];
+        if (typeof raw === 'string') {
+          return raw;
+        }
+      }
     }
-  } catch (_) {
-    // ignore
+  } catch {
+    // ignore import.meta access errors
   }
   try {
-    if (typeof process !== 'undefined' && process.env) {
-      return process.env[name];
+    if (typeof process !== 'undefined' && typeof process.env === 'object' && process.env !== null) {
+      const raw = process.env[name];
+      return typeof raw === 'string' ? raw : undefined;
     }
-  } catch (_) {
-    // ignore
+  } catch {
+    // ignore process access errors
   }
   return undefined;
 }
@@ -40,7 +47,6 @@ export function getAppMode(): AppMode {
 export type ModeDefaults = {
   devMode: boolean;
   plannerTwoPhase: boolean;
-  wilOnly: boolean;
   wilDebug: boolean;
   plannerTimeoutMs: number;
   actorTimeoutMs: number;
@@ -52,7 +58,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
       return {
         devMode: true,
         plannerTwoPhase: true,
-        wilOnly: false,
         wilDebug: true,
         plannerTimeoutMs: 180_000,
         actorTimeoutMs: 180_000,
@@ -62,7 +67,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
         devMode: false,
         // Keep existing behavior: two-phase off during tests
         plannerTwoPhase: false,
-        wilOnly: false,
         wilDebug: false,
         // Keep generous timeouts to avoid flakes; callers can override
         plannerTimeoutMs: 180_000,
@@ -73,7 +77,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
         devMode: false,
         // JSON-first production pilot uses two-phase planner by default
         plannerTwoPhase: true,
-        wilOnly: false,
         wilDebug: false,
         plannerTimeoutMs: 180_000,
         actorTimeoutMs: 180_000,
@@ -83,7 +86,6 @@ export function getModeDefaults(mode: AppMode = getAppMode()): ModeDefaults {
       return {
         devMode: false,
         plannerTwoPhase: true,
-        wilOnly: false,
         wilDebug: false,
         plannerTimeoutMs: 180_000,
         actorTimeoutMs: 180_000,

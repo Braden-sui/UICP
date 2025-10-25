@@ -15,7 +15,9 @@ type ToolCallAccumulator = {
   payload?: unknown;
 };
 
-export const createOllamaAggregator = (onBatch?: (batch: Batch) => Promise<ApplyOutcome | void> | ApplyOutcome | void) => {
+export const createOllamaAggregator = (
+  onBatch?: (batch: Batch) => Promise<ApplyOutcome | void> | ApplyOutcome | void,
+) => {
   let jsonBuffer = '';
   let wilBuffer = '';
   const toolCallAccumulators = new Map<number, ToolCallAccumulator>();
