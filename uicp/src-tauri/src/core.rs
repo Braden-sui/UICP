@@ -16,10 +16,12 @@ use dirs::data_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{Map, Value};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::{RwLock, Semaphore};
 use tokio_rusqlite::Connection as AsyncConn;
-use tracing::Level;
+#[cfg(feature = "otel_spans")]
+use tracing_subscriber::{fmt, EnvFilter};
 
 // ----------------------------------------------------------------------------
 // Constants and paths
@@ -44,6 +46,66 @@ static TRACING_INIT_ONCE: Once = Once::new();
 static TRACING_READY: AtomicBool = AtomicBool::new(false);
 static STDERR_FALLBACK_EMITTED: AtomicBool = AtomicBool::new(false);
 const DEFAULT_TRACING_LEVEL: &str = "info";
+
+#[derive(Clone, Copy)]
+enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+/// Structured logging payload with optional stable codes and JSON metadata.
+#[derive(Debug, Clone)]
+pub struct LogEvent {
+    message: String,
+    code: Option<&'static str>,
+    fields: Map<String, Value>,
+}
+
+impl LogEvent {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: None,
+            fields: Map::new(),
+        }
+    }
+
+    pub fn code(mut self, code: &'static str) -> Self {
+        self.code = Some(code);
+        self
+    }
+
+    pub fn field(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.fields.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn fields<I, K, V>(mut self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<Value>,
+    {
+        for (key, value) in iter {
+            self.fields.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    fn into_parts(self) -> (String, Option<&'static str>, Map<String, Value>) {
+        (self.message, self.code, self.fields)
+    }
+}
+
+impl<T> From<T> for LogEvent
+where
+    T: Into<String>,
+{
+    fn from(value: T) -> Self {
+        LogEvent::new(value)
+    }
+}
 
 pub fn files_dir_path() -> &'static std::path::Path {
     &FILES_DIR
@@ -128,6 +190,11 @@ pub struct AppState {
     pub circuit_config: CircuitBreakerConfig,
     pub action_log: action_log::ActionLogHandle,
     pub job_token_key: [u8; 32],
+}
+
+/// Compute a stable cache key for compute tasks so callers outside compute_cache can derive the same key.
+pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
+    crate::compute_cache::compute_key(task, input, env_hash)
 }
 
 // ----------------------------------------------------------------------------
@@ -410,11 +477,19 @@ where
     T: serde::Serialize + Clone,
 {
     if let Err(err) = app_handle.emit(event, payload.clone()) {
-        log_warn(format!("emit_or_log fallback for {event}: {err:?}"));
+        log_warn(
+            LogEvent::new("emit_or_log fallback")
+                .code("W-UICP-LOG-0001")
+                .field("event", event)
+                .field("error", format!("{err:?}")),
+        );
         if let Err(fallback_err) = app_handle.emit("uicp-host-debug", payload) {
-            log_error(format!(
-                "emit_or_log fallback emit failed for {event}: {fallback_err:?}"
-            ));
+            log_error(
+                LogEvent::new("emit_or_log fallback emit failed")
+                    .code("E-UICP-LOG-0002")
+                    .field("event", event)
+                    .field("error", format!("{fallback_err:?}")),
+            );
         }
     }
 }
@@ -423,4 +498,132 @@ where
 pub async fn remove_compute_job<R: Runtime>(app_handle: &tauri::AppHandle<R>, job_id: &str) {
     let state: State<'_, crate::AppState> = app_handle.state();
     state.compute_ongoing.write().await.remove(job_id);
+}
+
+// ----------------------------------------------------------------------------
+// Logging helpers and tracing initialization (structured; see LogEvent below)
+// ----------------------------------------------------------------------------
+
+/// Initialize tracing subscribers (when enabled) or fall back to stderr logging.
+pub fn init_tracing() {
+    #[cfg(feature = "otel_spans")]
+    {
+        TRACING_INIT_ONCE.call_once(|| {
+            let default_filter = std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| format!("uicp={}", DEFAULT_TRACING_LEVEL));
+            let env_filter = EnvFilter::try_new(default_filter)
+                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_TRACING_LEVEL));
+            let subscriber = fmt().with_env_filter(env_filter).with_target(true).finish();
+            match tracing::subscriber::set_global_default(subscriber) {
+                Ok(()) => {
+                    TRACING_READY.store(true, Ordering::SeqCst);
+                }
+                Err(err) => {
+                    stderr_log("error", &format!("failed to initialize tracing: {err}"));
+                    STDERR_FALLBACK_EMITTED.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+    }
+
+    #[cfg(not(feature = "otel_spans"))]
+    {
+        TRACING_INIT_ONCE.call_once(|| {
+            TRACING_READY.store(true, Ordering::SeqCst);
+        });
+    }
+}
+
+fn log_inner(level: LogLevel, event: LogEvent) {
+    let tracing_ready = TRACING_READY.load(Ordering::SeqCst);
+    let (message, code, fields) = event.into_parts();
+    let context_value = if fields.is_empty() {
+        None
+    } else {
+        Some(Value::Object(fields))
+    };
+
+    #[cfg(feature = "otel_spans")]
+    {
+        if tracing_ready {
+            match level {
+                LogLevel::Info => match (code, context_value.as_ref()) {
+                    (Some(code), Some(ctx)) => tracing::info!(
+                        target = "uicp",
+                        code = %code,
+                        context = %ctx,
+                        "{message}"
+                    ),
+                    (Some(code), None) => tracing::info!(target = "uicp", code = %code, "{message}"),
+                    (None, Some(ctx)) => tracing::info!(target = "uicp", context = %ctx, "{message}"),
+                    (None, None) => tracing::info!(target = "uicp", "{message}"),
+                },
+                LogLevel::Warn => match (code, context_value.as_ref()) {
+                    (Some(code), Some(ctx)) => tracing::warn!(
+                        target = "uicp",
+                        code = %code,
+                        context = %ctx,
+                        "{message}"
+                    ),
+                    (Some(code), None) => tracing::warn!(target = "uicp", code = %code, "{message}"),
+                    (None, Some(ctx)) => tracing::warn!(target = "uicp", context = %ctx, "{message}"),
+                    (None, None) => tracing::warn!(target = "uicp", "{message}"),
+                },
+                LogLevel::Error => match (code, context_value.as_ref()) {
+                    (Some(code), Some(ctx)) => tracing::error!(
+                        target = "uicp",
+                        code = %code,
+                        context = %ctx,
+                        "{message}"
+                    ),
+                    (Some(code), None) => tracing::error!(target = "uicp", code = %code, "{message}"),
+                    (None, Some(ctx)) => tracing::error!(target = "uicp", context = %ctx, "{message}"),
+                    (None, None) => tracing::error!(target = "uicp", "{message}"),
+                },
+            }
+            return;
+        }
+    }
+
+    let (label, is_error) = match level {
+        LogLevel::Info => ("info", false),
+        LogLevel::Warn => ("warn", false),
+        LogLevel::Error => ("error", true),
+    };
+    let mut fallback = String::new();
+    if let Some(code) = code {
+        fallback.push('[');
+        fallback.push_str(code);
+        fallback.push_str("] ");
+    }
+    fallback.push_str(&message);
+    if let Some(ctx) = context_value.as_ref() {
+        fallback.push_str(" | ");
+        fallback.push_str(&ctx.to_string());
+    }
+    stderr_log(label, &fallback);
+
+    if is_error {
+        STDERR_FALLBACK_EMITTED.store(true, Ordering::SeqCst);
+    }
+}
+
+fn stderr_log(label: &str, message: &str) {
+    let mut sink = io::stderr().lock();
+    let _ = writeln!(sink, "[uicp::{label}] {message}");
+}
+
+/// Log an informational message.
+pub fn log_info(event: impl Into<LogEvent>) {
+    log_inner(LogLevel::Info, event.into());
+}
+
+/// Log a warning message.
+pub fn log_warn(event: impl Into<LogEvent>) {
+    log_inner(LogLevel::Warn, event.into());
+}
+
+/// Log an error message.
+pub fn log_error(event: impl Into<LogEvent>) {
+    log_inner(LogLevel::Error, event.into());
 }

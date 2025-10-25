@@ -16,6 +16,7 @@ import { getComponentCatalogSummary as getAdapterComponentCatalogSummary } from 
 import { type TaskSpec } from './schemas';
 import { generateTaskSpec } from './generateTaskSpec';
 import { cfg } from '../config';
+import { LLMError, LLMErrorCode, type LLMErrorCodeT, toLLMError } from './errors';
 
 // Model selection: derive from selected profile, no .env dependency
 const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
@@ -51,7 +52,8 @@ const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', __mo
 const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', __modeDefaults.actorTimeoutMs ?? 180_000, { min: 1_000 });
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-const toError = (input: unknown): Error => (input instanceof Error ? input : new Error(String(input)));
+const toLLM = (input: unknown, fallback?: LLMErrorCodeT): LLMError =>
+  toLLMError(input, fallback ?? LLMErrorCode.Unknown);
 const escapeHtml = (value: string): string =>
   value
     .replace(/&/g, '&amp;')
@@ -91,7 +93,7 @@ export type RunIntentResult = {
 };
 
 const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error: unknown, useTools: boolean): string => {
-  const reason = toError(error).message.replace(/\s+/g, ' ').trim();
+  const reason = toLLM(error).message.replace(/\s+/g, ' ').trim();
   const snippet = reason.length > 400 ? `${reason.slice(0, 400)}...` : reason;
   if (toolName === 'emit_plan') {
     if (useTools) {
@@ -132,7 +134,7 @@ export async function planWithProfile(
       phase: 'planner',
     });
     if (!text || text.trim().length === 0) {
-      throw new Error('planner_empty');
+      throw new LLMError(LLMErrorCode.PlannerEmpty, 'Planner produced no content');
     }
     const outline = parsePlannerOutline(text || intent);
     const plan = validatePlan({
@@ -218,7 +220,11 @@ export async function planWithProfile(
           });
           return { plan: fallbackPlan, channelUsed: 'text-fallback' };
         }
-        throw new Error(`planner_missing_tool_call${preview ? `: ${preview}` : ''}`);
+        throw new LLMError(
+          LLMErrorCode.PlannerMissingToolCall,
+          'Planner response missing emit_plan tool call',
+          preview,
+        );
       }
 
       // WIL-only path: collect text only
@@ -227,7 +233,7 @@ export async function planWithProfile(
         phase: 'planner',
       });
       if (!text || text.trim().length === 0) {
-        throw new Error('planner_empty');
+        throw new LLMError(LLMErrorCode.PlannerEmpty, 'Planner produced no content');
       }
 
       // Try JSON parse first (model might emit JSON as content)
@@ -253,7 +259,7 @@ export async function planWithProfile(
       extraSystem = `${buildCatalogSummary()}\n\n${retry}`;
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw toLLM(lastErr, LLMErrorCode.PlannerFailure);
 }
 
 // Augment the planner output with minimal, deterministic hints for the actor (Gui).
@@ -444,8 +450,12 @@ export async function actWithProfile(
           }
         }
         const snippet = trimmed.slice(0, 200).replace(/\s+/g, ' ').trim();
-        const detail = snippet.length > 0 ? ` (${snippet})` : '';
-        throw new Error(`actor_nop: missing emit_batch tool call${detail}`);
+        const detail = snippet.length > 0 ? snippet : undefined;
+        throw new LLMError(
+          LLMErrorCode.ActorMissingToolCall,
+          'actor_nop: missing emit_batch tool call',
+          detail,
+        );
       }
 
       // Text-only fallback for profiles without tool support
@@ -454,21 +464,24 @@ export async function actWithProfile(
         phase: 'actor',
       });
       if (!text || text.trim().length === 0) {
-        throw new Error('actor_empty');
+        throw new LLMError(LLMErrorCode.ActorEmpty, 'Actor response returned no content');
       }
       const wilBatch = parseWilToBatch(text);
       if (wilBatch && wilBatch.length > 0) {
         const ensured = ensureWindowSpawn(plan, wilBatch);
         return { batch: ensured, channelUsed: 'text' };
       }
-      throw new Error('actor_nop: no valid batch from text');
+      throw new LLMError(
+        LLMErrorCode.ActorInvalidBatch,
+        'actor_nop: no valid batch from text response',
+      );
     } catch (err) {
       lastErr = err;
       const retry = buildStructuredRetryMessage('emit_batch', err, supportsTools);
       extraSystem = `${buildCatalogSummary()}\n\n${retry}`;
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw toLLM(lastErr, LLMErrorCode.ActorFailure);
 }
 
 function parsePlannerOutline(text: string): { summary: string; risks?: string[]; actorHints?: string[] } {
@@ -549,7 +562,7 @@ export async function runIntent(
         failures.taskSpec = taskSpecResult.error;
       }
     } catch (err) {
-      const failure = toError(err);
+      const failure = toLLM(err, LLMErrorCode.TaskSpecGeneralFailure);
       failures.taskSpec = failure.message;
       console.warn('[runIntent] taskSpec generation failed, continuing with stub', { traceId, error: failure });
     }
@@ -603,7 +616,7 @@ export async function runIntent(
       failures.planner = 'planner_missing_tool_call';
     }
   } catch (err) {
-    const failure = toError(err);
+    const failure = toLLM(err, LLMErrorCode.PlannerFailure);
     // Planner degraded: proceed with actor-only fallback using the raw intent as summary
     notice = 'planner_fallback';
     failures.planner = failure.message;
@@ -671,7 +684,7 @@ export async function runIntent(
     batch = out.batch;
     actorChannelUsed = out.channelUsed;
   } catch (err) {
-    const failure = toError(err);
+    const failure = toLLM(err, LLMErrorCode.ActorFailure);
     const isActorNop = /^actor_nop:\s*/i.test(failure.message);
     if (isActorNop && notice === 'planner_fallback') {
       batch = validateBatch([]);

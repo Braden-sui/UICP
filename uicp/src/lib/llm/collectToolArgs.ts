@@ -1,4 +1,5 @@
 import type { StreamEvent } from './ollama';
+import { LLMError, LLMErrorCode } from './errors';
 
 /**
  * Accumulates tool_call arguments from a stream of events.
@@ -36,7 +37,10 @@ export async function collectToolArgs(
   const accumulators = new Map<number, ToolCallAccumulator>();
 
   const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`E-UICP-0100: Tool collection timeout after ${timeoutMs}ms`)), timeoutMs),
+    setTimeout(
+      () => reject(new LLMError(LLMErrorCode.ToolCollectionTimeout, `Tool collection timeout after ${timeoutMs}ms`)),
+      timeoutMs,
+    ),
   );
 
   try {
@@ -75,7 +79,12 @@ export async function collectToolArgs(
               const args = JSON.parse(acc.argsBuffer);
               return { index: acc.index, id: acc.id, name: acc.name, args };
             } catch (err) {
-              throw new Error(`E-UICP-0101: Failed to parse tool args for ${targetName}: ${err}`);
+              throw new LLMError(
+                LLMErrorCode.ToolArgsParseFailed,
+                `Failed to parse tool args for ${targetName}`,
+                undefined,
+                err,
+              );
             }
           }
         }
@@ -86,10 +95,10 @@ export async function collectToolArgs(
     ]);
     return result;
   } catch (err) {
-    if (err instanceof Error && err.message.startsWith('E-UICP-0100')) {
+    if (err instanceof LLMError && err.code === LLMErrorCode.ToolCollectionTimeout) {
       throw err;
     }
-    throw new Error(`E-UICP-0102: Tool collection failed: ${err}`);
+    throw new LLMError(LLMErrorCode.ToolCollectionFailed, 'Tool collection failed', undefined, err);
   }
 }
 
@@ -104,7 +113,10 @@ export async function collectAllToolCalls(
   const accumulators = new Map<number, ToolCallAccumulator>();
 
   const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`E-UICP-0103: Tool collection timeout after ${timeoutMs}ms`)), timeoutMs),
+    setTimeout(
+      () => reject(new LLMError(LLMErrorCode.ToolCollectionAllTimeout, `Tool collection timeout after ${timeoutMs}ms`)),
+      timeoutMs,
+    ),
   );
 
   try {
@@ -136,10 +148,10 @@ export async function collectAllToolCalls(
       timeoutPromise,
     ]);
   } catch (err) {
-    if (err instanceof Error && err.message.startsWith('E-UICP-0103')) {
+    if (err instanceof LLMError && err.code === LLMErrorCode.ToolCollectionAllTimeout) {
       throw err;
     }
-    throw new Error(`E-UICP-0104: Tool collection failed: ${err}`);
+    throw new LLMError(LLMErrorCode.ToolCollectionAllFailed, 'Tool collection failed', undefined, err);
   }
 
   // Parse all accumulated buffers

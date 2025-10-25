@@ -2390,7 +2390,9 @@ fn main() {
                     .visible(true)
                     .build();
                 if let Err(err2) = splash_fallback {
-                    tracing::error!("failed to create splash window (data URL fallback): {err2:?}");
+                    log_error(format!(
+                        "failed to create splash window (data URL fallback): {err2:?}"
+                    ));
                 }
             }
 

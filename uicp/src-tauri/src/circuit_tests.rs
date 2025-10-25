@@ -124,9 +124,7 @@ async fn test_circuit_opens_after_max_failures() {
         "payload should include host"
     );
     assert_eq!(
-        payload
-            .get("consecutiveFailures")
-            .and_then(|v| v.as_u64()),
+        payload.get("consecutiveFailures").and_then(|v| v.as_u64()),
         Some(config.max_failures as u64),
         "payload should include consecutive failure count"
     );

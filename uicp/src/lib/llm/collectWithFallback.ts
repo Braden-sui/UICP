@@ -2,6 +2,7 @@ import type { StreamEvent } from './ollama';
 import type { CollectedToolArgs } from './collectToolArgs';
 import { emitTelemetryEvent } from '../telemetry';
 import type { TelemetryEventPayload, TraceSpan } from '../telemetry/types';
+import { LLMError, LLMErrorCode } from './errors';
 
 export type CollectionResult = {
   toolResult?: CollectedToolArgs;
@@ -68,7 +69,7 @@ export async function collectWithFallback(
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
       timedOut = true;
-      reject(new Error(`E-UICP-0105: Collection timeout after ${timeoutMs}ms`));
+      reject(new LLMError(LLMErrorCode.CollectionTimeout, `Collection timeout after ${timeoutMs}ms`));
     }, timeoutMs);
   });
 
@@ -119,9 +120,9 @@ export async function collectWithFallback(
         status: 'timeout',
         data: { targetToolName, timeoutMs },
       });
-      throw err instanceof Error ? err : new Error(String(err));
+      throw err instanceof LLMError ? err : new LLMError(LLMErrorCode.CollectionTimeout, String(err), undefined, err);
     }
-    throw new Error(`E-UICP-0106: Collection failed: ${err}`);
+    throw new LLMError(LLMErrorCode.CollectionFailed, 'Collection failed', undefined, err);
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);

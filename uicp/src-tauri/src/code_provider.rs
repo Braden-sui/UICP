@@ -12,6 +12,8 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 
+use crate::{log_error, log_info, log_warn};
+
 const ERR_PROVIDER_CONFIG: &str = "E-UICP-1400";
 const ERR_PROVIDER_SPAWN: &str = "E-UICP-1401";
 const ERR_PROVIDER_IO: &str = "E-UICP-1402";
@@ -434,7 +436,7 @@ fn log_httpjail_applied(provider: &str) {
     );
     #[cfg(not(feature = "otel_spans"))]
     {
-        tracing::info!("[uicp] httpjail allowlist enforced for provider {provider}");
+        log_info(format!("httpjail allowlist enforced for provider {provider}"));
     }
 }
 
@@ -449,10 +451,9 @@ fn log_httpjail_skipped(provider: &str, reason: &str) {
     );
     #[cfg(not(feature = "otel_spans"))]
     {
-        tracing::warn!(
-            "[uicp:{}] httpjail requested but not enforced for provider {provider}: {reason}",
-            WARN_HTTPJAIL_DISABLED
-        );
+        log_warn(format!(
+            "[{WARN_HTTPJAIL_DISABLED}] httpjail requested but not enforced for provider {provider}: {reason}"
+        ));
     }
 }
 
@@ -471,12 +472,12 @@ fn log_provider_bin(provider: &str, path: &std::path::Path, source: &str) {
         );
         #[cfg(not(feature = "otel_spans"))]
         {
-            tracing::info!(
-                "[uicp] provider {provider} executable resolved via {source}: {} (os={}, arch={})",
+            log_info(format!(
+                "provider {provider} executable resolved via {source}: {} (os={}, arch={})",
                 path.display(),
                 std::env::consts::OS,
                 std::env::consts::ARCH
-            );
+            ));
         }
     }
 }

@@ -11,6 +11,7 @@ import { buildEnvironmentSnapshot } from '../env';
 import { EMIT_PLAN, EMIT_BATCH, planSchema, batchSchema } from './tools';
 import type { TaskSpec } from './schemas';
 import { useAppStore } from '../../state/app';
+import { LLMError, LLMErrorCode } from './errors';
 
 export type LLMStream = AsyncIterable<StreamEvent>;
 
@@ -97,7 +98,10 @@ export function getPlannerClient(): PlannerClient {
       }
       const model = options?.model;
       if (!model) {
-        throw new Error('Planner model not specified. Provide model via options.model or choose a profile in Agent Settings.');
+        throw new LLMError(
+          LLMErrorCode.PlannerModelMissing,
+          'Planner model not specified. Provide model via options.model or choose a profile in Agent Settings.',
+        );
       }
       const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
       const plannerEffort =
@@ -153,7 +157,10 @@ export function getActorClient(): ActorClient {
       }
       const model = options?.model;
       if (!model) {
-        throw new Error('Actor model not specified. Provide model via options.model or choose a profile in Agent Settings.');
+        throw new LLMError(
+          LLMErrorCode.ActorModelMissing,
+          'Actor model not specified. Provide model via options.model or choose a profile in Agent Settings.',
+        );
       }
       const isGptOss = typeof model === 'string' && model.startsWith('gpt-oss');
       const actorEffort =

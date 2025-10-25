@@ -6,6 +6,8 @@ use tokio::process::Command;
 
 use serde_json::Value;
 
+use crate::core::{log_info, LogEvent};
+
 const ERR_PROVIDER_INVALID: &str = "E-UICP-1500";
 const ERR_PROGRAM_NOT_FOUND: &str = "E-UICP-1501"; // ProgramNotFound
 const ERR_NOT_AUTHENTICATED: &str = "E-UICP-1502"; // NotAuthenticated
@@ -789,16 +791,13 @@ fn log_login_wrap(provider: &str, policy_key: &str, enabled: bool) {
         "httpjail login wrap"
     );
     #[cfg(not(feature = "otel_spans"))]
-    {
-        tracing::info!(
-            target = "uicp",
-            provider = provider,
-            policyKey = policy_key,
-            policyVersionOrHash = %policy_version,
-            enabled = enabled,
-            "httpjail login wrap"
-        );
-    }
+    log_info(
+        LogEvent::new("httpjail login wrap")
+            .field("provider", provider)
+            .field("policyKey", policy_key)
+            .field("policyVersionOrHash", policy_version)
+            .field("enabled", enabled),
+    );
 }
 
 fn log_resolved(provider: &str, path: &Path, source: &str) {
@@ -814,17 +813,14 @@ fn log_resolved(provider: &str, path: &Path, source: &str) {
             "provider executable resolved"
         );
         #[cfg(not(feature = "otel_spans"))]
-        {
-            tracing::info!(
-                target = "uicp",
-                provider = provider,
-                exe = %path.display(),
-                source = source,
-                os = %std::env::consts::OS,
-                arch = %std::env::consts::ARCH,
-                "provider executable resolved"
-            );
-        }
+        log_info(
+            LogEvent::new("provider executable resolved")
+                .field("provider", provider)
+                .field("exe", path.display().to_string())
+                .field("source", source)
+                .field("os", std::env::consts::OS)
+                .field("arch", std::env::consts::ARCH),
+        );
     }
 }
 

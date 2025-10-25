@@ -26,7 +26,7 @@ use crate::compute_input::{
 };
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
-use crate::ComputeJobSpec;
+use crate::{log_error, log_warn, ComputeJobSpec};
 
 /// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]

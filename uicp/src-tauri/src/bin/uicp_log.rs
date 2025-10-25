@@ -1,13 +1,13 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
 use anyhow::{anyhow, Context, Result};
-use uicp::{parse_pubkey, verify_chain, ActionLogVerifyReport, DATA_DIR};
+use uicp::{log_error, log_warn, parse_pubkey, verify_chain, ActionLogVerifyReport, DATA_DIR};
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            tracing::error!("uicp-log: {err:?}");
+            log_error(format!("uicp-log: {err:?}"));
             ExitCode::FAILURE
         }
     }
@@ -90,7 +90,7 @@ fn emit_report(report: ActionLogVerifyReport, sig_checked: bool) {
 }
 
 fn print_usage() {
-    tracing::warn!("Usage:");
-    tracing::warn!("  uicp-log verify [--db path/to/data.db] [--pubkey HEX_OR_B64]");
-    tracing::warn!("  uicp-log --help");
+    log_warn("Usage:");
+    log_warn("  uicp-log verify [--db path/to/data.db] [--pubkey HEX_OR_B64]");
+    log_warn("  uicp-log --help");
 }

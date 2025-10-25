@@ -559,6 +559,22 @@ const getStorage = (): Storage | null => {
   }
 };
 
+type PersistPhase = 'load' | 'save' | 'read';
+
+const persistWarnings: Record<PersistPhase, boolean> = {
+  load: false,
+  save: false,
+  read: false,
+};
+
+const logPersistWarning = (phase: PersistPhase, err: unknown): void => {
+  if (persistWarnings[phase]) return;
+  persistWarnings[phase] = true;
+  try {
+    console.warn(`[net-guard] urlhaus persistence ${phase} failure`, err);
+  } catch { /* logging itself should never throw */ }
+};
+
 const loadPersistedUrlhaus = () => {
   try {
     if (!cfg || !cfg.urlhausPersistEnabled) return;
@@ -576,7 +592,9 @@ const loadPersistedUrlhaus = () => {
         urlhausCache.set(k, { verdict: 'clean', expires: v.expires });
       }
     }
-  } catch {}
+  } catch (err) {
+    logPersistWarning('load', err);
+  }
 };
 
 const savePersistedUrlhaus = (k: string, verdict: 'clean' | 'suspicious' | 'malicious' | 'unknown', expires: number) => {
@@ -589,7 +607,9 @@ const savePersistedUrlhaus = (k: string, verdict: 'clean' | 'suspicious' | 'mali
     const now = Date.now();
     const maxEntries = typeof cfg.urlhausPersistMaxEntries === 'number' && cfg.urlhausPersistMaxEntries! > 0 ? cfg.urlhausPersistMaxEntries! : 500;
     let obj: Record<string, { verdict: string; expires: number }> = {};
-    try { obj = JSON.parse(st.getItem(key) || '{}') || {}; } catch {}
+    try { obj = JSON.parse(st.getItem(key) || '{}') || {}; } catch (err) {
+      logPersistWarning('read', err);
+    }
     for (const kk of Object.keys(obj)) {
       const vv = obj[kk];
       if (!vv || typeof vv.expires !== 'number' || vv.expires <= now) delete obj[kk];
@@ -602,7 +622,9 @@ const savePersistedUrlhaus = (k: string, verdict: 'clean' | 'suspicious' | 'mali
       for (const d of toDrop) delete obj[d];
     }
     st.setItem(key, JSON.stringify(obj));
-  } catch {}
+  } catch (err) {
+    logPersistWarning('save', err);
+  }
 };
 
 function cacheUrlhausVerdict(

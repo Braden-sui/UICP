@@ -1,4 +1,5 @@
 import { validatePlan, validateBatch, type Plan, type Batch } from '../uicp/schemas';
+import { LLMError, LLMErrorCode } from './errors';
 
 export type ToolName = 'emit_plan' | 'emit_batch';
 
@@ -112,7 +113,7 @@ export function normalizePlanJson(value: unknown): Plan {
 
   const msg =
     lastError instanceof Error ? lastError.message : typeof lastError === 'string' ? lastError : 'no valid plan payload';
-  throw new Error(`E-UICP-0420: Failed to normalize plan JSON payload (${msg})`);
+  throw new LLMError(LLMErrorCode.PlanNormalizationFailed, `Failed to normalize plan JSON payload (${msg})`, undefined, lastError);
 }
 
 export function normalizeBatchJson(value: unknown): Batch {
@@ -160,7 +161,12 @@ export function normalizeBatchJson(value: unknown): Batch {
 
   const msg =
     lastError instanceof Error ? lastError.message : typeof lastError === 'string' ? lastError : 'unknown batch error';
-  throw new Error(`E-UICP-0421: Failed to normalize batch JSON payload (${msg})`);
+  throw new LLMError(
+    LLMErrorCode.BatchNormalizationFailed,
+    `Failed to normalize batch JSON payload (${msg})`,
+    undefined,
+    lastError,
+  );
 }
 
 function resolveToolPayload(value: unknown, expectedName: ToolName): ParsedTool | null {

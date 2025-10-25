@@ -13,6 +13,8 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime};
+
+use crate::{log_error, log_info, log_warn};
 // Optional signature verification (if caller provides a public key)
 use anyhow::{bail, Result as AnyResult};
 use base64::engine::general_purpose::{
@@ -120,6 +122,8 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
             target = "uicp",
             "skipping module install (UICP_MODULES_DIR set)"
         );
+        #[cfg(not(feature = "otel_spans"))]
+        log_info("skipping module install (UICP_MODULES_DIR set)".to_string());
         return Ok(());
     }
 
@@ -131,6 +135,8 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
     if _lock.is_none() {
         #[cfg(feature = "otel_spans")]
         tracing::debug!(target = "uicp", path = %target.display(), "module installer already active");
+        #[cfg(not(feature = "otel_spans"))]
+        log_info(format!("module installer already active: {}", target.display()));
         // Another process/thread is installing; skip to avoid races.
         return Ok(());
     }
@@ -148,6 +154,8 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                 copy_dir_all(src, &target)?;
                 #[cfg(feature = "otel_spans")]
                 tracing::info!(target = "uicp", from = %src.display(), to = %target.display(), "modules installed from bundle");
+                #[cfg(not(feature = "otel_spans"))]
+                log_info(format!("modules installed from bundle: {} -> {}", src.display(), target.display()));
                 if let Err(err) = verify_installed_modules(&target) {
                     log_error(format!("bundled modules verification failed: {err:#}"));
                 }
@@ -173,6 +181,11 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                 }
             }
         }
+        #[cfg(not(feature = "otel_spans"))]
+        log_info(format!(
+            "attempted manifest repair at {}",
+            manifest_path.display()
+        ));
     }
 
     // Otherwise validate listed files exist; copy missing ones from bundle when possible.
@@ -378,6 +391,11 @@ pub fn load_manifest<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ModuleMani
     if !manifest_path.exists() {
         #[cfg(feature = "otel_spans")]
         tracing::info!(target = "uicp", path = %manifest_path.display(), "modules manifest missing; returning empty");
+        #[cfg(not(feature = "otel_spans"))]
+        log_info(format!(
+            "modules manifest missing; returning empty ({})",
+            manifest_path.display()
+        ));
         return Ok(ModuleManifest::default());
     }
     // Attempt a best-effort repair before strict parsing.
@@ -388,6 +406,10 @@ pub fn load_manifest<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ModuleMani
     #[cfg(feature = "otel_spans")]
     if parsed.is_ok() {
         tracing::info!(target = "uicp", path = %manifest_path.display(), "modules manifest loaded");
+    }
+    #[cfg(not(feature = "otel_spans"))]
+    if parsed.is_ok() {
+        log_info(format!("modules manifest loaded: {}", manifest_path.display()));
     }
     parsed
 }
@@ -408,6 +430,10 @@ pub fn find_module<R: Runtime>(
     let Some(entry) = selected else {
         #[cfg(feature = "otel_spans")]
         tracing::info!(target = "uicp", task = %task, version = %version, "module not found in manifest");
+        #[cfg(not(feature = "otel_spans"))]
+        log_info(format!(
+            "module not found in manifest (task={task}, version={version})"
+        ));
         return Ok(None);
     };
     if !is_clean_filename(&entry.filename) {
@@ -470,6 +496,13 @@ pub fn find_module<R: Runtime>(
                     version = %entry.version,
                     "loaded provenance metadata"
                 );
+            }
+            #[cfg(not(feature = "otel_spans"))]
+            if provenance.is_some() {
+                log_info(format!(
+                    "loaded provenance metadata for {}@{}",
+                    entry.task, entry.version
+                ));
             }
             Ok(Some(ModuleRef {
                 entry: entry.clone(),
@@ -889,14 +922,14 @@ fn verify_installed_modules(target: &Path) -> Result<()> {
         match verify_digest(&path, &entry.digest_sha256) {
             Ok(true) => {}
             Ok(false) => {
-                tracing::error!(
+                log_error(format!(
                     "removing module {} due to digest mismatch after install",
                     entry.filename
-                );
+                ));
                 let _ = fs::remove_file(&path);
             }
             Err(err) => {
-                tracing::error!("failed verifying digest for {}: {err:#}", entry.filename);
+                log_error(format!("failed verifying digest for {}: {err:#}", entry.filename));
                 let _ = fs::remove_file(&path);
             }
         }

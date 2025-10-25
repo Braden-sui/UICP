@@ -6,6 +6,7 @@ use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 use tokio_rusqlite::Connection as AsyncConn;
+use uicp::log_error;
 
 async fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     if let Some(parent) = db_path.parent() {
@@ -233,7 +234,7 @@ async fn cmd_compact_log(db: &PathBuf) -> anyhow::Result<i32> {
 }
 
 fn usage() -> ! {
-    tracing::error!("Usage:\n  harness init-db <db_path>\n  harness persist <db_path> <id> <tool> <args_json>\n  harness log-hash <db_path>\n  harness save-checkpoint <db_path> <hash>\n  harness compact-log <db_path>\n  harness materialize <db_path> <key>\n  harness count-missing <db_path>\n  harness quick-check <db_path>\n  harness fk-check <db_path>");
+    log_error("Usage:\n  harness init-db <db_path>\n  harness persist <db_path> <id> <tool> <args_json>\n  harness log-hash <db_path>\n  harness save-checkpoint <db_path> <hash>\n  harness compact-log <db_path>\n  harness materialize <db_path> <key>\n  harness count-missing <db_path>\n  harness quick-check <db_path>\n  harness fk-check <db_path>");
     std::process::exit(2)
 }
 
@@ -288,7 +289,7 @@ async fn main() {
     match code {
         Ok(_) => {}
         Err(err) => {
-            tracing::error!("error: {err:?}");
+            log_error(format!("error: {err:?}"));
             std::process::exit(1);
         }
     }
