@@ -21,9 +21,18 @@ export function setRuntimePolicy(p: Partial<Policy>) {
   }
 }
 
+const extractEnv = (source: unknown): Record<string, unknown> => {
+  if (!source || typeof source !== 'object') return {};
+  const envCandidate = (source as { env?: unknown }).env;
+  if (envCandidate && typeof envCandidate === 'object') {
+    return envCandidate as Record<string, unknown>;
+  }
+  return {};
+};
+
 function fromEnv(): Policy {
-  const metaEnv = ((import.meta as unknown) as { env?: Record<string, unknown> }).env ?? {};
-  const procEnv: Record<string, unknown> = (typeof process !== 'undefined' && (process as any).env) ? (process as any).env : {};
+  const metaEnv = extractEnv(typeof import.meta !== 'undefined' ? import.meta : undefined);
+  const procEnv = extractEnv(typeof process !== 'undefined' ? process : undefined);
   const env = { ...metaEnv, ...procEnv } as Record<string, unknown>;
   const safe = String(env.UICP_SAFE_MODE ?? '0').toLowerCase();
   if (safe === '1' || safe === 'true') return Presets.locked;

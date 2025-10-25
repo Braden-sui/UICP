@@ -313,7 +313,7 @@ export const retryBlockedFetch = async (retryId: string): Promise<boolean> => {
       const response = await entry.executor();
       entry.resolve(response);
       return true;
-    } catch (firstErr) {
+    } catch {
       const response2 = await entry.executor();
       entry.resolve(response2);
       return true;
