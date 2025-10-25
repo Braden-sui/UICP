@@ -333,55 +333,6 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
     }
 
     // Ensure the legacy table has the workspace column before we attempt to rebuild the PK.
-    let mut has_workspace_column = false;
-    {
-        let mut stmt = conn
-            .prepare("PRAGMA table_info('compute_cache')")
-            .context("inspect compute_cache schema")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let name: String = row.get(1)?;
-            if name == "workspace_id" {
-                has_workspace_column = true;
-                break;
-            }
-        }
-    }
-    if !has_workspace_column {
-        match conn.execute(
-            "ALTER TABLE compute_cache ADD COLUMN workspace_id TEXT DEFAULT 'default'",
-            [],
-        ) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") => {}
-            Err(err) => {
-                return Err(err).context(
-                    "Failed to add workspace_id column. The database may be locked or corrupt.",
-                )
-            }
-        }
-    }
-
-    // Tighten NULLs that may have slipped in before the composite key existed.
-    conn.execute(
-        "UPDATE compute_cache SET workspace_id = 'default' WHERE workspace_id IS NULL",
-        [],
-    )
-    .context("backfill null workspace_id values")?;
-
-    // Detect if the composite primary key is already in place.
-    let mut pk_columns: Vec<String> = Vec::new();
-    {
-        let mut stmt = conn
-            .prepare("PRAGMA table_info('compute_cache')")
-            .context("inspect compute_cache primary key")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let name: String = row.get(1)?;
-            let pk_pos: i32 = row.get(5)?;
-            if pk_pos > 0 {
-                pk_columns.push(name);
             }
         }
     }
