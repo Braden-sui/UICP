@@ -9,7 +9,11 @@
   - Tool/command queue and replay
 - Event streaming to the frontend (Tauri emit)
   - Optional Wasm compute plane (feature-gated)
-- Data Storage: Local SQLite under `~/Documents/UICP/`.
+- Data Storage: Local SQLite in platform-specific data directories:
+  - Linux: `~/.local/share/UICP`
+  - macOS: `~/Library/Application Support/UICP`
+  - Windows: `%APPDATA%\UICP` (e.g., `C:\Users\Username\AppData\Roaming\UICP`)
+  - Override via `UICP_DATA_DIR` environment variable
 
 ## Backend Modules (Rust)
 
@@ -23,7 +27,7 @@
 
 ## Commands (selected)
 
-- Chat streaming: `chat_completion(requestId, request)` emits `ollama-completion` events; cancel via `cancel_chat(requestId)`.
+- Chat streaming: `chat_completion(requestId?, request)` emits `ollama-completion` events; cancel via `cancel_chat(requestId)`. Note: `requestId` is optional.
 - Key management: `load_api_key`, `save_api_key`, `test_api_key` (Cloud: `GET /api/tags`, Local: `GET /v1/models`).
 - Persistence: `persist_command`, `get_workspace_commands`, `clear_workspace_commands`, `delete_window_commands`.
 - Compute: `compute_call`, `compute_cancel`, `clear_compute_cache` (feature-gated runtime).
@@ -55,7 +59,7 @@
 ## Environment Snapshot
 
 - A compact snapshot (agent flags, open windows, last trace; DOM summary by default) is prepended to planner/actor prompts.
-- Size budget: ~16 KB target (hard cap ~32 KB).
+- No explicit size limit enforced; content is clamped per-window to 160 characters for individual text content.
 
 ## Interactivity (no inline JS)
 

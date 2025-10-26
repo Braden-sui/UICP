@@ -32,6 +32,9 @@
 - **[MODEL_INTEGRATION.md](MODEL_INTEGRATION.md)** - Provider integration and verification
 - **[MODEL_CHOICES.md](MODEL_CHOICES.md)** - LLM model selection
 - **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** - Current known issues and workarounds
+- **[findings-matrix.md](findings-matrix.md)** - Documentation audit findings
+- **[AUDIT_SUMMARY.md](AUDIT_SUMMARY.md)** - Latest documentation audit summary
+- **[DEEP_AUDIT.md](DEEP_AUDIT.md)** - Deep audit: individual claim verification with evidence
 - This page serves as the docs index
 
 ---
@@ -52,10 +55,13 @@ UICP is a local-first desktop environment that you build through natural languag
 ## Test Status
 
 ```
-✅ 267/267 tests passing
+✅ 382 tests passing (85 test files)
+⚠️  1 test failing (agents loader)
 ✅ TypeScript: 0 errors
 ✅ Lint: 0 errors
 ```
+
+Note: One test in `agents/loader.test.ts` currently fails due to yaml dependency issue.
 
 ---
 

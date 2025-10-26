@@ -97,9 +97,9 @@ Catalog
 - Files: uicp/src/lib/bridge/result.ts, uicp/src/lib/llm/ollama.ts
 - Meaning: Failed to unregister listener or window-level not found conditions.
 
-0402–0405 Adapter input detail codes
+0401–0407 Compute input detail codes
 - File: uicp/src-tauri/src/compute_input.rs
-- Meaning: CSV/table/workspace path/fs caps/IO detail classification for messages.
+- Meaning: CSV/table/workspace path/fs caps/IO/script/codegen detail classification for messages
 
 0410–0415 Harness admin routine errors
 - File: uicp/src-tauri/src/test_support/harness.rs
@@ -134,9 +134,13 @@ Catalog
 0660 Boot action-log append failure (non-fatal)
 - File: uicp/src-tauri/src/main.rs
 
-0701–0703 csv.parse component errors
-- File: uicp/components/csv.parse/csv-parse/src/lib.rs
-- Meaning: Data URI parse, UTF-8, CSV parse.
+0701 Job token validation failed
+- File: uicp/src-tauri/src/main.rs
+- Meaning: Missing or invalid job token for compute job
+
+0703–0710 Applet.quickjs prewarm/instantiate errors
+- File: uicp/src-tauri/src/compute.rs
+- Meaning: Component instantiation, binding init, or prewarm call failures
 
 0801 table.query partial emission failed
 - File: uicp/components/table.query/src/lib.rs

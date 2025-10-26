@@ -60,7 +60,12 @@ The compute plane uses `compute_cache` (SQLite) to memoize deterministic runs:
 
 ## Memory Hygiene
 
-- Workspace files live under `~/Documents/UICP/files`. Compute jobs read via `ws:/files/**` only when the `fs_read` capability is granted.
+- Workspace files live under the OS-specific data directory in the `files` subdirectory:
+  - Linux: `~/.local/share/UICP/files`
+  - macOS: `~/Library/Application Support/UICP/files`
+  - Windows: `%APPDATA%\UICP\files`
+  - Override via `UICP_DATA_DIR` environment variable
+- Compute jobs read via `ws:/files/**` only when the `fs_read` capability is granted.
 - `resetWorkspace({ deleteFiles: true })` is intentionally unimplemented in V1 to avoid accidental data loss—delete files via host OS if needed.
 - The compute store retains at most 100 terminal jobs (`useComputeStore`) to cap memory usage while preserving recent metrics and logs.
 
