@@ -197,7 +197,7 @@ export const secretExists = async (service: string, account: string) => {
 export const secretDelete = (service: string, account: string) =>
   inv<void>('secret_delete', { service, account });
 
-export const saveProviderApiKey = (provider: 'openai' | 'anthropic', key: string) =>
+export const saveProviderApiKey = (provider: 'openai' | 'anthropic' | 'openrouter' | 'ollama', key: string) =>
   inv<void>('save_provider_api_key', { provider, key });
 
 // Open a native browser window (WebView) to an external URL inside the app shell.

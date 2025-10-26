@@ -2751,7 +2751,11 @@ async fn save_provider_api_key(provider: String, key: String) -> Result<(), Stri
     let account = match provider.trim().to_ascii_lowercase().as_str() {
         "openai" => "openai:api_key",
         "anthropic" => "anthropic:api_key",
-        other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
+        "openrouter" => "openrouter:api_key",
+        "ollama" => "ollama:api_key",
+        _ => {
+            return Err(format!("E-UICP-9202 unknown provider '{provider}'"));
+        }
     };
     let key_trimmed = key.trim().to_string();
     let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;

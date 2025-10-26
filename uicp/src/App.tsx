@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { MotionConfig } from 'motion/react';
 import DockChat from './components/DockChat';
 import Desktop from './components/Desktop';
 import GrantModal from './components/GrantModal';
 import KeystoreUnlockModal from './components/KeystoreUnlockModal';
+import OnboardingWelcomeModal from './components/OnboardingWelcomeModal';
 import SystemToast from './components/SystemToast';
 import DevtoolsComputePanel from './components/DevtoolsComputePanel';
 import SystemBanner from './components/SystemBanner';
@@ -18,6 +19,8 @@ import { useAppStore } from './state/app';
 import { isReducedMotion } from './lib/ui/animation';
 import { onPolicyChange, setRuntimePolicy } from './lib/security/policyLoader';
 import { loadPersistedPolicy, persistPolicy } from './lib/security/policyPersistence';
+import { useKeystore } from './state/keystore';
+import { hasTauriBridge } from './lib/bridge/tauri';
 
 // App stitches the desktop canvas with the DockChat control surface and supporting overlays.
 // Includes ambient particles for premium visual polish.
@@ -28,6 +31,8 @@ const App = () => {
 
   // Feature flag: Motion animations enabled
   const motionEnabled = useAppStore((state) => state.motionEnabled);
+  const refreshStatus = useKeystore((state) => state.refreshStatus);
+  const refreshIds = useKeystore((state) => state.refreshIds);
 
   // Respect reduced motion: map to Motion's reducedMotion setting
   // "user" = respect system preference (default)
@@ -62,6 +67,12 @@ const App = () => {
     }
   }, []);
 
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    void refreshStatus();
+    void refreshIds();
+  }, [refreshIds, refreshStatus]);
+
   return (
     <MotionConfig reducedMotion={reducedMotion}>
       <div className="relative min-h-screen w-full bg-background text-foreground">
@@ -70,6 +81,7 @@ const App = () => {
         <PolicyOverlay />
         <Desktop />
         <DockChat />
+        <OnboardingWelcomeModal />
         <GrantModal />
         <KeystoreUnlockModal />
         <PermissionPromptHost />

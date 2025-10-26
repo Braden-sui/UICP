@@ -210,6 +210,7 @@ export type AppState = {
   // When opening the Policy Viewer from a toast or inspector, seed the rule input
   policyViewerSeedRule: string | null;
   firstRunPermissionsReviewed: boolean;
+  welcomeCompleted: boolean;
   filesystemScopesOpen: boolean;
   plannerProfileKey: PlannerProfileKey;
   actorProfileKey: ActorProfileKey;
@@ -256,6 +257,7 @@ export type AppState = {
   setPolicyViewerSeedRule: (rule: string | null) => void;
   setNetworkInspectorOpen: (value: boolean) => void;
   setFirstRunPermissionsReviewed: (value: boolean) => void;
+  setWelcomeCompleted: (value: boolean) => void;
   setFilesystemScopesOpen: (value: boolean) => void;
   setPlannerProfileKey: (key: PlannerProfileKey) => void;
   setActorProfileKey: (key: ActorProfileKey) => void;
@@ -322,6 +324,7 @@ export const useAppStore = create<AppState>()(
       policyViewerSeedRule: null,
       networkInspectorOpen: false,
       firstRunPermissionsReviewed: false,
+      welcomeCompleted: false,
       filesystemScopesOpen: false,
       plannerProfileKey: getDefaultPlannerProfileKey(),
       actorProfileKey: getDefaultActorProfileKey(),
@@ -390,6 +393,7 @@ export const useAppStore = create<AppState>()(
       setPolicyViewerSeedRule: (rule) => set({ policyViewerSeedRule: rule }),
       setNetworkInspectorOpen: (value) => set({ networkInspectorOpen: value }),
       setFirstRunPermissionsReviewed: (value) => set({ firstRunPermissionsReviewed: value }),
+      setWelcomeCompleted: (value) => set({ welcomeCompleted: value }),
       setFilesystemScopesOpen: (value) => set({ filesystemScopesOpen: value }),
       setPlannerProfileKey: (key) => {
         setSelectedPlannerProfileKey(key);
@@ -778,6 +782,7 @@ export const useAppStore = create<AppState>()(
         safeMode: state.safeMode,
         safeReason: state.safeReason,
         firstRunPermissionsReviewed: state.firstRunPermissionsReviewed,
+        welcomeCompleted: state.welcomeCompleted,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;

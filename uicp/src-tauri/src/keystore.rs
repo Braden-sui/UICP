@@ -409,10 +409,12 @@ impl Keystore {
                     *guard = KeystoreState::Locked;
                     return Err(KeystoreError::Locked);
                 }
+                let new_expiry = now + self.ttl;
+                state.expires_at = new_expiry;
                 Ok(UnlockedSnapshot {
                     kek: SecretVec::new(state.kek.expose_secret().clone()),
                     method: state.method,
-                    expires_at: state.expires_at,
+                    expires_at: new_expiry,
                 })
             }
         }

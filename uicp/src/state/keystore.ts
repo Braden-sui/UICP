@@ -12,6 +12,8 @@ type KeystoreState = {
   unlock: (passphrase: string) => Promise<boolean>;
   quickLock: () => Promise<void>;
   saveProviderKey: (provider: 'openai' | 'anthropic' | 'ollama' | 'openrouter', key: string) => Promise<boolean>;
+  knownIds: string[];
+  refreshIds: () => Promise<string[]>;
 };
 
 let ticker: number | null = null;
@@ -44,6 +46,7 @@ export const useKeystore = create<KeystoreState>((set, get) => ({
   method: null,
   busy: false,
   error: undefined,
+  knownIds: [],
   refreshStatus: async () => {
     const res = await keystoreStatus();
     if (!res.ok || res.value == null) {
@@ -75,12 +78,30 @@ export const useKeystore = create<KeystoreState>((set, get) => ({
     stopTicker();
   },
   saveProviderKey: async (provider, key) => {
-    const res = await saveProviderApiKey(provider === 'openrouter' ? 'openai' : (provider as 'openai' | 'anthropic'), key);
-    if (!res.ok) return false;
+    const res = await saveProviderApiKey(provider, key);
+    if (!res.ok) {
+      set({ error: res.error.message });
+      return false;
+    }
+    set({ error: undefined });
     if (provider === 'ollama') {
       const test = await inv<{ valid: boolean; message?: string }>('test_api_key');
       if (!test.ok || !test.value.valid) return false;
     }
+    await get().refreshIds();
     return true;
+  },
+  refreshIds: async () => {
+    const res = await inv<string[]>('keystore_list_ids');
+    if (!res.ok || !Array.isArray(res.value)) {
+      if (!res.ok) {
+        set({ error: res.error.message });
+      }
+      set({ knownIds: [] });
+      return [];
+    }
+    const ids = (res.value ?? []).filter((id): id is string => typeof id === 'string');
+    set({ knownIds: ids, error: undefined });
+    return ids;
   },
 }));
