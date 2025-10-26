@@ -356,10 +356,10 @@ struct AgentsConfigLoadResult {
 const AGENTS_CONFIG_MAX_SIZE_BYTES: usize = 512 * 1024; // 512 KiB safety cap
 
 fn agents_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let resolver = app.path_resolver();
-    let Some(base) = resolver.app_data_dir() else {
-        return Err("E-UICP-AGENTS-PATH: app data directory unavailable".into());
-    };
+    let resolver = app.path();
+    let base = resolver
+        .app_data_dir()
+        .map_err(|err| format!("E-UICP-AGENTS-PATH: {}", err))?;
     Ok(base.join("uicp").join("agents.yaml"))
 }
 

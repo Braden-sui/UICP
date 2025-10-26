@@ -6,6 +6,7 @@ use tokio::process::Command;
 
 use serde_json::Value;
 
+#[cfg(not(feature = "otel_spans"))]
 use crate::core::{log_info, LogEvent};
 
 const ERR_PROVIDER_INVALID: &str = "E-UICP-1500";

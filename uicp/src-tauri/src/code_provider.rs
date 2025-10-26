@@ -12,7 +12,8 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 
-use crate::{log_error, log_info, log_warn};
+#[cfg(not(feature = "otel_spans"))]
+use crate::{log_info, log_warn};
 
 const ERR_PROVIDER_CONFIG: &str = "E-UICP-1400";
 const ERR_PROVIDER_SPAWN: &str = "E-UICP-1401";

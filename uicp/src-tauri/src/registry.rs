@@ -14,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime};
 
-use crate::{log_error, log_info, log_warn};
+use crate::log_error;
+#[cfg_attr(feature = "otel_spans", allow(unused_imports))]
+use crate::log_warn;
+#[cfg_attr(feature = "otel_spans", allow(unused_imports))]
+use crate::log_info;
 // Optional signature verification (if caller provides a public key)
 use anyhow::{bail, Result as AnyResult};
 use base64::engine::general_purpose::{
@@ -461,7 +465,6 @@ pub fn find_module<R: Runtime>(
             enforce_strict_signature(entry)?;
             #[cfg(feature = "wasm_compute")]
             {
-                use crate::core::{compute_cache_key, log_error, log_warn};
                 crate::compute::preflight_component_imports(
                     &path,
                     &format!("{}@{}", entry.task, entry.version),
