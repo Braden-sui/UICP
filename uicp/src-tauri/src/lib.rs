@@ -24,6 +24,8 @@ pub mod compute_cache;
 pub mod compute_input;
 pub mod core;
 pub mod registry;
+pub mod keystore;
+pub mod providers;
 
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod provider_cli;

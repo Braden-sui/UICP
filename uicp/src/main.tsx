@@ -144,6 +144,13 @@ const bootstrap = async () => {
     maybeHideLoader();
   }
 
+  try {
+    const { initializeAgentsPreflight } = await import('./lib/agents/loader');
+    await initializeAgentsPreflight();
+  } catch (error) {
+    console.warn('[main] agents preflight initialization failed', error);
+  }
+
   // Best-effort warm-start for QuickJS via script.panel.
   // Fires once per session after module verification; non-blocking.
   try {

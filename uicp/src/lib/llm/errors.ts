@@ -1,6 +1,7 @@
 import { UICPError } from '../bridge/result';
 
 export const LLMErrorCode = {
+  CodeRouteGuard: 'E-UICP-0911',
   PlannerModelMissing: 'E-UICP-1200',
   ActorModelMissing: 'E-UICP-1201',
   PlannerEmpty: 'E-UICP-1202',

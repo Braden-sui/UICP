@@ -263,6 +263,9 @@ type StreamRequestOptions = {
   meta?: StreamMeta;
   reasoning?: { effort: 'low' | 'medium' | 'high' };
   ollamaOptions?: Record<string, unknown>;
+  provider?: string;
+  base_url?: string;
+  maxTokens?: number;
 };
 
 export function streamOllamaCompletion(
@@ -339,6 +342,7 @@ export function streamOllamaCompletion(
   emitUiDebug('llm_request_started', {
     ...logCtx(),
     model,
+    provider: options?.provider,
     messagesCount: messages.length,
     toolsCount: Array.isArray(tools) ? tools.length : 0,
     timeoutMs: options?.signal ? null : DEFAULT_CHAT_TIMEOUT_MS,
@@ -568,8 +572,15 @@ export function streamOllamaCompletion(
       if (options?.reasoning !== undefined) {
         requestPayload.reasoning = options.reasoning;
       }
-      if (options?.ollamaOptions !== undefined) {
-        requestPayload.options = options.ollamaOptions;
+      const mergedOllamaOptions: Record<string, unknown> = {
+        ...(options?.ollamaOptions ?? {}),
+      };
+      if (typeof options?.maxTokens === 'number' && Number.isFinite(options.maxTokens)) {
+        requestPayload.max_tokens = Math.max(1, Math.floor(options.maxTokens));
+        mergedOllamaOptions.num_predict = Math.max(1, Math.floor(options.maxTokens));
+      }
+      if (Object.keys(mergedOllamaOptions).length > 0) {
+        requestPayload.options = mergedOllamaOptions;
       }
 
       // Mark this requestId as the active in-flight chat stream
@@ -583,6 +594,8 @@ export function streamOllamaCompletion(
         void tauriInvoke('chat_completion', {
           requestId,
           request: requestPayload,
+          provider: options?.provider,
+          base_url: options?.base_url,
         }).catch((err) => {
           logError('invoke', err);
           if (timeoutId) {

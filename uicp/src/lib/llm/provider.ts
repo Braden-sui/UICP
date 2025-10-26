@@ -27,6 +27,9 @@ export type PlannerStreamOptions = {
   taskSpec?: TaskSpec;
   toolSummary?: string;
   reasoningEffort?: ReasoningEffort;
+  provider?: string;
+  baseUrl?: string;
+  maxTokens?: number;
 };
 
 export type ActorStreamOptions = {
@@ -38,6 +41,9 @@ export type ActorStreamOptions = {
   responseFormat?: unknown;
   meta?: StreamMeta;
   reasoningEffort?: ReasoningEffort;
+  provider?: string;
+  baseUrl?: string;
+  maxTokens?: number;
 };
 
 export type PlannerClient = {
@@ -110,11 +116,14 @@ export function getPlannerClient(): PlannerClient {
       const reasoningPayload = plannerEffort ? { effort: plannerEffort } : undefined;
       // Force JSON-mode responses so downstream schema validation never sees prose.
       // Provide OpenAI-compatible response_format as a hint for local daemons.
-      const requestOptions: Parameters<typeof streamOllamaCompletion>[3] = {
+      const requestOptions: NonNullable<Parameters<typeof streamOllamaCompletion>[3]> = {
         format,
         responseFormat,
         toolChoice,
         meta,
+        provider: options?.provider,
+        base_url: options?.baseUrl,
+        maxTokens: options?.maxTokens,
       };
       if (isGptOss && reasoningPayload) {
         requestOptions.reasoning = reasoningPayload;
@@ -167,11 +176,14 @@ export function getActorClient(): ActorClient {
         options?.reasoningEffort ?? (isGptOss ? useAppStore.getState().actorReasoningEffort : undefined);
       const reasoningPayload = actorEffort ? { effort: actorEffort } : undefined;
       // Request JSON-mode responses only when tool calling is enabled, otherwise allow free-form WIL text.
-      const requestOptions: Parameters<typeof streamOllamaCompletion>[3] = {
+      const requestOptions: NonNullable<Parameters<typeof streamOllamaCompletion>[3]> = {
         format,
         responseFormat,
         toolChoice,
         meta,
+        provider: options?.provider,
+        base_url: options?.baseUrl,
+        maxTokens: options?.maxTokens,
       };
       if (isGptOss && reasoningPayload) {
         requestOptions.reasoning = reasoningPayload;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::keystore::{get_or_init_keystore, KeystoreError};
 

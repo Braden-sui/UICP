@@ -221,8 +221,9 @@ const AgentSettingsWindow = () => {
   // Wizard: API key inputs
   const [openaiKey, setOpenaiKey] = useState<string>('');
   const [anthropicKey, setAnthropicKey] = useState<string>('');
+  const [openrouterKey, setOpenrouterKey] = useState<string>('');
   const saveProviderKey = useCallback(
-    async (provider: 'openai' | 'anthropic', key: string) => {
+    async (provider: 'openai' | 'anthropic' | 'openrouter', key: string) => {
       if (!hasTauriBridge()) {
         useAppStore.getState().pushToast({ variant: 'error', message: 'Saving keys requires the desktop runtime' });
         return;
@@ -801,7 +802,7 @@ const AgentSettingsWindow = () => {
               <span className="font-semibold">Step 3:</span>
               <span>Save API keys to Keystore</span>
             </div>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
               <label className="flex flex-col gap-1">
                 <span className="font-semibold uppercase tracking-wide text-slate-500">OPENAI_API_KEY</span>
                 <input
@@ -836,6 +837,26 @@ const AgentSettingsWindow = () => {
                     type="button"
                     onClick={() => saveProviderKey('anthropic', anthropicKey)}
                     disabled={!bridgeAvailable || !anthropicKey.trim()}
+                    className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Save Key
+                  </button>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-slate-500">OPENROUTER_API_KEY</span>
+                <input
+                  type="password"
+                  value={openrouterKey}
+                  onChange={(e) => setOpenrouterKey(e.target.value)}
+                  placeholder="sk-or-..."
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                />
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => saveProviderKey('openrouter', openrouterKey)}
+                    disabled={!bridgeAvailable || !openrouterKey.trim()}
                     className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Save Key

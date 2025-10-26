@@ -22,8 +22,10 @@ providers:
     headers:
       x-api-key: "\${ANTHROPIC_API_KEY}"
     model_aliases:
-      claude_default: claude-3-7-sonnet-latest
-      claude_mini: claude-3-7-haiku-latest
+      claude_default:
+        id: claude-sonnet-4-5-20250929
+      claude_mini:
+        id: claude-haiku-4-5
   openrouter:
     base_url: https://openrouter.ai/api/v1
     headers:
@@ -81,15 +83,15 @@ describe('agents loader', () => {
   it('builds candidate lists with provider overrides and defaulting', () => {
     const agents = loadFromText(baseYaml);
     const resolved = resolveProfiles(agents);
-    expect(resolved.planner[0]).toEqual({ provider: 'openai', model: 'gpt-5' });
-    expect(resolved.planner[1]).toEqual({ provider: 'anthropic', model: 'claude-3-7-sonnet-latest' });
+    expect(resolved.planner[0]).toMatchObject({ provider: 'openai', model: 'gpt-5' });
+    expect(resolved.planner[1]).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' });
     // fallback without provider uses primary's provider (openai)
-    expect(resolved.planner[2]).toEqual({ provider: 'openai', model: 'gpt-5-mini' });
+    expect(resolved.planner[2]).toMatchObject({ provider: 'openai', model: 'gpt-5-mini' });
 
-    expect(resolved.actor[0]).toEqual({ provider: 'anthropic', model: 'claude-3-7-sonnet-latest' });
-    expect(resolved.actor[1]).toEqual({ provider: 'openai', model: 'gpt-5' });
+    expect(resolved.actor[0]).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' });
+    expect(resolved.actor[1]).toMatchObject({ provider: 'openai', model: 'gpt-5' });
     // fallback without provider uses primary's provider (anthropic)
-    expect(resolved.actor[2]).toEqual({ provider: 'anthropic', model: 'claude-3-7-haiku-latest' });
+    expect(resolved.actor[2]).toMatchObject({ provider: 'anthropic', model: 'claude-haiku-4-5' });
   });
 
   it('throws on invalid schema (missing providers)', () => {

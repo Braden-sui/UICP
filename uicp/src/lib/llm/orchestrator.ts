@@ -17,19 +17,24 @@ import { type TaskSpec } from './schemas';
 import { generateTaskSpec } from './generateTaskSpec';
 import { cfg } from '../config';
 import { LLMError, LLMErrorCode, type LLMErrorCodeT, toLLMError } from './errors';
+// NOTE: build still warns about missing yaml type declarations; tracked separately.
+import {
+  loadAgentsConfig,
+  resolveProfiles,
+  refreshAgentsPreflight,
+  getSnapshot as getAgentsSnapshot,
+} from '../agents/loader';
+import type { ResolvedProfiles, ResolvedCandidate } from '../agents/schema';
 
-// Model selection: derive from selected profile, no .env dependency
 const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
   const profile = getPlannerProfile(profileKey);
   if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
     return profile.defaultModel;
   }
-  // Fallback: a broadly supported tools-capable planner
   return 'deepseek-v3.1:671b';
 };
 
 const getActorModel = (profileKey?: ActorProfileKey): string => {
-  // Prefer sensible defaults per actor profile
   switch (profileKey) {
     case 'qwen':
       return 'qwen3-coder:480b';
@@ -46,10 +51,75 @@ const getActorModel = (profileKey?: ActorProfileKey): string => {
   }
 };
 
+type CandidateStack = ResolvedProfiles | null;
+
+let cachedCandidates: CandidateStack = null;
+
+const getCandidateStack = async (): Promise<CandidateStack> => {
+  if (cfg.profilesMode !== 'yaml') {
+    return null;
+  }
+  if (cachedCandidates) {
+    await refreshAgentsPreflightOnDemand(cachedCandidates);
+    return cachedCandidates;
+  }
+  try {
+    const agents = await loadAgentsConfig();
+    const resolved = resolveProfiles(agents);
+    cachedCandidates = resolved;
+    await refreshAgentsPreflightOnDemand(resolved);
+    return cachedCandidates;
+  } catch (error) {
+    console.warn('[orchestrator] failed to load YAML agents config, falling back to legacy profiles', error);
+    cachedCandidates = null;
+    return null;
+  }
+};
+
+const refreshAgentsPreflightOnDemand = async (resolved: ResolvedProfiles): Promise<void> => {
+  try {
+    const agents = getAgentsSnapshot() ?? (await loadAgentsConfig());
+    if (agents) {
+      await refreshAgentsPreflight(agents, resolved);
+    }
+  } catch (error) {
+    console.warn('[orchestrator] preflight refresh failed', error);
+  }
+};
+
 // Derive sane defaults from mode, allow env override
 const __modeDefaults = getModeDefaults(getAppMode());
 const DEFAULT_PLANNER_TIMEOUT_MS = readNumberEnv('VITE_PLANNER_TIMEOUT_MS', __modeDefaults.plannerTimeoutMs ?? 180_000, { min: 1_000 });
 const DEFAULT_ACTOR_TIMEOUT_MS = readNumberEnv('VITE_ACTOR_TIMEOUT_MS', __modeDefaults.actorTimeoutMs ?? 180_000, { min: 1_000 });
+const DEFAULT_MAX_TOKENS = readNumberEnv('VITE_DEFAULT_MAX_TOKENS', 4096, { min: 1 });
+
+const computeMaxTokensBudget = (
+  candidate: ResolvedCandidate | undefined,
+  profileCap: number | undefined,
+  defaultsCap: number,
+): number | undefined => {
+  const caps: number[] = [];
+  if (typeof profileCap === 'number' && Number.isFinite(profileCap) && profileCap > 0) {
+    caps.push(profileCap);
+  }
+  if (typeof defaultsCap === 'number' && Number.isFinite(defaultsCap) && defaultsCap > 0) {
+    caps.push(defaultsCap);
+  }
+  if (candidate?.limits) {
+    const { max_output_tokens, max_context_tokens } = candidate.limits;
+    if (typeof max_output_tokens === 'number' && Number.isFinite(max_output_tokens) && max_output_tokens > 0) {
+      caps.push(max_output_tokens);
+    }
+    if (typeof max_context_tokens === 'number' && Number.isFinite(max_context_tokens) && max_context_tokens > 0) {
+      caps.push(Math.floor(max_context_tokens * 0.85));
+    }
+  }
+  if (caps.length === 0) {
+    return undefined;
+  }
+  const result = Math.max(1, Math.min(...caps));
+  return result;
+};
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const toLLM = (input: unknown, fallback?: LLMErrorCodeT): LLMError =>
@@ -80,6 +150,12 @@ export type RunIntentHooks = {
   onPhaseChange?: (detail: RunIntentPhaseDetail) => void;
 };
 
+type SelectedModelInfo = {
+  provider?: string;
+  model: string;
+  alias?: string;
+};
+
 export type RunIntentResult = {
   plan: Plan;
   batch: Batch;
@@ -90,6 +166,7 @@ export type RunIntentResult = {
   autoApply?: boolean;
   failures?: { planner?: string; actor?: string; taskSpec?: string };
   taskSpec?: TaskSpec;
+  models?: { planner?: SelectedModelInfo; actor?: SelectedModelInfo };
 };
 
 const buildStructuredRetryMessage = (toolName: 'emit_plan' | 'emit_batch', error: unknown, useTools: boolean): string => {
@@ -115,16 +192,25 @@ export async function planWithProfile(
     traceId?: string;
     taskSpec?: TaskSpec;
     toolSummary?: string;
+    modelOverride?: string;
+    candidate?: ResolvedCandidate;
   },
-): Promise<{ plan: Plan; channelUsed?: string }> {
+): Promise<{ plan: Plan; channelUsed?: string; selectedModel?: SelectedModelInfo }> {
   const client = getPlannerClient();
   const profile = getPlannerProfile(options?.profileKey);
   const supportsTools = profile.capabilities?.supportsTools === true;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_PLANNER_TIMEOUT_MS;
   const wilOnly = cfg.wilOnly === true;
+  const candidate = options?.candidate;
+  const agentsSnapshot = getAgentsSnapshot();
+  const defaultsMaxTokens = agentsSnapshot?.defaults?.max_tokens ?? DEFAULT_MAX_TOKENS;
+  const plannerProfileCap = agentsSnapshot?.profiles?.planner?.max_tokens ?? defaultsMaxTokens;
 
   // WIL deterministic planner (local, no model call)
   if (profile.key === 'wil') {
+    const selectedModel: SelectedModelInfo = candidate
+      ? { provider: candidate.provider, model: candidate.model, alias: candidate.alias }
+      : { model: 'wil' };
     const stream = client.streamIntent(intent, {
       profileKey: profile.key,
       meta: { traceId: options?.traceId, intent },
@@ -143,21 +229,34 @@ export async function planWithProfile(
       batch: [],
       actor_hints: outline.actorHints && outline.actorHints.length ? outline.actorHints : undefined,
     });
-    return { plan, channelUsed: 'text' };
+    return { plan, channelUsed: 'text', selectedModel };
   }
+
+  const resolvedModel = options?.modelOverride ?? (candidate ? candidate.model : getPlannerModel(profile.key));
+  const selectedModel: SelectedModelInfo = candidate
+    ? { provider: candidate.provider, model: resolvedModel, alias: candidate.alias }
+    : { model: resolvedModel };
 
   let lastErr: unknown;
   let extraSystem: string | undefined = buildCatalogSummary();
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
+      const maxTokens = computeMaxTokensBudget(candidate, plannerProfileCap, defaultsMaxTokens);
+      const snapshotForBase = agentsSnapshot ?? getAgentsSnapshot();
+      const resolvedBaseUrl = candidate?.provider && snapshotForBase?.providers?.[candidate.provider]?.base_url
+        ? snapshotForBase.providers[candidate.provider]!.base_url
+        : undefined;
       const stream = client.streamIntent(intent, {
         profileKey: profile.key,
-        model: getPlannerModel(profile.key),
+        model: resolvedModel,
         extraSystem,
         meta: { traceId: options?.traceId, intent },
         taskSpec: options?.taskSpec,
         toolSummary: options?.toolSummary ?? buildCatalogSummary(),
+        provider: candidate?.provider,
+        baseUrl: resolvedBaseUrl,
+        maxTokens,
       });
 
       // JSON-first path: collect both tool calls AND text in single pass
@@ -171,7 +270,7 @@ export async function planWithProfile(
         if (toolResult?.args) {
           try {
             const plan = validatePlan(toolResult.args);
-            return { plan, channelUsed: 'tool' };
+            return { plan, channelUsed: 'tool', selectedModel };
           } catch (err) {
             if (options?.traceId) {
               emitTelemetryEvent('tool_args_parsed', {
@@ -209,7 +308,7 @@ export async function planWithProfile(
         if (trimmed.length > 0) {
           const jsonFallback = tryParsePlanFromJson(trimmed);
           if (jsonFallback) {
-            return { plan: jsonFallback, channelUsed: 'json-fallback' };
+            return { plan: jsonFallback, channelUsed: 'json-fallback', selectedModel };
           }
           const outline = parsePlannerOutline(trimmed || intent);
           const fallbackPlan = validatePlan({
@@ -218,7 +317,7 @@ export async function planWithProfile(
             batch: [],
             actor_hints: outline.actorHints && outline.actorHints.length ? outline.actorHints : undefined,
           });
-          return { plan: fallbackPlan, channelUsed: 'text-fallback' };
+          return { plan: fallbackPlan, channelUsed: 'text-fallback', selectedModel };
         }
         throw new LLMError(
           LLMErrorCode.PlannerMissingToolCall,
@@ -239,7 +338,7 @@ export async function planWithProfile(
       // Try JSON parse first (model might emit JSON as content)
       const jsonPlan = tryParsePlanFromJson(text);
       if (jsonPlan) {
-        return { plan: jsonPlan, channelUsed: 'json' };
+        return { plan: jsonPlan, channelUsed: 'json', selectedModel };
       }
 
       // Final fallback: parse outline sections (legacy text path)
@@ -252,6 +351,7 @@ export async function planWithProfile(
           actor_hints: outline.actorHints && outline.actorHints.length ? outline.actorHints : undefined,
         }),
         channelUsed: 'text',
+        selectedModel,
       };
     } catch (err) {
       lastErr = err;
@@ -363,24 +463,40 @@ function ensureWindowSpawn(plan: Plan, batch: Batch): Batch {
 
 export async function actWithProfile(
   plan: Plan,
-  options?: { timeoutMs?: number; profileKey?: ActorProfileKey; traceId?: string },
-): Promise<{ batch: Batch; channelUsed?: string }> {
+  options?: { timeoutMs?: number; profileKey?: ActorProfileKey; traceId?: string; modelOverride?: string; candidate?: ResolvedCandidate },
+): Promise<{ batch: Batch; channelUsed?: string; selectedModel?: SelectedModelInfo }> {
   const client = getActorClient();
   const profile = getActorProfile(options?.profileKey);
   const supportsTools = profile.capabilities?.supportsTools === true;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_ACTOR_TIMEOUT_MS;
   const planJson = JSON.stringify({ summary: plan.summary, risks: plan.risks, actor_hints: plan.actorHints, batch: plan.batch });
+  const candidate = options?.candidate;
+  const resolvedModel = options?.modelOverride ?? (candidate ? candidate.model : getActorModel(profile.key));
+  const selectedModel: SelectedModelInfo = candidate
+    ? { provider: candidate.provider, model: resolvedModel, alias: candidate.alias }
+    : { model: resolvedModel };
+  const agentsSnapshot = getAgentsSnapshot();
+  const defaultsMaxTokens = agentsSnapshot?.defaults?.max_tokens ?? DEFAULT_MAX_TOKENS;
+  const actorProfileCap = agentsSnapshot?.profiles?.actor?.max_tokens ?? defaultsMaxTokens;
 
   let lastErr: unknown;
   let extraSystem: string | undefined = buildCatalogSummary();
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
+      const maxTokens = computeMaxTokensBudget(candidate, actorProfileCap, defaultsMaxTokens);
+      const snapshotForBase = agentsSnapshot ?? getAgentsSnapshot();
+      const resolvedBaseUrl = candidate?.provider && snapshotForBase?.providers?.[candidate.provider]?.base_url
+        ? snapshotForBase.providers[candidate.provider]!.base_url
+        : undefined;
       const stream = client.streamPlan(planJson, {
         profileKey: profile.key,
-        model: getActorModel(profile.key),
+        model: resolvedModel,
         extraSystem,
         meta: { traceId: options?.traceId, planSummary: plan.summary },
+        provider: candidate?.provider,
+        baseUrl: resolvedBaseUrl,
+        maxTokens,
       });
 
       // JSON-first path: collect tool calls and JSON text (WIL only when wilOnly)
@@ -396,7 +512,7 @@ export async function actWithProfile(
             const batchData = toolResult.args as { batch?: unknown };
             if (Array.isArray(batchData.batch)) {
               const batch = ensureWindowSpawn(plan, validateBatch(batchData.batch));
-              return { batch, channelUsed: 'tool' };
+              return { batch, channelUsed: 'tool', selectedModel };
             }
           } catch (err) {
             if (options?.traceId) {
@@ -438,7 +554,7 @@ export async function actWithProfile(
             const normalized = normalizeBatchJson(trimmed);
             if (Array.isArray(normalized) && normalized.length > 0) {
               const ensured = ensureWindowSpawn(plan, normalized);
-              return { batch: ensured, channelUsed: 'json-fallback' };
+              return { batch: ensured, channelUsed: 'json-fallback', selectedModel };
             }
           } catch {
             // ignore parse errors; consider WIL only if wilOnly
@@ -446,7 +562,7 @@ export async function actWithProfile(
           const wilBatch = parseWilToBatch(trimmed);
           if (wilBatch && wilBatch.length > 0) {
             const ensured = ensureWindowSpawn(plan, wilBatch);
-            return { batch: ensured, channelUsed: 'text-fallback' };
+            return { batch: ensured, channelUsed: 'text-fallback', selectedModel };
           }
         }
         const snippet = trimmed.slice(0, 200).replace(/\s+/g, ' ').trim();
@@ -469,7 +585,7 @@ export async function actWithProfile(
       const wilBatch = parseWilToBatch(text);
       if (wilBatch && wilBatch.length > 0) {
         const ensured = ensureWindowSpawn(plan, wilBatch);
-        return { batch: ensured, channelUsed: 'text' };
+        return { batch: ensured, channelUsed: 'text', selectedModel };
       }
       throw new LLMError(
         LLMErrorCode.ActorInvalidBatch,
@@ -535,6 +651,22 @@ export async function runIntent(
   const failures: RunIntentResult['failures'] = {};
   let taskSpec: TaskSpec | undefined;
   let taskSpecChannelUsed: string | undefined;
+  const modelSelections: Required<RunIntentResult>['models'] = {};
+
+  const candidateStack = cfg.profilesMode === 'yaml' ? await getCandidateStack() : null;
+  const plannerCandidates = candidateStack?.planner;
+  const actorCandidates = candidateStack?.actor;
+
+  if (cfg.profilesMode === 'yaml' && /^\s*(code\.|needs\.code)/i.test(text)) {
+    console.warn('[runIntent] blocking code.* request in interactive mode', {
+      traceId,
+      textPreview: text.slice(0, 120),
+    });
+    throw new LLMError(
+      LLMErrorCode.CodeRouteGuard,
+      'E-UICP-0911: code.* requests require CLI. Run `pnpm codegen <task>` instead.',
+    );
+  }
 
   // Phase 0 (Optional): Generate TaskSpec if two-phase planner enabled
   const twoPhaseEnabled = options?.plannerTwoPhaseEnabled ?? false;
@@ -603,21 +735,42 @@ export async function runIntent(
   let plan: Plan;
   let plannerChannelUsed: string | undefined;
   const toolSummary = taskSpec ? getToolRegistrySummary() : undefined;
-  try {
-    const out = await planWithProfile(text, {
-      profileKey: options?.plannerProfileKey,
-      traceId,
-      taskSpec,
-      toolSummary,
-    });
-    plan = out.plan;
-    plannerChannelUsed = out.channelUsed;
+  const plannerCandidateList = plannerCandidates && plannerCandidates.length > 0 ? plannerCandidates : [undefined];
+  let plannerResult: Awaited<ReturnType<typeof planWithProfile>> | undefined;
+  let plannerFailure: LLMError | undefined;
+
+  for (let idx = 0; idx < plannerCandidateList.length; idx++) {
+    const candidate = plannerCandidateList[idx];
+    try {
+      const out = await planWithProfile(text, {
+        profileKey: options?.plannerProfileKey,
+        traceId,
+        taskSpec,
+        toolSummary,
+        candidate,
+      });
+      plannerResult = out;
+      if (out.selectedModel) {
+        modelSelections.planner = out.selectedModel;
+      }
+      break;
+    } catch (err) {
+      const failure = toLLM(err, LLMErrorCode.PlannerFailure);
+      plannerFailure = failure;
+      if (idx + 1 < plannerCandidateList.length) {
+        continue;
+      }
+    }
+  }
+
+  if (plannerResult) {
+    plan = plannerResult.plan;
+    plannerChannelUsed = plannerResult.channelUsed;
     if (plannerChannelUsed === 'text-fallback' || plannerChannelUsed === 'json-fallback') {
       failures.planner = 'planner_missing_tool_call';
     }
-  } catch (err) {
-    const failure = toLLM(err, LLMErrorCode.PlannerFailure);
-    // Planner degraded: proceed with actor-only fallback using the raw intent as summary
+  } else {
+    const failure = plannerFailure ?? new LLMError(LLMErrorCode.PlannerFailure, 'Planner failed');
     notice = 'planner_fallback';
     failures.planner = failure.message;
     console.error('planner failed', { traceId, error: failure });
@@ -627,6 +780,7 @@ export async function runIntent(
       risks: [`planner_error: ${failure.message}`],
     });
     plan = fallback;
+    plannerChannelUsed = undefined;
   }
   const isClarifier = isStructuredClarifierPlan(plan);
   if (!isClarifier) {
@@ -676,60 +830,82 @@ export async function runIntent(
   });
 
   // Step 2: Act
-  let batch: Batch;
+  let batch: Batch = validateBatch([]);
   let actorChannelUsed: string | undefined;
   let clarifierAttempted = false;
-  try {
-    const out = await actWithProfile(plan, { profileKey: options?.actorProfileKey, traceId });
-    batch = out.batch;
-    actorChannelUsed = out.channelUsed;
-  } catch (err) {
-    const failure = toLLM(err, LLMErrorCode.ActorFailure);
-    const isActorNop = /^actor_nop:\s*/i.test(failure.message);
-    if (isActorNop && notice === 'planner_fallback') {
-      batch = validateBatch([]);
-    } else if (isActorNop && import.meta.env.MODE !== 'test') {
-      batch = validateBatch([]);
-    } else if (isActorNop && !clarifierAttempted) {
-      const reason = failure.message.replace(/^actor_nop:\s*/i, '').trim() || 'missing details';
-      // Propose multiple-choice defaults for common cases
-      const choicesByReason: Record<string, string[]> = {
-        'missing window id': ['win-notes', 'win-app', 'win-main'],
-        'invalid url': ['https://example.com', 'https://uicp.local/ready'],
-      };
-      const lower = reason.toLowerCase();
-      const opts =
-        lower.includes('missing window id') ? choicesByReason['missing window id'] : lower.includes('invalid url') ? choicesByReason['invalid url'] : undefined;
-      const questions = [{ key: 'missing', prompt: `Provide missing details to continue (${reason})`, options: opts, defaultIndex: opts ? 0 : undefined }];
-      const caps = enforcePlannerCap(clarifierAttempted ? 1 : 0, questions.length);
-      notice = 'planner_fallback';
-      failures.actor = reason;
-      clarifierAttempted = true;
-      if (!caps.ok) {
-        // Over caps: return with empty batch; UI surfaces reason
+  const actorCandidateList = actorCandidates && actorCandidates.length > 0 ? actorCandidates : [undefined];
+  let actorResult: Awaited<ReturnType<typeof actWithProfile>> | undefined;
+
+  for (let idx = 0; idx < actorCandidateList.length; idx++) {
+    const candidate = actorCandidateList[idx];
+    try {
+      const out = await actWithProfile(plan, { profileKey: options?.actorProfileKey, traceId, candidate });
+      actorResult = out;
+      if (out.selectedModel) {
+        modelSelections.actor = out.selectedModel;
+      }
+      break;
+    } catch (err) {
+      const failure = toLLM(err, LLMErrorCode.ActorFailure);
+      if (idx + 1 < actorCandidateList.length) {
+        continue;
+      }
+
+      const isActorNop = /^actor_nop:\s*/i.test(failure.message);
+      if (isActorNop && notice === 'planner_fallback') {
+        batch = validateBatch([]);
+      } else if (isActorNop && import.meta.env.MODE !== 'test') {
+        batch = validateBatch([]);
+      } else if (isActorNop && !clarifierAttempted) {
+        const reason = failure.message.replace(/^actor_nop:\s*/i, '').trim() || 'missing details';
+        // Propose multiple-choice defaults for common cases
+        const choicesByReason: Record<string, string[]> = {
+          'missing window id': ['win-notes', 'win-app', 'win-main'],
+          'invalid url': ['https://example.com', 'https://uicp.local/ready'],
+        };
+        const lower = reason.toLowerCase();
+        const opts =
+          lower.includes('missing window id') ? choicesByReason['missing window id'] : lower.includes('invalid url') ? choicesByReason['invalid url'] : undefined;
+        const questions = [{ key: 'missing', prompt: `Provide missing details to continue (${reason})`, options: opts, defaultIndex: opts ? 0 : undefined }];
+        const caps = enforcePlannerCap(clarifierAttempted ? 1 : 0, questions.length);
+        notice = 'planner_fallback';
+        failures.actor = reason;
+        clarifierAttempted = true;
+        if (!caps.ok) {
+          // Over caps: return with empty batch; UI surfaces reason
+          batch = validateBatch([]);
+        } else {
+          const clarifier = composeClarifier(questions);
+          try {
+            const out2 = await planWithProfile(`${text}\n\n${clarifier}`, { profileKey: options?.plannerProfileKey, traceId });
+            plan = out2.plan;
+            plannerChannelUsed = out2.channelUsed ?? plannerChannelUsed;
+            if (out2.selectedModel) {
+              modelSelections.planner = out2.selectedModel;
+            }
+          } catch (replanErr) {
+            console.error('clarifier replan failed', replanErr);
+          }
+          batch = validateBatch([]);
+        }
+      } else if (isActorNop) {
+        notice = 'planner_fallback';
+        failures.actor = failure.message.replace(/^actor_nop:\s*/i, '').trim();
+        console.error('actor emitted nop; routing back to planner', { traceId, error: failure });
         batch = validateBatch([]);
       } else {
-        const clarifier = composeClarifier(questions);
-        try {
-          const out2 = await planWithProfile(`${text}\n\n${clarifier}`, { profileKey: options?.plannerProfileKey, traceId });
-          plan = out2.plan;
-          plannerChannelUsed = out2.channelUsed ?? plannerChannelUsed;
-        } catch (replanErr) {
-          console.error('clarifier replan failed', replanErr);
-        }
+        notice = 'actor_fallback';
+        failures.actor = failure.message;
+        console.error('actor failed', { traceId, error: failure });
         batch = validateBatch([]);
       }
-    } else if (isActorNop) {
-      notice = 'planner_fallback';
-      failures.actor = failure.message.replace(/^actor_nop:\s*/i, '').trim();
-      console.error('actor emitted nop; routing back to planner', { traceId, error: failure });
-      batch = validateBatch([]);
-    } else {
-      notice = 'actor_fallback';
-      failures.actor = failure.message;
-      console.error('actor failed', { traceId, error: failure });
-      batch = validateBatch([]);
+      break;
     }
+  }
+
+  if (actorResult) {
+    batch = actorResult.batch;
+    actorChannelUsed = actorResult.channelUsed;
   }
 
   // Step 3: Stamp idempotency keys when missing
@@ -764,6 +940,7 @@ export async function runIntent(
     channels: { planner: plannerChannelUsed, actor: actorChannelUsed, taskSpec: taskSpecChannelUsed },
     failures: Object.keys(failures).length > 0 ? failures : undefined,
     taskSpec,
+    models: Object.keys(modelSelections).length > 0 ? modelSelections : undefined,
   };
 }
 

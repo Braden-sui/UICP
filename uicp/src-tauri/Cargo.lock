@@ -6114,6 +6114,7 @@ dependencies = [
  "ammonia",
  "anyhow",
  "argon2",
+ "async-trait",
  "base64 0.22.1",
  "blake3",
  "bytes",

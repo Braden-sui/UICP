@@ -8,10 +8,13 @@ import {
   type ResolvedProfiles,
 } from './schema';
 import { readStringEnv } from '../env/values';
+import { runAgentsPreflight, type AgentsPreflight } from './preflight';
 
 // In-memory snapshot with hot-reload support (simple polling watcher)
 let snapshot: { data: AgentsFile; loadedAt: number; source: 'appdata' | 'builtin' | 'test'; rawHash: string } | null = null;
 let watchTimer: number | null = null;
+let preflightSnapshot: AgentsPreflight | null = null;
+const preflightListeners = new Set<(snapshot: AgentsPreflight | null) => void>();
 
 const CONFIG_PATH = 'uicp/agents.yaml'; // AppData location
 
@@ -114,6 +117,18 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
           },
           list_models: undefined,
         },
+        ollama: {
+          base_url: 'https://ollama.com/v1',
+          headers: { Authorization: 'Bearer ${OLLAMA_API_KEY}' },
+          model_aliases: {
+            glm_default: { id: 'glm-4.6', limits: { max_context_tokens: 200_000 } },
+            deepseek_default: { id: 'deepseek-v3.1', limits: { max_context_tokens: 128_000 } },
+            gptoss_default: { id: 'gpt-oss:120b', limits: { max_context_tokens: 131_072 } },
+            kimi_default: { id: 'kimi-k2', limits: { max_context_tokens: 128_000 } },
+            qwen_default: { id: 'qwen3-coder:480b', limits: { max_context_tokens: 256_000 } },
+          },
+          list_models: undefined,
+        },
         openrouter: {
           base_url: 'https://openrouter.ai/api/v1',
           headers: {},
@@ -127,8 +142,20 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
         },
       },
       profiles: {
-        planner: { provider: 'openai', model: 'gpt_default', temperature: 0.2, max_tokens: 4096, fallbacks: [] },
-        actor: { provider: 'anthropic', model: 'claude_default', temperature: 0.2, max_tokens: 4096, fallbacks: [] },
+        planner: {
+          provider: 'openai',
+          model: 'gpt_default',
+          temperature: 0.2,
+          max_tokens: 4096,
+          fallbacks: ['ollama:glm_default', 'ollama:deepseek_default', 'ollama:gptoss_default', 'ollama:kimi_default', 'ollama:qwen_default'],
+        },
+        actor: {
+          provider: 'anthropic',
+          model: 'claude_default',
+          temperature: 0.2,
+          max_tokens: 4096,
+          fallbacks: ['ollama:glm_default', 'ollama:deepseek_default', 'ollama:gptoss_default', 'ollama:kimi_default', 'ollama:qwen_default'],
+        },
       },
       codegen: { engine: 'cli', allow_paid_fallback: false },
     };
@@ -141,6 +168,20 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
 };
 
 export const getSnapshot = (): AgentsFile | null => snapshot?.data ?? null;
+export const getPreflightSnapshot = (): AgentsPreflight | null => preflightSnapshot;
+
+export const refreshAgentsPreflight = async (
+  agents: AgentsFile,
+  resolved: ResolvedProfiles,
+): Promise<void> => {
+  try {
+    preflightSnapshot = await runAgentsPreflight(agents, resolved);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('[agents] preflight failed', message);
+  }
+  notifyPreflightListeners(preflightSnapshot);
+};
 
 type NormalizedAlias = { id: string; alias?: string; limits?: ModelLimits };
 
@@ -206,7 +247,43 @@ export const resolveProfiles = (agents: AgentsFile): ResolvedProfiles => {
   return { planner, actor };
 };
 
-export const startWatcher = async (onReload?: (agents: AgentsFile) => void): Promise<void> => {
+const notifyPreflightListeners = (value: AgentsPreflight | null): void => {
+  for (const listener of [...preflightListeners]) {
+    try {
+      listener(value);
+    } catch (err) {
+      console.warn('[agents] preflight listener error', err);
+    }
+  }
+};
+
+export const subscribeAgentsPreflight = (
+  listener: (snapshot: AgentsPreflight | null) => void,
+): (() => void) => {
+  preflightListeners.add(listener);
+  try {
+    listener(preflightSnapshot);
+  } catch (err) {
+    console.warn('[agents] preflight listener invoke failed', err);
+  }
+  return () => {
+    preflightListeners.delete(listener);
+  };
+};
+
+export const initializeAgentsPreflight = async (): Promise<void> => {
+  try {
+    const agents = await loadAgentsConfig();
+    const resolved = resolveProfiles(agents);
+    await refreshAgentsPreflight(agents, resolved);
+  } catch (err) {
+    console.warn('[agents] initialize preflight failed', err);
+  }
+};
+
+export const startWatcher = async (
+  onReload?: (agents: AgentsFile) => void | Promise<void>,
+): Promise<void> => {
   if (watchTimer !== null) return; // already watching
   let lastHash = snapshot?.rawHash ?? '';
   const intervalMs = 2500;
@@ -220,7 +297,14 @@ export const startWatcher = async (onReload?: (agents: AgentsFile) => void): Pro
         const data = loadFromText(file.text);
         snapshot = { data, loadedAt: Date.now(), source: file.source, rawHash: h };
         lastHash = h;
-        onReload?.(data);
+        try {
+          await refreshAgentsPreflight(data, resolveProfiles(data));
+        } catch (err) {
+          console.warn('[agents] preflight refresh during watch failed', err);
+        }
+        if (onReload) {
+          await onReload(data);
+        }
         console.info('[agents] config reloaded');
       }
     } catch (err) {
@@ -234,6 +318,11 @@ export const stopWatcher = (): void => {
     clearInterval(watchTimer as unknown as number);
     watchTimer = null;
   }
+};
+
+export const __resetPreflightForTests = (): void => {
+  preflightSnapshot = null;
+  preflightListeners.clear();
 };
 
 // Test helper to inject config without filesystem

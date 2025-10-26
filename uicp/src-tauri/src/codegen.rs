@@ -41,6 +41,7 @@ const ERR_INPUT_INVALID: &str = "E-UICP-1300";
 const ERR_CODE_UNSAFE: &str = "E-UICP-1301";
 const ERR_PROVIDER: &str = "E-UICP-1302";
 const ERR_API_KEY: &str = "E-UICP-1303";
+const ERR_NO_CLI: &str = "E-UICP-1305";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionStrategy {
@@ -97,8 +98,8 @@ impl ProviderKind {
 
 #[derive(Debug, Clone)]
 struct CodeProviderPlan {
-    kind: ProviderKind,
-    requested_label: String,
+    pub(crate) kind: ProviderKind,
+    pub(crate) requested_label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -459,7 +460,7 @@ async fn run_codegen<R: Runtime>(
 ) -> Result<CodegenRunOk, CodegenFailure> {
     let state: State<'_, AppState> = app.state();
     let plan = build_plan(spec)?;
-    let provider_queue = resolve_provider_queue(&plan);
+    let provider_queue = resolve_provider_queue(&plan)?;
 
     if plan.validator_version != VALIDATOR_VERSION {
         emit_or_log(
@@ -835,27 +836,61 @@ fn command_available(program: &str) -> bool {
 }
 
 fn detect_auto_provider() -> ProviderKind {
-    if command_available("codex") {
+    if provider_available(ProviderKind::CodexCli) {
         ProviderKind::CodexCli
-    } else if command_available("claude") {
+    } else if provider_available(ProviderKind::ClaudeCli) {
         ProviderKind::ClaudeCli
     } else {
         ProviderKind::OpenAiApi
     }
 }
 
-fn provider_kind_from_label(label: &str, auto_kind: ProviderKind) -> ProviderKind {
+fn provider_kind_from_label(label: &str) -> Option<ProviderKind> {
     match label {
-        "codex" => ProviderKind::CodexCli,
-        "claude" => ProviderKind::ClaudeCli,
-        "openai" => ProviderKind::OpenAiApi,
-        "auto" | "" => auto_kind,
-        _ => auto_kind,
+        "codex" => Some(ProviderKind::CodexCli),
+        "claude" => Some(ProviderKind::ClaudeCli),
+        _ => None,
     }
 }
 
-fn resolve_provider_queue(plan: &CodegenPlan) -> Vec<CodeProviderPlan> {
-    let auto_kind = detect_auto_provider();
+fn provider_available(kind: ProviderKind) -> bool {
+    match kind {
+        ProviderKind::CodexCli => command_available("codex"),
+        ProviderKind::ClaudeCli => command_available("claude"),
+        ProviderKind::OpenAiApi => false,
+    }
+}
+
+fn provider_install_hint(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::CodexCli => "Install Codex CLI by running `npm install -g @openai/codex-cli`.",
+        ProviderKind::ClaudeCli => "Install Claude CLI by running `npm install -g @anthropic-ai/claude-cli`.",
+        ProviderKind::OpenAiApi => "Install the required CLI provider and retry.",
+    }
+}
+
+fn missing_cli_error(labels: &[String]) -> String {
+    if labels.is_empty() {
+        return format!(
+            "{ERR_NO_CLI}: no codegen CLI providers detected. Install Claude CLI (`npm install -g @anthropic-ai/claude-cli`) or Codex CLI (`npm install -g @openai/codex-cli`) and rerun."
+        );
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for label in labels {
+        let kind = provider_kind_from_label(label).unwrap_or(ProviderKind::CodexCli);
+        parts.push(format!("provider '{label}': {}", provider_install_hint(kind)));
+    }
+    format!(
+        "{ERR_NO_CLI}: requested codegen provider(s) unavailable. {}",
+        parts.join(" ")
+    )
+}
+
+fn resolve_provider_queue(plan: &CodegenPlan) -> Result<Vec<CodeProviderPlan>, CodegenFailure> {
+    let auto_kind = match detect_auto_provider() {
+        ProviderKind::OpenAiApi => None,
+        other => Some(other),
+    };
 
     let mut requested_labels: Vec<String> = if plan.providers.is_empty() {
         vec![plan.provider_label.clone()]
@@ -869,33 +904,57 @@ fn resolve_provider_queue(plan: &CodegenPlan) -> Vec<CodeProviderPlan> {
 
     let mut seen: HashSet<ProviderKind> = HashSet::new();
     let mut queue: Vec<CodeProviderPlan> = Vec::new();
-
     for label in requested_labels {
-        let kind = provider_kind_from_label(label.as_str(), auto_kind);
-        if seen.insert(kind) {
-            let resolved_label = if label == "auto" || label.is_empty() {
-                kind.as_str().to_string()
-            } else {
-                label
-            };
-            queue.push(CodeProviderPlan {
-                kind,
-                requested_label: resolved_label,
-            });
+        let normalized = label.trim().to_ascii_lowercase();
+        let (maybe_kind, resolved_label) = match normalized.as_str() {
+            "codex" => (provider_kind_from_label("codex"), "codex".to_string()),
+            "claude" => (provider_kind_from_label("claude"), "claude".to_string()),
+            "" | "auto" => (
+                auto_kind,
+                auto_kind
+                    .map(|kind| kind.as_str().to_string())
+                    .unwrap_or_else(|| "".to_string()),
+            ),
+            other => {
+                return Err(CodegenFailure::invalid(format!(
+                    "{ERR_INPUT_INVALID}: provider '{other}' unsupported"
+                )))
+            }
+        };
+
+        if let Some(kind) = maybe_kind {
+            if seen.insert(kind) {
+                queue.push(CodeProviderPlan {
+                    kind,
+                    requested_label: resolved_label,
+                });
+            }
         }
     }
 
-    if !queue
-        .iter()
-        .any(|p| matches!(p.kind, ProviderKind::OpenAiApi))
-    {
-        queue.push(CodeProviderPlan {
-            kind: ProviderKind::OpenAiApi,
-            requested_label: ProviderKind::OpenAiApi.as_str().to_string(),
-        });
+    if queue.is_empty() {
+        return Err(CodegenFailure::provider(missing_cli_error(&[])));
     }
 
-    queue
+    let mut unavailable: Vec<String> = Vec::new();
+    queue.retain(|entry| {
+        if provider_available(entry.kind) {
+            true
+        } else {
+            unavailable.push(entry.requested_label.clone());
+            false
+        }
+    });
+
+    if queue.is_empty() {
+        return Err(CodegenFailure::provider(missing_cli_error(&unavailable)));
+    }
+
+    if !unavailable.is_empty() {
+        return Err(CodegenFailure::provider(missing_cli_error(&unavailable)));
+    }
+
+    Ok(queue)
 }
 
 fn annotate_validation_meta(artifact: &mut NormalizedArtifact, report: &ValidationReport) {
@@ -2647,7 +2706,7 @@ mod tests {
             super::clear_test_provider_results();
             let spec = make_best_of_both_spec();
             let plan = build_plan(&spec).expect("plan");
-            let queue = resolve_provider_queue(&plan);
+            let queue = resolve_provider_queue(&plan).expect("queue");
             assert!(
                 queue
                     .iter()
@@ -2722,7 +2781,7 @@ export function onEvent(action: string, payload: string, state: string) {
             super::clear_test_provider_results();
             let spec = make_best_of_both_spec();
             let plan = build_plan(&spec).expect("plan");
-            let queue = resolve_provider_queue(&plan);
+            let queue = resolve_provider_queue(&plan).expect("queue");
 
             super::push_test_provider_result(
                 ProviderKind::CodexCli,

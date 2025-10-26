@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 
 use tokio::sync::RwLock;
 
@@ -188,7 +188,7 @@ async fn test_half_open_failure_reopens_immediately() {
         max_failures: 2,
         open_duration_ms: 50,
     };
-    let (_, emit) = create_telemetry_sink();
+    let (events, emit) = create_telemetry_sink();
     let host = "api.example.com";
 
     for _ in 0..2 {

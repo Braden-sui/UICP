@@ -45,6 +45,7 @@ mod compute_input;
 mod core;
 mod events;
 mod policy;
+mod anthropic;
 mod provider_cli;
 mod registry;
 #[cfg(feature = "wasm_compute")]
@@ -1166,6 +1167,8 @@ async fn chat_completion(
     state: State<'_, AppState>,
     request_id: Option<String>,
     request: ChatCompletionRequest,
+    provider: Option<String>,
+    base_url: Option<String>,
 ) -> Result<(), String> {
     let ChatCompletionRequest {
         model,
@@ -1185,13 +1188,17 @@ async fn chat_completion(
 
     let use_cloud = *state.use_direct_cloud.read().await;
     let debug_on = *state.debug_enabled.read().await;
+    let provider_lower = provider.as_ref().map(|s| s.to_ascii_lowercase());
 
-    // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
+    // Default actor model favors Qwen3-Coder for consistent cloud/local pairing when provider not specified.
     // Avoid reading .env here; the UI selects the model per Agent Settings.
     let requested_model = model.unwrap_or_else(|| "qwen3-coder:480b".into());
-    // Normalize to colon-delimited tags for both Cloud and local.
-    // If the input had a "-cloud" suffix, preserve it on local to aid routing.
-    let resolved_model = normalize_model_name(&requested_model, use_cloud);
+    // Only normalize for Ollama-compatible routing. OpenAI/OpenRouter expect raw model ids.
+    let resolved_model = if matches!(provider_lower.as_deref(), Some("openai") | Some("openrouter")) {
+        requested_model.clone()
+    } else {
+        normalize_model_name(&requested_model, use_cloud)
+    };
 
     let mut body = serde_json::json!({
         "model": resolved_model,
@@ -1293,10 +1300,19 @@ async fn chat_completion(
         };
 
         if debug_on {
-            let url = if use_cloud {
-                format!("{}/api/chat", base_url)
+            let url = if let Some(p) = provider_lower.as_deref() {
+                match p {
+                    // OpenAI-compatible routes
+                    "openai" | "openrouter" => format!("{}/chat/completions", base_url),
+                    // Anthropic Messages API (basic routing; event shape differs and may require future transformation)
+                    "anthropic" => format!("{}/v1/messages", base_url),
+                    // Fallback to Ollama paths
+                    _ => {
+                        if use_cloud { format!("{}/api/chat", base_url) } else { format!("{}/chat/completions", base_url) }
+                    }
+                }
             } else {
-                format!("{}/chat/completions", base_url)
+                if use_cloud { format!("{}/api/chat", base_url) } else { format!("{}/chat/completions", base_url) }
             };
             let ev = serde_json::json!({
                 "ts": Utc::now().timestamp_millis(),
@@ -1436,15 +1452,15 @@ async fn chat_completion(
                 .header("Idempotency-Key", &rid_for_task)
                 .header("User-Agent", user_agent.as_str());
 
-            if use_cloud {
-                match build_provider_headers("ollama").await {
+            // Inject provider headers when a provider is specified; otherwise use Ollama Cloud headers when enabled.
+            if let Some(p) = provider_lower.as_deref() {
+                match build_provider_headers(p).await {
                     Ok(headers) => {
                         for (k, v) in headers.into_iter() {
                             builder = builder.header(k, v);
                         }
                     }
                     Err(e) => {
-                        // Fail closed when keystore is locked or key missing
                         emit_problem_detail(
                             &app_handle,
                             &rid_for_task,
@@ -1454,6 +1470,12 @@ async fn chat_completion(
                             None,
                         );
                         break;
+                    }
+                }
+            } else if use_cloud {
+                if let Ok(headers) = build_provider_headers("ollama").await {
+                    for (k, v) in headers.into_iter() {
+                        builder = builder.header(k, v);
                     }
                 }
             }
@@ -1672,6 +1694,7 @@ async fn chat_completion(
                     // SSE assembly state
                     let mut carry = String::new();
                     let mut event_buf = String::new();
+                    let is_anthropic = matches!(provider_lower.as_deref(), Some("anthropic"));
 
                     const DEBUG_PREVIEW_CHARS: usize = 512;
                     let preview_payload = |input: &str| -> (String, bool) {
@@ -1714,7 +1737,17 @@ async fn chat_completion(
                         }
                         match serde_json::from_str::<serde_json::Value>(payload_str) {
                             Ok(val) => {
-                                if val.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                let normalized = if is_anthropic {
+                                    crate::anthropic::normalize_message(val.clone())
+                                } else {
+                                    None
+                                };
+                                let payload_ref = normalized.as_ref().unwrap_or(&val);
+                                if payload_ref
+                                    .get("done")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                                {
                                     if debug_on {
                                         let ev = serde_json::json!({
                                             "ts": Utc::now().timestamp_millis(),
@@ -1738,7 +1771,7 @@ async fn chat_completion(
                                         "event": "delta_json",
                                         "requestId": rid,
                                         "len": payload_str.len(),
-                                        "payload": val.clone(),
+                                        "payload": payload_ref.clone(),
                                         "preview": preview,
                                         "truncated": truncated,
                                     });
@@ -1748,7 +1781,7 @@ async fn chat_completion(
                                 emit_or_log(
                                     app_handle,
                                     "ollama-completion",
-                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "json" }),
+                                    serde_json::json!({ "done": false, "delta": payload_ref, "kind": "json" }),
                                 );
                             }
                             Err(_) => {
@@ -1882,6 +1915,9 @@ async fn chat_completion(
                                                     // reset event buffer
                                                     event_buf.clear();
                                                     continue;
+                                                }
+                                                if !event_buf.is_empty() {
+                                                    event_buf.push('\n');
                                                 }
                                                 event_buf.push_str(content);
                                                 continue;
@@ -2330,10 +2366,8 @@ fn main() {
         job_token_key,
     };
 
-    if let Err(err) = load_env_key(&state) {
-        log_error(format!("Failed to load environment keys: {err:?}"));
-        std::process::exit(1);
-    }
+    // NOTE: Environment API key loading moved to embedded keystore flows.
+    // Intentionally no-op here to avoid exposing plaintext or diverging from keystore contract.
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()

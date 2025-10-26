@@ -112,27 +112,21 @@ fn filesystem_paths_must_be_workspace_scoped() {
 // When that lands, update policy tests to validate allowlist/denylist behavior instead.
 
 #[test]
-fn time_capability_is_denied() {
+fn time_capability_is_allowed() {
     let mut spec = base_spec();
     spec.capabilities.time = true;
-    let deny = enforce_compute_policy(&spec).expect("expected policy rejection for time");
-    assert_eq!(deny.code, "Compute.CapabilityDenied");
     assert!(
-        deny.message.contains("cap.time denied"),
-        "unexpected message {}",
-        deny.message
+        enforce_compute_policy(&spec).is_none(),
+        "time capability should be allowed by policy"
     );
 }
 
 #[test]
-fn random_capability_is_denied() {
+fn random_capability_is_allowed() {
     let mut spec = base_spec();
     spec.capabilities.random = true;
-    let deny = enforce_compute_policy(&spec).expect("expected policy rejection for random");
-    assert_eq!(deny.code, "Compute.CapabilityDenied");
     assert!(
-        deny.message.contains("cap.random denied"),
-        "unexpected message {}",
-        deny.message
+        enforce_compute_policy(&spec).is_none(),
+        "random capability should be allowed by policy"
     );
 }

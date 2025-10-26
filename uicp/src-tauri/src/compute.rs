@@ -2531,9 +2531,8 @@ mod with_runtime {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::core::{
-            emit_problem_detail, files_dir_path, job_result_path, log_error, log_warn,
-        };
+        use crate::core::files_dir_path;
+        use crate::compute_input::{fs_read_allowed, sanitize_ws_files_path};
 
         #[test]
         fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {
