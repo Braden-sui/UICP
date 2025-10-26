@@ -200,6 +200,16 @@ export const secretDelete = (service: string, account: string) =>
 export const saveProviderApiKey = (provider: 'openai' | 'anthropic' | 'openrouter' | 'ollama', key: string) =>
   inv<void>('save_provider_api_key', { provider, key });
 
+type AgentsConfigPayload = {
+  exists: boolean;
+  contents?: string | null;
+  path: string;
+};
+
+export const loadAgentsConfigFile = () => inv<AgentsConfigPayload>('load_agents_config_file');
+
+export const saveAgentsConfigFile = (contents: string) => inv<void>('save_agents_config_file', { contents });
+
 // Open a native browser window (WebView) to an external URL inside the app shell.
 // Returns { ok, label, url, safe } or a typed UICP error via Result.
 export async function openBrowserWindow(url: string, opts?: { label?: string; safe?: boolean }) {

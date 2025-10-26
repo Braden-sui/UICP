@@ -9,6 +9,8 @@ import {
 } from './schema';
 import { readStringEnv } from '../env/values';
 import { runAgentsPreflight, type AgentsPreflight } from './preflight';
+import { hasTauriBridge, inv } from '../bridge/tauri';
+import type { UICPError } from '../bridge/result';
 
 // In-memory snapshot with hot-reload support (simple polling watcher)
 let snapshot: { data: AgentsFile; loadedAt: number; source: 'appdata' | 'builtin' | 'test'; rawHash: string } | null = null;
@@ -17,6 +19,12 @@ let preflightSnapshot: AgentsPreflight | null = null;
 const preflightListeners = new Set<(snapshot: AgentsPreflight | null) => void>();
 
 const CONFIG_PATH = 'uicp/agents.yaml'; // AppData location
+
+type AgentsConfigCommandPayload = {
+  exists: boolean;
+  contents?: string | null;
+  path: string;
+};
 
 type FsModule = typeof import('@tauri-apps/plugin-fs');
 let fsMod: FsModule | null = null;
@@ -77,7 +85,23 @@ export const loadFromText = (yamlText: string): AgentsFile => {
   return parsed;
 };
 
-const readConfigFile = async (): Promise<{ text: string; source: 'appdata' | 'builtin' } | null> => {
+const formatBridgeError = (err: UICPError): string => {
+  const code = err?.code ?? 'E-UICP-UNKNOWN';
+  const message = err?.message ?? 'unknown error';
+  return `${code} ${message}`;
+};
+
+export const readAgentsConfigRaw = async (): Promise<{ text: string; source: 'appdata' | 'builtin' } | null> => {
+  if (hasTauriBridge()) {
+    const res = await inv<AgentsConfigCommandPayload>('load_agents_config_file');
+    if (!res.ok) {
+      throw new Error(`[agents] load command failed: ${formatBridgeError(res.error)}`);
+    }
+    if (!res.value.exists || res.value.contents == null) {
+      return null;
+    }
+    return { text: res.value.contents, source: 'appdata' };
+  }
   try {
     const fs = await getFs();
     if (await fs.exists(CONFIG_PATH, { baseDir: fs.BaseDirectory.AppData })) {
@@ -91,8 +115,20 @@ const readConfigFile = async (): Promise<{ text: string; source: 'appdata' | 'bu
   return null;
 };
 
+const writeConfigFile = async (yamlText: string): Promise<void> => {
+  if (hasTauriBridge()) {
+    const res = await inv<void>('save_agents_config_file', { contents: yamlText });
+    if (!res.ok) {
+      throw new Error(`[agents] save command failed: ${formatBridgeError(res.error)}`);
+    }
+    return;
+  }
+  const fs = await getFs();
+  await fs.writeTextFile(CONFIG_PATH, yamlText, { baseDir: fs.BaseDirectory.AppData });
+};
+
 export const loadAgentsConfig = async (): Promise<AgentsFile> => {
-  const file = await readConfigFile();
+  const file = await readAgentsConfigRaw();
   if (!file) {
     // Minimal safe default with local placeholders; no secrets or external calls.
     const minimal: AgentsFile = {
@@ -164,6 +200,19 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
   }
   const data = loadFromText(file.text);
   snapshot = { data, loadedAt: Date.now(), source: file.source, rawHash: hashString(file.text) };
+  return data;
+};
+
+export const saveAgentsConfig = async (yamlText: string): Promise<AgentsFile> => {
+  await writeConfigFile(yamlText);
+  const data = loadFromText(yamlText);
+  snapshot = { data, loadedAt: Date.now(), source: 'appdata', rawHash: hashString(yamlText) };
+  try {
+    const resolved = resolveProfiles(data);
+    await refreshAgentsPreflight(data, resolved);
+  } catch (err) {
+    console.warn('[agents] preflight after save failed', err);
+  }
   return data;
 };
 
@@ -290,7 +339,7 @@ export const startWatcher = async (
   // eslint-disable-next-line @typescript-eslint/no-misused-promises
   watchTimer = setInterval(async () => {
     try {
-      const file = await readConfigFile();
+      const file = await readAgentsConfigRaw();
       if (!file) return;
       const h = hashString(file.text);
       if (h !== lastHash) {

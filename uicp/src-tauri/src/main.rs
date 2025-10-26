@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    io::ErrorKind,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -24,6 +25,7 @@ use tauri::{
 
 use rand::RngCore;
 use tokio::{
+    fs,
     io::AsyncWriteExt,
     sync::{RwLock, Semaphore},
     time::{interval, timeout},
@@ -342,6 +344,104 @@ struct CommandRequest {
     id: String,
     tool: String,
     args: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentsConfigLoadResult {
+    exists: bool,
+    contents: Option<String>,
+    path: String,
+}
+
+const AGENTS_CONFIG_MAX_SIZE_BYTES: usize = 512 * 1024; // 512 KiB safety cap
+
+fn agents_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let resolver = app.path_resolver();
+    let Some(base) = resolver.app_data_dir() else {
+        return Err("E-UICP-AGENTS-PATH: app data directory unavailable".into());
+    };
+    Ok(base.join("uicp").join("agents.yaml"))
+}
+
+#[tauri::command]
+async fn load_agents_config_file(app: tauri::AppHandle) -> Result<AgentsConfigLoadResult, String> {
+    let path = agents_config_path(&app)?;
+    let path_display = path.display().to_string();
+    match fs::read_to_string(&path).await {
+        Ok(contents) => Ok(AgentsConfigLoadResult {
+            exists: true,
+            contents: Some(contents),
+            path: path_display,
+        }),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(AgentsConfigLoadResult {
+            exists: false,
+            contents: None,
+            path: path_display,
+        }),
+        Err(err) => {
+            log_error(format!(
+                "agents config read failed at {}: {}",
+                path_display, err
+            ));
+            Err(format!("E-UICP-AGENTS-READ: {}", err))
+        }
+    }
+}
+
+#[tauri::command]
+async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Result<(), String> {
+    if contents.len() > AGENTS_CONFIG_MAX_SIZE_BYTES {
+        return Err(format!(
+            "E-UICP-AGENTS-SIZE: payload {} bytes exceeds limit {}",
+            contents.len(),
+            AGENTS_CONFIG_MAX_SIZE_BYTES
+        ));
+    }
+
+    let path = agents_config_path(&app)?;
+    let path_display = path.display().to_string();
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent).await {
+            log_error(format!(
+                "agents config mkdir failed at {}: {}",
+                parent.display(), err
+            ));
+            return Err(format!("E-UICP-AGENTS-MKDIR: {}", err));
+        }
+    }
+
+    // Write contents using a temporary file for best-effort atomicity on supported platforms.
+    let tmp_path = path.with_extension("yaml.tmp");
+    if let Err(err) = fs::write(&tmp_path, contents.as_bytes()).await {
+        log_error(format!(
+            "agents config temp write failed at {}: {}",
+            tmp_path.display(), err
+        ));
+        return Err(format!("E-UICP-AGENTS-WRITE-TMP: {}", err));
+    }
+
+    // Replace existing file. On Windows rename fails if target exists; remove old file first.
+    if fs::metadata(&path).await.is_ok() {
+        if let Err(err) = fs::remove_file(&path).await {
+            log_error(format!(
+                "agents config remove existing failed at {}: {}",
+                path_display, err
+            ));
+            let _ = fs::remove_file(&tmp_path).await;
+            return Err(format!("E-UICP-AGENTS-REMOVE: {}", err));
+        }
+    }
+
+    if let Err(err) = fs::rename(&tmp_path, &path).await {
+        log_error(format!(
+            "agents config commit rename failed at {}: {}",
+            path_display, err
+        ));
+        let _ = fs::remove_file(&tmp_path).await;
+        return Err(format!("E-UICP-AGENTS-RENAME: {}", err));
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -2554,6 +2654,8 @@ fn main() {
             provider_health,
             provider_resolve,
             provider_install,
+            load_agents_config_file,
+            save_agents_config_file,
             keystore_unlock,
             keystore_lock,
             keystore_status,

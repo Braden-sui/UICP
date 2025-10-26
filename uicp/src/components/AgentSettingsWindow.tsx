@@ -23,6 +23,13 @@ import {
   usePreferencesStore,
   type CodegenDefaultProvider,
 } from '../state/preferences';
+import {
+  loadAgentsConfig,
+  saveAgentsConfig,
+  resolveModel,
+} from '../lib/agents/loader';
+import type { AgentsFile } from '../lib/agents/schema';
+import { stringify } from 'yaml';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -129,6 +136,131 @@ const AgentSettingsWindow = () => {
 
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
+
+  const [agentsConfig, setAgentsConfig] = useState<AgentsFile | null>(null);
+  const [agentsLoading, setAgentsLoading] = useState<boolean>(false);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
+  const [plannerProviderOverride, setPlannerProviderOverride] = useState<string>('');
+  const [plannerModelOverride, setPlannerModelOverride] = useState<string>('');
+  const [actorProviderOverride, setActorProviderOverride] = useState<string>('');
+  const [actorModelOverride, setActorModelOverride] = useState<string>('');
+
+  useEffect(() => {
+    if (!hasTauriBridge()) {
+      setAgentsConfig(null);
+      return;
+    }
+    setAgentsLoading(true);
+    (async () => {
+      try {
+        const config = await loadAgentsConfig();
+        setAgentsConfig(config);
+        const plannerProfileEntry = config.profiles?.planner;
+        const actorProfileEntry = config.profiles?.actor;
+        if (plannerProfileEntry) {
+          setPlannerProviderOverride(plannerProfileEntry.provider ?? '');
+          setPlannerModelOverride(plannerProfileEntry.model ?? '');
+        }
+        if (actorProfileEntry) {
+          setActorProviderOverride(actorProfileEntry.provider ?? '');
+          setActorModelOverride(actorProfileEntry.model ?? '');
+        }
+        setAgentsError(null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setAgentsError(message);
+        useAppStore.getState().pushToast({ variant: 'error', message: `Failed to load agent config: ${message}` });
+      } finally {
+        setAgentsLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!agentsConfig?.profiles) {
+      setPlannerProviderOverride('');
+      setPlannerModelOverride('');
+      setActorProviderOverride('');
+      setActorModelOverride('');
+      return;
+    }
+    const { planner, actor } = agentsConfig.profiles;
+    if (planner) {
+      setPlannerProviderOverride(planner.provider ?? '');
+      setPlannerModelOverride(planner.model ?? '');
+    }
+    if (actor) {
+      setActorProviderOverride(actor.provider ?? '');
+      setActorModelOverride(actor.model ?? '');
+    }
+  }, [agentsConfig]);
+
+  const providerOptions = useMemo(() => {
+    if (!agentsConfig) return [] as Array<{ value: string; label: string }>;
+    return Object.keys(agentsConfig.providers ?? {}).map((key) => ({ value: key, label: key }));
+  }, [agentsConfig]);
+
+  const buildModelOptions = useCallback(
+    (providerKey: string, currentModel?: string) => {
+      if (!agentsConfig || !providerKey) {
+        return currentModel ? [{ value: currentModel, label: currentModel }] : [];
+      }
+      const provider = agentsConfig.providers?.[providerKey];
+      if (!provider) {
+        return currentModel ? [{ value: currentModel, label: currentModel }] : [];
+      }
+      const aliasEntries = Object.entries(provider.model_aliases ?? {});
+      const options = aliasEntries.map(([alias, entry]) => {
+        const resolved = typeof entry === 'string' ? entry : entry.id;
+        return { value: alias, label: `${alias} → ${resolved}` };
+      });
+      if (currentModel && !options.some((opt) => opt.value === currentModel)) {
+        options.push({ value: currentModel, label: currentModel });
+      }
+      return options.sort((a, b) => a.value.localeCompare(b.value));
+    },
+    [agentsConfig],
+  );
+
+  const plannerModelOptions = useMemo(
+    () => buildModelOptions(plannerProviderOverride, plannerModelOverride),
+    [buildModelOptions, plannerModelOverride, plannerProviderOverride],
+  );
+
+  const actorModelOptions = useMemo(
+    () => buildModelOptions(actorProviderOverride, actorModelOverride),
+    [buildModelOptions, actorModelOverride, actorProviderOverride],
+  );
+
+  const plannerResolvedModelId = useMemo(() => {
+    if (!agentsConfig || !plannerProviderOverride || !plannerModelOverride) return '';
+    return resolveModel(agentsConfig, plannerProviderOverride, plannerModelOverride);
+  }, [agentsConfig, plannerModelOverride, plannerProviderOverride]);
+
+  const actorResolvedModelId = useMemo(() => {
+    if (!agentsConfig || !actorProviderOverride || !actorModelOverride) return '';
+    return resolveModel(agentsConfig, actorProviderOverride, actorModelOverride);
+  }, [actorModelOverride, actorProviderOverride, agentsConfig]);
+
+  const persistAgentsConfig = useCallback(
+    async (updater: (draft: AgentsFile) => void) => {
+      if (!agentsConfig) return;
+      const draft: AgentsFile = JSON.parse(JSON.stringify(agentsConfig));
+      updater(draft);
+      try {
+        const yamlText = stringify(draft);
+        await saveAgentsConfig(yamlText);
+        setAgentsConfig(draft);
+        setAgentsError(null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setAgentsError(message);
+        useAppStore.getState().pushToast({ variant: 'error', message: `Failed to save agent config: ${message}` });
+        throw err;
+      }
+    },
+    [agentsConfig],
+  );
 
   // Proxy settings
   const [proxyHttps, setProxyHttps] = useState<string>('');
@@ -363,6 +495,78 @@ const AgentSettingsWindow = () => {
       setActorProfileKey(event.target.value as ActorProfileKey);
     },
     [setActorProfileKey],
+  );
+
+  const handlePlannerProviderUpdate = useCallback(
+    async (event: ChangeEvent<HTMLSelectElement>) => {
+      const provider = event.target.value;
+      setPlannerProviderOverride(provider);
+      if (!agentsConfig) return;
+      try {
+        await persistAgentsConfig((draft) => {
+          const profile = draft.profiles?.planner;
+          if (!profile) return;
+          profile.provider = provider;
+        });
+      } catch {
+        // toast already emitted
+      }
+    },
+    [agentsConfig, persistAgentsConfig],
+  );
+
+  const handlePlannerModelUpdate = useCallback(
+    async (event: ChangeEvent<HTMLSelectElement>) => {
+      const model = event.target.value;
+      setPlannerModelOverride(model);
+      if (!agentsConfig) return;
+      try {
+        await persistAgentsConfig((draft) => {
+          const profile = draft.profiles?.planner;
+          if (!profile) return;
+          profile.model = model;
+        });
+      } catch {
+        // toast already emitted
+      }
+    },
+    [agentsConfig, persistAgentsConfig],
+  );
+
+  const handleActorProviderUpdate = useCallback(
+    async (event: ChangeEvent<HTMLSelectElement>) => {
+      const provider = event.target.value;
+      setActorProviderOverride(provider);
+      if (!agentsConfig) return;
+      try {
+        await persistAgentsConfig((draft) => {
+          const profile = draft.profiles?.actor;
+          if (!profile) return;
+          profile.provider = provider;
+        });
+      } catch {
+        // toast already emitted
+      }
+    },
+    [agentsConfig, persistAgentsConfig],
+  );
+
+  const handleActorModelUpdate = useCallback(
+    async (event: ChangeEvent<HTMLSelectElement>) => {
+      const model = event.target.value;
+      setActorModelOverride(model);
+      if (!agentsConfig) return;
+      try {
+        await persistAgentsConfig((draft) => {
+          const profile = draft.profiles?.actor;
+          if (!profile) return;
+          profile.model = model;
+        });
+      } catch {
+        // toast already emitted
+      }
+    },
+    [agentsConfig, persistAgentsConfig],
   );
 
   const handleTwoPhaseToggle = useCallback(
@@ -611,6 +815,118 @@ const AgentSettingsWindow = () => {
           Select which profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). Profiles are model-agnostic
           and can be paired with any compatible LLM provider. Switch profiles here to change reasoning and execution behavior.
         </p>
+        {bridgeAvailable && (
+          <div className="rounded border border-slate-200 bg-white/80 p-3 text-sm text-slate-700 shadow-sm">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Planner &amp; Actor Providers</div>
+            {agentsLoading && <div className="text-xs text-slate-500">Loading agents.yaml…</div>}
+            {!agentsLoading && agentsError && (
+              <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {agentsError}
+              </div>
+            )}
+            {!agentsLoading && !agentsError && agentsConfig && (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/40 p-3">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planner provider</span>
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="font-semibold uppercase tracking-wide text-slate-500">Provider</span>
+                    <select
+                      value={plannerProviderOverride}
+                      onChange={handlePlannerProviderUpdate}
+                      disabled={!agentsConfig}
+                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                    >
+                      {providerOptions.length === 0 ? (
+                        <option value="">No providers defined</option>
+                      ) : (
+                        providerOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="font-semibold uppercase tracking-wide text-slate-500">Model alias</span>
+                    <select
+                      value={plannerModelOverride}
+                      onChange={handlePlannerModelUpdate}
+                      disabled={!plannerModelOptions.length}
+                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {plannerModelOptions.length === 0 ? (
+                        <option value="">No model aliases found</option>
+                      ) : (
+                        plannerModelOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  {plannerResolvedModelId && (
+                    <div className="text-[11px] text-slate-500">
+                      Resolved model: <span className="font-mono">{plannerResolvedModelId}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/40 p-3">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor provider</span>
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="font-semibold uppercase tracking-wide text-slate-500">Provider</span>
+                    <select
+                      value={actorProviderOverride}
+                      onChange={handleActorProviderUpdate}
+                      disabled={!agentsConfig}
+                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                    >
+                      {providerOptions.length === 0 ? (
+                        <option value="">No providers defined</option>
+                      ) : (
+                        providerOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="font-semibold uppercase tracking-wide text-slate-500">Model alias</span>
+                    <select
+                      value={actorModelOverride}
+                      onChange={handleActorModelUpdate}
+                      disabled={!actorModelOptions.length}
+                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {actorModelOptions.length === 0 ? (
+                        <option value="">No model aliases found</option>
+                      ) : (
+                        actorModelOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  {actorResolvedModelId && (
+                    <div className="text-[11px] text-slate-500">
+                      Resolved model: <span className="font-mono">{actorResolvedModelId}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {!agentsLoading && !agentsError && !agentsConfig && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                Unable to load agents.yaml. Planner and actor selections will use baked-in defaults until a configuration is saved.
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-2 text-sm text-slate-600">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planner profile</span>
