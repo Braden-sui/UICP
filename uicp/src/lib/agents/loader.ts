@@ -1,0 +1,242 @@
+import { parse as parseYaml } from 'yaml';
+import {
+  AgentsFileSchema,
+  type AgentsFile,
+  type ModelAlias,
+  type ModelLimits,
+  type ResolvedCandidate,
+  type ResolvedProfiles,
+} from './schema';
+import { readStringEnv } from '../env/values';
+
+// In-memory snapshot with hot-reload support (simple polling watcher)
+let snapshot: { data: AgentsFile; loadedAt: number; source: 'appdata' | 'builtin' | 'test'; rawHash: string } | null = null;
+let watchTimer: number | null = null;
+
+const CONFIG_PATH = 'uicp/agents.yaml'; // AppData location
+
+type FsModule = typeof import('@tauri-apps/plugin-fs');
+let fsMod: FsModule | null = null;
+const getFs = async (): Promise<FsModule> => {
+  if (fsMod) return fsMod;
+  try {
+    fsMod = await import('@tauri-apps/plugin-fs');
+  } catch (err) {
+    throw new Error('[agents] filesystem module unavailable');
+  }
+  return fsMod;
+};
+
+const hashString = (s: string): string => {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
+};
+
+const getEnv = (key: string): string | undefined => {
+  // Prefer vite/import.meta.env for browser/tauri front-end
+  const viaVite = readStringEnv(key);
+  if (viaVite !== undefined) return viaVite;
+  // Fallback to process.env for tests/node
+  // eslint-disable-next-line no-restricted-globals
+  const anyGlobal = (globalThis as any);
+  const proc = anyGlobal?.process as { env?: Record<string, string | undefined> } | undefined;
+  return proc?.env?.[key];
+};
+
+const interpolate = (value: unknown): unknown => {
+  if (typeof value === 'string') {
+    return value.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name: string) => {
+      const v = getEnv(name);
+      return v !== undefined ? v : `\${${name}}`;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map(interpolate);
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = interpolate(v);
+    }
+    return out;
+  }
+  return value;
+};
+
+export const loadFromText = (yamlText: string): AgentsFile => {
+  const raw = parseYaml(yamlText) as unknown;
+  const interpolated = interpolate(raw);
+  const parsed = AgentsFileSchema.parse(interpolated);
+  return parsed;
+};
+
+const readConfigFile = async (): Promise<{ text: string; source: 'appdata' | 'builtin' } | null> => {
+  try {
+    const fs = await getFs();
+    if (await fs.exists(CONFIG_PATH, { baseDir: fs.BaseDirectory.AppData })) {
+      const txt = await fs.readTextFile(CONFIG_PATH, { baseDir: fs.BaseDirectory.AppData });
+      return { text: txt, source: 'appdata' };
+    }
+  } catch {
+    // ignore
+  }
+  // No builtin source shipped yet (template lives in repo root). Return null.
+  return null;
+};
+
+export const loadAgentsConfig = async (): Promise<AgentsFile> => {
+  const file = await readConfigFile();
+  if (!file) {
+    // Minimal safe default with local placeholders; no secrets or external calls.
+    const minimal: AgentsFile = {
+      version: '1',
+      defaults: { temperature: 0.2, top_p: 1.0, max_tokens: 4096, json_mode: true, tools_enabled: true },
+      providers: {
+        openai: {
+          base_url: 'https://api.openai.com/v1',
+          headers: {},
+          model_aliases: {
+            gpt_default: { id: 'gpt-5', limits: { max_context_tokens: 400_000 } },
+            gpt_mini: { id: 'gpt-5-mini', limits: { max_context_tokens: 200_000 } },
+          },
+          list_models: undefined,
+        },
+        anthropic: {
+          base_url: 'https://api.anthropic.com',
+          headers: {},
+          model_aliases: {
+            claude_default: { id: 'claude-sonnet-4-5', limits: { max_context_tokens: 200_000 } },
+            claude_mini: { id: 'claude-haiku-4-5', limits: { max_context_tokens: 200_000 } },
+          },
+          list_models: undefined,
+        },
+        openrouter: {
+          base_url: 'https://openrouter.ai/api/v1',
+          headers: {},
+          model_aliases: {
+            gpt_default: { id: 'openai/gpt-5', limits: { max_context_tokens: 400_000 } },
+            gpt_mini: { id: 'openai/gpt-5-mini', limits: { max_context_tokens: 200_000 } },
+            claude_default: { id: 'anthropic/claude-4.5-sonnet', limits: { max_context_tokens: 200_000 } },
+            claude_mini: { id: 'anthropic/claude-haiku-4.5', limits: { max_context_tokens: 200_000 } },
+          },
+          list_models: undefined,
+        },
+      },
+      profiles: {
+        planner: { provider: 'openai', model: 'gpt_default', temperature: 0.2, max_tokens: 4096, fallbacks: [] },
+        actor: { provider: 'anthropic', model: 'claude_default', temperature: 0.2, max_tokens: 4096, fallbacks: [] },
+      },
+      codegen: { engine: 'cli', allow_paid_fallback: false },
+    };
+    snapshot = { data: minimal, loadedAt: Date.now(), source: 'builtin', rawHash: '0' };
+    return minimal;
+  }
+  const data = loadFromText(file.text);
+  snapshot = { data, loadedAt: Date.now(), source: file.source, rawHash: hashString(file.text) };
+  return data;
+};
+
+export const getSnapshot = (): AgentsFile | null => snapshot?.data ?? null;
+
+type NormalizedAlias = { id: string; alias?: string; limits?: ModelLimits };
+
+const normalizeAlias = (entry: ModelAlias | undefined, fallbackId: string): NormalizedAlias => {
+  if (!entry) {
+    return { id: fallbackId };
+  }
+  if (typeof entry === 'string') {
+    return { id: entry, alias: fallbackId };
+  }
+  return { id: entry.id, alias: fallbackId, limits: entry.limits };
+};
+
+export const resolveModel = (agents: AgentsFile, providerKey: string, modelOrAlias: string): string => {
+  const provider = agents.providers[providerKey];
+  if (!provider) return modelOrAlias;
+  const normalized = normalizeAlias(provider.model_aliases?.[modelOrAlias], modelOrAlias);
+  return normalized.id;
+};
+
+const resolveCandidate = (
+  agents: AgentsFile,
+  providerKey: string,
+  modelOrAlias: string,
+): ResolvedCandidate => {
+  const provider = agents.providers[providerKey];
+  if (!provider) {
+    return { provider: providerKey, model: modelOrAlias };
+  }
+  const normalized = normalizeAlias(provider.model_aliases?.[modelOrAlias], modelOrAlias);
+  return {
+    provider: providerKey,
+    model: normalized.id,
+    alias: normalized.alias,
+    limits: normalized.limits,
+  };
+};
+
+const parseFallbackEntry = (entry: string): { provider?: string; model: string } => {
+  const idx = entry.indexOf(':');
+  if (idx === -1) return { model: entry };
+  return { provider: entry.slice(0, idx), model: entry.slice(idx + 1) };
+};
+
+export const resolveProfiles = (agents: AgentsFile): ResolvedProfiles => {
+  const planP = agents.profiles.planner;
+  const actP = agents.profiles.actor;
+
+  const planner: ResolvedCandidate[] = [resolveCandidate(agents, planP.provider, planP.model)];
+  for (const fb of planP.fallbacks || []) {
+    const { provider, model } = parseFallbackEntry(fb);
+    const p = provider ?? planP.provider;
+    planner.push(resolveCandidate(agents, p, model));
+  }
+
+  const actor: ResolvedCandidate[] = [resolveCandidate(agents, actP.provider, actP.model)];
+  for (const fb of actP.fallbacks || []) {
+    const { provider, model } = parseFallbackEntry(fb);
+    const p = provider ?? actP.provider;
+    actor.push(resolveCandidate(agents, p, model));
+  }
+
+  return { planner, actor };
+};
+
+export const startWatcher = async (onReload?: (agents: AgentsFile) => void): Promise<void> => {
+  if (watchTimer !== null) return; // already watching
+  let lastHash = snapshot?.rawHash ?? '';
+  const intervalMs = 2500;
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises
+  watchTimer = setInterval(async () => {
+    try {
+      const file = await readConfigFile();
+      if (!file) return;
+      const h = hashString(file.text);
+      if (h !== lastHash) {
+        const data = loadFromText(file.text);
+        snapshot = { data, loadedAt: Date.now(), source: file.source, rawHash: h };
+        lastHash = h;
+        onReload?.(data);
+        console.info('[agents] config reloaded');
+      }
+    } catch (err) {
+      console.warn('[agents] watcher error', err);
+    }
+  }, intervalMs) as unknown as number;
+};
+
+export const stopWatcher = (): void => {
+  if (watchTimer !== null) {
+    clearInterval(watchTimer as unknown as number);
+    watchTimer = null;
+  }
+};
+
+// Test helper to inject config without filesystem
+export const __setTestSnapshot = (data: AgentsFile): void => {
+  snapshot = { data, loadedAt: Date.now(), source: 'test', rawHash: 'test' };
+};

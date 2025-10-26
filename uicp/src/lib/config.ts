@@ -1,4 +1,4 @@
-import { readBooleanEnv, readNumberEnv } from './env/values';
+import { readBooleanEnv, readNumberEnv, readStringEnv } from './env/values';
 import { getAppMode, getModeDefaults } from './mode';
 
 const modeDefaults = getModeDefaults(getAppMode());
@@ -16,4 +16,8 @@ export const cfg = {
   wilDebug: readBooleanEnv('VITE_WIL_DEBUG', modeDefaults.wilDebug),
   wilMaxBufferKb: readNumberEnv('VITE_WIL_MAX_BUFFER_KB', 256, { min: 1 }),
   plannerTwoPhase: readBooleanEnv('VITE_PLANNER_TWO_PHASE', modeDefaults.plannerTwoPhase),
+  profilesMode: (() => {
+    const raw = (readStringEnv('UICP_PROFILES_MODE', 'yaml') || 'yaml').trim().toLowerCase();
+    return raw === 'legacy' ? 'legacy' : 'yaml';
+  })(),
 };

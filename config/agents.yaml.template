@@ -1,0 +1,101 @@
+# UICP Agents Configuration (template)
+# Copy this file to config/agents.yaml and edit as needed.
+
+version: "1"
+
+defaults:
+  temperature: 0.2
+  top_p: 1.0
+  max_tokens: 4096
+  json_mode: true
+  tools_enabled: true
+
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    headers:
+      Authorization: "Bearer ${OPENAI_API_KEY}"
+      OpenAI-Beta: "realtime=v1"
+    model_aliases:
+      gpt_default:
+        id: gpt-5
+        limits:
+          max_context_tokens: 400000
+      gpt_mini:
+        id: gpt-5-mini
+        limits:
+          max_context_tokens: 200000
+    list_models:
+      method: GET
+      url: https://api.openai.com/v1/models
+      id_path: "data[].id"
+
+  anthropic:
+    base_url: https://api.anthropic.com
+    headers:
+      x-api-key: "${ANTHROPIC_API_KEY}"
+      anthropic-version: "2023-06-01"
+    model_aliases:
+      claude_default:
+        id: claude-sonnet-4-5-20250929
+        limits:
+          max_context_tokens: 200000
+      claude_mini:
+        id: claude-haiku-4-5
+        limits:
+          max_context_tokens: 200000
+    list_models:
+      method: GET
+      url: https://api.anthropic.com/v1/models
+      id_path: "data[].id"
+
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    headers:
+      Authorization: "Bearer ${OPENROUTER_API_KEY}"
+      HTTP-Referer: "${OPENROUTER_REFERER}"
+      X-Title: "${OPENROUTER_TITLE}"
+    model_aliases:
+      gpt_default:
+        id: openai/gpt-5
+        limits:
+          max_context_tokens: 400000
+      gpt_mini:
+        id: openai/gpt-5-mini
+        limits:
+          max_context_tokens: 200000
+      claude_default:
+        id: anthropic/claude-4.5-sonnet
+        limits:
+          max_context_tokens: 200000
+      claude_mini:
+        id: anthropic/claude-haiku-4.5
+        limits:
+          max_context_tokens: 200000
+    list_models:
+      method: GET
+      url: https://openrouter.ai/api/v1/models
+      id_path: "data[].id"
+
+profiles:
+  planner:
+    provider: openai
+    model: gpt_default
+    temperature: 0.2
+    max_tokens: 4096
+    fallbacks:
+      - anthropic:claude_default
+      - openrouter:gpt_default
+
+  actor:
+    provider: anthropic
+    model: claude_default
+    temperature: 0.2
+    max_tokens: 4096
+    fallbacks:
+      - openai:gpt_default
+      - openrouter:claude_default
+
+codegen:
+  engine: "cli"
+  allow_paid_fallback: false

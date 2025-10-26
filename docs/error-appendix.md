@@ -145,6 +145,36 @@ Catalog
 0801 table.query partial emission failed
 - File: uicp/components/table.query/src/lib.rs
 
+14xx Code provider errors (Codex, Claude CLI)
+
+1400 Provider config error
+- File: uicp/src-tauri/src/code_provider.rs
+- Meaning: Unable to resolve home directory or other config issue
+
+1401 Provider spawn error
+- File: uicp/src-tauri/src/code_provider.rs
+- Meaning: Failed to spawn provider CLI process
+
+1402 Provider IO error
+- File: uicp/src-tauri/src/code_provider.rs
+- Meaning: Provider stdin write, wait, or filesystem operation failed
+
+1403 Provider exit error
+- File: uicp/src-tauri/src/code_provider.rs
+- Meaning: Provider CLI exited with non-zero status code
+
+1404 Provider parse error
+- File: uicp/src-tauri/src/code_provider.rs
+- Meaning: Failed to parse provider output JSON or session logs
+
+1405 Provider session error
+- File: uicp/src-tauri/src/code_provider.rs
+- Meaning: Failed to read or scan provider session logs
+
+1406 Httpjail disabled warning
+- File: uicp/src-tauri/src/code_provider.rs
+- Meaning: httpjail requested but not enforced (non-fatal warning)
+
 0999 Unknown
 - File: uicp/src/lib/bridge/result.ts
 - Meaning: Fallback mapping when no specific code applies.
