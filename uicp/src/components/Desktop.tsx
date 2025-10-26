@@ -22,6 +22,7 @@ import { useAppSelector, type DesktopShortcutPosition } from '../state/app';
 import AgentSettingsWindow from './AgentSettingsWindow';
 import PreferencesWindow from './PreferencesWindow';
 import DevtoolsAnalyticsListener from './DevtoolsAnalyticsListener';
+import KeystoreHotkeysListener from './KeystoreHotkeysListener';
 import { installWorkspaceArtifactCleanup } from '../lib/uicp/cleanup';
 import { inv } from '../lib/bridge/tauri';
 
@@ -78,6 +79,7 @@ export const Desktop = () => {
   const filesystemScopesOpen = useAppSelector((s) => s.filesystemScopesOpen);
   const setFilesystemScopesOpen = useAppSelector((s) => s.setFilesystemScopesOpen);
   const devMode = useAppSelector((s) => s.devMode);
+  const streaming = useAppSelector((s) => s.streaming);
   const openLogs = useCallback(() => setLogsOpen(true), [setLogsOpen]);
   const hideLogs = useCallback(() => setLogsOpen(false), [setLogsOpen]);
   const openMetrics = useCallback(() => setMetricsOpen(true), [setMetricsOpen]);
@@ -123,6 +125,47 @@ export const Desktop = () => {
       }
     };
   }, []);
+
+  // Auto-lock on tab visibility loss; if streaming, defer until stream completes
+  useEffect(() => {
+    let defer = false;
+    const onVis = async () => {
+      try {
+        if (document.visibilityState === 'hidden') {
+          if (streaming) {
+            defer = true;
+          } else {
+            // Fire-and-forget; backend enforces state
+            await inv('keystore_lock');
+          }
+        }
+      } catch (err) {
+        // ignore UI-level errors; backend is source of truth
+      }
+    };
+    const onStreamClosed = async () => {
+      if (!defer) return;
+      defer = false;
+      try {
+        await inv('keystore_lock');
+      } catch {
+        // ignore
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    const uiHandler = ((e: Event) => {
+      const detail = (e as CustomEvent).detail as Record<string, unknown> | undefined;
+      if (!detail || typeof detail.event !== 'string') return;
+      if (detail.event === 'stream_closed') {
+        void onStreamClosed();
+      }
+    }) as EventListener;
+    window.addEventListener('ui-debug-log', uiHandler);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('ui-debug-log', uiHandler);
+    };
+  }, [streaming]);
 
   // Register defaults so the built-in shortcuts render even on first run.
   useEffect(() => {
@@ -485,6 +528,7 @@ export const Desktop = () => {
     <div className="relative flex min-h-screen w-full flex-col items-stretch">
       <DevtoolsAnalyticsListener />
       <DesktopClock />
+      <KeystoreHotkeysListener />
       <DesktopMenuBar menus={menus} />
       {/* WHY: Provide a full-viewport canvas so agent windows and shortcuts share a single coordinate space.
           INVARIANT: workspace-root and the overlay must share this positioned ancestor so drag math stays correct. */}

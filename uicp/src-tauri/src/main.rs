@@ -12,7 +12,6 @@ use base64::Engine as _;
 use chrono::Utc;
 use dotenvy::dotenv;
 use hmac::{Hmac, Mac};
-use keyring::Entry;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Url};
 use rusqlite::{params, OptionalExtension};
@@ -50,6 +49,8 @@ mod provider_cli;
 mod registry;
 #[cfg(feature = "wasm_compute")]
 mod wasi_logging;
+mod keystore;
+mod providers;
 
 #[cfg(any(test, feature = "compute_harness"))]
 mod commands;
@@ -61,6 +62,9 @@ pub use policy::{
 
 use compute_input::canonicalize_task_input;
 use core::{init_tracing, log_error, log_info, log_warn, CircuitBreakerConfig};
+use secrecy::SecretString;
+use crate::keystore::{get_or_init_keystore, UnlockStatus};
+use crate::providers::build_provider_headers;
 use provider_cli::{ProviderHealthResult, ProviderLoginResult};
 
 // Re-export shared core items so crate::... references in submodules remain valid
@@ -82,6 +86,124 @@ static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
 pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
     let state: State<'_, AppState> = app_handle.state();
     state.ongoing.write().await.remove(request_id);
+}
+
+// ---------------------------------------------------------------------------
+// Keystore Tauri commands (no plaintext read exposure)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn keystore_unlock(app: tauri::AppHandle, method: String, passphrase: Option<String>) -> Result<UnlockStatus, String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    match method.to_ascii_lowercase().as_str() {
+        "passphrase" => {
+            let Some(p) = passphrase else { return Err("passphrase required".into()); };
+            let status = ks
+                .unlock_passphrase(SecretString::new(p))
+                .await
+                .map_err(|e| e.to_string())?;
+            if !status.locked {
+                // Fire-and-forget: import known env vars into keystore once unlocked
+                let ks_clone = ks.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = import_env_secrets_into_keystore(ks_clone).await;
+                });
+                // Emit telemetry for unlock
+                emit_or_log(
+                    &app,
+                    "keystore_unlock",
+                    serde_json::json!({
+                        "method": status.method.map(|m| match m { crate::keystore::UnlockMethod::Passphrase => "passphrase", crate::keystore::UnlockMethod::Mock => "mock" }),
+                        "ttlSec": status.ttl_remaining_sec,
+                    }),
+                );
+            }
+            Ok(status)
+        }
+        "mock" => Err("mock unlock not permitted in release".into()),
+        _ => Err("unsupported unlock method".into()),
+    }
+}
+
+#[tauri::command]
+async fn keystore_lock(app: tauri::AppHandle) -> Result<(), String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.lock();
+    // Emit telemetry for manual lock
+    emit_or_log(&app, "keystore_autolock", serde_json::json!({ "reason": "manual" }));
+    Ok(())
+}
+
+#[tauri::command]
+async fn keystore_status() -> Result<UnlockStatus, String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    Ok(ks.status())
+}
+
+#[tauri::command]
+async fn keystore_list_ids() -> Result<Vec<String>, String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.list_ids().await.map_err(|e| e.to_string())
+}
+
+/// Emit an explicit keystore_autolock telemetry event with a reason.
+#[tauri::command]
+fn keystore_autolock_reason(app: tauri::AppHandle, reason: String) -> Result<(), String> {
+    emit_or_log(&app, "keystore_autolock", serde_json::json!({ "reason": reason }));
+    Ok(())
+}
+
+#[tauri::command]
+async fn secret_set(service: String, account: String, value: String) -> Result<(), String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.secret_set(&service, &account, SecretString::new(value))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn secret_exists(service: String, account: String) -> Result<serde_json::Value, String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    let exists = ks.secret_exists(&service, &account).await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "exists": exists }))
+}
+
+#[tauri::command]
+async fn secret_delete(service: String, account: String) -> Result<(), String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.secret_delete(&service, &account).await.map_err(|e| e.to_string())
+}
+
+// Import known provider env vars into keystore when unlocked. Best-effort; errors are logged but not surfaced.
+async fn import_env_secrets_into_keystore(ks: std::sync::Arc<crate::keystore::Keystore>) -> Result<(), String> {
+    // (service, account, env_var)
+    let mappings = [
+        ("uicp", "openai:api_key", "OPENAI_API_KEY"),
+        ("uicp", "anthropic:api_key", "ANTHROPIC_API_KEY"),
+        ("uicp", "openrouter:api_key", "OPENROUTER_API_KEY"),
+        ("uicp", "ollama:api_key", "OLLAMA_API_KEY"),
+    ];
+    for (service, account, env_key) in mappings.iter() {
+        if let Ok(true) = ks.secret_exists(service, account).await {
+            continue;
+        }
+        if let Ok(value) = std::env::var(env_key) {
+            let trimmed = value.trim().to_string();
+            if !trimmed.is_empty() {
+                if let Err(err) = ks
+                    .secret_set(service, account, SecretString::new(trimmed))
+                    .await
+                {
+                    log_warn(
+                        crate::core::LogEvent::new("env import to keystore failed")
+                            .field("account", *account)
+                            .field("error", err.to_string()),
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Copy a workspace file (ws:/files/...) to a host destination path and return the final host path.
@@ -593,8 +715,8 @@ async fn get_paths() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn load_api_key(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let key = state.ollama_key.read().await.clone();
-    Ok(key)
+    // Do not return plaintext secrets via Tauri commands.
+    Ok(None)
 }
 
 #[tauri::command]
@@ -606,22 +728,11 @@ async fn set_debug(state: State<'_, AppState>, enabled: bool) -> Result<(), Stri
 #[tauri::command]
 async fn save_api_key(state: State<'_, AppState>, key: String) -> Result<(), String> {
     let key_trimmed = key.trim().to_string();
-
-    // Store in OS keyring using blocking task since keyring is sync
-    let key_clone = key_trimmed.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let entry = Entry::new("UICP", "ollama_api_key")
-            .map_err(|e| format!("Failed to access keyring: {e}"))?;
-        entry
-            .set_password(&key_clone)
-            .map_err(|e| format!("Failed to store key in keyring: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))??;
-
-    *state.ollama_key.write().await = Some(key_trimmed);
-    Ok(())
+    // Store in embedded keystore under uicp:ollama:api_key
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.secret_set("uicp", "ollama:api_key", SecretString::new(key_trimmed))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -629,12 +740,6 @@ async fn test_api_key(
     state: State<'_, AppState>,
     window: tauri::Window,
 ) -> Result<ApiKeyStatus, String> {
-    let Some(key) = state.ollama_key.read().await.clone() else {
-        return Ok(ApiKeyStatus {
-            valid: false,
-            message: Some("No API key configured".into()),
-        });
-    };
     let client = state.http.clone();
     let base = get_ollama_base_url(&state).await?;
     let use_cloud = *state.use_direct_cloud.read().await;
@@ -647,7 +752,12 @@ async fn test_api_key(
 
     let mut req = client.get(url);
     if use_cloud {
-        req = req.header("Authorization", format!("Bearer {}", key));
+        let headers = build_provider_headers("ollama")
+            .await
+            .map_err(|e| e.to_string())?;
+        for (k, v) in headers.into_iter() {
+            req = req.header(k, v);
+        }
     }
     let result = req.send().await.map_err(|e| format!("HTTP error: {e}"))?;
 
@@ -1075,10 +1185,6 @@ async fn chat_completion(
 
     let use_cloud = *state.use_direct_cloud.read().await;
     let debug_on = *state.debug_enabled.read().await;
-    let api_key_opt = state.ollama_key.read().await.clone();
-    if use_cloud && api_key_opt.is_none() {
-        return Err("No API key configured".into());
-    }
 
     // Default actor model favors Qwen3-Coder for consistent cloud/local pairing.
     // Avoid reading .env here; the UI selects the model per Agent Settings.
@@ -1127,7 +1233,7 @@ async fn chat_completion(
     let client = state.http.clone();
     let base_url = base.clone();
     let body_payload = body.clone();
-    let api_key_for_task = api_key_opt.clone();
+    // No plaintext secret propagation; headers will be injected from keystore when needed.
     let logs_dir = LOGS_DIR.clone();
     let rid_for_task = rid.clone();
     let stream_flag_for_task = body_payload
@@ -1331,8 +1437,24 @@ async fn chat_completion(
                 .header("User-Agent", user_agent.as_str());
 
             if use_cloud {
-                if let Some(key) = &api_key_for_task {
-                    builder = builder.header("Authorization", format!("Bearer {}", key));
+                match build_provider_headers("ollama").await {
+                    Ok(headers) => {
+                        for (k, v) in headers.into_iter() {
+                            builder = builder.header(k, v);
+                        }
+                    }
+                    Err(e) => {
+                        // Fail closed when keystore is locked or key missing
+                        emit_problem_detail(
+                            &app_handle,
+                            &rid_for_task,
+                            401,
+                            "E-UICP-SEC-LOCKED",
+                            &format!("provider headers unavailable: {}", e),
+                            None,
+                        );
+                        break;
+                    }
                 }
             }
 
@@ -1832,56 +1954,7 @@ async fn chat_completion(
 
 // Database schema management is implemented in core::init_database and helpers.
 
-fn load_env_key(state: &AppState) -> anyhow::Result<()> {
-    // Try to load API key from keyring first
-    let entry = Entry::new("UICP", "ollama_api_key")?;
-    let mut key_from_keyring = false;
-
-    if let Ok(stored_key) = entry.get_password() {
-        state.ollama_key.blocking_write().replace(stored_key);
-        key_from_keyring = true;
-    }
-
-    // Load other config from .env or environment
-    let mut env_api_key: Option<String> = None;
-
-    if ENV_PATH.exists() {
-        for item in dotenvy::from_path_iter(&*ENV_PATH)? {
-            let (key, value) = item?;
-            if key == "OLLAMA_API_KEY" {
-                env_api_key = Some(value);
-            } else if key == "USE_DIRECT_CLOUD" {
-                let use_cloud = value == "1" || value.to_lowercase() == "true";
-                *state.use_direct_cloud.blocking_write() = use_cloud;
-            }
-        }
-    } else {
-        // still load default .env if present elsewhere
-        if let Err(err) = dotenv() {
-            log_warn(format!("Failed to load fallback .env: {err:?}"));
-        }
-        env_api_key = std::env::var("OLLAMA_API_KEY").ok();
-        if let Ok(val) = std::env::var("USE_DIRECT_CLOUD") {
-            let use_cloud = val == "1" || val.to_lowercase() == "true";
-            *state.use_direct_cloud.blocking_write() = use_cloud;
-        }
-    }
-
-    // Migration: if API key was in .env but not in keyring, migrate it
-    if !key_from_keyring {
-        if let Some(key_value) = env_api_key {
-            log_info("Migrating OLLAMA_API_KEY from .env to secure keyring...");
-            if let Err(e) = entry.set_password(&key_value) {
-                log_warn(format!("Failed to migrate API key to keyring: {e}"));
-            } else {
-                log_info("Successfully migrated API key to keyring. You can now remove OLLAMA_API_KEY from .env");
-            }
-            state.ollama_key.blocking_write().replace(key_value);
-        }
-    }
-
-    Ok(())
-}
+// Deprecated: legacy keyring/env migration is removed. Embedded keystore is the only source of provider keys.
 
 // Helper to get the appropriate Ollama base URL with validation
 async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
@@ -2447,6 +2520,14 @@ fn main() {
             provider_health,
             provider_resolve,
             provider_install,
+            keystore_unlock,
+            keystore_lock,
+            keystore_status,
+            keystore_list_ids,
+            keystore_autolock_reason,
+            secret_set,
+            secret_exists,
+            secret_delete,
             frontend_ready,
             check_container_runtime,
             check_network_capabilities
@@ -2662,28 +2743,21 @@ async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> 
     Ok(())
 }
 
-/// Save a provider API key to the OS keyring.
+/// Save a provider API key to the embedded keystore.
 /// provider: "openai" or "anthropic"
-/// ERROR: E-UICP-9202 invalid provider; E-UICP-9203 keyring error
+/// ERROR: E-UICP-9202 invalid provider; E-UICP-SEC-LOCKED when keystore locked
 #[tauri::command]
 async fn save_provider_api_key(provider: String, key: String) -> Result<(), String> {
     let account = match provider.trim().to_ascii_lowercase().as_str() {
-        "openai" => "openai_api_key",
-        "anthropic" => "anthropic_api_key",
+        "openai" => "openai:api_key",
+        "anthropic" => "anthropic:api_key",
         other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
     };
     let key_trimmed = key.trim().to_string();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let entry = Entry::new("UICP", account)
-            .map_err(|e| format!("E-UICP-9203: keyring access failed: {e}"))?;
-        entry
-            .set_password(&key_trimmed)
-            .map_err(|e| format!("E-UICP-9203: keyring store failed: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))??;
-    Ok(())
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.secret_set("uicp", account, secrecy::SecretString::new(key_trimmed))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Pull the container image for a provider (docker or podman). Returns the image name.

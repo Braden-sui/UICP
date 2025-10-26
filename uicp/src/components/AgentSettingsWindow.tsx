@@ -11,6 +11,7 @@ import {
 } from '../lib/llm/profiles';
 import type { PlannerProfileKey, ActorProfileKey, ReasoningEffort } from '../lib/llm/profiles';
 import { hasTauriBridge, tauriInvoke } from '../lib/bridge/tauri';
+import { useKeystore } from '../state/keystore';
 import {
   useProviderSelector,
   type ProviderHealthPayload,
@@ -111,6 +112,21 @@ const AgentSettingsWindow = () => {
   const devMode = import.meta.env.DEV === true;
   const [installingProvider, setInstallingProvider] = useState<ProviderName | null>(null);
 
+  // Keystore state
+  const ks = useKeystore();
+  const [passphrase, setPassphrase] = useState<string>('');
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    void ks.refreshStatus();
+  }, []);
+
+  const formatTtl = (sec: number | null): string => {
+    if (sec == null) return '';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
   const plannerProfile = useMemo(() => getPlannerProfile(plannerProfileKey), [plannerProfileKey]);
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
 
@@ -203,24 +219,32 @@ const AgentSettingsWindow = () => {
   }, [devMode, refreshResolved]);
 
   // Wizard: API key inputs
-  const [openaiKey, setOpenaiKey] = useState<string>("");
-  const [anthropicKey, setAnthropicKey] = useState<string>("");
+  const [openaiKey, setOpenaiKey] = useState<string>('');
+  const [anthropicKey, setAnthropicKey] = useState<string>('');
   const saveProviderKey = useCallback(
     async (provider: 'openai' | 'anthropic', key: string) => {
       if (!hasTauriBridge()) {
         useAppStore.getState().pushToast({ variant: 'error', message: 'Saving keys requires the desktop runtime' });
         return;
       }
+      if (ks.locked) {
+        useAppStore.getState().pushToast({ variant: 'error', message: 'Unlock keystore first' });
+        return;
+      }
       try {
-        await tauriInvoke('save_provider_api_key', { provider, key });
-        useAppStore.getState().pushToast({ variant: 'success', message: `${provider} key saved to OS keychain` });
+        const ok = await ks.saveProviderKey(provider, key);
+        if (ok) {
+          useAppStore.getState().pushToast({ variant: 'success', message: `${provider} key saved to keystore` });
+        } else {
+          useAppStore.getState().pushToast({ variant: 'error', message: `Failed to save ${provider} key` });
+        }
       } catch (err) {
         useAppStore
           .getState()
           .pushToast({ variant: 'error', message: `Save failed: ${(err as Error)?.message ?? String(err)}` });
       }
     },
-    [],
+    [ks.locked],
   );
 
   const handleProviderHealth = useCallback(
@@ -679,6 +703,56 @@ const AgentSettingsWindow = () => {
           </label>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Secrets (Keystore)</div>
+          <div className="flex flex-col gap-3 text-sm">
+            {ks.locked ? (
+              <div className="flex flex-col gap-2">
+                <div className="text-rose-600">Locked</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={passphrase}
+                    onChange={(e) => setPassphrase(e.target.value)}
+                    placeholder="Enter passphrase"
+                    className="flex-1 rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!passphrase.trim()) return;
+                      const ok = await ks.unlock(passphrase);
+                      if (!ok) {
+                        useAppStore.getState().pushToast({ variant: 'error', message: ks.error ?? 'Unlock failed' });
+                      } else {
+                        setPassphrase('');
+                        useAppStore.getState().pushToast({ variant: 'success', message: 'Keystore unlocked' });
+                      }
+                    }}
+                    disabled={ks.busy || !passphrase.trim()}
+                    className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {ks.busy ? 'Unlocking…' : 'Unlock'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="text-emerald-600">Unlocked</div>
+                <div className="text-slate-600">Method: {ks.method ?? 'passphrase'}</div>
+                <div className="text-slate-600">Auto-lock in {formatTtl(ks.ttlRemainingSec)}</div>
+                <button
+                  type="button"
+                  onClick={() => ks.quickLock()}
+                  className="ml-auto rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
+                >
+                  Quick Lock
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Connect Providers (Wizard)</div>
           <div className="grid grid-cols-1 gap-2 text-xs text-slate-600">
             <div className="flex flex-wrap items-center gap-2">
@@ -725,7 +799,7 @@ const AgentSettingsWindow = () => {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold">Step 3:</span>
-              <span>Save API keys to OS keychain</span>
+              <span>Save API keys to Keystore</span>
             </div>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
               <label className="flex flex-col gap-1">

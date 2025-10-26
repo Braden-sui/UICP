@@ -3,6 +3,7 @@ import { MotionConfig } from 'motion/react';
 import DockChat from './components/DockChat';
 import Desktop from './components/Desktop';
 import GrantModal from './components/GrantModal';
+import KeystoreUnlockModal from './components/KeystoreUnlockModal';
 import SystemToast from './components/SystemToast';
 import DevtoolsComputePanel from './components/DevtoolsComputePanel';
 import SystemBanner from './components/SystemBanner';
@@ -70,6 +71,7 @@ const App = () => {
         <Desktop />
         <DockChat />
         <GrantModal />
+        <KeystoreUnlockModal />
         <PermissionPromptHost />
         <NetGuardToastBridge />
         <PermissionsToastBridge />

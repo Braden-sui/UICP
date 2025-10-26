@@ -30,6 +30,9 @@ use crate::{
     compute_cache, emit_or_log, remove_compute_job, AppState, ComputeFinalErr, ComputeFinalOk,
     ComputeJobSpec,
 };
+use crate::providers::build_provider_headers;
+use crate::keystore::get_or_init_keystore;
+use secrecy::ExposeSecret;
 
 const TASK_PREFIX: &str = "codegen.run@";
 const VALIDATOR_VERSION: &str = "codegen-validator-v1";
@@ -195,7 +198,6 @@ struct CodegenInstallInput {
 
 struct ProviderSettings {
     model_id: String,
-    api_key: String,
 }
 
 #[derive(Debug)]
@@ -1478,14 +1480,17 @@ async fn run_codex_cli<R: Runtime>(
 ) -> Result<NormalizedArtifact, CodegenFailure> {
     let workspace = create_job_workspace(&spec.job_id, "codex").await?;
     let mut extra_env: HashMap<String, String> = HashMap::new();
-    if let Ok(key) = env::var("OPENAI_API_KEY") {
-        extra_env.insert("OPENAI_API_KEY".into(), key);
-    }
-    if let Ok(key) = env::var("CODEX_API_KEY") {
-        extra_env.insert("CODEX_API_KEY".into(), key);
+    // Read OpenAI key from keystore and pass to CLI via env (backend-only; never surfaced to UI)
+    if let Ok(ks) = get_or_init_keystore().await {
+        if let Ok(secret) = ks.read_internal("uicp", "openai:api_key").await {
+            if let Ok(key) = String::from_utf8(secret.expose_secret().clone()) {
+                extra_env.insert("OPENAI_API_KEY".into(), key.clone());
+                // Some Codex builds expect CODEX_API_KEY; set both for compatibility.
+                extra_env.insert("CODEX_API_KEY".into(), key);
+            }
+        }
     }
 
-    let mut extra_env: HashMap<String, String> = extra_env;
     // Enforce httpjail on local runs to align with provider health policy
     extra_env.insert("UICP_HTTPJAIL".into(), "1".into());
 
@@ -1524,11 +1529,15 @@ async fn run_claude_cli<R: Runtime>(
 ) -> Result<NormalizedArtifact, CodegenFailure> {
     let workspace = create_job_workspace(&spec.job_id, "claude").await?;
     let mut extra_env: HashMap<String, String> = HashMap::new();
-    if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
-        extra_env.insert("ANTHROPIC_API_KEY".into(), key);
+    // Read Anthropic key from keystore and pass to CLI via env (backend-only)
+    if let Ok(ks) = get_or_init_keystore().await {
+        if let Ok(secret) = ks.read_internal("uicp", "anthropic:api_key").await {
+            if let Ok(key) = String::from_utf8(secret.expose_secret().clone()) {
+                extra_env.insert("ANTHROPIC_API_KEY".into(), key);
+            }
+        }
     }
 
-    let mut extra_env: HashMap<String, String> = extra_env;
     // Enforce httpjail on local runs to align with provider health policy
     extra_env.insert("UICP_HTTPJAIL".into(), "1".into());
 
@@ -1608,10 +1617,8 @@ fn default_model() -> String {
 }
 
 fn resolve_provider_settings(plan: &CodegenPlan) -> Result<ProviderSettings, CodegenFailure> {
-    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| CodegenFailure::missing_key())?;
     Ok(ProviderSettings {
         model_id: plan.model_id.clone(),
-        api_key,
     })
 }
 
@@ -1648,10 +1655,13 @@ Language must be {lang}. Include meta.modelId and meta.provider. Do not wrap out
         "messages": messages,
     });
 
-    let response = client
-        .post(endpoint)
-        .header("Authorization", format!("Bearer {}", settings.api_key))
-        .header("Content-Type", "application/json")
+    let mut req = client.post(endpoint).header("Content-Type", "application/json");
+    // Inject headers from keystore-backed providers mapping
+    let headers = build_provider_headers("openai").await?;
+    for (k, v) in headers.into_iter() {
+        req = req.header(k, v);
+    }
+    let response = req
         .json(&body)
         .send()
         .await

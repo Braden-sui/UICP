@@ -12,11 +12,13 @@ import { ComputeError } from '../compute/errors';
 import { asStatePath, type Batch, type ApplyOutcome } from '../uicp/adapters/schemas';
 import { OrchestratorEvent } from '../orchestrator/state-machine';
 import { type Result, createBridgeUnavailableError, toUICPError, UICPErrorCode } from './result';
+export type { Result } from './result';
 import { policyDecide } from '../provider/router';
 import { emitTelemetryEvent } from '../telemetry';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
+let lockWhenStreamCloses = false;
 
 const getBridgeWindow = () => (typeof window === 'undefined' ? undefined : window);
 
@@ -40,7 +42,20 @@ export const tauriInvoke = async <T>(command: string, args?: unknown): Promise<T
   if (!hasTauriBridge()) {
     throw new Error(`Tauri bridge unavailable for command ${command}`);
   }
-  return invoke<T>(command, args as never);
+  try {
+    return await invoke<T>(command, args as never);
+  } catch (error) {
+    // Global intercept for keystore locked errors; prompt unlock then retry once
+    if (isKeystoreLockedError(error)) {
+      const resumeId = createId('unlock');
+      requestKeystoreUnlock(resumeId, { command });
+      const outcome = await waitForUnlockOutcome(resumeId);
+      if (outcome === 'resume') {
+        return await invoke<T>(command, args as never);
+      }
+    }
+    throw error;
+  }
 };
 
 // WHY: Universal invoke wrapper that returns Result<T, UICPError> for standardized error handling.
@@ -67,7 +82,21 @@ export const inv = async <T>(command: string, args?: unknown): Promise<Result<T>
     const value = await invoke<T>(command, args as never);
     return { ok: true, value };
   } catch (error) {
-    return { ok: false, error: toUICPError(error, UICPErrorCode.InvokeFailed) };
+    const err = toUICPError(error, UICPErrorCode.InvokeFailed);
+    if (isKeystoreLockedError(err)) {
+      const resumeId = createId('unlock');
+      requestKeystoreUnlock(resumeId, { command });
+      const outcome = await waitForUnlockOutcome(resumeId);
+      if (outcome === 'resume') {
+        try {
+          const value = await invoke<T>(command, args as never);
+          return { ok: true, value };
+        } catch (retryErr) {
+          return { ok: false, error: toUICPError(retryErr, UICPErrorCode.InvokeFailed) };
+        }
+      }
+    }
+    return { ok: false, error: err };
   }
 };
 
@@ -77,6 +106,99 @@ export const setInvOverride = (impl: InvOverride | null): void => {
 };
 
 type InvOverride = <T>(command: string, args?: unknown) => Promise<Result<T>>;
+
+// Keystore unlock/resume helpers
+const isKeystoreLockedError = (error: unknown): boolean => {
+  try {
+    const msg = (error as { message?: string })?.message ?? String(error);
+    return typeof msg === 'string' && msg.includes('E-UICP-SEC-LOCKED');
+  } catch {
+    return false;
+  }
+};
+
+const waitForUnlockOutcome = (resumeId: string, timeoutMs = 120000): Promise<'resume' | 'cancel'> => {
+  return new Promise((resolve) => {
+    const w = getBridgeWindow();
+    if (!w) return resolve('cancel');
+    let done = false;
+    const onResume = (e: Event) => {
+      try {
+        const d = (e as CustomEvent).detail as { id?: string } | undefined;
+        if (d?.id === resumeId && !done) {
+          done = true;
+          cleanup();
+          resolve('resume');
+        }
+      } catch {}
+    };
+    const onCancel = (e: Event) => {
+      try {
+        const d = (e as CustomEvent).detail as { id?: string } | undefined;
+        if (d?.id === resumeId && !done) {
+          done = true;
+          cleanup();
+          resolve('cancel');
+        }
+      } catch {}
+    };
+    const cleanup = () => {
+      w.removeEventListener('keystore-unlock-resume', onResume as EventListener);
+      w.removeEventListener('keystore-unlock-cancel', onCancel as EventListener);
+    };
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve('cancel');
+    }, timeoutMs);
+    w.addEventListener('keystore-unlock-resume', onResume as EventListener);
+    w.addEventListener('keystore-unlock-cancel', onCancel as EventListener);
+    // Clear timer on resolve
+    const origResolve = resolve;
+    // Note: TS helper; no-op since resolve is immediate above
+    void origResolve;
+    // timer cleared in cleanup via resolution paths
+  });
+};
+
+const requestKeystoreUnlock = (resumeId: string, extra?: Record<string, unknown>): void => {
+  try {
+    const w = getBridgeWindow();
+    if (!w) return;
+    w.dispatchEvent(new CustomEvent('keystore-unlock-request', { detail: { id: resumeId, ...(extra ?? {}) } }));
+  } catch {
+    // ignore
+  }
+};
+
+// Keystore bridge wrappers (no plaintext secrets returned)
+export type KeystoreUnlockStatus = {
+  locked: boolean;
+  ttl_remaining_sec?: number | null;
+  method?: 'Passphrase' | 'Mock' | string | null;
+};
+
+export const keystoreStatus = () => inv<KeystoreUnlockStatus>('keystore_status');
+
+export const keystoreUnlockPassphrase = (passphrase: string) =>
+  inv<KeystoreUnlockStatus>('keystore_unlock', { method: 'passphrase', passphrase });
+
+export const keystoreLock = () => inv<void>('keystore_lock');
+
+export const secretSet = (service: string, account: string, value: string) =>
+  inv<void>('secret_set', { service, account, value });
+
+export const secretExists = async (service: string, account: string) => {
+  const res = await inv<{ exists: boolean }>('secret_exists', { service, account });
+  return res.ok ? { ok: true, value: res.value.exists } : res;
+};
+
+export const secretDelete = (service: string, account: string) =>
+  inv<void>('secret_delete', { service, account });
+
+export const saveProviderApiKey = (provider: 'openai' | 'anthropic', key: string) =>
+  inv<void>('save_provider_api_key', { provider, key });
 
 // Open a native browser window (WebView) to an external URL inside the app shell.
 // Returns { ok, label, url, safe } or a typed UICP error via Result.
@@ -226,6 +348,26 @@ export async function initializeTauriBridge() {
     });
     pendingBinds.delete(final.jobId);
     dispatchComputeFinal(final);
+  }
+
+  // Auto-lock on window blur unless a stream is currently active; if active, lock when the stream completes.
+  try {
+    const bridgeWin = getBridgeWindow();
+    if (bridgeWin) {
+      bridgeWin.addEventListener('blur', async () => {
+        try {
+          if (useAppStore.getState().streaming) {
+            lockWhenStreamCloses = true;
+          } else {
+            await invoke('keystore_lock');
+          }
+        } catch (err) {
+          console.warn('[keystore] auto-lock on blur failed', err);
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('[keystore] auto-lock wiring failed', err);
   }
 
   function setupTestComputeFallback(
@@ -380,7 +522,20 @@ export async function initializeTauriBridge() {
       } catch (err) {
         console.warn('[tauri] mint_job_token failed', err);
       }
-      await invoke('compute_call', { spec: routedSpec });
+      try {
+        await invoke('compute_call', { spec: routedSpec });
+      } catch (err) {
+        if (isKeystoreLockedError(err)) {
+          const resumeId = createId('unlock');
+          requestKeystoreUnlock(resumeId, { jobId: routedSpec.jobId, task: routedSpec.task });
+          const outcome = await waitForUnlockOutcome(resumeId);
+          if (outcome === 'resume') {
+            await invoke('compute_call', { spec: routedSpec });
+            return;
+          }
+        }
+        throw err;
+      }
     } catch (error) {
       pendingBinds.delete(spec.jobId);
       useComputeStore.getState().markFinal(spec.jobId, false, undefined, undefined, ComputeError.CapabilityDenied);
@@ -715,6 +870,14 @@ export async function initializeTauriBridge() {
           handleAggregatorError(error);
         }
         useAppStore.getState().setStreaming(false);
+        if (lockWhenStreamCloses) {
+          lockWhenStreamCloses = false;
+          try {
+            await invoke('keystore_lock');
+          } catch (err) {
+            console.warn('[keystore] deferred lock failed', err);
+          }
+        }
         if (flushed) {
           aggregatorFailed = false;
         }
