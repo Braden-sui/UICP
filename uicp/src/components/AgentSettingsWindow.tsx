@@ -23,8 +23,10 @@ import {
   usePreferencesStore,
   type CodegenDefaultProvider,
 } from '../state/preferences';
-import { loadAgentsConfig, saveAgentsConfig } from '../lib/agents/loader';
+import { loadAgentsConfig, saveAgentsConfigFile, startWatcher, stopWatcher, resolveProfiles, refreshAgentsPreflight, subscribeAgentsPreflight, getPreflightSnapshot } from '../lib/agents/loader';
 import type { AgentsFile, ProfileEntry, ProfileMode } from '../lib/agents/schema';
+import type { AgentsPreflight } from '../lib/agents/preflight';
+import { effectiveContext } from '../lib/agents/preflight';
 import { stringify } from 'yaml';
 
 const plannerProfiles = listPlannerProfiles();
@@ -341,6 +343,9 @@ const AgentSettingsWindow = () => {
   const [plannerCustomError, setPlannerCustomError] = useState<string | null>(null);
   const [actorCustomError, setActorCustomError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
+  const [preflight, setPreflight] = useState<AgentsPreflight | null>(null);
+  const [newPlannerFallback, setNewPlannerFallback] = useState<string>('');
+  const [newActorFallback, setNewActorFallback] = useState<string>('');
 
   useEffect(() => {
     if (!hasTauriBridge()) {
@@ -373,6 +378,25 @@ const AgentSettingsWindow = () => {
         setAgentsLoading(false);
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    let disposed = false;
+    void startWatcher(async (agents) => {
+      if (disposed) return;
+      setAgentsConfig(agents);
+    });
+    const unsub = subscribeAgentsPreflight((snapshot) => {
+      if (disposed) return;
+      setPreflight(snapshot);
+    });
+    setPreflight(getPreflightSnapshot());
+    return () => {
+      disposed = true;
+      stopWatcher();
+      unsub();
+    };
   }, []);
 
   useEffect(() => {
@@ -425,8 +449,18 @@ const AgentSettingsWindow = () => {
     [agentsConfig, globalProvider],
   );
 
-  // resolved model ids are internal; UI only shows friendly names
+  const currentProviderEntry = useMemo(() => {
+    if (!agentsConfig || !globalProvider) return null;
+    return agentsConfig.providers?.[globalProvider] ?? null;
+  }, [agentsConfig, globalProvider]);
 
+  const currentProviderPreflight = useMemo(() => {
+    const snap = preflight;
+    if (!snap || !globalProvider) return null;
+    return snap.providers?.[globalProvider] ?? null;
+  }, [preflight, globalProvider]);
+
+  // resolved model ids are internal; UI only shows friendly names
   const persistAgentsConfig = useCallback(
     async (updater: (draft: AgentsFile) => void) => {
       if (!agentsConfig) return;
@@ -434,7 +468,7 @@ const AgentSettingsWindow = () => {
       updater(draft);
       try {
         const yamlText = stringify(draft);
-        await saveAgentsConfig(yamlText);
+        await saveAgentsConfigFile(yamlText);
         setAgentsConfig(draft);
         setAgentsError(null);
       } catch (err) {
@@ -446,6 +480,50 @@ const AgentSettingsWindow = () => {
     },
     [agentsConfig],
   );
+
+  const validateFallbackEntry = (value: string): string | null => {
+    const v = (value || '').trim();
+    if (!v) return 'Value required';
+    const idx = v.indexOf(':');
+    if (idx <= 0 || idx === v.length - 1) return 'Use provider:aliasOrId format';
+    return null;
+  };
+
+  const handleAddFallback = useCallback(
+    async (role: 'planner' | 'actor', value: string) => {
+      const err = validateFallbackEntry(value);
+      if (err) {
+        useAppStore.getState().pushToast({ variant: 'error', message: err });
+        return;
+      }
+      if (!agentsConfig) return;
+      const trimmed = value.trim();
+      await persistAgentsConfig((draft) => {
+        const profile = draft.profiles?.[role];
+        if (!profile) return;
+        const list = Array.isArray(profile.fallbacks) ? [...profile.fallbacks] : [];
+        if (!list.includes(trimmed)) list.push(trimmed);
+        profile.fallbacks = list;
+      });
+      if (role === 'planner') setNewPlannerFallback('');
+      if (role === 'actor') setNewActorFallback('');
+    },
+    [agentsConfig, persistAgentsConfig],
+  );
+
+  const handleRemoveFallback = useCallback(
+    async (role: 'planner' | 'actor', index: number) => {
+      if (!agentsConfig) return;
+      await persistAgentsConfig((draft) => {
+        const profile = draft.profiles?.[role];
+        if (!profile || !Array.isArray(profile.fallbacks)) return;
+        profile.fallbacks = profile.fallbacks.filter((_, i) => i !== index);
+      });
+    },
+    [agentsConfig, persistAgentsConfig],
+  );
+
+  
 
   // Proxy settings
   const [proxyHttps, setProxyHttps] = useState<string>('');
@@ -463,18 +541,7 @@ const AgentSettingsWindow = () => {
     })();
   }, []);
 
-  // Keep container security env in sync with preferences
-  useEffect(() => {
-    if (!hasTauriBridge()) return;
-    (async () => {
-      try {
-        await tauriInvoke('set_env_var', { name: 'UICP_DISABLE_FIREWALL', value: firewallDisabled ? '1' : null });
-        await tauriInvoke('set_env_var', { name: 'UICP_STRICT_CAPS', value: strictCaps ? '1' : null });
-      } catch {
-        // ignore in UI; toggles still apply on change
-      }
-    })();
-  }, [firewallDisabled, strictCaps]);
+  
 
   const handleFirewallToggle = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -1007,6 +1074,41 @@ const AgentSettingsWindow = () => {
     }
   }, [modulesDir]);
 
+  const handleCheckProviders = useCallback(async () => {
+    try {
+      const agents = await loadAgentsConfig();
+      const resolved = resolveProfiles(agents);
+      await refreshAgentsPreflight(agents, resolved);
+      useAppStore.getState().pushToast({ variant: 'info', message: 'Preflight completed (see console for details)' });
+    } catch (err) {
+      useAppStore.getState().pushToast({ variant: 'error', message: `Preflight failed: ${(err as Error)?.message ?? String(err)}` });
+    }
+  }, []);
+
+  const preflightSummary = useMemo(() => {
+    const snapshot = preflight;
+    if (!snapshot) return null;
+    const providers = snapshot.providers || {};
+    const fmt = (c?: { provider: string; model: string; alias?: string }) => {
+      if (!c) return '';
+      const prov = providers[c.provider];
+      const has = prov && Array.isArray(prov.models) && prov.models.length > 0 ? prov.models.includes(c.model) : undefined;
+      const cap = prov?.caps?.[c.model];
+      const ctx = cap ? effectiveContext(cap) : undefined;
+      const ctxPart = typeof ctx === 'number' && ctx > 0 ? `, ctx ${ctx}` : '';
+      const label = c.alias ? `${c.provider} → ${c.model} (alias ${c.alias}${ctxPart})` : `${c.provider} → ${c.model}${ctxPart}`;
+      if (has === true) return `✓ ${label}`;
+      if (has === false) return `⚠ ${label}`;
+      return `• ${label}`;
+    };
+    const planner = snapshot.resolvedProfiles.planner;
+    const actor = snapshot.resolvedProfiles.actor;
+    return {
+      planner: [fmt(planner[0]), ...planner.slice(1).map(fmt)],
+      actor: [fmt(actor[0]), ...actor.slice(1).map(fmt)],
+    };
+  }, [preflight]);
+
   const handleVerifyModules = useCallback(async () => {
     try {
       if (!hasTauriBridge()) {
@@ -1071,6 +1173,27 @@ const AgentSettingsWindow = () => {
             {!agentsLoading && agentsError && (
               <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                 {agentsError}
+              </div>
+            )}
+            {currentProviderEntry && (
+              <div className="mt-3 grid grid-cols-1 gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 sm:grid-cols-3">
+                <div>
+                  <div className="font-semibold text-slate-700">Base URL</div>
+                  <div className="truncate">{currentProviderEntry.base_url}</div>
+                </div>
+                <div>
+                  <div className="font-semibold text-slate-700">Models</div>
+                  <div>
+                    {currentProviderPreflight?.models?.length ?? 0}
+                    {currentProviderPreflight?.fetchedAt ? ` (as of ${new Date(currentProviderPreflight.fetchedAt).toLocaleTimeString()})` : ''}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-semibold text-slate-700">Status</div>
+                  <div className={currentProviderPreflight?.error ? 'text-rose-600' : 'text-emerald-600'}>
+                    {currentProviderPreflight?.error ? 'fetch error' : 'ok'}
+                  </div>
+                </div>
               </div>
             )}
             {!agentsLoading && !agentsError && agentsConfig && (
@@ -1138,6 +1261,36 @@ const AgentSettingsWindow = () => {
                     </button>
                   );
                 })}
+              </div>
+            )}
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCheckProviders}
+                disabled={!agentsConfig}
+                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Check Providers
+              </button>
+            </div>
+            {preflightSummary && (
+              <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-slate-600">
+                <div>
+                  <div className="font-semibold">Planner</div>
+                  <ul className="ml-4 list-disc">
+                    {preflightSummary.planner.filter(Boolean).map((line, i) => (
+                      <li key={`pf-plan-${i}`}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <div className="font-semibold">Actor</div>
+                  <ul className="ml-4 list-disc">
+                    {preflightSummary.actor.filter(Boolean).map((line, i) => (
+                      <li key={`pf-act-${i}`}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
               </div>
             )}
             {!agentsLoading && !agentsError && !agentsConfig && (
@@ -1480,6 +1633,72 @@ const AgentSettingsWindow = () => {
                   </button>
                 </div>
               </label>
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-medium text-slate-600">Fallbacks</div>
+              <div className="flex flex-wrap gap-1">
+                {(agentsConfig?.profiles?.planner?.fallbacks ?? []).map((fb, i) => (
+                  <span key={`p-fb-${i}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">
+                    {fb}
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveFallback('planner', i)}
+                      className="ml-1 rounded px-1 text-[10px] text-slate-500 hover:bg-slate-200"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newPlannerFallback}
+                  onChange={(e) => setNewPlannerFallback(e.target.value)}
+                  placeholder="provider:aliasOrId"
+                  className="flex-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleAddFallback('planner', newPlannerFallback)}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="mb-1 text-xs font-medium text-slate-600">Actor Fallbacks</div>
+              <div className="flex flex-wrap gap-1">
+                {(agentsConfig?.profiles?.actor?.fallbacks ?? []).map((fb, i) => (
+                  <span key={`a-fb-${i}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">
+                    {fb}
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveFallback('actor', i)}
+                      className="ml-1 rounded px-1 text-[10px] text-slate-500 hover:bg-slate-200"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newActorFallback}
+                  onChange={(e) => setNewActorFallback(e.target.value)}
+                  placeholder="provider:aliasOrId"
+                  className="flex-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleAddFallback('actor', newActorFallback)}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Add
+                </button>
+              </div>
             </div>
           </div>
         </div>

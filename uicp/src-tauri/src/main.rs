@@ -360,6 +360,7 @@ struct AgentsConfigLoadResult {
 }
 
 const AGENTS_CONFIG_MAX_SIZE_BYTES: usize = 512 * 1024; // 512 KiB safety cap
+const AGENTS_CONFIG_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/agents.yaml.template"));
 
 fn agents_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let resolver = app.path();
@@ -379,11 +380,59 @@ async fn load_agents_config_file(app: tauri::AppHandle) -> Result<AgentsConfigLo
             contents: Some(contents),
             path: path_display,
         }),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(AgentsConfigLoadResult {
-            exists: false,
-            contents: None,
-            path: path_display,
-        }),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            if AGENTS_CONFIG_TEMPLATE.len() > AGENTS_CONFIG_MAX_SIZE_BYTES {
+                return Err(format!(
+                    "E-UICP-AGENTS-TEMPLATE-SIZE: template {} bytes exceeds limit {}",
+                    AGENTS_CONFIG_TEMPLATE.len(),
+                    AGENTS_CONFIG_MAX_SIZE_BYTES
+                ));
+            }
+            if let Some(parent) = path.parent() {
+                if let Err(mkdir_err) = fs::create_dir_all(parent).await {
+                    log_error(format!(
+                        "agents config mkdir failed at {}: {}",
+                        parent.display(), mkdir_err
+                    ));
+                    return Err(format!("E-UICP-AGENTS-MKDIR: {}", mkdir_err));
+                }
+            }
+            let tmp_path = path.with_extension("yaml.tmp");
+            if let Err(write_err) = fs::write(&tmp_path, AGENTS_CONFIG_TEMPLATE.as_bytes()).await {
+                log_error(format!(
+                    "agents config temp write failed at {}: {}",
+                    tmp_path.display(), write_err
+                ));
+                return Err(format!("E-UICP-AGENTS-WRITE-TMP: {}", write_err));
+            }
+            if fs::metadata(&path).await.is_ok() {
+                if let Err(remove_err) = fs::remove_file(&path).await {
+                    log_error(format!(
+                        "agents config remove existing failed at {}: {}",
+                        path_display, remove_err
+                    ));
+                    let _ = fs::remove_file(&tmp_path).await;
+                    return Err(format!("E-UICP-AGENTS-REMOVE: {}", remove_err));
+                }
+            }
+            if let Err(rename_err) = fs::rename(&tmp_path, &path).await {
+                log_error(format!(
+                    "agents config commit rename failed at {}: {}",
+                    path_display, rename_err
+                ));
+                let _ = fs::remove_file(&tmp_path).await;
+                return Err(format!("E-UICP-AGENTS-RENAME: {}", rename_err));
+            }
+            log_info(format!(
+                "Bootstrapped agents.yaml from template at {}",
+                path_display
+            ));
+            Ok(AgentsConfigLoadResult {
+                exists: true,
+                contents: Some(AGENTS_CONFIG_TEMPLATE.to_string()),
+                path: path_display,
+            })
+        }
         Err(err) => {
             log_error(format!(
                 "agents config read failed at {}: {}",

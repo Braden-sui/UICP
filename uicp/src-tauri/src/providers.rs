@@ -37,7 +37,18 @@ pub async fn build_provider_headers(provider: &str) -> Result<HashMap<String, St
         }
         "openrouter" => {
             headers.insert("Authorization".into(), format!("Bearer {key}"));
-            headers.insert("X-Title".into(), "UICP".into());
+            if let Ok(title) = std::env::var("UICP_OPENROUTER_TITLE") {
+                if !title.trim().is_empty() {
+                    headers.insert("X-Title".into(), title);
+                }
+            } else {
+                headers.insert("X-Title".into(), "UICP".into());
+            }
+            if let Ok(referer) = std::env::var("UICP_OPENROUTER_REFERER") {
+                if !referer.trim().is_empty() {
+                    headers.insert("HTTP-Referer".into(), referer);
+                }
+            }
         }
         "ollama" => {
             headers.insert("Authorization".into(), format!("Bearer {key}"));

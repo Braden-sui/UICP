@@ -1,11 +1,28 @@
 import type { AgentsFile, ResolvedProfiles } from './schema';
 
+export type ModelCaps = {
+  id: string;
+  context_length?: number;
+  provider_context_length?: number;
+  provider_max_completion?: number;
+  supported_parameters?: string[];
+  tokenizer?: string;
+};
+
+export const effectiveContext = (c: ModelCaps): number => {
+  const a = typeof c.context_length === 'number' ? c.context_length : Infinity;
+  const b = typeof c.provider_context_length === 'number' ? c.provider_context_length : Infinity;
+  const v = Math.min(a, b);
+  return Number.isFinite(v) ? v : 0;
+};
+
 export type ProviderPreflight = {
   provider: string;
   models: string[];
   fetchedAt: number;
   error?: string;
   skipped?: boolean;
+  caps?: Record<string, ModelCaps>;
 };
 
 export type AgentsPreflight = {
@@ -101,6 +118,7 @@ const fetchProviderModels = async (
   providerKey: string,
   config: ListModelsConfig,
   headers: Record<string, string>,
+  requestedIds: string[] = [],
 ): Promise<ProviderPreflight> => {
   const fetchedAt = Date.now();
   if (!isFetchAvailable()) {
@@ -134,10 +152,40 @@ const fetchProviderModels = async (
 
     const body = await response.json();
     const models = extractStringsByPath(body, config.id_path);
+    let caps: Record<string, ModelCaps> | undefined;
+    if (providerKey.toLowerCase() === 'openrouter') {
+      try {
+        const data = Array.isArray((body as any)?.data) ? (body as any).data : [];
+        const set = new Set<string>(requestedIds);
+        const entries = data
+          .filter((m: any) => typeof m?.id === 'string' && (set.size === 0 || set.has(m.id)))
+          .map((m: any) => [
+            m.id,
+            {
+              id: m.id,
+              context_length: typeof m.context_length === 'number' ? m.context_length : undefined,
+              provider_context_length:
+                typeof m?.top_provider?.context_length === 'number'
+                  ? m.top_provider.context_length
+                  : undefined,
+              provider_max_completion:
+                typeof m?.top_provider?.max_completion_tokens === 'number'
+                  ? m.top_provider.max_completion_tokens
+                  : undefined,
+              supported_parameters: Array.isArray(m?.supported_parameters) ? m.supported_parameters : undefined,
+              tokenizer: typeof m?.architecture?.tokenizer === 'string' ? m.architecture.tokenizer : undefined,
+            } as ModelCaps,
+          ] as const);
+        caps = Object.fromEntries(entries);
+      } catch {
+        // ignore caps errors; keep models list
+      }
+    }
     return {
       provider: providerKey,
       models,
       fetchedAt,
+      ...(caps ? { caps } : {}),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -156,6 +204,15 @@ export const runAgentsPreflight = async (
 ): Promise<AgentsPreflight> => {
   const providers: Record<string, ProviderPreflight> = {};
 
+  const idsByProvider: Record<string, string[]> = {};
+  const add = (prov?: string, id?: string) => {
+    if (!prov || !id) return;
+    if (!idsByProvider[prov]) idsByProvider[prov] = [];
+    if (!idsByProvider[prov].includes(id)) idsByProvider[prov].push(id);
+  };
+  for (const c of resolved.planner) add(c.provider, c.model);
+  for (const c of resolved.actor) add(c.provider, c.model);
+
   const entries = Object.entries(agents.providers ?? {});
   for (const [providerKey, providerEntry] of entries) {
     if (providerEntry.list_models) {
@@ -164,7 +221,8 @@ export const runAgentsPreflight = async (
         url: providerEntry.list_models.url,
         id_path: providerEntry.list_models.id_path,
       };
-      providers[providerKey] = await fetchProviderModels(providerKey, config, providerEntry.headers ?? {});
+      const requestedIds = idsByProvider[providerKey] ?? [];
+      providers[providerKey] = await fetchProviderModels(providerKey, config, providerEntry.headers ?? {}, requestedIds);
     }
   }
 

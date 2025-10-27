@@ -1,4 +1,4 @@
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
   AgentsFileSchema,
   type AgentsFile,
@@ -27,6 +27,7 @@ type AgentsConfigCommandPayload = {
   contents?: string | null;
   path: string;
 };
+
 
 type FsModule = typeof import('@tauri-apps/plugin-fs');
 let fsMod: FsModule | null = null;
@@ -84,7 +85,17 @@ export const loadFromText = (yamlText: string): AgentsFile => {
   const raw = parseYaml(yamlText) as unknown;
   const interpolated = interpolate(raw);
   const parsed = AgentsFileSchema.parse(interpolated);
-  return migrateAgentsFile(parsed);
+  const migrated = migrateAgentsFile(parsed);
+  if (hasTauriBridge()) {
+    const copy: AgentsFile = JSON.parse(JSON.stringify(migrated));
+    for (const pkey of Object.keys(copy.providers ?? {})) {
+      const entry = copy.providers[pkey];
+      if (!entry) continue;
+      entry.headers = {} as Record<string, string>;
+    }
+    return copy;
+  }
+  return migrated;
 };
 
 const formatBridgeError = (err: UICPError): string => {
@@ -203,6 +214,15 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
   }
   const data = loadFromText(file.text);
   snapshot = { data, loadedAt: Date.now(), source: file.source, rawHash: hashString(file.text) };
+  try {
+    const normalizedYaml = stringifyYaml(data);
+    if (hashString(normalizedYaml) !== hashString(file.text)) {
+      await writeConfigFile(normalizedYaml);
+      snapshot = { data, loadedAt: Date.now(), source: 'appdata', rawHash: hashString(normalizedYaml) };
+    }
+  } catch {
+    // ignore normalization write failures
+  }
   return data;
 };
 
@@ -218,6 +238,8 @@ export const saveAgentsConfig = async (yamlText: string): Promise<AgentsFile> =>
   }
   return data;
 };
+
+export const saveAgentsConfigFile = saveAgentsConfig;
 
 export const getSnapshot = (): AgentsFile | null => snapshot?.data ?? null;
 export const getPreflightSnapshot = (): AgentsPreflight | null => preflightSnapshot;
@@ -391,6 +413,7 @@ export const migrateProfileEntry = (profile: ProfileEntry): ProfileEntry => {
 export const migrateAgentsFile = (agents: AgentsFile): AgentsFile => {
   return {
     ...agents,
+    version: '1',
     profiles: {
       planner: migrateProfileEntry(agents.profiles.planner),
       actor: migrateProfileEntry(agents.profiles.actor),

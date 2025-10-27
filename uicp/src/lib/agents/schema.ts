@@ -64,6 +64,32 @@ export const ProfileEntrySchema = z
           message: 'Custom mode requires a concrete model id.',
         });
       }
+      // OpenRouter requires provider-prefixed ids (e.g., 'anthropic/claude-sonnet-4.5')
+      if (profile.provider?.toLowerCase() === 'openrouter') {
+        if (typeof customValue === 'string' && !customValue.includes('/')) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['custom_model'],
+            message: 'OpenRouter model ids must be provider-prefixed (e.g., openai/gpt-5).',
+          });
+        }
+      }
+    }
+    if (Array.isArray(profile.fallbacks)) {
+      for (let i = 0; i < profile.fallbacks.length; i++) {
+        const fb = profile.fallbacks[i];
+        if (typeof fb !== 'string' || fb.trim().length === 0) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fallbacks', i], message: 'Fallback must be a non-empty string.' });
+          continue;
+        }
+        const idx = fb.indexOf(':');
+        if (idx === -1) {
+          continue;
+        }
+        if (idx === 0 || idx === fb.length - 1) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fallbacks', i], message: "Fallback must be 'provider:aliasOrId'." });
+        }
+      }
     }
   });
 
@@ -80,13 +106,58 @@ export const CodegenSchema = z.object({
   allow_paid_fallback: z.boolean().default(false),
 });
 
-export const AgentsFileSchema = z.object({
-  version: z.string().default('1'),
-  defaults: DefaultsSchema.default({}),
-  providers: z.record(ProviderSchema),
-  profiles: z.object({ planner: ProfileEntrySchema, actor: ProfileEntrySchema }),
-  codegen: CodegenSchema.default({ engine: 'cli', allow_paid_fallback: false }),
-});
+export const AgentsFileSchema = z
+  .object({
+    version: z.string().default('1'),
+    defaults: DefaultsSchema.default({}),
+    providers: z.record(ProviderSchema),
+    profiles: z.object({ planner: ProfileEntrySchema, actor: ProfileEntrySchema }),
+    codegen: CodegenSchema.default({ engine: 'cli', allow_paid_fallback: false }),
+  })
+  .superRefine((data, ctx) => {
+    if (typeof data.version !== 'string' || data.version.trim() === '') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['version'], message: 'version must be a non-empty string' });
+    }
+    const providers = data.providers ?? {};
+    const checkProfileFallbacks = (profileKey: 'planner' | 'actor') => {
+      const profile = (data.profiles as any)?.[profileKey] as z.infer<typeof ProfileEntrySchema> | undefined;
+      if (!profile || !Array.isArray(profile.fallbacks)) return;
+      for (let i = 0; i < profile.fallbacks.length; i++) {
+        const fb = profile.fallbacks[i];
+        if (typeof fb !== 'string') continue;
+        const idx = fb.indexOf(':');
+        if (idx === -1) {
+          const activeProvider = providers?.[profile.provider];
+          if (!activeProvider) continue;
+          const aliases = activeProvider.model_aliases ?? {};
+          if (!Object.prototype.hasOwnProperty.call(aliases, fb)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['profiles', profileKey, 'fallbacks', i],
+              message: `Alias '${fb}' not found under active provider '${profile.provider}'.`,
+            });
+          }
+        } else if (idx === 0 || idx === fb.length - 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['profiles', profileKey, 'fallbacks', i],
+            message: "Fallback must be 'provider:aliasOrId'.",
+          });
+        } else {
+          const p = fb.slice(0, idx);
+          if (!providers[p]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['profiles', profileKey, 'fallbacks', i],
+              message: `Provider '${p}' referenced in fallback not found in providers`,
+            });
+          }
+        }
+      }
+    };
+    checkProfileFallbacks('planner');
+    checkProfileFallbacks('actor');
+  });
 
 export type AgentsFile = z.infer<typeof AgentsFileSchema>;
 export type ProviderEntry = z.infer<typeof ProviderSchema>;
