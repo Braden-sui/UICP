@@ -197,73 +197,81 @@ const ModelSelector = (props: ModelSelectorProps) => {
   } = props;
   const hasProvider = provider.trim().length > 0;
   const hasPresets = presets.length > 0;
-  const selectedPresetLabel = presets.find((p) => p.id === presetValue)?.label ?? (hasPresets ? presets[0].label : '');
+  const isOpenRouter = provider === 'openrouter';
 
-  const toggleButtonClass = 'self-start text-[11px] uppercase tracking-wide text-slate-500 hover:text-slate-700';
+  if (!hasProvider) {
+    return (
+      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-500">
+        Select a provider first
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-1 text-xs">
-      <span className="font-semibold uppercase tracking-wide text-slate-500">Model</span>
-      {!hasProvider ? (
-        <div className="rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-          Select a provider to choose a model.
-        </div>
-      ) : mode === 'preset' && hasPresets ? (
-        <div className="flex flex-col gap-2">
-          <label className="flex flex-col gap-1">
-            <span className="font-semibold uppercase tracking-wide text-slate-500">Preset</span>
-            <select
-              value={presetValue || presets[0]?.id || ''}
-              onChange={(event) => onPresetChange(event.target.value)}
-              disabled={disabled}
-              className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {presets.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-            Selected: {selectedPresetLabel || 'Auto'}
-          </div>
-          <button type="button" className={toggleButtonClass} onClick={() => onModeChange('custom')} disabled={disabled}>
-            ⚙️ Use custom model id instead
-          </button>
-        </div>
-      ) : mode === 'preset' ? (
-        <div className="flex flex-col gap-2">
-          <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            No presets defined for this provider. Switch to a custom model id.
-          </div>
-          <button type="button" className={toggleButtonClass} onClick={() => onModeChange('custom')} disabled={disabled}>
-            ⚙️ Use custom model id
-          </button>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
+      {hasPresets && (
+        <label className="flex items-start gap-2.5">
           <input
-            type="text"
-            value={customValue}
-            onChange={(event) => onCustomChange(event.target.value)}
-            onBlur={() => {
-              void onCustomBlur();
-            }}
-            placeholder={customPlaceholder}
+            type="radio"
+            checked={mode === 'preset'}
+            onChange={() => onModeChange('preset')}
             disabled={disabled}
-            className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            className="mt-0.5 h-4 w-4 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed"
           />
-          {customError ? <span className="text-[11px] text-rose-600">⚠️ {customError}</span> : null}
-          {hasPresets ? (
-            <button type="button" className={toggleButtonClass} onClick={() => onModeChange('preset')} disabled={disabled}>
-              ↩️ Switch back to presets
-            </button>
-          ) : (
-            <span className="text-[11px] text-slate-500">This provider only supports custom model ids.</span>
+          <div className="flex flex-1 flex-col gap-2">
+            <span className="text-sm font-medium text-slate-700">Use preset model</span>
+            {mode === 'preset' && (
+              <select
+                value={presetValue || presets[0]?.id || ''}
+                onChange={(event) => onPresetChange(event.target.value)}
+                disabled={disabled}
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        </label>
+      )}
+      <label className="flex items-start gap-2.5">
+        <input
+          type="radio"
+          checked={mode === 'custom'}
+          onChange={() => onModeChange('custom')}
+          disabled={disabled}
+          className="mt-0.5 h-4 w-4 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed"
+        />
+        <div className="flex flex-1 flex-col gap-2">
+          <span className="text-sm font-medium text-slate-700">
+            {isOpenRouter ? 'Custom model (recommended for OpenRouter)' : 'Use custom model ID'}
+          </span>
+          {mode === 'custom' && (
+            <>
+              <input
+                type="text"
+                value={customValue}
+                onChange={(event) => onCustomChange(event.target.value)}
+                onBlur={() => {
+                  void onCustomBlur();
+                }}
+                placeholder={customPlaceholder}
+                disabled={disabled}
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              />
+              {customError && <span className="text-xs text-rose-600">⚠️ {customError}</span>}
+              {isOpenRouter && !customError && (
+                <span className="text-xs text-slate-500">
+                  Examples: anthropic/claude-sonnet-4.5, openai/gpt-5, meta-llama/llama-3.3-70b
+                </span>
+              )}
+            </>
           )}
         </div>
-      )}
+      </label>
     </div>
   );
 };
@@ -690,37 +698,6 @@ const AgentSettingsWindow = () => {
     [agentsConfig, persistAgentsConfig],
   );
 
-  const handleGlobalProviderChange = useCallback(
-    async (event: ChangeEvent<HTMLSelectElement>) => {
-      const provider = event.target.value;
-      const defaults = selectDefaultAliases(agentsConfig, provider);
-      const nextPlanner: ProfileEditorState = {
-        provider,
-        mode: defaults.planner ? 'preset' : 'custom',
-        presetModel: defaults.planner,
-        customModel: plannerState.customModel,
-      };
-      const nextActor: ProfileEditorState = {
-        provider,
-        mode: defaults.actor ? 'preset' : 'custom',
-        presetModel: defaults.actor,
-        customModel: actorState.customModel,
-      };
-      setGlobalProvider(provider);
-      setPlannerState(nextPlanner);
-      setActorState(nextActor);
-      setPlannerCustomError(null);
-      setActorCustomError(null);
-      try {
-        await updateProfileConfig('planner', nextPlanner);
-        await updateProfileConfig('actor', nextActor);
-      } catch {
-        // toast emitted upstream
-      }
-    },
-    [agentsConfig, plannerState.customModel, actorState.customModel, updateProfileConfig],
-  );
-
   // Per-role provider change no longer exposed in UI
 
   const handlePlannerModeChange = useCallback(
@@ -1073,80 +1050,123 @@ const AgentSettingsWindow = () => {
       minHeight={320}
     >
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-slate-600">
-          Select which profiles power the planner (reasoning &amp; plan generation) and actor (batch builder). Profiles are model-agnostic
-          and can be paired with any compatible LLM provider. Switch profiles here to change reasoning and execution behavior.
-        </p>
+        {/* Header with Advanced Toggle */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-slate-800">Agent Configuration</h2>
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            {showAdvanced ? '← Hide Advanced' : 'Show Advanced →'}
+          </button>
+        </div>
+
+        {/* Provider Selection */}
         {bridgeAvailable && (
-          <div className="rounded border border-slate-200 bg-white/80 p-3 text-sm text-slate-700 shadow-sm">
-            <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <span>LLM Provider</span>
-              <button
-                type="button"
-                onClick={() => setShowAdvanced((v) => !v)}
-                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
-              >
-                {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
-              </button>
-            </div>
-            {agentsLoading && <div className="text-xs text-slate-500">Loading agents.yaml…</div>}
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 text-sm font-semibold text-slate-700">LLM Provider</div>
+            {agentsLoading && <div className="text-sm text-slate-500">Loading configuration...</div>}
             {!agentsLoading && agentsError && (
-              <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                 {agentsError}
               </div>
             )}
             {!agentsLoading && !agentsError && agentsConfig && (
-              <div className="flex flex-col gap-3">
-                <div className="flex flex-col gap-3 rounded border border-slate-200 bg-slate-50/40 p-3">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Provider</span>
-                  <label className="flex flex-col gap-1 text-xs">
-                    <select
-                      value={globalProvider}
-                      onChange={handleGlobalProviderChange}
-                      disabled={!agentsConfig}
-                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {providerOptions.map((option) => {
+                  const isSelected = globalProvider === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => {
+                        if (!agentsConfig) return;
+                        const provider = option.value;
+                        const defaults = selectDefaultAliases(agentsConfig, provider);
+                        const nextPlanner: ProfileEditorState = {
+                          provider,
+                          mode: defaults.planner ? 'preset' : 'custom',
+                          presetModel: defaults.planner,
+                          customModel: plannerState.customModel,
+                        };
+                        const nextActor: ProfileEditorState = {
+                          provider,
+                          mode: defaults.actor ? 'preset' : 'custom',
+                          presetModel: defaults.actor,
+                          customModel: actorState.customModel,
+                        };
+                        setGlobalProvider(provider);
+                        setPlannerState(nextPlanner);
+                        setActorState(nextActor);
+                        setPlannerCustomError(null);
+                        setActorCustomError(null);
+                        void persistAgentsConfig((draft) => {
+                          const plannerProfileDraft = draft.profiles?.planner;
+                          if (plannerProfileDraft) {
+                            plannerProfileDraft.provider = provider;
+                            plannerProfileDraft.mode = nextPlanner.mode;
+                            plannerProfileDraft.preset_model = nextPlanner.presetModel.trim() || undefined;
+                            plannerProfileDraft.custom_model = nextPlanner.customModel.trim() || undefined;
+                            plannerProfileDraft.model =
+                              nextPlanner.mode === 'custom'
+                                ? nextPlanner.customModel.trim()
+                                : nextPlanner.presetModel.trim();
+                          }
+                          const actorProfileDraft = draft.profiles?.actor;
+                          if (actorProfileDraft) {
+                            actorProfileDraft.provider = provider;
+                            actorProfileDraft.mode = nextActor.mode;
+                            actorProfileDraft.preset_model = nextActor.presetModel.trim() || undefined;
+                            actorProfileDraft.custom_model = nextActor.customModel.trim() || undefined;
+                            actorProfileDraft.model =
+                              nextActor.mode === 'custom'
+                                ? nextActor.customModel.trim()
+                                : nextActor.presetModel.trim();
+                          }
+                        });
+                      }}
+                      className={`flex flex-col items-center gap-1.5 rounded-lg border-2 p-3 text-center transition-colors ${
+                        isSelected
+                          ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                      } ${!agentsConfig ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                     >
-                      {providerOptions.length === 0 ? (
-                        <option value="">No providers defined</option>
-                      ) : (
-                        providerOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-                </div>
-                {/* Model selection moved into profile sections; no duplicate Planner/Actor blocks here */}
+                      <span className="text-xs font-semibold">{option.label}</span>
+                      {isSelected && <span className="text-[10px] text-emerald-600">Active</span>}
+                    </button>
+                  );
+                })}
               </div>
             )}
             {!agentsLoading && !agentsError && !agentsConfig && (
-              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                Unable to load agents.yaml. Planner and actor selections will use baked-in defaults until a configuration is saved.
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                Configuration file not found. Using default settings.
               </div>
             )}
           </div>
         )}
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-2 text-sm text-slate-600">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planner profile</span>
-            <select
-              value={plannerProfileKey}
-              onChange={handlePlannerChange}
-              className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-            >
-              {plannerProfiles.map((profile) => (
-                <option key={profile.key} value={profile.key}>
-                  {profile.label}
-                </option>
-              ))}
-            </select>
-            <span className="text-xs text-slate-500">{plannerProfile.description}</span>
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">
-              Channels: {plannerProfile.capabilities?.channels.join(', ') ?? 'commentary'}
-            </span>
-            <div className="mt-2">
+        {/* Planner Configuration */}
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 text-sm font-semibold text-slate-700">Planner (Reasoning & Planning)</div>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Profile</label>
+              <select
+                value={plannerProfileKey}
+                onChange={handlePlannerChange}
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+              >
+                {plannerProfiles.map((profile) => (
+                  <option key={profile.key} value={profile.key}>
+                    {profile.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">{plannerProfile.description}</p>
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-medium text-slate-600">Model Selection</div>
               <ModelSelector
                 mode={plannerState.mode}
                 provider={globalProvider}
@@ -1162,45 +1182,50 @@ const AgentSettingsWindow = () => {
                 onCustomBlur={handlePlannerCustomBlur}
               />
             </div>
-          </label>
-          {plannerProfile.key === 'gpt-oss' && (
-            <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/30 p-3 text-sm text-slate-600">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planner reasoning effort</span>
+            {plannerProfile.key === 'gpt-oss' && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <label className="mb-1 block text-xs font-medium text-slate-600">Reasoning Effort</label>
+                <select
+                  value={plannerReasoningEffort}
+                  onChange={handlePlannerReasoningChange}
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                >
+                  {REASONING_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  {REASONING_OPTIONS.find((option) => option.value === plannerReasoningEffort)?.helper ??
+                    'Choose reasoning depth'}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Actor Configuration */}
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 text-sm font-semibold text-slate-700">Actor (Execution & Implementation)</div>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Profile</label>
               <select
-                value={plannerReasoningEffort}
-                onChange={handlePlannerReasoningChange}
-                className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                value={actorProfileKey}
+                onChange={handleActorChange}
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
               >
-                {REASONING_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
+                {actorProfiles.map((profile) => (
+                  <option key={profile.key} value={profile.key}>
+                    {profile.label}
                   </option>
                 ))}
               </select>
-              <span className="text-xs text-slate-500">
-                {REASONING_OPTIONS.find((option) => option.value === plannerReasoningEffort)?.helper ??
-                  'Choose how much chain-of-thought detail gpt-oss should use.'}
-              </span>
+              <p className="mt-1 text-xs text-slate-500">{actorProfile.description}</p>
             </div>
-          )}
-          <label className="flex flex-col gap-2 text-sm text-slate-600">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor profile</span>
-            <select
-              value={actorProfileKey}
-              onChange={handleActorChange}
-              className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-            >
-              {actorProfiles.map((profile) => (
-                <option key={profile.key} value={profile.key}>
-                  {profile.label}
-                </option>
-              ))}
-            </select>
-            <span className="text-xs text-slate-500">{actorProfile.description}</span>
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">
-              Channels: {actorProfile.capabilities?.channels.join(', ') ?? 'commentary'}
-            </span>
-            <div className="mt-2">
+            <div>
+              <div className="mb-2 text-xs font-medium text-slate-600">Model Selection</div>
               <ModelSelector
                 mode={actorState.mode}
                 provider={globalProvider}
@@ -1216,41 +1241,62 @@ const AgentSettingsWindow = () => {
                 onCustomBlur={handleActorCustomBlur}
               />
             </div>
-          </label>
-          {actorProfile.key === 'gpt-oss' && (
-            <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/30 p-3 text-sm text-slate-600">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor reasoning effort</span>
-              <select
-                value={actorReasoningEffort}
-                onChange={handleActorReasoningChange}
-                className="rounded border border-slate-300 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-              >
-                {REASONING_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <span className="text-xs text-slate-500">
-                {REASONING_OPTIONS.find((option) => option.value === actorReasoningEffort)?.helper ??
-                  'Higher effort increases reasoning depth for gpt-oss batches.'}
-              </span>
-            </div>
-          )}
-          <label className="flex items-center gap-3 rounded border border-slate-200 bg-slate-50/50 p-3 text-sm">
-            <input
-              type="checkbox"
-              checked={plannerTwoPhaseEnabled}
-              onChange={handleTwoPhaseToggle}
-              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-            />
-            <div className="flex flex-col gap-1">
-              <span className="font-medium text-slate-700">Two-Phase Planner (Experimental)</span>
-              <span className="text-xs text-slate-500">
-                When enabled, the planner first generates a structured TaskSpec, then produces the final plan. This can improve plan quality for complex requests.
-              </span>
-            </div>
-          </label>
+            {actorProfile.key === 'gpt-oss' && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <label className="mb-1 block text-xs font-medium text-slate-600">Reasoning Effort</label>
+                <select
+                  value={actorReasoningEffort}
+                  onChange={handleActorReasoningChange}
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                >
+                  {REASONING_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  {REASONING_OPTIONS.find((option) => option.value === actorReasoningEffort)?.helper ??
+                    'Choose reasoning depth'}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* System Settings */}
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 text-sm font-semibold text-slate-700">System Settings</div>
+          <div className="flex flex-col gap-3">
+            <label className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+              <input
+                type="checkbox"
+                checked={plannerTwoPhaseEnabled}
+                onChange={handleTwoPhaseToggle}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium text-slate-700">Two-Phase Planner</span>
+                <span className="text-xs text-slate-500">
+                  Generate structured TaskSpec before final plan (experimental)
+                </span>
+              </div>
+            </label>
+            <label className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+              <input
+                type="checkbox"
+                checked={safeMode}
+                onChange={handleSafeModeToggle}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500"
+              />
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium text-slate-700">Safe Mode</span>
+                <span className="text-xs text-slate-500">
+                  Disable all code generation (emergency kill switch)
+                </span>
+              </div>
+            </label>
+          </div>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Secrets (Keystore)</div>

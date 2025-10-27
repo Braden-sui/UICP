@@ -32,7 +32,7 @@ Model Selection:
   ( ) Use preset model
       [Dropdown: if presets available]
   
-  (•) Use custom model ID  <-- Radio, not toggle
+  (*) Use custom model ID  <-- Radio, not toggle
       [Text input: full width, prominent]
       [Helper text for OpenRouter: examples]
 ```
@@ -46,10 +46,10 @@ Model Selection:
 [Section Card]
 Title: System Settings
 
-[✓] Two-Phase Planner
+- [x] Two-Phase Planner
     Generate structured TaskSpec before plan (experimental)
 
-[✓] Safe Mode
+- [x] Safe Mode
     Disable all code generation
 
 Keystore: [Status indicator] [Unlock/Lock button]
@@ -84,49 +84,49 @@ Keystore: [Status indicator] [Unlock/Lock button]
 
 ## Implementation Phases
 
-### Phase 1: ModelSelector Rebuild ✅
+### Phase 1: ModelSelector Rebuild (done)
 - Add radio buttons for preset/custom
 - OpenRouter special handling
 - Better placeholder text
 - Remove toggle buttons
 
-### Phase 2: Provider Selection ✅
+### Phase 2: Provider Selection (done)
 - Card-based UI with icons
 - Grid layout
 - Click to select
 
-### Phase 3: Planner/Actor Cards ✅
+### Phase 3: Planner/Actor Cards (done)
 - Separate cards
 - Cleaner model configuration
 - Remove old nested structure
 
-### Phase 4: System Settings Card ✅
+### Phase 4: System Settings Card (done)
 - Group Two-Phase, Safe Mode, Keystore
 - Simpler layout
 
-### Phase 5: Advanced Collapse ✅
+### Phase 5: Advanced Collapse (done)
 - Move wizard/security/network behind toggle
 - Keep core settings visible
 
 ## Backend Capabilities Supported
 
 ### Per Provider (from agents.yaml schema)
-- ✅ base_url
-- ✅ headers (with env vars)
-- ✅ model_aliases (presets)
-- ✅ list_models (optional API)
+- (done) base_url
+- (done) headers (with env vars)
+- (done) model_aliases (presets)
+- (done) list_models (optional API)
 
 ### Per Profile (planner/actor)
-- ✅ provider (string)
-- ✅ mode ('preset' | 'custom')
-- ✅ preset_model (alias)
-- ✅ custom_model (direct ID)
-- ✅ temperature (0-2)
-- ✅ max_tokens
-- ⚠️ fallbacks (not yet in UI - future)
+- provider (string)
+- model (alias or direct ID)
+- temperature (0-2)
+- max_tokens
+- fallbacks (supported by schema; may be added to UI later)
+
+Note: UI offers a "preset" vs "custom" mode for convenience, but agents.yaml persists a single `model` field that can be either an alias or a concrete ID.
 
 ### Recommended for Users
-1. **Provider switching** - Easy Ollama ⟷ OpenRouter toggle
+1. **Provider switching** - Easy Ollama <-> OpenRouter toggle
 2. **Custom models** - Especially for OpenRouter's vast catalog
 3. **Presets** - Quick selection for common models
 4. **Temperature** - (Advanced) Control randomness
@@ -147,7 +147,8 @@ Keystore: [Status indicator] [Unlock/Lock button]
 - Internal spacing: gap-3 (12px)
 
 ### Icons
-- 🦙 Ollama
-- 🌐 OpenRouter
-- 🤖 OpenAI
-- 🔮 Anthropic
+- Ollama
+- OpenRouter
+- OpenAI
+- Anthropic
+
