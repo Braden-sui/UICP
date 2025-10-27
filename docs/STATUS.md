@@ -9,7 +9,7 @@ Last updated: 2025-10-26
 - Desktop app (React + Tauri) runs as a desktop-first experience; when opened in a plain browser the UI degrades gracefully instead of crashing, while the Tauri bridge continues to drive native flows.
 - Compute plane (Wasmtime, feature-gated) is implemented with registry, cache, and policy; compute harness E2E smoke now runs in CI to guard guest/host drift.
 - Track E (JS execution path in WASI) is complete: QuickJS component is signed, host injects bundled sources, integration suite covers init/render/onEvent, counter applet ships as a reference, and docs live in `docs/compute/JS_EXECUTION_PATH.md`.
-- CI runs lint, typecheck, unit, e2e, build, security scans, .
+- CI runs lint, typecheck, unit tests, build, and security scans. E2E and compute harness smoke run in dedicated workflows.
 
 ## Now (Current Focus)
 
@@ -51,7 +51,7 @@ Track E closed out with docs, tests, and example applet covering the QuickJS exe
 
 - UI: lint, typecheck, unit, e2e, build all pass locally when Node 20/pnpm 10 are used.
 - Compute: Rust tests plus compute harness smoke run in CI; local `cargo test --features wasm_compute` currently blocked by Wasmtime API drift (see Open Bugs).
-- Link checks: configured via `.lychee.toml`.
+- Docs CI: Markdown link check (github-action-markdown-link-check) and codespell run on docs changes.
 
 ## Pointers (Authoritative Lists)
 
@@ -67,4 +67,5 @@ Track E closed out with docs, tests, and example applet covering the QuickJS exe
 
 - Keep this snapshot accurate; update when you land meaningful changes.
 - Treat checklists as the source of truth for acceptance criteria; this page summarizes and links.
+
 

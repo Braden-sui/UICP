@@ -17,6 +17,9 @@ Purpose: explain the in-app egress guard that wraps `fetch`, XHR, WebSocket, Eve
 - URLHaus integration for host/url verdicts with in-memory + persisted cache.
 - Monitor-only mode (observe but do not block) for diagnostics.
 
+Defaults (policy flags)
+- blockWorkers: true; blockServiceWorker: true; blockWebRTC: true; blockWebTransport: false (unless policy overrides)
+
 ## Environment and Config (Vite/Frontend)
 - `VITE_NET_GUARD_ENABLED` (default 1): `1|true` to enable.
 - `VITE_NET_GUARD_MONITOR` (default 0): `1|true` to observe only.
@@ -46,4 +49,3 @@ Purpose: explain the in-app egress guard that wraps `fetch`, XHR, WebSocket, Eve
 ## Notes
 - In tests, defaults force Workers/ServiceWorker/WebRTC blocked unless toggled by policy.
 - WebSocket wrapper also blocks when a prior fetch verdict cached a host as malicious.
-

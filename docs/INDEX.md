@@ -14,6 +14,7 @@ Purpose: a single landing page that lists the canonical docs. Anything not linke
 - Adapter v2 details: docs/adapter.md
 
 ## Security
+- Capabilities (Tauri): docs/security/capabilities.md
 - Network guard (egress policy, URLHaus, allowlists): docs/security/network-guard.md
 - Keystore (embedded secrets store): docs/security/keystore.md
 
@@ -26,6 +27,7 @@ Purpose: a single landing page that lists the canonical docs. Anything not linke
 - Providers (CLI, health, keystore): docs/providers.md
 
 ## Operations
+- Backend commands reference: docs/backend-commands.md
 - Project status snapshot: docs/STATUS.md
 - Compute runtime checklist: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md
 - Configuration reference: docs/config.md
