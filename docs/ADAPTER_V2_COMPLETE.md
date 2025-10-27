@@ -1,4 +1,6 @@
-# Adapter v2 Implementation - COMPLETE
+# DEPRECATED - see docs/adapter.md
+
+# Adapter v2 Implementation - COMPLETE (Historical)
 
 **Date**: October 19, 2025  
 **Status**: ✅ Production - V1 Removed, V2 Only  
@@ -370,3 +372,4 @@ For questions about:
 ---
 
 **END OF DOCUMENT**
+DEPRECATED — See docs/adapter.md for the authoritative Adapter v2 documentation. Last-reviewed: 2025-10-26

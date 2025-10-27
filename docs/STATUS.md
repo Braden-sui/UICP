@@ -2,7 +2,7 @@
 
 Purpose: one-page, human-readable snapshot of what is Done, In Progress, Next, plus risks and CI health. This page is the entry point for status; deeper, authoritative checklists remain in docs/MVP checklist.md and docs/compute/COMPUTE_RUNTIME_CHECKLIST.md.
 
-Last updated: 2025-10-19
+Last updated: 2025-10-26
 
 ## Summary
 
@@ -57,9 +57,11 @@ Track E closed out with docs, tests, and example applet covering the QuickJS exe
 
 - MVP scope and status: docs/MVP checklist.md
 - Compute runtime checklist: docs/compute/COMPUTE_RUNTIME_CHECKLIST.md
-- Compute testing (plan/boundary/coverage): docs/compute/testing.md
 - Architecture overview: docs/architecture.md
-- Model usage and endpoints: docs/model-usage.md, docs/ollama cloud vs. turbo.md
+- Network guard reference: docs/security/network-guard.md
+- Agents config guide: docs/agents/README.md
+- Model choices: docs/MODEL_CHOICES.md
+- Index (canonical docs): docs/INDEX.md
 
 ## Working Agreement (lightweight)
 

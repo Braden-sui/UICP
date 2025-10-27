@@ -144,6 +144,12 @@ async fn keystore_status() -> Result<UnlockStatus, String> {
 }
 
 #[tauri::command]
+async fn keystore_sentinel_exists() -> Result<bool, String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.sentinel_exists().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn keystore_list_ids() -> Result<Vec<String>, String> {
     let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
     ks.list_ids().await.map_err(|e| e.to_string())
@@ -2659,14 +2665,13 @@ fn main() {
             keystore_unlock,
             keystore_lock,
             keystore_status,
+            keystore_sentinel_exists,
             keystore_list_ids,
             keystore_autolock_reason,
             secret_set,
             secret_exists,
             secret_delete,
-            frontend_ready,
-            check_container_runtime,
-            check_network_capabilities
+            frontend_ready
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2682,188 +2687,8 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(splash) = app.get_webview_window("splash") {
         let _ = splash.close();
     }
+
     Ok(())
-}
-
-/// Set or unset a process environment variable for subsequent provider operations.
-/// ERROR: E-UICP-9201 invalid name
-/// Check if container runtime (Docker/Podman) is available
-#[tauri::command]
-async fn check_container_runtime() -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("check_container_runtime");
-    use std::process::Command;
-
-    // Check for Docker
-    if let Ok(output) = Command::new("docker")
-        .arg("version")
-        .arg("--format")
-        .arg("{{.Server.Version}}")
-        .output()
-    {
-        if output.status.success() {
-            #[cfg(feature = "otel_spans")]
-            tracing::info!(
-                target = "uicp",
-                runtime = "docker",
-                "container runtime detected"
-            );
-            return Ok(serde_json::json!({
-                "available": true,
-                "runtime": "docker",
-                "version": String::from_utf8_lossy(&output.stdout).trim()
-            }));
-        }
-    }
-
-    // Check for Podman
-    if let Ok(output) = Command::new("podman")
-        .arg("version")
-        .arg("--format")
-        .arg("{{.Server.Version}}")
-        .output()
-    {
-        if output.status.success() {
-            #[cfg(feature = "otel_spans")]
-            tracing::info!(
-                target = "uicp",
-                runtime = "podman",
-                "container runtime detected"
-            );
-            return Ok(serde_json::json!({
-                "available": true,
-                "runtime": "podman",
-                "version": String::from_utf8_lossy(&output.stdout).trim()
-            }));
-        }
-    }
-
-    #[cfg(feature = "otel_spans")]
-    tracing::warn!(target = "uicp", "no container runtime found");
-    Ok(serde_json::json!({
-        "available": false,
-        "error": "No container runtime found (Docker or Podman required)"
-    }))
-}
-
-/// Check network capabilities and restrictions.
-/// WHY: Avoid misleading telemetry; report actual network gate.
-/// INVARIANT: Network is disabled unless `UICP_ALLOW_NET` is explicitly enabled.
-#[tauri::command]
-async fn check_network_capabilities() -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("check_network_capabilities");
-
-    // Gate network with an explicit env flag.
-    // Accept common truthy forms: 1,true,yes,on (case-insensitive).
-    fn parse_env_flag(value: &str) -> bool {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    }
-
-    let has_network = std::env::var("UICP_ALLOW_NET")
-        .ok()
-        .map(|v| parse_env_flag(&v))
-        .unwrap_or(false);
-
-    // If network is enabled, it's still constrained by provider allowlists via httpjail.
-    // Keep reason explicit for operators.
-    let (restricted, reason) = if has_network {
-        (
-            true,
-            Some(
-                "enabled by UICP_ALLOW_NET; provider calls restricted by httpjail allowlists"
-                    .to_string(),
-            ),
-        )
-    } else {
-        (
-            true,
-            Some("network disabled by policy; set UICP_ALLOW_NET=1 to enable".to_string()),
-        )
-    };
-
-    // Load a concise httpjail allowlist summary (best-effort).
-    fn allowlist_path() -> std::path::PathBuf {
-        if let Some(override_os) = std::env::var_os("UICP_HTTPJAIL_ALLOWLIST") {
-            let p = std::path::PathBuf::from(&override_os);
-            if !p.as_os_str().is_empty() {
-                return p;
-            }
-        }
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("ops")
-            .join("code")
-            .join("network")
-            .join("allowlist.json")
-    }
-
-    let policy_path = allowlist_path();
-    let allowlist_summary: Option<serde_json::Value> = match std::fs::read_to_string(&policy_path) {
-        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(v) => {
-                let mut providers_obj = serde_json::Map::new();
-                if let Some(providers) = v.get("providers").and_then(|x| x.as_object()) {
-                    for (name, entry) in providers {
-                        let hosts = entry
-                            .get("hosts")
-                            .and_then(|h| h.as_array())
-                            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
-                            .unwrap_or_default();
-                        let methods = entry
-                            .get("methods")
-                            .and_then(|m| m.as_array())
-                            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
-                            .unwrap_or_default();
-                        let block_post = entry
-                            .get("blockPost")
-                            .and_then(|b| b.as_bool())
-                            .unwrap_or(true);
-
-                        let sample_hosts: Vec<&str> = hosts.iter().copied().take(3).collect();
-                        let provider_json = serde_json::json!({
-                            "hostsCount": hosts.len(),
-                            "hostsSample": sample_hosts,
-                            "methods": methods,
-                            "blockPost": block_post,
-                        });
-                        providers_obj.insert(name.clone(), provider_json);
-                    }
-                }
-                Some(serde_json::json!({
-                    "source": policy_path.display().to_string(),
-                    "providers": providers_obj,
-                }))
-            }
-            Err(err) => Some(serde_json::json!({
-                "error": format!("E-UICP-9301: allowlist parse failed: {}", err),
-                "source": policy_path.display().to_string(),
-            })),
-        },
-        Err(err) => Some(serde_json::json!({
-            "error": format!("E-UICP-9300: allowlist read failed: {}", err),
-            "source": policy_path.display().to_string(),
-        })),
-    };
-
-    let json = serde_json::json!({
-        "hasNetwork": has_network,
-        "restricted": restricted,
-        "reason": reason,
-        "allowlist": allowlist_summary
-    });
-
-    #[cfg(feature = "otel_spans")]
-    tracing::info!(
-        target = "uicp",
-        has_network,
-        restricted,
-        "network capabilities returned"
-    );
-    Ok(json)
 }
 
 #[tauri::command]

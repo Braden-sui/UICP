@@ -186,6 +186,8 @@ export const keystoreUnlockPassphrase = (passphrase: string) =>
 
 export const keystoreLock = () => inv<void>('keystore_lock');
 
+export const keystoreSentinelExists = () => inv<boolean>('keystore_sentinel_exists');
+
 export const secretSet = (service: string, account: string, value: string) =>
   inv<void>('secret_set', { service, account, value });
 

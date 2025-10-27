@@ -92,6 +92,9 @@ export type IntentTelemetry = {
   updatedAt: number;
 };
 
+// Minimal mirror of orchestrator SelectedModelInfo for UI display
+export type SelectedModelInfo = { provider?: string; model: string; alias?: string };
+
 export type TelemetryBuffer = {
   capacity: number;
   data: Array<IntentTelemetry | undefined>;
@@ -219,6 +222,8 @@ export type AppState = {
   plannerTwoPhaseEnabled: boolean;
   // Feature flag: Enable Motion-powered animations for windows/panels/icons
   motionEnabled: boolean;
+  // Last models chosen by orchestrator (resolved from YAML providers/models)
+  lastModels?: { planner?: SelectedModelInfo; actor?: SelectedModelInfo };
   // Tracks user-placement of desktop shortcuts so the layout feels persistent.
   desktopShortcuts: Record<string, DesktopShortcutPosition>;
   // Pinned workspace windows exposed as desktop shortcuts by windowId -> meta
@@ -288,6 +293,8 @@ export type AppState = {
   transitionOrchestrator: (event: OrchestratorEventName, metadata?: Record<string, unknown>) => StateTransition | null;
   startNewOrchestratorRun: () => void;
   canAutoApply: () => boolean;
+  // Set last-used models for current/most recent run
+  setLastModels: (models: { planner?: SelectedModelInfo; actor?: SelectedModelInfo } | undefined) => void;
 };
 
 export const useAppStore = create<AppState>()(
@@ -332,6 +339,7 @@ export const useAppStore = create<AppState>()(
       actorReasoningEffort: 'high',
       plannerTwoPhaseEnabled: readBooleanEnv('VITE_PLANNER_TWO_PHASE', getModeDefaults(getAppMode()).plannerTwoPhase),
       motionEnabled: true, // Start with Motion enabled by default
+      lastModels: undefined,
       desktopShortcuts: {},
       pinnedWindows: {},
       workspaceWindows: {},
@@ -760,6 +768,7 @@ export const useAppStore = create<AppState>()(
           return { orchestratorContext: newContext };
         }),
       canAutoApply: () => can_auto_apply(get().orchestratorContext),
+      setLastModels: (models) => set({ lastModels: models }),
     })),
     {
       name: 'uicp-app',

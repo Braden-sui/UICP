@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createId } from '../lib/utils';
-import { hasTauriBridge, openBrowserWindow } from '../lib/bridge/tauri';
+import { hasTauriBridge, openBrowserWindow, keystoreSentinelExists } from '../lib/bridge/tauri';
 import { useAppStore } from '../state/app';
 import { useKeystore } from '../state/keystore';
 import {
@@ -10,7 +10,7 @@ import {
   type ProviderId,
 } from '../lib/providers/setupGuides';
 
-type Step = 'intro' | 'providers' | 'summary';
+type Step = 'setup' | 'intro' | 'providers' | 'summary';
 
 type ProviderRow = {
   id: string;
@@ -71,12 +71,71 @@ const OnboardingWelcomeModal = () => {
       saving: false,
     })),
   );
+  const [firstRun, setFirstRun] = useState<boolean | null>(null);
+  const [username, setUsername] = useState('');
+  const [pass1, setPass1] = useState('');
+  const [pass2, setPass2] = useState('');
+
+  const renderSetup = () => (
+    <div className="flex flex-col gap-4">
+      <h2 className="text-xl font-semibold text-slate-900">Set up your keystore</h2>
+      <p className="text-sm text-slate-600">
+        Create a passphrase to encrypt your API keys. You will need this to unlock the keystore.
+      </p>
+      <div className="flex flex-col gap-3">
+        <input
+          type="text"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="Username (optional)"
+          className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-slate-500 focus:outline-none"
+        />
+        <input
+          type="password"
+          value={pass1}
+          onChange={(e) => setPass1(e.target.value)}
+          placeholder="Passphrase (min 6 chars)"
+          className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-slate-500 focus:outline-none"
+        />
+        <input
+          type="password"
+          value={pass2}
+          onChange={(e) => setPass2(e.target.value)}
+          placeholder="Confirm passphrase"
+          className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-slate-500 focus:outline-none"
+        />
+      </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <button
+          type="button"
+          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100"
+          onClick={() => setStep('intro')}
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={handleCreatePassphrase}
+          disabled={!canSetPass || keystore.busy}
+        >
+          {keystore.busy ? 'Setting up…' : 'Create & Unlock'}
+        </button>
+      </div>
+    </div>
+  );
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         await refreshStatus();
+        try {
+          const exists = await keystoreSentinelExists();
+          if (!cancelled) setFirstRun(exists.ok ? !exists.value : false);
+        } catch {
+          if (!cancelled) setFirstRun(false);
+        }
         const ids = await refreshIds();
         if (!cancelled && ids.length > 0) {
           setWelcomeCompleted(true);
@@ -115,6 +174,18 @@ const OnboardingWelcomeModal = () => {
   }, [rows]);
 
   const shouldShow = !welcomeCompleted && !initializing && knownIds.length === 0;
+  const canSetPass = pass1.trim().length >= 6 && pass1 === pass2;
+
+  const handleCreatePassphrase = useCallback(async () => {
+    if (!canSetPass) return;
+    const ok = await keystore.unlock(pass1);
+    if (ok) {
+      pushToast({ variant: 'success', message: 'Keystore initialized and unlocked.' });
+      setStep('providers');
+    } else {
+      pushToast({ variant: 'error', message: keystore.error ?? 'Failed to initialize keystore' });
+    }
+  }, [canSetPass, keystore, pass1, pushToast]);
 
   const handleRowProviderChange = useCallback((rowId: string, provider: ProviderId) => {
     setRows((prev) =>
@@ -387,7 +458,8 @@ const OnboardingWelcomeModal = () => {
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur">
       <div className="w-[min(720px,92vw)] rounded-3xl bg-slate-50 p-6 shadow-2xl">
-        {step === 'intro' ? renderIntro() : null}
+        {step === 'setup' || (firstRun && step === 'intro') ? renderSetup() : null}
+        {step === 'intro' && !firstRun ? renderIntro() : null}
         {step === 'providers' ? renderProviderRows() : null}
         {step === 'summary' ? renderSummary() : null}
       </div>

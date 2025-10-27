@@ -4,6 +4,8 @@ import {
   type AgentsFile,
   type ModelAlias,
   type ModelLimits,
+  type ProfileEntry,
+  type ProfileMode,
   type ResolvedCandidate,
   type ResolvedProfiles,
 } from './schema';
@@ -82,7 +84,7 @@ export const loadFromText = (yamlText: string): AgentsFile => {
   const raw = parseYaml(yamlText) as unknown;
   const interpolated = interpolate(raw);
   const parsed = AgentsFileSchema.parse(interpolated);
-  return parsed;
+  return migrateAgentsFile(parsed);
 };
 
 const formatBridgeError = (err: UICPError): string => {
@@ -195,8 +197,9 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
       },
       codegen: { engine: 'cli', allow_paid_fallback: false },
     };
-    snapshot = { data: minimal, loadedAt: Date.now(), source: 'builtin', rawHash: '0' };
-    return minimal;
+    const migrated = migrateAgentsFile(minimal);
+    snapshot = { data: migrated, loadedAt: Date.now(), source: 'builtin', rawHash: '0' };
+    return migrated;
   }
   const data = loadFromText(file.text);
   snapshot = { data, loadedAt: Date.now(), source: file.source, rawHash: hashString(file.text) };
@@ -244,6 +247,36 @@ const normalizeAlias = (entry: ModelAlias | undefined, fallbackId: string): Norm
   return { id: entry.id, alias: fallbackId, limits: entry.limits };
 };
 
+const selectMode = (profile: ProfileEntry): ProfileMode => {
+  if (profile.mode) {
+    return profile.mode;
+  }
+  if (profile.custom_model && profile.custom_model.trim()) {
+    return 'custom';
+  }
+  return 'preset';
+};
+
+const getPresetModel = (profile: ProfileEntry): string => {
+  if (profile.mode === 'preset' && profile.preset_model) {
+    return profile.preset_model;
+  }
+  if (!profile.mode) {
+    return profile.preset_model ?? profile.model;
+  }
+  return profile.preset_model ?? '';
+};
+
+const getCustomModel = (profile: ProfileEntry): string => {
+  if (profile.mode === 'custom' && profile.custom_model) {
+    return profile.custom_model;
+  }
+  if (!profile.mode) {
+    return profile.custom_model ?? profile.model;
+  }
+  return profile.custom_model ?? '';
+};
+
 export const resolveModel = (agents: AgentsFile, providerKey: string, modelOrAlias: string): string => {
   const provider = agents.providers[providerKey];
   if (!provider) return modelOrAlias;
@@ -275,18 +308,55 @@ const parseFallbackEntry = (entry: string): { provider?: string; model: string }
   return { provider: entry.slice(0, idx), model: entry.slice(idx + 1) };
 };
 
-export const resolveProfiles = (agents: AgentsFile): ResolvedProfiles => {
-  const planP = agents.profiles.planner;
-  const actP = agents.profiles.actor;
+const derivePrimaryModel = (agents: AgentsFile, profile: ProfileEntry): { aliasOrId: string; resolved: string } => {
+  const mode = selectMode(profile);
+  if (mode === 'custom') {
+    const customId = getCustomModel(profile);
+    return { aliasOrId: customId, resolved: customId };
+  }
+  const presetAlias = getPresetModel(profile) || profile.model;
+  const resolved = resolveModel(agents, profile.provider, presetAlias);
+  return { aliasOrId: presetAlias, resolved };
+};
 
-  const planner: ResolvedCandidate[] = [resolveCandidate(agents, planP.provider, planP.model)];
+const normalizeProfile = (profile: ProfileEntry): ProfileEntry => {
+  const mode = selectMode(profile);
+  if (mode === 'custom') {
+    const customId = getCustomModel(profile);
+    return {
+      ...profile,
+      mode,
+      model: customId,
+      preset_model: profile.preset_model,
+      custom_model: customId,
+    };
+  }
+  const presetAlias = getPresetModel(profile) || profile.model;
+  return {
+    ...profile,
+    mode,
+    model: presetAlias,
+    preset_model: presetAlias,
+    custom_model: profile.custom_model,
+  };
+};
+
+export const resolveProfiles = (agents: AgentsFile): ResolvedProfiles => {
+  const planP = normalizeProfile(agents.profiles.planner);
+  const actP = normalizeProfile(agents.profiles.actor);
+
+  const plannerPrimary = derivePrimaryModel(agents, planP);
+  const planner: ResolvedCandidate[] = [
+    resolveCandidate(agents, planP.provider, plannerPrimary.aliasOrId),
+  ];
   for (const fb of planP.fallbacks || []) {
     const { provider, model } = parseFallbackEntry(fb);
     const p = provider ?? planP.provider;
     planner.push(resolveCandidate(agents, p, model));
   }
 
-  const actor: ResolvedCandidate[] = [resolveCandidate(agents, actP.provider, actP.model)];
+  const actorPrimary = derivePrimaryModel(agents, actP);
+  const actor: ResolvedCandidate[] = [resolveCandidate(agents, actP.provider, actorPrimary.aliasOrId)];
   for (const fb of actP.fallbacks || []) {
     const { provider, model } = parseFallbackEntry(fb);
     const p = provider ?? actP.provider;
@@ -294,6 +364,38 @@ export const resolveProfiles = (agents: AgentsFile): ResolvedProfiles => {
   }
 
   return { planner, actor };
+};
+
+export const migrateProfileEntry = (profile: ProfileEntry): ProfileEntry => {
+  const mode = selectMode(profile);
+  if (mode === 'custom') {
+    const customId = getCustomModel(profile);
+    return {
+      ...profile,
+      mode,
+      model: customId,
+      preset_model: profile.preset_model,
+      custom_model: customId,
+    };
+  }
+  const presetAlias = getPresetModel(profile) || profile.model;
+  return {
+    ...profile,
+    mode,
+    model: presetAlias,
+    preset_model: presetAlias,
+    custom_model: profile.custom_model,
+  };
+};
+
+export const migrateAgentsFile = (agents: AgentsFile): AgentsFile => {
+  return {
+    ...agents,
+    profiles: {
+      planner: migrateProfileEntry(agents.profiles.planner),
+      actor: migrateProfileEntry(agents.profiles.actor),
+    },
+  };
 };
 
 const notifyPreflightListeners = (value: AgentsPreflight | null): void => {

@@ -16,6 +16,8 @@ const ModelLimitsSchema = z
   })
   .partial();
 
+const ProfileModeSchema = z.enum(['preset', 'custom']);
+
 export const ModelAliasObjectSchema = z.object({
   id: z.string().min(1),
   limits: ModelLimitsSchema.optional(),
@@ -30,13 +32,40 @@ export const ProviderSchema = z.object({
   list_models: ListModelsSchema.optional(),
 });
 
-export const ProfileEntrySchema = z.object({
-  provider: z.string(),
-  model: z.string(), // alias or concrete id
-  temperature: z.number().min(0).max(2).default(0.2),
-  max_tokens: z.number().int().positive().default(4096),
-  fallbacks: z.array(z.string()).default([]), // entries like 'provider:alias' or just alias
-});
+export const ProfileEntrySchema = z
+  .object({
+    provider: z.string(),
+    model: z.string(), // alias or concrete id (legacy field kept for orchestrator)
+    mode: ProfileModeSchema.optional(),
+    preset_model: z.string().optional(),
+    custom_model: z.string().optional(),
+    temperature: z.number().min(0).max(2).default(0.2),
+    max_tokens: z.number().int().positive().default(4096),
+    fallbacks: z.array(z.string()).default([]), // entries like 'provider:alias' or just alias
+  })
+  .superRefine((profile, ctx) => {
+    const mode: 'preset' | 'custom' = profile.mode ?? 'preset';
+    if (mode === 'preset') {
+      const presetValue = profile.preset_model ?? profile.model;
+      if (!presetValue || !presetValue.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['preset_model'],
+          message: 'Preset mode requires a model alias.',
+        });
+      }
+    }
+    if (mode === 'custom') {
+      const customValue = profile.custom_model ?? profile.model;
+      if (!customValue || !customValue.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['custom_model'],
+          message: 'Custom mode requires a concrete model id.',
+        });
+      }
+    }
+  });
 
 export const DefaultsSchema = z.object({
   temperature: z.number().min(0).max(2).default(0.2),
@@ -62,6 +91,7 @@ export const AgentsFileSchema = z.object({
 export type AgentsFile = z.infer<typeof AgentsFileSchema>;
 export type ProviderEntry = z.infer<typeof ProviderSchema>;
 export type ProfileEntry = z.infer<typeof ProfileEntrySchema>;
+export type ProfileMode = z.infer<typeof ProfileModeSchema>;
 export type ModelAliasObject = z.infer<typeof ModelAliasObjectSchema>;
 export type ModelAlias = z.infer<typeof ModelAliasSchema>;
 export type ModelLimits = z.infer<typeof ModelLimitsSchema>;

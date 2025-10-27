@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "fs-appdata-read",
+  "description": "Allow reading policy and config files from AppData (read-only)",
+  "windows": ["main"],
+  "permissions": [
+    "fs:allow-appdata-read",
+    "fs:allow-appdata-read-recursive",
+    "fs:allow-read-text-file"
+  ]
+}

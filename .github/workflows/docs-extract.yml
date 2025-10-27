@@ -1,0 +1,31 @@
+name: docs-extract
+
+on:
+  pull_request:
+    paths:
+      - '**/*.ts'
+      - '**/*.tsx'
+      - '**/*.rs'
+  workflow_dispatch: {}
+
+jobs:
+  docgen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate inventories
+        run: |
+          node scripts/docgen/extract-docs.mjs
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-generated
+          path: docs/generated

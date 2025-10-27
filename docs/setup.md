@@ -41,7 +41,7 @@ OLLAMA_API_KEY=your_cloud_key_here
 Notes
 - When `USE_DIRECT_CLOUD=1`, Cloud requests go to `https://ollama.com/api/chat` with `Authorization: Bearer <key>`.
 - Local offload uses `http://127.0.0.1:11434/v1/chat/completions` and requires a local daemon.
- - Preferred storage for `OLLAMA_API_KEY` is the OS keyring. If you place it in `.env` for convenience, the app will read it on startup and migrate it into the keyring automatically.
+- The desktop uses an embedded keystore. `.env` is read only by the frontend; there is no automatic migration from `.env` into the keystore. Use the Agent Settings UI to save API keys.
 
 ### Network Guard (in-app egress)
 

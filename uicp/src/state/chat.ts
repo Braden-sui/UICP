@@ -160,6 +160,7 @@ const executePlanGeneration = async ({
   // Orchestrator path: DeepSeek (planner) -> Qwen (actor) via streaming transport.
   app.setSuppressAutoApply(true);
   try {
+    app.setLastModels(undefined);
     const result = await runIntent(
       session.prompt,
       /* applyNow */ false,
@@ -196,6 +197,7 @@ const executePlanGeneration = async ({
         plannerTwoPhaseEnabled: app.plannerTwoPhaseEnabled,
       },
     );
+    app.setLastModels(result.models);
     notice = result.notice;
     const plannerFailure = result.failures?.planner;
     const actorFailure = result.failures?.actor;

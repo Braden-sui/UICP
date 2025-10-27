@@ -1,0 +1,38 @@
+name: docs-enforce
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  require-docs-on-api-change:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect API-affecting changes
+        id: code
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            uicp/src/lib/uicp/adapters/**
+            uicp/src/lib/schema/**
+            uicp/src-tauri/src/commands.rs
+            uicp/src-tauri/src/policy.rs
+            uicp/src-tauri/src/compute.rs
+
+      - name: Detect docs changes
+        id: docs
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            docs/**
+            uicp/README.md
+
+      - name: Enforce docs update
+        if: steps.code.outputs.any_changed == 'true' && steps.docs.outputs.any_changed == 'false'
+        run: |
+          echo "Detected API-affecting changes without docs updates." 1>&2
+          echo "Please update docs/ (architecture, adapter, providers, config, errors) or uicp/README.md." 1>&2
+          exit 1

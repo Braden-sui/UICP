@@ -40,6 +40,20 @@ const HKDF_PREFIX: &str = "uicp:secret:";
 const AAD_SUFFIX: &str = ":v1";
 const RNG_FAILURE_CODE: &str = "E-UICP-SEC-RNG";
 
+/// Legacy environment variable mappings used during migration from plaintext .env files.
+/// Tuple layout: (service namespace, account identifier, environment variable name)
+pub const ENV_SECRET_MAPPINGS: &[(&str, &str, &str)] = &[
+    ("uicp", "openai:api_key", "OPENAI_API_KEY"),
+    ("uicp", "anthropic:api_key", "ANTHROPIC_API_KEY"),
+    ("uicp", "openrouter:api_key", "OPENROUTER_API_KEY"),
+    ("uicp", "ollama:api_key", "OLLAMA_API_KEY"),
+];
+
+// Sentinel used to verify passphrase correctness without exposing the KEK or any real secrets.
+const SENTINEL_SERVICE: &str = "uicp";
+const SENTINEL_ACCOUNT: &str = "keystore:sentinel";
+const SENTINEL_PLAINTEXT: &[u8] = b"uicp-sentinel-v1";
+
 // Test-injectable RNG hook. In production, this remains None and OsRng is used.
 // In tests, set via set_test_rng_hook(Some(fn)) to simulate RNG failures or custom fills.
 thread_local! {
@@ -87,6 +101,8 @@ pub enum KeystoreError {
     Locked,
     #[error("E-UICP-SEC-UNAUTH: unlock method not available in current mode")]
     Unauthorized,
+    #[error("E-UICP-SEC-BADPASS: invalid passphrase or keystore corrupted")]
+    BadPassphrase,
     #[error("E-UICP-SEC-NOT_FOUND: secret not found")]
     NotFound,
     #[error("E-UICP-SEC-DB: {0}")]
@@ -233,6 +249,9 @@ impl Keystore {
             return Err(KeystoreError::Unauthorized);
         }
         let kek = derive_kek(passphrase.expose_secret(), &self.app_salt)?;
+        // Verify (or initialize on first run) the sentinel using the derived KEK.
+        // This rejects wrong passphrases without changing state.
+        self.verify_or_initialize_sentinel(&kek).await?;
         best_effort_lock(&kek, &self.memory_lock_warned);
         let expires_at = Instant::now() + self.ttl;
         {
@@ -387,6 +406,100 @@ impl Keystore {
             .map_err(|err| KeystoreError::Database(err.to_string()))?;
 
         Ok(SecretVec::new(plaintext))
+    }
+
+    // Read a raw record by id without requiring an unlocked state.
+    async fn get_secret_raw(&self, id: &str) -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
+        let query_id = id.to_string();
+        let rec = self
+            .conn
+            .call(move |conn| {
+                let res = conn
+                    .query_row(
+                        "SELECT nonce, aad, ciphertext FROM secrets WHERE id = ?1",
+                        params![query_id],
+                        |row| {
+                            let nonce: Vec<u8> = row.get(0)?;
+                            let aad: Vec<u8> = row.get(1)?;
+                            let ciphertext: Vec<u8> = row.get(2)?;
+                            Ok((nonce, aad, ciphertext))
+                        },
+                    )
+                    .optional()
+                    .map_err(tokio_rusqlite::Error::from)?;
+                Ok(res)
+            })
+            .await
+            .map_err(|err| KeystoreError::Database(err.to_string()))?;
+        Ok(rec)
+    }
+
+    /// Returns true if the keystore has been initialized with a sentinel record.
+    /// This check does not require an unlocked state.
+    pub async fn sentinel_exists(&self) -> Result<bool> {
+        let id = secret_id(SENTINEL_SERVICE, SENTINEL_ACCOUNT);
+        Ok(self.get_secret_raw(&id).await?.is_some())
+    }
+
+    // Insert or update a raw record by id. Used for sentinel initialization before unlocking state.
+    async fn put_secret_raw(
+        &self,
+        id: &str,
+        nonce: Vec<u8>,
+        aad: Vec<u8>,
+        ciphertext: Vec<u8>,
+        created_at: i64,
+    ) -> Result<()> {
+        let id_owned = id.to_string();
+        self.conn
+            .call(move |conn| {
+                conn
+                    .execute(
+                        "INSERT INTO secrets (id, nonce, aad, ciphertext, created_at, last_used_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(id) DO UPDATE SET
+                           nonce = excluded.nonce,
+                           aad = excluded.aad,
+                           ciphertext = excluded.ciphertext",
+                        params![id_owned, nonce, aad, ciphertext, created_at, created_at],
+                    )
+                    .map_err(tokio_rusqlite::Error::from)
+                    .map(|_| ())
+            })
+            .await
+            .map_err(|err| KeystoreError::Database(err.to_string()))?;
+        Ok(())
+    }
+
+    // Verify the sentinel using the provided KEK; if missing, initialize it.
+    async fn verify_or_initialize_sentinel(&self, kek: &SecretVec<u8>) -> Result<()> {
+        let id = secret_id(SENTINEL_SERVICE, SENTINEL_ACCOUNT);
+        if let Some((nonce, aad, ciphertext)) = self.get_secret_raw(&id).await? {
+            let mut dek = self.derive_dek(kek, &id)?;
+            let pt = decrypt_secret(&dek, &nonce, &aad, &ciphertext);
+            dek.zeroize();
+            match pt {
+                Ok(bytes) if bytes.as_slice() == SENTINEL_PLAINTEXT => Ok(()),
+                _ => Err(KeystoreError::BadPassphrase),
+            }
+        } else {
+            // First run: create the sentinel with the provided passphrase.
+            let aad = aad_value(SENTINEL_SERVICE, SENTINEL_ACCOUNT);
+            let mut dek = self.derive_dek(kek, &id)?;
+            let mut nonce_arr = [0u8; 24];
+            fill_nonce(&mut nonce_arr)?;
+            let ct = encrypt_secret(&dek, &nonce_arr, aad.as_bytes(), SENTINEL_PLAINTEXT)?;
+            dek.zeroize();
+            let created_at = chrono::Utc::now().timestamp_millis();
+            self.put_secret_raw(
+                &id,
+                nonce_arr.to_vec(),
+                aad.into_bytes(),
+                ct,
+                created_at,
+            )
+            .await
+        }
     }
 
     /// List SecretIds present in the keystore without exposing any plaintext values.
@@ -806,6 +919,32 @@ mod tests {
             .await
             .unwrap();
         assert!(after_read >= after_upsert, "read must update last_used_at");
+    }
+
+    #[tokio::test]
+    async fn unlock_with_wrong_passphrase_fails() {
+        let tmp = tempdir().unwrap();
+        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
+        // First unlock initializes sentinel with this passphrase
+        let _ = ks.unlock_passphrase(SecretString::new("correct-pass".into())).await.unwrap();
+        ks.lock();
+        // Wrong passphrase should be rejected
+        let err = ks.unlock_passphrase(SecretString::new("wrong-pass".into())).await.err().unwrap();
+        matches!(err, KeystoreError::BadPassphrase);
+    }
+
+    #[tokio::test]
+    async fn unlock_again_with_correct_passphrase_succeeds() {
+        let tmp = tempdir().unwrap();
+        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
+        // First unlock initializes sentinel
+        let _ = ks.unlock_passphrase(SecretString::new("my-pass".into())).await.unwrap();
+        ks.lock();
+        // Unlock with the same passphrase should succeed
+        let status = ks.unlock_passphrase(SecretString::new("my-pass".into())).await.unwrap();
+        assert!(!status.locked, "status should be unlocked after correct passphrase");
     }
 
     #[tokio::test]

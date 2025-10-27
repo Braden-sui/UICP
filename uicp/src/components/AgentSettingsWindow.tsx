@@ -23,12 +23,8 @@ import {
   usePreferencesStore,
   type CodegenDefaultProvider,
 } from '../state/preferences';
-import {
-  loadAgentsConfig,
-  saveAgentsConfig,
-  resolveModel,
-} from '../lib/agents/loader';
-import type { AgentsFile } from '../lib/agents/schema';
+import { loadAgentsConfig, saveAgentsConfig } from '../lib/agents/loader';
+import type { AgentsFile, ProfileEntry, ProfileMode } from '../lib/agents/schema';
 import { stringify } from 'yaml';
 
 const plannerProfiles = listPlannerProfiles();
@@ -57,6 +53,24 @@ const PROVIDER_INFO: Record<
   },
 };
 
+// Choose sensible defaults per provider for planner and actor
+const selectDefaultAliases = (
+  agents: AgentsFile | null,
+  providerKey: string,
+): { planner: string; actor: string } => {
+  const none = { planner: '', actor: '' };
+  if (!agents || !providerKey) return none;
+  const provider = agents.providers?.[providerKey];
+  if (!provider) return none;
+  const aliases = Object.keys(provider.model_aliases ?? {});
+  if (aliases.length === 0) return none;
+  const hasGPT = aliases.includes('gpt_default');
+  const hasClaude = aliases.includes('claude_default');
+  const planner = hasGPT ? 'gpt_default' : aliases[0];
+  const actor = hasClaude ? 'claude_default' : (aliases.find((a) => a !== planner) ?? aliases[0]);
+  return { planner, actor };
+};
+
 const describeStatus = (
   status: ProviderStatus,
 ): { label: string; className: string } => {
@@ -79,6 +93,179 @@ const normalizeDetail = (detail?: string): string | undefined => {
   const trimmed = detail.trim();
   if (!trimmed) return undefined;
   return trimmed.length > 220 ? `${trimmed.slice(0, 217)}...` : trimmed;
+};
+
+// Present a friendlier model label from a resolved model id
+// Examples:
+// - anthropic/claude-sonnet-4.5 -> claude sonnet 4.5
+// - glm-4.6 -> glm 4.6
+// - gpt-oss:120b -> gpt oss 120b
+const toFriendlyModelName = (resolvedId: string): string => {
+  const withoutPrefix = resolvedId.includes('/') ? resolvedId.split('/').pop()! : resolvedId;
+  return withoutPrefix.replace(/[-_:]/g, ' ');
+};
+
+type ProfileEditorState = {
+  provider: string;
+  mode: ProfileMode;
+  presetModel: string;
+  customModel: string;
+};
+
+type ModelPresetOption = {
+  id: string;
+  label: string;
+  resolvesTo: string;
+};
+
+const EMPTY_PROFILE_STATE: ProfileEditorState = {
+  provider: '',
+  mode: 'preset',
+  presetModel: '',
+  customModel: '',
+};
+
+const inferProfileEditorState = (profile?: ProfileEntry | null): ProfileEditorState => {
+  if (!profile) {
+    return { ...EMPTY_PROFILE_STATE };
+  }
+  const inferredMode: ProfileMode = profile.mode ?? (profile.custom_model && profile.custom_model.trim() ? 'custom' : 'preset');
+  const presetModel = profile.preset_model ?? (inferredMode === 'preset' ? profile.model ?? '' : '');
+  const customModel = profile.custom_model ?? (inferredMode === 'custom' ? profile.model ?? '' : '');
+  return {
+    provider: profile.provider ?? '',
+    mode: inferredMode,
+    presetModel: presetModel ?? '',
+    customModel: customModel ?? '',
+  };
+};
+
+const getProviderPresets = (agents: AgentsFile | null, providerKey: string): ModelPresetOption[] => {
+  if (!agents || !providerKey) return [];
+  const provider = agents.providers?.[providerKey];
+  if (!provider) return [];
+  const aliasEntries = Object.entries(provider.model_aliases ?? {});
+  return aliasEntries
+    .map(([alias, entry]) => {
+      const resolved = typeof entry === 'string' ? entry : entry.id;
+      const display = toFriendlyModelName(resolved);
+      return { id: alias, label: display, resolvesTo: resolved };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+};
+
+const validateCustomModel = (providerKey: string, value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 'Model id cannot be empty';
+  }
+  if (providerKey === 'openrouter' && !trimmed.includes('/')) {
+    return 'OpenRouter models require provider/model-name format';
+  }
+  return null;
+};
+
+type ModelSelectorProps = {
+  mode: ProfileMode;
+  provider: string;
+  presets: ModelPresetOption[];
+  presetValue: string;
+  customValue: string;
+  customPlaceholder: string;
+  customError: string | null;
+  disabled: boolean;
+  onModeChange: (mode: ProfileMode) => void;
+  onPresetChange: (value: string) => void;
+  onCustomChange: (value: string) => void;
+  onCustomBlur: () => void | Promise<void>;
+};
+
+const ModelSelector = (props: ModelSelectorProps) => {
+  const {
+    mode,
+    provider,
+    presets,
+    presetValue,
+    customValue,
+    customPlaceholder,
+    customError,
+    disabled,
+    onModeChange,
+    onPresetChange,
+    onCustomChange,
+    onCustomBlur,
+  } = props;
+  const hasProvider = provider.trim().length > 0;
+  const hasPresets = presets.length > 0;
+  const selectedPresetLabel = presets.find((p) => p.id === presetValue)?.label ?? (hasPresets ? presets[0].label : '');
+
+  const toggleButtonClass = 'self-start text-[11px] uppercase tracking-wide text-slate-500 hover:text-slate-700';
+
+  return (
+    <div className="flex flex-col gap-1 text-xs">
+      <span className="font-semibold uppercase tracking-wide text-slate-500">Model</span>
+      {!hasProvider ? (
+        <div className="rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+          Select a provider to choose a model.
+        </div>
+      ) : mode === 'preset' && hasPresets ? (
+        <div className="flex flex-col gap-2">
+          <label className="flex flex-col gap-1">
+            <span className="font-semibold uppercase tracking-wide text-slate-500">Preset</span>
+            <select
+              value={presetValue || presets[0]?.id || ''}
+              onChange={(event) => onPresetChange(event.target.value)}
+              disabled={disabled}
+              className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {presets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+            Selected: {selectedPresetLabel || 'Auto'}
+          </div>
+          <button type="button" className={toggleButtonClass} onClick={() => onModeChange('custom')} disabled={disabled}>
+            ⚙️ Use custom model id instead
+          </button>
+        </div>
+      ) : mode === 'preset' ? (
+        <div className="flex flex-col gap-2">
+          <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            No presets defined for this provider. Switch to a custom model id.
+          </div>
+          <button type="button" className={toggleButtonClass} onClick={() => onModeChange('custom')} disabled={disabled}>
+            ⚙️ Use custom model id
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <input
+            type="text"
+            value={customValue}
+            onChange={(event) => onCustomChange(event.target.value)}
+            onBlur={() => {
+              void onCustomBlur();
+            }}
+            placeholder={customPlaceholder}
+            disabled={disabled}
+            className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          {customError ? <span className="text-[11px] text-rose-600">⚠️ {customError}</span> : null}
+          {hasPresets ? (
+            <button type="button" className={toggleButtonClass} onClick={() => onModeChange('preset')} disabled={disabled}>
+              ↩️ Switch back to presets
+            </button>
+          ) : (
+            <span className="text-[11px] text-slate-500">This provider only supports custom model ids.</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 };
 
 const AgentSettingsWindow = () => {
@@ -140,14 +327,20 @@ const AgentSettingsWindow = () => {
   const [agentsConfig, setAgentsConfig] = useState<AgentsFile | null>(null);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(false);
   const [agentsError, setAgentsError] = useState<string | null>(null);
-  const [plannerProviderOverride, setPlannerProviderOverride] = useState<string>('');
-  const [plannerModelOverride, setPlannerModelOverride] = useState<string>('');
-  const [actorProviderOverride, setActorProviderOverride] = useState<string>('');
-  const [actorModelOverride, setActorModelOverride] = useState<string>('');
+  const [plannerState, setPlannerState] = useState<ProfileEditorState>({ ...EMPTY_PROFILE_STATE });
+  const [actorState, setActorState] = useState<ProfileEditorState>({ ...EMPTY_PROFILE_STATE });
+  const [globalProvider, setGlobalProvider] = useState<string>('');
+  const [plannerCustomError, setPlannerCustomError] = useState<string | null>(null);
+  const [actorCustomError, setActorCustomError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
   useEffect(() => {
     if (!hasTauriBridge()) {
       setAgentsConfig(null);
+      setPlannerState({ ...EMPTY_PROFILE_STATE });
+      setActorState({ ...EMPTY_PROFILE_STATE });
+      setPlannerCustomError(null);
+      setActorCustomError(null);
       return;
     }
     setAgentsLoading(true);
@@ -155,16 +348,14 @@ const AgentSettingsWindow = () => {
       try {
         const config = await loadAgentsConfig();
         setAgentsConfig(config);
-        const plannerProfileEntry = config.profiles?.planner;
-        const actorProfileEntry = config.profiles?.actor;
-        if (plannerProfileEntry) {
-          setPlannerProviderOverride(plannerProfileEntry.provider ?? '');
-          setPlannerModelOverride(plannerProfileEntry.model ?? '');
-        }
-        if (actorProfileEntry) {
-          setActorProviderOverride(actorProfileEntry.provider ?? '');
-          setActorModelOverride(actorProfileEntry.model ?? '');
-        }
+        setPlannerState(inferProfileEditorState(config.profiles?.planner));
+        setActorState(inferProfileEditorState(config.profiles?.actor));
+        const initialProvider = config.profiles?.planner?.provider ?? config.profiles?.actor?.provider ?? '';
+        setGlobalProvider(initialProvider);
+        setPlannerState((prev) => ({ ...prev, provider: initialProvider }));
+        setActorState((prev) => ({ ...prev, provider: initialProvider }));
+        setPlannerCustomError(null);
+        setActorCustomError(null);
         setAgentsError(null);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -178,21 +369,22 @@ const AgentSettingsWindow = () => {
 
   useEffect(() => {
     if (!agentsConfig?.profiles) {
-      setPlannerProviderOverride('');
-      setPlannerModelOverride('');
-      setActorProviderOverride('');
-      setActorModelOverride('');
+      setPlannerState({ ...EMPTY_PROFILE_STATE });
+      setActorState({ ...EMPTY_PROFILE_STATE });
+      setGlobalProvider('');
+      setPlannerCustomError(null);
+      setActorCustomError(null);
       return;
     }
     const { planner, actor } = agentsConfig.profiles;
-    if (planner) {
-      setPlannerProviderOverride(planner.provider ?? '');
-      setPlannerModelOverride(planner.model ?? '');
-    }
-    if (actor) {
-      setActorProviderOverride(actor.provider ?? '');
-      setActorModelOverride(actor.model ?? '');
-    }
+    setPlannerState(inferProfileEditorState(planner));
+    setActorState(inferProfileEditorState(actor));
+    const initialProvider = planner?.provider ?? actor?.provider ?? '';
+    setGlobalProvider(initialProvider);
+    setPlannerState((prev) => ({ ...prev, provider: initialProvider }));
+    setActorState((prev) => ({ ...prev, provider: initialProvider }));
+    setPlannerCustomError(null);
+    setActorCustomError(null);
   }, [agentsConfig]);
 
   const providerOptions = useMemo(() => {
@@ -200,47 +392,32 @@ const AgentSettingsWindow = () => {
     return Object.keys(agentsConfig.providers ?? {}).map((key) => ({ value: key, label: key }));
   }, [agentsConfig]);
 
-  const buildModelOptions = useCallback(
-    (providerKey: string, currentModel?: string) => {
-      if (!agentsConfig || !providerKey) {
-        return currentModel ? [{ value: currentModel, label: currentModel }] : [];
-      }
-      const provider = agentsConfig.providers?.[providerKey];
-      if (!provider) {
-        return currentModel ? [{ value: currentModel, label: currentModel }] : [];
-      }
-      const aliasEntries = Object.entries(provider.model_aliases ?? {});
-      const options = aliasEntries.map(([alias, entry]) => {
-        const resolved = typeof entry === 'string' ? entry : entry.id;
-        return { value: alias, label: `${alias} → ${resolved}` };
-      });
-      if (currentModel && !options.some((opt) => opt.value === currentModel)) {
-        options.push({ value: currentModel, label: currentModel });
-      }
-      return options.sort((a, b) => a.value.localeCompare(b.value));
-    },
-    [agentsConfig],
+  const customModelPlaceholder = useCallback((providerKey: string, role: 'planner' | 'actor'): string => {
+    switch (providerKey) {
+      case 'openai':
+        return role === 'planner' ? 'e.g. gpt-5, gpt-5-mini' : 'e.g. gpt-5, gpt-5-mini';
+      case 'anthropic':
+        return role === 'planner' ? 'e.g. claude-sonnet-4-5-20250929, claude-haiku-4-5' : 'e.g. claude-sonnet-4-5-20250929, claude-haiku-4-5';
+      case 'openrouter':
+        return role === 'planner' ? 'openai/gpt-5, anthropic/claude-sonnet-4.5' : 'anthropic/claude-sonnet-4.5, openai/gpt-5-mini';
+      case 'ollama':
+        return 'e.g. deepseek-v3.1, qwen3-coder:480b';
+      default:
+        return role === 'planner' ? 'Enter a model id or alias' : 'Enter a model id or alias';
+    }
+  }, []);
+
+  const plannerPresets = useMemo(
+    () => getProviderPresets(agentsConfig, globalProvider),
+    [agentsConfig, globalProvider],
   );
 
-  const plannerModelOptions = useMemo(
-    () => buildModelOptions(plannerProviderOverride, plannerModelOverride),
-    [buildModelOptions, plannerModelOverride, plannerProviderOverride],
+  const actorPresets = useMemo(
+    () => getProviderPresets(agentsConfig, globalProvider),
+    [agentsConfig, globalProvider],
   );
 
-  const actorModelOptions = useMemo(
-    () => buildModelOptions(actorProviderOverride, actorModelOverride),
-    [buildModelOptions, actorModelOverride, actorProviderOverride],
-  );
-
-  const plannerResolvedModelId = useMemo(() => {
-    if (!agentsConfig || !plannerProviderOverride || !plannerModelOverride) return '';
-    return resolveModel(agentsConfig, plannerProviderOverride, plannerModelOverride);
-  }, [agentsConfig, plannerModelOverride, plannerProviderOverride]);
-
-  const actorResolvedModelId = useMemo(() => {
-    if (!agentsConfig || !actorProviderOverride || !actorModelOverride) return '';
-    return resolveModel(agentsConfig, actorProviderOverride, actorModelOverride);
-  }, [actorModelOverride, actorProviderOverride, agentsConfig]);
+  // resolved model ids are internal; UI only shows friendly names
 
   const persistAgentsConfig = useCallback(
     async (updater: (draft: AgentsFile) => void) => {
@@ -497,77 +674,162 @@ const AgentSettingsWindow = () => {
     [setActorProfileKey],
   );
 
-  const handlePlannerProviderUpdate = useCallback(
+  const updateProfileConfig = useCallback(
+    async (role: 'planner' | 'actor', nextState: ProfileEditorState) => {
+      if (!agentsConfig) return;
+      await persistAgentsConfig((draft) => {
+        const profile = draft.profiles?.[role];
+        if (!profile) return;
+        profile.provider = nextState.provider;
+        profile.mode = nextState.mode;
+        profile.preset_model = nextState.presetModel.trim() || undefined;
+        profile.custom_model = nextState.customModel.trim() || undefined;
+        profile.model = nextState.mode === 'custom' ? nextState.customModel.trim() : nextState.presetModel.trim();
+      });
+    },
+    [agentsConfig, persistAgentsConfig],
+  );
+
+  const handleGlobalProviderChange = useCallback(
     async (event: ChangeEvent<HTMLSelectElement>) => {
       const provider = event.target.value;
-      setPlannerProviderOverride(provider);
-      if (!agentsConfig) return;
+      const defaults = selectDefaultAliases(agentsConfig, provider);
+      const nextPlanner: ProfileEditorState = {
+        provider,
+        mode: defaults.planner ? 'preset' : 'custom',
+        presetModel: defaults.planner,
+        customModel: plannerState.customModel,
+      };
+      const nextActor: ProfileEditorState = {
+        provider,
+        mode: defaults.actor ? 'preset' : 'custom',
+        presetModel: defaults.actor,
+        customModel: actorState.customModel,
+      };
+      setGlobalProvider(provider);
+      setPlannerState(nextPlanner);
+      setActorState(nextActor);
+      setPlannerCustomError(null);
+      setActorCustomError(null);
       try {
-        await persistAgentsConfig((draft) => {
-          const profile = draft.profiles?.planner;
-          if (!profile) return;
-          profile.provider = provider;
-        });
+        await updateProfileConfig('planner', nextPlanner);
+        await updateProfileConfig('actor', nextActor);
       } catch {
-        // toast already emitted
+        // toast emitted upstream
       }
     },
-    [agentsConfig, persistAgentsConfig],
+    [agentsConfig, plannerState.customModel, actorState.customModel, updateProfileConfig],
   );
 
-  const handlePlannerModelUpdate = useCallback(
-    async (event: ChangeEvent<HTMLSelectElement>) => {
-      const model = event.target.value;
-      setPlannerModelOverride(model);
-      if (!agentsConfig) return;
+  // Per-role provider change no longer exposed in UI
+
+  const handlePlannerModeChange = useCallback(
+    async (mode: ProfileMode) => {
+      const nextState: ProfileEditorState = {
+        ...plannerState,
+        mode,
+        presetModel: mode === 'preset' ? plannerState.presetModel || plannerPresets[0]?.id || '' : plannerState.presetModel,
+      };
+      setPlannerState(nextState);
+      if (mode === 'custom') {
+        const error = validateCustomModel(plannerState.provider, plannerState.customModel);
+        setPlannerCustomError(error);
+        if (error) return;
+      }
       try {
-        await persistAgentsConfig((draft) => {
-          const profile = draft.profiles?.planner;
-          if (!profile) return;
-          profile.model = model;
-        });
+        await updateProfileConfig('planner', nextState);
       } catch {
-        // toast already emitted
+        // toast emitted upstream
       }
     },
-    [agentsConfig, persistAgentsConfig],
+    [plannerState, plannerPresets, updateProfileConfig],
   );
 
-  const handleActorProviderUpdate = useCallback(
-    async (event: ChangeEvent<HTMLSelectElement>) => {
-      const provider = event.target.value;
-      setActorProviderOverride(provider);
-      if (!agentsConfig) return;
+  const handlePlannerPresetChange = useCallback(
+    async (value: string) => {
+      const nextState: ProfileEditorState = { ...plannerState, presetModel: value, mode: 'preset' };
+      setPlannerState(nextState);
       try {
-        await persistAgentsConfig((draft) => {
-          const profile = draft.profiles?.actor;
-          if (!profile) return;
-          profile.provider = provider;
-        });
+        await updateProfileConfig('planner', nextState);
       } catch {
-        // toast already emitted
+        // toast emitted upstream
       }
     },
-    [agentsConfig, persistAgentsConfig],
+    [plannerState, updateProfileConfig],
   );
 
-  const handleActorModelUpdate = useCallback(
-    async (event: ChangeEvent<HTMLSelectElement>) => {
-      const model = event.target.value;
-      setActorModelOverride(model);
-      if (!agentsConfig) return;
+  const handlePlannerCustomChange = useCallback((value: string) => {
+    setPlannerState((prev) => ({ ...prev, customModel: value }));
+    setPlannerCustomError(null);
+  }, []);
+
+  const handlePlannerCustomBlur = useCallback(async () => {
+    const error = validateCustomModel(plannerState.provider, plannerState.customModel);
+    setPlannerCustomError(error);
+    if (error) return;
+    const nextState: ProfileEditorState = { ...plannerState, mode: 'custom' };
+    setPlannerState(nextState);
+    try {
+      await updateProfileConfig('planner', nextState);
+    } catch {
+      // toast emitted upstream
+    }
+  }, [plannerState, updateProfileConfig]);
+
+  // Per-role provider change no longer exposed in UI
+
+  const handleActorModeChange = useCallback(
+    async (mode: ProfileMode) => {
+      const nextState: ProfileEditorState = {
+        ...actorState,
+        mode,
+        presetModel: mode === 'preset' ? actorState.presetModel || actorPresets[0]?.id || '' : actorState.presetModel,
+      };
+      setActorState(nextState);
+      if (mode === 'custom') {
+        const error = validateCustomModel(actorState.provider, actorState.customModel);
+        setActorCustomError(error);
+        if (error) return;
+      }
       try {
-        await persistAgentsConfig((draft) => {
-          const profile = draft.profiles?.actor;
-          if (!profile) return;
-          profile.model = model;
-        });
+        await updateProfileConfig('actor', nextState);
       } catch {
-        // toast already emitted
+        // toast emitted upstream
       }
     },
-    [agentsConfig, persistAgentsConfig],
+    [actorState, actorPresets, updateProfileConfig],
   );
+
+  const handleActorPresetChange = useCallback(
+    async (value: string) => {
+      const nextState: ProfileEditorState = { ...actorState, presetModel: value, mode: 'preset' };
+      setActorState(nextState);
+      try {
+        await updateProfileConfig('actor', nextState);
+      } catch {
+        // toast emitted upstream
+      }
+    },
+    [actorState, updateProfileConfig],
+  );
+
+  const handleActorCustomChange = useCallback((value: string) => {
+    setActorState((prev) => ({ ...prev, customModel: value }));
+    setActorCustomError(null);
+  }, []);
+
+  const handleActorCustomBlur = useCallback(async () => {
+    const error = validateCustomModel(actorState.provider, actorState.customModel);
+    setActorCustomError(error);
+    if (error) return;
+    const nextState: ProfileEditorState = { ...actorState, mode: 'custom' };
+    setActorState(nextState);
+    try {
+      await updateProfileConfig('actor', nextState);
+    } catch {
+      // toast emitted upstream
+    }
+  }, [actorState, updateProfileConfig]);
 
   const handleTwoPhaseToggle = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -817,7 +1079,16 @@ const AgentSettingsWindow = () => {
         </p>
         {bridgeAvailable && (
           <div className="rounded border border-slate-200 bg-white/80 p-3 text-sm text-slate-700 shadow-sm">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Planner &amp; Actor Providers</div>
+            <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <span>LLM Provider</span>
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
+              >
+                {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
+              </button>
+            </div>
             {agentsLoading && <div className="text-xs text-slate-500">Loading agents.yaml…</div>}
             {!agentsLoading && agentsError && (
               <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
@@ -826,13 +1097,12 @@ const AgentSettingsWindow = () => {
             )}
             {!agentsLoading && !agentsError && agentsConfig && (
               <div className="flex flex-col gap-3">
-                <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/40 p-3">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planner provider</span>
+                <div className="flex flex-col gap-3 rounded border border-slate-200 bg-slate-50/40 p-3">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Provider</span>
                   <label className="flex flex-col gap-1 text-xs">
-                    <span className="font-semibold uppercase tracking-wide text-slate-500">Provider</span>
                     <select
-                      value={plannerProviderOverride}
-                      onChange={handlePlannerProviderUpdate}
+                      value={globalProvider}
+                      onChange={handleGlobalProviderChange}
                       disabled={!agentsConfig}
                       className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
                     >
@@ -847,77 +1117,8 @@ const AgentSettingsWindow = () => {
                       )}
                     </select>
                   </label>
-                  <label className="flex flex-col gap-1 text-xs">
-                    <span className="font-semibold uppercase tracking-wide text-slate-500">Model alias</span>
-                    <select
-                      value={plannerModelOverride}
-                      onChange={handlePlannerModelUpdate}
-                      disabled={!plannerModelOptions.length}
-                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {plannerModelOptions.length === 0 ? (
-                        <option value="">No model aliases found</option>
-                      ) : (
-                        plannerModelOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-                  {plannerResolvedModelId && (
-                    <div className="text-[11px] text-slate-500">
-                      Resolved model: <span className="font-mono">{plannerResolvedModelId}</span>
-                    </div>
-                  )}
                 </div>
-                <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/40 p-3">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Actor provider</span>
-                  <label className="flex flex-col gap-1 text-xs">
-                    <span className="font-semibold uppercase tracking-wide text-slate-500">Provider</span>
-                    <select
-                      value={actorProviderOverride}
-                      onChange={handleActorProviderUpdate}
-                      disabled={!agentsConfig}
-                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-                    >
-                      {providerOptions.length === 0 ? (
-                        <option value="">No providers defined</option>
-                      ) : (
-                        providerOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-xs">
-                    <span className="font-semibold uppercase tracking-wide text-slate-500">Model alias</span>
-                    <select
-                      value={actorModelOverride}
-                      onChange={handleActorModelUpdate}
-                      disabled={!actorModelOptions.length}
-                      className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {actorModelOptions.length === 0 ? (
-                        <option value="">No model aliases found</option>
-                      ) : (
-                        actorModelOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-                  {actorResolvedModelId && (
-                    <div className="text-[11px] text-slate-500">
-                      Resolved model: <span className="font-mono">{actorResolvedModelId}</span>
-                    </div>
-                  )}
-                </div>
+                {/* Model selection moved into profile sections; no duplicate Planner/Actor blocks here */}
               </div>
             )}
             {!agentsLoading && !agentsError && !agentsConfig && (
@@ -945,6 +1146,22 @@ const AgentSettingsWindow = () => {
             <span className="text-[11px] uppercase tracking-wide text-slate-400">
               Channels: {plannerProfile.capabilities?.channels.join(', ') ?? 'commentary'}
             </span>
+            <div className="mt-2">
+              <ModelSelector
+                mode={plannerState.mode}
+                provider={globalProvider}
+                presets={plannerPresets}
+                presetValue={plannerState.presetModel}
+                customValue={plannerState.customModel}
+                customPlaceholder={customModelPlaceholder(globalProvider, 'planner')}
+                customError={plannerCustomError}
+                disabled={!globalProvider}
+                onModeChange={handlePlannerModeChange}
+                onPresetChange={handlePlannerPresetChange}
+                onCustomChange={handlePlannerCustomChange}
+                onCustomBlur={handlePlannerCustomBlur}
+              />
+            </div>
           </label>
           {plannerProfile.key === 'gpt-oss' && (
             <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/30 p-3 text-sm text-slate-600">
@@ -983,6 +1200,22 @@ const AgentSettingsWindow = () => {
             <span className="text-[11px] uppercase tracking-wide text-slate-400">
               Channels: {actorProfile.capabilities?.channels.join(', ') ?? 'commentary'}
             </span>
+            <div className="mt-2">
+              <ModelSelector
+                mode={actorState.mode}
+                provider={globalProvider}
+                presets={actorPresets}
+                presetValue={actorState.presetModel}
+                customValue={actorState.customModel}
+                customPlaceholder={customModelPlaceholder(globalProvider, 'actor')}
+                customError={actorCustomError}
+                disabled={!globalProvider}
+                onModeChange={handleActorModeChange}
+                onPresetChange={handleActorPresetChange}
+                onCustomChange={handleActorCustomChange}
+                onCustomBlur={handleActorCustomBlur}
+              />
+            </div>
           </label>
           {actorProfile.key === 'gpt-oss' && (
             <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50/30 p-3 text-sm text-slate-600">
@@ -1069,6 +1302,7 @@ const AgentSettingsWindow = () => {
           </div>
         </div>
 
+        {showAdvanced && (
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Connect Providers (Wizard)</div>
           <div className="grid grid-cols-1 gap-2 text-xs text-slate-600">
@@ -1182,6 +1416,8 @@ const AgentSettingsWindow = () => {
             </div>
           </div>
         </div>
+        )}
+        {showAdvanced && (
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Container Security</div>
           <label className="flex items-center gap-3 rounded border border-slate-200 bg-white/80 p-3 text-sm">
@@ -1209,6 +1445,9 @@ const AgentSettingsWindow = () => {
             </div>
           </label>
         </div>
+        )}
+        {showAdvanced && (
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Code Providers</div>
           <div className="flex flex-col gap-3">
             {providerEntries.map(({ provider, status }) => {
@@ -1328,47 +1567,51 @@ const AgentSettingsWindow = () => {
             </label>
             {!bridgeAvailable && (
               <span className="text-slate-500">
-                Provider commands require the desktop runtime. Buttons stay disabled in browser preview.
+                This provider requires interactive login and will open a new window or dialog. Keep the Assistant window visible so you can approve the request quickly.
               </span>
             )}
           </div>
         </div>
-        <div className="rounded border border-slate-200 bg-white/60 p-3">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Network (Proxy)</div>
-          <div className="flex flex-col gap-2 text-xs text-slate-600">
-            <label className="flex flex-col gap-1">
-              <span className="font-semibold uppercase tracking-wide text-slate-500">HTTPS Proxy</span>
-              <input
-                type="text"
-                value={proxyHttps}
-                onChange={(e) => setProxyHttps(e.target.value)}
-                placeholder="http://host:port"
-                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="font-semibold uppercase tracking-wide text-slate-500">No Proxy</span>
-              <input
-                type="text"
-                value={proxyNoProxy}
-                onChange={(e) => setProxyNoProxy(e.target.value)}
-                placeholder="localhost,127.0.0.1"
-                className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
-              />
-            </label>
-            <div>
-              <button
-                type="button"
-                onClick={handleApplyProxy}
-                disabled={!bridgeAvailable}
-                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Apply Proxy
-              </button>
-              <span className="ml-2 text-slate-500">Affects new CLI runs (login/health/jobs)</span>
+        )}
+        {showAdvanced && (
+          <div className="rounded border border-slate-200 bg-white/60 p-3">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Network (Proxy)</div>
+            <div className="flex flex-col gap-2 text-xs text-slate-600">
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-slate-500">HTTPS Proxy</span>
+                <input
+                  type="text"
+                  value={proxyHttps}
+                  onChange={(e) => setProxyHttps(e.target.value)}
+                  placeholder="http://host:port"
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-slate-500">No Proxy</span>
+                <input
+                  type="text"
+                  value={proxyNoProxy}
+                  onChange={(e) => setProxyNoProxy(e.target.value)}
+                  placeholder="localhost,127.0.0.1"
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-inner focus:border-slate-400 focus:outline-none"
+                />
+              </label>
+              <div>
+                <button
+                  type="button"
+                  onClick={handleApplyProxy}
+                  disabled={!bridgeAvailable}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Apply Proxy
+                </button>
+                <span className="ml-2 text-slate-500">Affects new CLI runs (login/health/jobs)</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
+
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <label className="flex items-center gap-3 text-sm">
             <input
@@ -1383,43 +1626,47 @@ const AgentSettingsWindow = () => {
             </div>
           </label>
         </div>
-        <div className="rounded border border-slate-200 p-3">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Wasm Modules</div>
-          <div className="text-xs text-slate-600">Directory: <span className="font-mono">{modulesDir || 'unresolved'}</span></div>
-          <div className="text-xs text-slate-600">Manifest entries: {modulesCount}</div>
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              onClick={handleCopyModulesPath}
-              className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
-            >
-              Copy Path
-            </button>
-            <button
-              type="button"
-              onClick={handleOpenModulesFolder}
-              className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
-            >
-              Open Folder
-            </button>
-            <button
-              type="button"
-              onClick={handleVerifyModules}
-              className="rounded border border-emerald-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 hover:bg-emerald-50"
-              title="Runs modules:verify"
-            >
-              Verify Modules
-            </button>
-            <button
-              type="button"
-              onClick={handleClearComputeCache}
-              className="rounded border border-rose-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-700 hover:bg-rose-50"
-              title="Clears workspace-scoped compute cache"
-            >
-              Clear Cache
-            </button>
+
+        {showAdvanced && (
+          <div className="rounded border border-slate-200 p-3">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Wasm Modules</div>
+            <div className="text-xs text-slate-600">Directory: <span className="font-mono">{modulesDir || 'unresolved'}</span></div>
+            <div className="text-xs text-slate-600">Manifest entries: {modulesCount}</div>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={handleCopyModulesPath}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
+              >
+                Copy Path
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenModulesFolder}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
+              >
+                Open Folder
+              </button>
+              <button
+                type="button"
+                onClick={handleVerifyModules}
+                className="rounded border border-emerald-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 hover:bg-emerald-50"
+                title="Runs modules:verify"
+              >
+                Verify Modules
+              </button>
+              <button
+                type="button"
+                onClick={handleClearComputeCache}
+                className="rounded border border-rose-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-700 hover:bg-rose-50"
+                title="Clears workspace-scoped compute cache"
+              >
+                Clear Cache
+              </button>
+            </div>
           </div>
-        </div>
+        )}
+
         <div className="flex justify-end">
           <button
             type="button"
@@ -1429,6 +1676,7 @@ const AgentSettingsWindow = () => {
             Close
           </button>
         </div>
+      </div>
     </DesktopWindow>
   );
 };

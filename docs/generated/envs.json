@@ -1,0 +1,317 @@
+{
+  "frontend": [
+    "VITE_ACTOR_PROFILE",
+    "VITE_ACTOR_TIMEOUT_MS",
+    "VITE_CHAT_DEFAULT_TIMEOUT_MS",
+    "VITE_DEFAULT_MAX_TOKENS",
+    "VITE_DEV_MODE",
+    "VITE_GUARD_ALLOW_DOMAINS",
+    "VITE_GUARD_ALLOW_IPS",
+    "VITE_GUARD_ALLOW_IP_RANGES",
+    "VITE_GUARD_ALLOW_PATHS",
+    "VITE_GUARD_ATTEMPT_SAMPLE",
+    "VITE_GUARD_BLOCK_DOMAINS",
+    "VITE_GUARD_BLOCK_IPS",
+    "VITE_GUARD_BLOCK_SERVICE_WORKER",
+    "VITE_GUARD_BLOCK_WEBRTC",
+    "VITE_GUARD_BLOCK_WEBTRANSPORT",
+    "VITE_GUARD_BLOCK_WORKERS",
+    "VITE_GUARD_FPR_THRESHOLD",
+    "VITE_GUARD_MAX_REDIRECTS",
+    "VITE_GUARD_MAX_REQUEST_BYTES",
+    "VITE_GUARD_MAX_RESPONSE_BYTES",
+    "VITE_GUARD_MIN_ATTEMPTS",
+    "VITE_GUARD_ROLLOUT_MINUTES_MONITOR",
+    "VITE_GUARD_ROLLOUT_STAGE",
+    "VITE_GUARD_VERBOSE",
+    "VITE_NET_GUARD_ENABLED",
+    "VITE_NET_GUARD_MONITOR",
+    "VITE_PLANNER_PROFILE",
+    "VITE_PLANNER_TIMEOUT_MS",
+    "VITE_PLANNER_TWO_PHASE",
+    "VITE_TASK_SPEC_TIMEOUT_MS",
+    "VITE_UICP_MODE",
+    "VITE_URLHAUS_API_BASE",
+    "VITE_URLHAUS_AUTH_KEY",
+    "VITE_URLHAUS_CACHE_TTL_SEC",
+    "VITE_URLHAUS_ENABLED",
+    "VITE_URLHAUS_MODE",
+    "VITE_URLHAUS_PERSIST",
+    "VITE_URLHAUS_PERSIST_KEY",
+    "VITE_URLHAUS_PERSIST_MAX",
+    "VITE_URLHAUS_PERSIST_TTL_SEC",
+    "VITE_URLHAUS_RESPECT_ALLOWS",
+    "VITE_URLHAUS_TIMEOUT_MS",
+    "VITE_WIL_DEBUG",
+    "VITE_WIL_MAX_BUFFER_KB",
+    "VITE_WIL_ONLY"
+  ],
+  "backend": [
+    "STRICT_MODULES_VERIFY",
+    "UICP_ACTION_LOG_PUBKEY",
+    "UICP_ACTION_LOG_SIGNING_SEED",
+    "UICP_ADAPTER_V2",
+    "UICP_ALLOW_NET",
+    "UICP_CACHE_V2",
+    "UICP_CIRCUIT_MAX_FAILURES",
+    "UICP_CIRCUIT_OPEN_MS",
+    "UICP_CI_PUBKEY_ENFORCE",
+    "UICP_CLAUDE_BIN",
+    "UICP_CLAUDE_PATH",
+    "UICP_CODEGEN_ANTHROPIC_ENDPOINT",
+    "UICP_CODEGEN_OPENAI_ENDPOINT",
+    "UICP_CODEGEN_OPENAI_MODEL",
+    "UICP_CODEX_BIN",
+    "UICP_CODEX_PATH",
+    "UICP_DATA_DIR",
+    "UICP_DB_MAINTENANCE_INTERVAL_HOURS",
+    "UICP_DB_VACUUM_INTERVAL_DAYS",
+    "UICP_DEBUG",
+    "UICP_DISABLE_FIREWALL",
+    "UICP_HEALTH_STRICT",
+    "UICP_HTTPJAIL",
+    "UICP_HTTPJAIL_ALLOWLIST",
+    "UICP_JOB_TOKEN_KEY_HEX",
+    "UICP_KEYSTORE_MODE",
+    "UICP_KEYSTORE_TTL_SEC",
+    "UICP_MODE",
+    "UICP_MODULES_DIR",
+    "UICP_MODULES_PUBKEY",
+    "UICP_MODULES_SIGNING_SEED",
+    "UICP_NPM_PATH",
+    "UICP_POLICY",
+    "UICP_POLICY_VERSION",
+    "UICP_PROFILES_MODE",
+    "UICP_REQUIRE_TOKENS",
+    "UICP_SAFE_MODE",
+    "UICP_SCRIPT_SOURCE_B64",
+    "UICP_SKIP_CONTRACT_VERIFY",
+    "UICP_STRICT_CAPS",
+    "UICP_STRICT_TIMING",
+    "UICP_TEST_COMPUTE_DELAY_MS",
+    "UICP_TEST_NPM_LOG",
+    "UICP_TRUST_STORE",
+    "UICP_TRUST_STORE_JSON",
+    "UICP_WASI_DIAG",
+    "UICP_WASM_CONCURRENCY"
+  ],
+  "files": {
+    "uicp/components/applet.quickjs/src/lib.rs": [
+      "UICP_SCRIPT_SOURCE_B64"
+    ],
+    "uicp/src/components/AgentSettingsWindow.tsx": [
+      "UICP_DISABLE_FIREWALL",
+      "UICP_HEALTH_STRICT",
+      "UICP_STRICT_CAPS"
+    ],
+    "uicp/src/components/ModuleRegistryWindow.tsx": [
+      "STRICT_MODULES_VERIFY"
+    ],
+    "uicp/src/lib/config.ts": [
+      "UICP_PROFILES_MODE",
+      "VITE_PLANNER_TWO_PHASE",
+      "VITE_WIL_DEBUG",
+      "VITE_WIL_MAX_BUFFER_KB",
+      "VITE_WIL_ONLY"
+    ],
+    "uicp/src/lib/llm/generateTaskSpec.ts": [
+      "VITE_TASK_SPEC_TIMEOUT_MS"
+    ],
+    "uicp/src/lib/llm/ollama.ts": [
+      "VITE_CHAT_DEFAULT_TIMEOUT_MS"
+    ],
+    "uicp/src/lib/llm/orchestrator.ts": [
+      "VITE_ACTOR_TIMEOUT_MS",
+      "VITE_DEFAULT_MAX_TOKENS",
+      "VITE_PLANNER_TIMEOUT_MS"
+    ],
+    "uicp/src/lib/llm/profiles.ts": [
+      "VITE_ACTOR_PROFILE",
+      "VITE_PLANNER_PROFILE"
+    ],
+    "uicp/src/lib/mode.ts": [
+      "UICP_MODE",
+      "VITE_UICP_MODE"
+    ],
+    "uicp/src/lib/security/guardRollout.ts": [
+      "VITE_GUARD_FPR_THRESHOLD",
+      "VITE_GUARD_MIN_ATTEMPTS",
+      "VITE_GUARD_ROLLOUT_MINUTES_MONITOR",
+      "VITE_GUARD_ROLLOUT_STAGE"
+    ],
+    "uicp/src/lib/security/networkGuard.ts": [
+      "VITE_GUARD_ALLOW_DOMAINS",
+      "VITE_GUARD_ALLOW_IPS",
+      "VITE_GUARD_ALLOW_IP_RANGES",
+      "VITE_GUARD_ALLOW_PATHS",
+      "VITE_GUARD_ATTEMPT_SAMPLE",
+      "VITE_GUARD_BLOCK_DOMAINS",
+      "VITE_GUARD_BLOCK_IPS",
+      "VITE_GUARD_BLOCK_SERVICE_WORKER",
+      "VITE_GUARD_BLOCK_WEBRTC",
+      "VITE_GUARD_BLOCK_WEBTRANSPORT",
+      "VITE_GUARD_BLOCK_WORKERS",
+      "VITE_GUARD_MAX_REDIRECTS",
+      "VITE_GUARD_MAX_REQUEST_BYTES",
+      "VITE_GUARD_MAX_RESPONSE_BYTES",
+      "VITE_GUARD_VERBOSE",
+      "VITE_NET_GUARD_ENABLED",
+      "VITE_NET_GUARD_MONITOR",
+      "VITE_URLHAUS_API_BASE",
+      "VITE_URLHAUS_AUTH_KEY",
+      "VITE_URLHAUS_CACHE_TTL_SEC",
+      "VITE_URLHAUS_ENABLED",
+      "VITE_URLHAUS_MODE",
+      "VITE_URLHAUS_PERSIST",
+      "VITE_URLHAUS_PERSIST_KEY",
+      "VITE_URLHAUS_PERSIST_MAX",
+      "VITE_URLHAUS_PERSIST_TTL_SEC",
+      "VITE_URLHAUS_RESPECT_ALLOWS",
+      "VITE_URLHAUS_TIMEOUT_MS"
+    ],
+    "uicp/src/lib/security/policyLoader.ts": [
+      "UICP_POLICY",
+      "UICP_SAFE_MODE"
+    ],
+    "uicp/src/lib/uicp/adapters/lifecycle.ts": [
+      "UICP_ADAPTER_V2"
+    ],
+    "uicp/src/state/app.ts": [
+      "VITE_DEV_MODE",
+      "VITE_PLANNER_TWO_PHASE"
+    ],
+    "uicp/src/types/env.d.ts": [
+      "VITE_ACTOR_TIMEOUT_MS",
+      "VITE_CHAT_DEFAULT_TIMEOUT_MS",
+      "VITE_PLANNER_TIMEOUT_MS",
+      "VITE_UICP_MODE",
+      "VITE_WIL_DEBUG",
+      "VITE_WIL_MAX_BUFFER_KB",
+      "VITE_WIL_ONLY"
+    ],
+    "uicp/src-tauri/src/action_log.rs": [
+      "UICP_ACTION_LOG_SIGNING_SEED",
+      "UICP_MODULES_SIGNING_SEED"
+    ],
+    "uicp/src-tauri/src/bin/uicp_log.rs": [
+      "UICP_ACTION_LOG_PUBKEY"
+    ],
+    "uicp/src-tauri/src/codegen.rs": [
+      "UICP_CODEGEN_OPENAI_ENDPOINT",
+      "UICP_CODEGEN_OPENAI_MODEL",
+      "UICP_HTTPJAIL"
+    ],
+    "uicp/src-tauri/src/code_provider.rs": [
+      "UICP_CLAUDE_BIN",
+      "UICP_CLAUDE_PATH",
+      "UICP_CODEX_BIN",
+      "UICP_CODEX_PATH",
+      "UICP_HTTPJAIL",
+      "UICP_HTTPJAIL_ALLOWLIST"
+    ],
+    "uicp/src-tauri/src/commands.rs": [
+      "UICP_CACHE_V2",
+      "UICP_DATA_DIR",
+      "UICP_POLICY_VERSION"
+    ],
+    "uicp/src-tauri/src/compute.rs": [
+      "UICP_CACHE_V2",
+      "UICP_POLICY_VERSION",
+      "UICP_SCRIPT_SOURCE_B64",
+      "UICP_SKIP_CONTRACT_VERIFY",
+      "UICP_TEST_COMPUTE_DELAY_MS",
+      "UICP_WASI_DIAG"
+    ],
+    "uicp/src-tauri/src/core.rs": [
+      "UICP_CIRCUIT_MAX_FAILURES",
+      "UICP_CIRCUIT_OPEN_MS",
+      "UICP_DATA_DIR"
+    ],
+    "uicp/src-tauri/src/keystore.rs": [
+      "UICP_KEYSTORE_MODE",
+      "UICP_KEYSTORE_TTL_SEC"
+    ],
+    "uicp/src-tauri/src/main.rs": [
+      "STRICT_MODULES_VERIFY",
+      "UICP_ALLOW_NET",
+      "UICP_CACHE_V2",
+      "UICP_DB_MAINTENANCE_INTERVAL_HOURS",
+      "UICP_DB_VACUUM_INTERVAL_DAYS",
+      "UICP_DEBUG",
+      "UICP_HTTPJAIL_ALLOWLIST",
+      "UICP_JOB_TOKEN_KEY_HEX",
+      "UICP_MODULES_PUBKEY",
+      "UICP_POLICY_VERSION",
+      "UICP_REQUIRE_TOKENS",
+      "UICP_TRUST_STORE",
+      "UICP_TRUST_STORE_JSON",
+      "UICP_WASM_CONCURRENCY"
+    ],
+    "uicp/src-tauri/src/policy.rs": [
+      "UICP_CODEGEN_ANTHROPIC_ENDPOINT",
+      "UICP_CODEGEN_OPENAI_ENDPOINT"
+    ],
+    "uicp/src-tauri/src/provider_cli.rs": [
+      "UICP_CLAUDE_BIN",
+      "UICP_CLAUDE_PATH",
+      "UICP_CODEX_BIN",
+      "UICP_CODEX_PATH",
+      "UICP_HEALTH_STRICT",
+      "UICP_HTTPJAIL",
+      "UICP_HTTPJAIL_ALLOWLIST",
+      "UICP_NPM_PATH",
+      "UICP_TEST_NPM_LOG"
+    ],
+    "uicp/src-tauri/src/registry.rs": [
+      "STRICT_MODULES_VERIFY",
+      "UICP_CI_PUBKEY_ENFORCE",
+      "UICP_MODULES_DIR",
+      "UICP_MODULES_PUBKEY",
+      "UICP_TRUST_STORE",
+      "UICP_TRUST_STORE_JSON"
+    ],
+    "uicp/src-tauri/src/test_support/harness.rs": [
+      "UICP_DATA_DIR",
+      "UICP_MODULES_DIR"
+    ],
+    "uicp/src-tauri/tests/integration_compute/codegen_e2e.rs": [
+      "UICP_HTTPJAIL"
+    ],
+    "uicp/src-tauri/tests/integration_compute/concurrency_cap.rs": [
+      "UICP_SKIP_CONTRACT_VERIFY",
+      "UICP_STRICT_TIMING",
+      "UICP_TEST_COMPUTE_DELAY_MS"
+    ],
+    "uicp/src-tauri/tests/integration_compute/determinism.rs": [
+      "UICP_SKIP_CONTRACT_VERIFY"
+    ],
+    "uicp/src-tauri/tests/integration_compute/kill_replay_shakedown.rs": [
+      "UICP_SKIP_CONTRACT_VERIFY"
+    ],
+    "uicp/src-tauri/tests/integration_compute/module_smoke.rs": [
+      "UICP_MODULES_DIR",
+      "UICP_SKIP_CONTRACT_VERIFY"
+    ],
+    "uicp/src-tauri/tests/integration_compute/policy_enforcement.rs": [
+      "UICP_HTTPJAIL"
+    ],
+    "uicp/src-tauri/tests/integration_compute/quickjs_applet.rs": [
+      "UICP_MODULES_DIR",
+      "UICP_SKIP_CONTRACT_VERIFY"
+    ],
+    "uicp/src-tauri/tests/integration_compute/script_world.rs": [
+      "UICP_MODULES_DIR",
+      "UICP_SKIP_CONTRACT_VERIFY"
+    ],
+    "uicp/src-tauri/tests/integration_compute.rs": [
+      "UICP_MODULES_DIR"
+    ],
+    "uicp/tests/unit/adapter.v2-flag.test.ts": [
+      "UICP_ADAPTER_V2"
+    ],
+    "uicp/tests/unit/security.policyLoader.default.test.ts": [
+      "UICP_POLICY",
+      "UICP_SAFE_MODE"
+    ]
+  }
+}

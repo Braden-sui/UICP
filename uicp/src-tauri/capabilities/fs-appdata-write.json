@@ -1,0 +1,21 @@
+{
+  "$schema": "./schema.json",
+  "identifier": "fs-appdata-write",
+  "description": "Allow creating and writing policy/config files under $APPDATA/uicp (scoped, no Desktop access)",
+  "windows": ["main"],
+  "permissions": [
+    "fs:allow-appdata-read",
+    "fs:allow-appdata-read-recursive",
+    "fs:allow-appdata-write",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPDATA/uicp/**" }
+      ]
+    }
+  ]
+}

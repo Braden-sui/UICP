@@ -1,6 +1,7 @@
 # UICP Documentation
 
-**Status**: October 19, 2025 - Production
+Note: This page is not the canonical index. Prefer docs/INDEX.md for the
+authoritative entry point to all current documentation.
 
 ---
 
@@ -8,7 +9,8 @@
 
 ### Core Documentation
 
-- **[ADAPTER_V2_COMPLETE.md](ADAPTER_V2_COMPLETE.md)** - Adapter v2 architecture (complete)
+- **[INDEX.md](INDEX.md)** - Canonical docs index
+- **[adapter.md](adapter.md)** - Adapter v2 internals (authoritative)
 - **[STATUS.md](STATUS.md)** - Current project status
 - **[USER_GUIDE.md](USER_GUIDE.md)** - User guide and core concepts
 
@@ -51,14 +53,9 @@ UICP is a local-first desktop environment that you build through natural languag
 
 ## Test Status
 
-```
-✅ 382 tests passing (85 test files)
-⚠️  1 test failing (agents loader)
-✅ TypeScript: 0 errors
-✅ Lint: 0 errors
-```
-
-Note: One test in `agents/loader.test.ts` currently fails due to yaml dependency issue.
+See CI badges and logs for current pass/fail status. Local results vary by
+platform and feature flags; prefer running `pnpm test` under `uicp/` for an
+up-to-date snapshot.
 
 ---
 
@@ -106,6 +103,5 @@ uicp/
 ---
 
 **For detailed information, see individual documentation files linked above.**
-
 
 

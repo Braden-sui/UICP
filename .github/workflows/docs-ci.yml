@@ -1,0 +1,29 @@
+name: docs-ci
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'uicp/README.md'
+  workflow_dispatch: {}
+
+jobs:
+  link-and-spell:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Markdown link check
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: 'yes'
+          folder-path: 'docs'
+
+      - name: Codespell
+        uses: codespell-project/actions-codespell@v2
+        with:
+          check_filenames: true
+          path: |
+            docs
+            uicp/README.md

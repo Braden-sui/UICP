@@ -4,8 +4,6 @@ import clsx from 'clsx';
 import { useDockReveal } from '../hooks/useDockReveal';
 import { useChatStore } from '../state/chat';
 import { useAppStore, type AgentPhase } from '../state/app';
-import { useContainerStatus } from '../hooks/useContainerStatus';
-import { PolicyWarningBadge } from './PolicyWarningBadge';
 import { PaperclipIcon, SendIcon, StopIcon, ClarifierIcon } from '../icons';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 import { strings } from '../strings';
@@ -35,24 +33,12 @@ export const DockChat = () => {
   const fullControlLocked = useAppStore((state) => state.fullControlLocked);
   const plannerProfileKey = useAppStore((state) => state.plannerProfileKey);
   const actorProfileKey = useAppStore((state) => state.actorProfileKey);
-  const { showWarning, warningMessage } = useContainerStatus();
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const autoApplyPlanRef = useRef<string | null>(null);
 
   const systemMessages = useMemo(() => messages.filter((msg) => msg.role === 'system'), [messages]);
-
-  // P1: Detect network-using prompts and disable when container unavailable
-  const isNetworkPrompt = useMemo(() => {
-    const networkKeywords = ['fetch', 'http', 'api', 'download', 'upload', 'request', 'url', 'web', 'online', 'internet'];
-    const lowerValue = value.toLowerCase();
-    return networkKeywords.some(keyword => lowerValue.includes(keyword));
-  }, [value]);
-
-  const isPromptDisabled = useMemo(() => {
-    return showWarning && isNetworkPrompt;
-  }, [showWarning, isNetworkPrompt]);
 
   const fullControlEnabled = useAppStore((state) => state.fullControl && !state.fullControlLocked);
   const statusSequence = useMemo<AgentPhase[]>(
@@ -78,6 +64,25 @@ export const DockChat = () => {
   const phaseBadgeLabel = useMemo(() => STATUS_PHASE_LABEL[agentStatus.phase], [agentStatus.phase]);
   const plannerLabel = useMemo(() => getPlannerProfile(plannerProfileKey).label, [plannerProfileKey]);
   const actorLabel = useMemo(() => getActorProfile(actorProfileKey).label, [actorProfileKey]);
+  const lastModels = useAppStore((state) => state.lastModels);
+  const plannerDisplay = useMemo(() => {
+    const m = lastModels?.planner;
+    if (m?.model && typeof m.model === 'string') {
+      const prov = m.provider ? `${m.provider}: ` : '';
+      const alias = m.alias ? ` (${m.alias})` : '';
+      return `${prov}${m.model}${alias}`;
+    }
+    return plannerLabel;
+  }, [lastModels, plannerLabel]);
+  const actorDisplay = useMemo(() => {
+    const m = lastModels?.actor;
+    if (m?.model && typeof m.model === 'string') {
+      const prov = m.provider ? `${m.provider}: ` : '';
+      const alias = m.alias ? ` (${m.alias})` : '';
+      return `${prov}${m.model}${alias}`;
+    }
+    return actorLabel;
+  }, [lastModels, actorLabel]);
 
   useEffect(() => {
     if (!chatOpen) return;
@@ -158,7 +163,7 @@ export const DockChat = () => {
               {fullControlLocked && ' (locked)'}
             </span>
             <span className="text-[11px] uppercase tracking-wide text-slate-700 drop-shadow-sm">
-              {plannerLabel} → {actorLabel}
+              {plannerDisplay} → {actorDisplay}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -288,15 +293,6 @@ export const DockChat = () => {
           )}
         </div>
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-          {/* P1: Policy warning badge for container/network restrictions */}
-          {showWarning && (
-            <PolicyWarningBadge 
-              message={warningMessage} 
-              variant="warning" 
-              persistent={true}
-              className="mb-2"
-            />
-          )}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -326,10 +322,9 @@ export const DockChat = () => {
             </div>
             <button
               type="submit"
-              disabled={sending || streaming || isPromptDisabled}
+              disabled={sending || streaming}
               className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-all duration-200 hover:bg-slate-700 hover:scale-110 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-300"
-              aria-label={isPromptDisabled ? "Send disabled - network prompts restricted" : "Send"}
-              title={isPromptDisabled ? "Network prompts are disabled when container runtime is unavailable" : ""}
+              aria-label="Send"
             >
               <SendIcon className="h-4 w-4" />
             </button>
