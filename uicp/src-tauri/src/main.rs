@@ -50,6 +50,7 @@ mod compute_input;
 mod core;
 mod egress;
 mod events;
+mod hostctx;
 mod keystore;
 mod net;
 mod policy;

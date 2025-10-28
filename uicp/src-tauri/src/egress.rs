@@ -8,12 +8,14 @@ use parking_lot::Mutex;
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     net::{is_ip_literal as net_is_ip_literal, is_private_ip as net_is_private_ip, parse_host},
     AppState,
 };
+use crate::authz::net_decision_with;
+use crate::hostctx::HostCtx;
 
 #[derive(Clone, Copy)]
 struct Bucket {
@@ -191,20 +193,19 @@ pub struct EgressResponse {
 }
 
 // -----------------------------------------------------------------------------
-// Tauri command: egress_fetch
+// Core egress function (pure host-core using injected HostCtx)
 // -----------------------------------------------------------------------------
 
-#[tauri::command]
-pub async fn egress_fetch(
-    _app: AppHandle,
-    state: State<'_, AppState>,
-    installed_id: String,
-    req: EgressRequest,
+pub async fn egress_fetch_core(
+    ctx: &HostCtx,
+    installed_id: &str,
+    req: &EgressRequest,
 ) -> Result<EgressResponse, String> {
     // Host + policy checks
     let host = parse_host(&req.url).map_err(|e| e.to_string())?;
     let https_only = req.url.starts_with("https://");
-    let (allowed, policy_label) = crate::authz::net_decision(
+    let (allowed, policy_label) = net_decision_with(
+        &*ctx.policy,
         &host,
         https_only,
         net_is_private_ip(&host),
@@ -214,12 +215,12 @@ pub async fn egress_fetch(
         return Err(format!("PolicyDenied: api:NET:{host}"));
     }
 
-    rate_limit_take(&installed_id, &host)?;
-    conc_enter(&installed_id, &host)?;
+    rate_limit_take(installed_id, &host)?;
+    conc_enter(installed_id, &host)?;
 
     // Build request
     let method = Method::from_bytes(req.method.as_bytes()).map_err(|e| e.to_string())?;
-    let client: &Client = &state.http;
+    let client: &Client = &ctx.http;
     let mut builder = client
         .request(method, &req.url)
         .timeout(Duration::from_secs(30));
@@ -237,7 +238,7 @@ pub async fn egress_fetch(
     let resp = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            conc_leave(&installed_id, &host);
+            conc_leave(installed_id, &host);
             return Err(e.to_string());
         }
     };
@@ -251,19 +252,19 @@ pub async fn egress_fetch(
     let body = match resp.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            conc_leave(&installed_id, &host);
+            conc_leave(installed_id, &host);
             return Err(e.to_string());
         }
     };
-    if body.len() > 50 * 1024 * 1024 {
-        conc_leave(&installed_id, &host);
+    if body.len() > ctx.limits.resp_max_bytes {
+        conc_leave(installed_id, &host);
         return Err("PolicyDenied: response too large".into());
     }
 
     let sha256 = body_sha256(&body);
     let body_vec = body.to_vec();
 
-    // Receipt (best-effort)
+    // Receipt via injected sink (best-effort)
     let rec = serde_json::json!({
         "ts": chrono::Utc::now().timestamp_millis(),
         "type": "egress",
@@ -277,12 +278,28 @@ pub async fn egress_fetch(
         "bytes_in": body.len(),
         "sha256": sha256,
     });
-    let _ = state.action_log.append_json("egress", &rec).await;
+    ctx.receipts.append("egress", &rec);
 
-    conc_leave(&installed_id, &host);
+    conc_leave(installed_id, &host);
     Ok(EgressResponse {
         status,
         headers: out_headers,
         body: body_vec,
     })
+}
+
+// -----------------------------------------------------------------------------
+// Tauri command: egress_fetch (thin wrapper)
+// -----------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn egress_fetch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    installed_id: String,
+    req: EgressRequest,
+) -> Result<EgressResponse, String> {
+    let appdata_root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let ctx = HostCtx::from_app(&state, appdata_root);
+    egress_fetch_core(&ctx, &installed_id, &req).await
 }

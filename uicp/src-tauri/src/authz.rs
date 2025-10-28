@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::Manager;
 use url::Url;
+use crate::hostctx::{PolicyMap as StorePolicyMap, PolicyStore};
 
 // In-memory decision cache: key -> "allow" | "deny"
 static POLICIES: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
@@ -80,6 +81,48 @@ fn parse_policies(json: &Value) -> HashMap<String, String> {
         }
     }
     out
+}
+
+// ----------------------------------------------------------------------------
+// Pure, store-based policy path for tests and host-core usage
+// ----------------------------------------------------------------------------
+
+fn load_map<S: PolicyStore + ?Sized>(store: &S) -> StorePolicyMap {
+    store
+        .load()
+        .into_iter()
+        .map(|(k, v)| (normalize_key(&k), v))
+        .collect()
+}
+
+/// Pure decision using an injected PolicyStore (no global cache).
+/// Returns (is_allowed, policy_label) for receipts/logging.
+pub fn net_decision_with<S: PolicyStore + ?Sized>(
+    store: &S,
+    host: &str,
+    https_only: bool,
+    is_private: bool,
+    is_ip: bool,
+) -> (bool, String) {
+    let map = load_map(store);
+    let key = format!("api:NET:{}", host.to_ascii_lowercase());
+    if !https_only || is_private || is_ip {
+        if let Some(e) = map.get(&key) {
+            if e.decision == "allow" {
+                return (true, format!("user-allow:{}", key));
+            }
+        }
+        return (false, "default-deny".into());
+    }
+    if let Some(e) = map.get(&key) {
+        if e.decision == "deny" {
+            return (false, format!("user-deny:{}", key));
+        }
+        if e.decision == "allow" {
+            return (true, format!("user-allow:{}", key));
+        }
+    }
+    (true, "default-allow".into())
 }
 
 /// Reload host permission policies from AppData/uicp/permissions.json into the in-memory cache.

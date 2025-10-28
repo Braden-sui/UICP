@@ -24,6 +24,7 @@ pub mod compute;
 pub mod compute_cache;
 pub mod compute_input;
 pub mod core;
+pub mod hostctx;
 pub mod keystore;
 pub mod providers;
 pub mod registry;
