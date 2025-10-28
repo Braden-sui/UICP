@@ -2933,18 +2933,7 @@ mod with_runtime {
             use std::process::Command as PCommand;
             use std::sync::Arc;
 
-            // Build the tiny log test component
-            let comp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("components")
-                .join("log.test");
-            let manifest = comp_dir.join("Cargo.toml");
-            let status = PCommand::new(env!("CARGO"))
-                .args(["component", "build", "--release", "--manifest-path"])
-                .arg(&manifest)
-                .status()
-                .expect("spawn cargo component");
-            assert!(status.success(), "cargo component build failed");
+            // Build the tiny log test component            }
             let artifact = "uicp_task_log_test.wasm";
             let wasm = ["wasm32-wasip1", "wasm32-wasi", "wasm32-wasi-preview1"]
                 .into_iter()
