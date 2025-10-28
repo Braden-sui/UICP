@@ -45,7 +45,7 @@ const plannerProfiles: Record<PlannerProfileKey, PlannerProfile> = {
     key: 'glm',
     label: 'GLM 4.6',
     description: 'Advanced agentic, reasoning and coding capabilities with 198K context window.',
-    defaultModel: 'glm-4.6:cloud',
+    defaultModel: 'glm-4.6',
     capabilities: { channels: ['json'], supportsTools: true },
     formatMessages: (intent: string, opts) => [
       { role: 'system', content: plannerPrompt.trim() },

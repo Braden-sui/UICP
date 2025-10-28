@@ -1386,6 +1386,105 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     }
 }
 
+/// Transform OpenAI-compatible request body to Anthropic Messages API format.
+/// INVARIANT: Anthropic expects different schema than OpenAI/Ollama.
+/// - system: top-level field (not a message with role="system")
+/// - messages: only user/assistant/tool roles (no developer role)
+/// - no response_format, format, or stream fields
+/// - max_tokens: required field
+fn transform_request_for_anthropic(body: serde_json::Value) -> Result<serde_json::Value, String> {
+    let mut anthropic_body = serde_json::json!({});
+
+    // Copy model as-is
+    if let Some(model) = body.get("model") {
+        anthropic_body["model"] = model.clone();
+    }
+
+    // Extract system message from messages array and set as top-level field
+    let messages = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| "messages must be an array".to_string())?;
+
+    let mut system_content = String::new();
+    let mut filtered_messages = Vec::new();
+
+    for msg in messages {
+        let msg_obj = msg
+            .as_object()
+            .ok_or_else(|| "each message must be an object".to_string())?;
+        let role = msg_obj
+            .get("role")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| "message must have a role".to_string())?;
+
+        // WHY: Anthropic doesn't support role="developer"; map it to system or user
+        let normalized_role = match role {
+            "developer" => "user",
+            "system" => {
+                // Collect system content; we'll set it as top-level field
+                if let Some(content) = msg_obj.get("content") {
+                    if let Some(text) = content.as_str() {
+                        if !system_content.is_empty() {
+                            system_content.push('\n');
+                        }
+                        system_content.push_str(text);
+                    }
+                }
+                continue; // Skip this message; it's now in system field
+            }
+            other => other,
+        };
+
+        // Build Anthropic-compatible message
+        let mut anthropic_msg = serde_json::json!({
+            "role": normalized_role,
+        });
+
+        // Copy content as-is (Anthropic accepts string or array of content blocks)
+        if let Some(content) = msg_obj.get("content") {
+            anthropic_msg["content"] = content.clone();
+        }
+
+        // Copy tool_call_id if present (for tool result messages)
+        if let Some(tool_call_id) = msg_obj.get("tool_call_id") {
+            anthropic_msg["tool_use_id"] = tool_call_id.clone();
+        }
+
+        filtered_messages.push(anthropic_msg);
+    }
+
+    anthropic_body["messages"] = serde_json::json!(filtered_messages);
+
+    // Set system field if we collected any system messages
+    if !system_content.is_empty() {
+        anthropic_body["system"] = serde_json::json!(system_content);
+    }
+
+    // Set max_tokens (required by Anthropic; default to 4096 if not provided)
+    let max_tokens = body
+        .get("max_tokens")
+        .or_else(|| body.get("options").and_then(|o| o.get("max_tokens")))
+        .and_then(|m| m.as_i64())
+        .unwrap_or(200000);
+    anthropic_body["max_tokens"] = serde_json::json!(max_tokens);
+
+    // Copy tools if present (Anthropic supports tool_use)
+    if let Some(tools) = body.get("tools") {
+        anthropic_body["tools"] = tools.clone();
+    }
+
+    // Copy tool_choice if present
+    if let Some(tool_choice) = body.get("tool_choice") {
+        anthropic_body["tool_choice"] = tool_choice.clone();
+    }
+
+    // Anthropic doesn't support response_format, format, or stream in the same way
+    // (stream is handled at HTTP level, not in body)
+
+    Ok(anthropic_body)
+}
+
 #[tauri::command]
 async fn chat_completion(
     window: tauri::Window,
@@ -1455,6 +1554,13 @@ async fn chat_completion(
     } else if use_cloud {
         if let Some(options_val) = options {
             body["options"] = options_val;
+        }
+    }
+
+    // Transform request body for Anthropic Messages API (different schema from OpenAI)
+    if let Some(p) = provider_lower.as_deref() {
+        if p == "anthropic" {
+            body = transform_request_for_anthropic(body)?;
         }
     }
 
@@ -2291,24 +2397,35 @@ async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
 }
 
 async fn maybe_enable_local_ollama(state: &AppState) {
-    if !*state.allow_local_opt_in.read().await {
+    let allow_local = *state.allow_local_opt_in.read().await;
+    if !allow_local {
+        *state.use_direct_cloud.write().await = true;
         return;
     }
+
     let client = state.http.clone();
     let url = format!("{}/models", crate::core::OLLAMA_LOCAL_BASE_DEFAULT);
     let ok = match tokio::time::timeout(Duration::from_millis(600), client.get(url).send()).await {
         Ok(Ok(resp)) => resp.status().is_success(),
         _ => false,
     };
-    if ok {
-        *state.use_direct_cloud.write().await = false;
-    }
+
+    let mut use_cloud = state.use_direct_cloud.write().await;
+    *use_cloud = !ok;
 }
 
 #[tauri::command]
 async fn set_allow_local_opt_in(state: State<'_, AppState>, allow: bool) -> Result<(), String> {
-    *state.allow_local_opt_in.write().await = allow;
+    {
+        let mut allow_guard = state.allow_local_opt_in.write().await;
+        *allow_guard = allow;
+    }
+
     if allow {
+        {
+            let mut use_cloud = state.use_direct_cloud.write().await;
+            *use_cloud = false;
+        }
         maybe_enable_local_ollama(&state).await;
     } else {
         *state.use_direct_cloud.write().await = true;

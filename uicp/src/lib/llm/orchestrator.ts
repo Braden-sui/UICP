@@ -35,17 +35,21 @@ const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
 };
 
 const getActorModel = (profileKey?: ActorProfileKey): string => {
-  switch (profileKey) {
+  const profile = getActorProfile(profileKey);
+  if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
+    return profile.defaultModel;
+  }
+  switch (profile?.key ?? profileKey) {
     case 'qwen':
       return 'qwen3-coder:480b';
     case 'deepseek':
       return 'deepseek-v3.1:671b';
     case 'glm':
-      return 'glm-4.6:cloud';
+      return 'glm-4.6';
     case 'gpt-oss':
       return 'gpt-oss:120b';
     case 'kimi':
-      return 'kimi-k2:latest';
+      return 'kimi-k2:1t';
     default:
       return 'qwen3-coder:480b';
   }
