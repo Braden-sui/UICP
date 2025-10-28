@@ -1074,12 +1074,6 @@ mod tests {
 
     #[tokio::test]
     async fn rng_failure_propagates() {
-        // Arrange: inject RNG hook that fails with our stable code
-        set_test_rng_hook(Some(|_| {
-            Err(KeystoreError::Other(format!(
-                "{RNG_FAILURE_CODE}: injected"
-            )))
-        }));
         let tmp = tempdir().unwrap();
         let cfg = KeystoreConfig {
             ttl: Duration::from_secs(30),
@@ -1090,6 +1084,13 @@ mod tests {
             .unlock_passphrase(SecretString::new("pass".into()))
             .await
             .unwrap();
+
+        // Arrange: inject RNG hook that fails with our stable code for subsequent nonce fills
+        set_test_rng_hook(Some(|_| {
+            Err(KeystoreError::Other(format!(
+                "{RNG_FAILURE_CODE}: injected"
+            )))
+        }));
 
         // Act: attempt to set secret, expecting failure
         let err = ks

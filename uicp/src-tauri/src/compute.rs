@@ -2939,7 +2939,7 @@ mod with_runtime {
                 .join("components")
                 .join("log.test");
             let manifest = comp_dir.join("Cargo.toml");
-            let status = PCommand::new("cargo")
+            let status = PCommand::new(env!("CARGO"))
                 .args(["component", "build", "--release", "--manifest-path"])
                 .arg(&manifest)
                 .status()
