@@ -206,3 +206,35 @@ pub(crate) fn set_policy_for_test(key: &str, decision: &str) {
 pub(crate) fn clear_policies_for_test() {
     POLICIES.write().clear();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hostctx::{PolicyEntry, PolicyStore, PolicyMap};
+
+    struct MapStore(pub PolicyMap);
+
+    impl PolicyStore for MapStore {
+        fn load(&self) -> PolicyMap {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn net_decision_with_normalizes_get_entry() {
+        let mut map = PolicyMap::new();
+        map.insert(
+            "api:GET:https://10.0.0.5".to_string(),
+            PolicyEntry {
+                decision: "allow".into(),
+                duration: String::new(),
+                createdAt: 0,
+                sessionOnly: false,
+            },
+        );
+        let store = MapStore(map);
+        let (allowed, label) = net_decision_with(&store, "10.0.0.5", true, true, true);
+        assert!(allowed);
+        assert_eq!(label, "user-allow:api:NET:10.0.0.5");
+    }
+}

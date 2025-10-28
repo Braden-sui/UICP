@@ -5,6 +5,9 @@ import { getComputeBridge } from './lib/bridge/globals';
 import { newUuid } from './lib/utils';
 import { installNetworkGuard } from './lib/security/networkGuard';
 import { startGuardRollout } from './lib/security/guardRollout';
+import { hasTauriBridge } from './lib/bridge/tauri';
+import { useKeystore } from './state/keystore';
+import KeystoreUnlockScreen from './components/KeystoreUnlockScreen';
 
 const LOADER_ID = 'uicp-loading-screen';
 const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flash)
@@ -95,6 +98,56 @@ if (!rootElement) {
 }
 const root = ReactDOM.createRoot(rootElement);
 
+const renderUnlockScreen = () => {
+  finalizeLoader();
+  root.render(
+    <React.StrictMode>
+      <KeystoreUnlockScreen />
+    </React.StrictMode>,
+  );
+  try {
+    void invoke('frontend_ready');
+  } catch {
+    // ignore: window may already be visible in dev/web builds
+  }
+};
+
+const waitForInitialUnlock = async (): Promise<void> => {
+  if (!hasTauriBridge()) {
+    return;
+  }
+
+  const store = useKeystore;
+
+  try {
+    await store.getState().refreshStatus();
+  } catch (error) {
+    console.warn('[main] initial keystore status check failed', error);
+  }
+
+  if (!store.getState().locked) {
+    return;
+  }
+
+  renderUnlockScreen();
+
+  await new Promise<void>((resolve) => {
+    const unsubscribe = store.subscribe((state, prevState) => {
+      const wasLocked = prevState?.locked ?? true;
+      if (wasLocked && !state.locked) {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+
+  try {
+    await store.getState().refreshIds();
+  } catch (error) {
+    console.warn('[main] keystore id refresh failed', error);
+  }
+};
+
 let paintReady = false;
 let bridgeReady = false;
 const maybeHideLoader = () => {
@@ -110,6 +163,8 @@ const maybeHideLoader = () => {
 };
 
 const bootstrap = async () => {
+  await waitForInitialUnlock();
+
   try {
     await import('./styles/global.css');
     const { default: App } = await import('./App');

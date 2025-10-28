@@ -22,6 +22,7 @@ use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
 use uuid::Uuid;
 
+use crate::apppack::{apppack_validate, install_app_pack};
 use crate::keystore::get_or_init_keystore;
 use crate::providers::build_provider_headers;
 use crate::{
@@ -532,7 +533,16 @@ async fn run_codegen<R: Runtime>(
         total_queue_ms = total_queue_ms.saturating_add(wait_ms);
         run_timer = Some(timer);
         _codegen_permit = Some(permit);
-        execute_with_strategy(app, spec, &plan, &provider_queue, &state.http).await?
+        let (artifact, workspace_dir) = execute_with_strategy(
+            app,
+            spec,
+            &plan,
+            &provider_queue,
+            &state.http,
+        )
+        .await?;
+        maybe_auto_install_pack(app, Some(workspace_dir.as_path())).await;
+        artifact
     };
 
     let validation = validate_code(plan.language, &plan.validator_version, &artifact.code)
@@ -985,7 +995,7 @@ async fn execute_with_strategy<R: Runtime>(
     plan: &CodegenPlan,
     queue: &[CodeProviderPlan],
     client: &reqwest::Client,
-) -> Result<NormalizedArtifact, CodegenFailure> {
+) -> Result<(NormalizedArtifact, PathBuf), CodegenFailure> {
     let mut attempts: Vec<ProviderAttemptLog> = Vec::new();
 
     match plan.strategy {
@@ -1006,7 +1016,7 @@ async fn execute_with_strategy<R: Runtime>(
                         });
                         emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
                         enrich_artifact_meta(&mut artifact, provider_plan, plan, &attempts);
-                        return Ok(artifact);
+                        return Ok((artifact, PathBuf::new()));
                     }
                     Err(err) => {
                         let message = err.message();
@@ -1121,7 +1131,7 @@ async fn execute_with_strategy<R: Runtime>(
                 let chosen_plan = winner.plan.clone();
                 let mut chosen = winner.artifact;
                 enrich_artifact_meta(&mut chosen, &chosen_plan, plan, &attempts);
-                return Ok(chosen);
+                return Ok((chosen, PathBuf::new()));
             }
 
             for provider_plan in queue {
@@ -1145,7 +1155,7 @@ async fn execute_with_strategy<R: Runtime>(
                         });
                         emit_provider_attempt(app, spec, plan, attempts.last().unwrap());
                         enrich_artifact_meta(&mut artifact, provider_plan, plan, &attempts);
-                        return Ok(artifact);
+                        return Ok((artifact, PathBuf::new()));
                     }
                     Err(err) => {
                         let message = err.message();
@@ -1220,6 +1230,41 @@ async fn run_provider<R: Runtime>(
         ProviderKind::OpenAiApi => run_openai_api(client, plan).await,
         ProviderKind::CodexCli => run_codex_cli(app, spec, plan).await,
         ProviderKind::ClaudeCli => run_claude_cli(app, spec, plan).await,
+    }
+}
+
+async fn maybe_auto_install_pack<R: Runtime>(
+    app: &AppHandle<R>,
+    workspace_dir: Option<&Path>,
+) {
+    let Some(workspace_dir) = workspace_dir else {
+        return;
+    };
+
+    let pack_root = workspace_dir.join("dist");
+    let manifest = pack_root.join("apppack.json");
+    if !manifest.exists() {
+        return;
+    }
+
+    if apppack_validate(pack_root.display().to_string()).await.is_err() {
+        return;
+    }
+
+    if let Ok(installed) = install_app_pack(&pack_root) {
+        let op = serde_json::json!({
+            "op": "component.render",
+            "params": {
+                "windowId": format!("app-{}", installed.installed_id),
+                "target": "#root",
+                "type": "uicp.miniapp",
+                "props": {
+                    "installedId": installed.installed_id,
+                    "title": "App"
+                }
+            }
+        });
+        crate::core::emit_or_log(app, crate::events::EVENT_UI_DEBUG, op);
     }
 }
 
@@ -2763,7 +2808,7 @@ export function onEvent(action: string, payload: string, state: string) {
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .expect("app");
             let client = reqwest::Client::new();
-            let artifact = execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
+            let (artifact, _) = execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
                 .await
                 .expect("strategy success");
             let provider_selected = artifact
@@ -2818,7 +2863,7 @@ export function onEvent(action: string, payload: string, state: string) {
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .expect("app");
             let client = reqwest::Client::new();
-            let artifact = execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
+            let (artifact, _) = execute_with_strategy(&app.handle(), &spec, &plan, &queue, &client)
                 .await
                 .expect("fallback success");
             let provider_selected = artifact

@@ -12,7 +12,7 @@ type LLMState = {
 
 export const useLLM = create<LLMState>((set) => ({
   provider: 'ollama-cloud',
-  model: 'llama3.1-405b-instruct',
+  model: 'qwen3-coder:480b',
   allowLocalOllama: false,
   setProviderModel: (provider, model) => set({ provider, model }),
   setAllowLocalOllama: (v) => set({ allowLocalOllama: v }),

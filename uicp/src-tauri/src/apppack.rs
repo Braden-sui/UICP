@@ -1,7 +1,9 @@
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 use tauri::State;
 
 use crate::{AppState, FILES_DIR};
@@ -16,10 +18,28 @@ pub struct AppPackManifest {
 }
 
 fn compute_id_from_dir(dir: &str) -> String {
-    // Use SHA-256 over provided dir string (stable without new deps)
-    let mut h = Sha256::new();
-    h.update(dir.as_bytes());
-    hex::encode(h.finalize())
+    let root = PathBuf::from(dir);
+    let mut files: Vec<_> = WalkDir::new(&root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect();
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    for path in files {
+        if let Ok(relative) = path.strip_prefix(&root) {
+            hasher.update(relative.to_string_lossy().as_bytes());
+        }
+        if let Ok(mut file) = std::fs::File::open(&path) {
+            let mut buffer = Vec::new();
+            if file.read_to_end(&mut buffer).is_ok() {
+                hasher.update(&buffer);
+            }
+        }
+    }
+    hex::encode(hasher.finalize())
 }
 
 fn read_to_string(path: &Path) -> Result<String, String> {
@@ -67,21 +87,26 @@ pub struct AppPackInstall {
     pub path: String,
 }
 
-#[tauri::command]
-pub async fn apppack_install(
-    _state: State<'_, AppState>,
-    dir: String,
-) -> Result<AppPackInstall, String> {
-    let id = compute_id_from_dir(&dir);
+pub fn install_app_pack(dir: &Path) -> Result<AppPackInstall, String> {
+    let dir_str = dir.to_string_lossy();
+    let id = compute_id_from_dir(&dir_str);
     let dst = FILES_DIR.join("apps").join(&id);
     if !dst.exists() {
         std::fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
-        copy_dir_recursive(&PathBuf::from(&dir), &dst).map_err(|e| e.to_string())?;
+        copy_dir_recursive(dir, &dst).map_err(|e| e.to_string())?;
     }
     Ok(AppPackInstall {
         installed_id: id.clone(),
         path: dst.display().to_string(),
     })
+}
+
+#[tauri::command]
+pub async fn apppack_install(
+    _state: State<'_, AppState>,
+    dir: String,
+) -> Result<AppPackInstall, String> {
+    install_app_pack(Path::new(&dir))
 }
 
 #[tauri::command]

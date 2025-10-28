@@ -2,6 +2,7 @@
 
 pub mod action_log;
 pub mod authz;
+pub mod apppack;
 pub mod policy;
 
 pub use action_log::{

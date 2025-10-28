@@ -61,6 +61,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_LibraryLoader"
 ] }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
+walkdir = "2"
 
   # Optional Wasm runtime (WASI Preview 2) for the compute plane.
   # Enable via `--features "wasm_compute uicp_wasi_enable"` when you want local compute.

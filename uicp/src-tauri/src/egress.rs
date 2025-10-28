@@ -27,6 +27,10 @@ struct Bucket {
 mod tests {
     use super::*;
     use crate::authz::{clear_policies_for_test, net_decision, set_policy_for_test};
+    use crate::hostctx::{HostCtx, InMemorySink, Limits, PolicyEntry, PolicyMap, PolicyStore};
+    use httpmock::MockServer;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
 
     #[test]
     fn rate_limit_blocks_after_burst() {
@@ -81,6 +85,74 @@ mod tests {
         assert_eq!(label, "user-allow:api:NET:example.com");
 
         clear_policies_for_test();
+    }
+
+    struct StaticPolicyStore(pub PolicyMap);
+
+    impl PolicyStore for StaticPolicyStore {
+        fn load(&self) -> PolicyMap {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn receipt_captures_policy_and_sha256() {
+        std::env::set_var("UICP_EGRESS_RL_ENABLED", "0");
+        reset_limiters_for_test();
+
+        let server = MockServer::start_async().await;
+        let body = "ok";
+        let _mock = server
+            .mock_async(|when, then| {
+                when.method("GET").path("/data");
+                then.status(200).header("Content-Type", "text/plain").body(body);
+            })
+            .await;
+
+        let host = server.host();
+        let mut policies = PolicyMap::new();
+        policies.insert(
+            format!("api:NET:{}", host),
+            PolicyEntry {
+                decision: "allow".into(),
+                duration: String::new(),
+                createdAt: 0,
+                sessionOnly: false,
+            },
+        );
+        let policy_store = Arc::new(StaticPolicyStore(policies));
+        let receipts_store = Arc::new(RwLock::new(Vec::new()));
+        let receipts_sink = Arc::new(InMemorySink(receipts_store.clone()));
+        let ctx = HostCtx::test(
+            reqwest::Client::new(),
+            policy_store,
+            receipts_sink,
+            Limits::default(),
+        );
+
+        let url = server.url("/data");
+        let req = EgressRequest {
+            method: "GET".into(),
+            url,
+            headers: None,
+            body: None,
+        };
+
+        let response = egress_fetch_core(&ctx, "app", &req).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, body.as_bytes());
+
+        let entries = receipts_store.read();
+        assert_eq!(entries.len(), 1);
+        let (_, payload) = &entries[0];
+        let policy = payload.get("policy").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(policy, format!("user-allow:api:NET:{}", host));
+        let sha = payload.get("sha256").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(sha.len(), 64);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+
+        std::env::remove_var("UICP_EGRESS_RL_ENABLED");
+        reset_limiters_for_test();
     }
 }
 
