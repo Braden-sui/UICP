@@ -8,7 +8,7 @@ import { PaperclipIcon, SendIcon, StopIcon, ClarifierIcon } from '../icons';
 import { getPlannerProfile, getActorProfile } from '../lib/llm/profiles';
 import { strings } from '../strings';
 import { LiquidGlass } from '@liquidglass/react';
-import { cancelActiveChat } from '../lib/llm/ollama';
+import { cancelActiveChat } from '../lib/llm/llm.stream';
 import type { Batch } from '../lib/schema';
 
 const STATUS_PHASE_SEQUENCE: AgentPhase[] = ['planning', 'acting', 'previewing', 'applying'];

@@ -1,7 +1,7 @@
 import plannerPrompt from '../../prompts/planner.txt?raw';
 import taskSpecPrompt from '../../prompts/planner_task_spec.txt?raw';
 import actorPrompt from '../../prompts/actor.txt?raw';
-import type { ChatMessage, ToolSpec } from './ollama';
+import type { ChatMessage, ToolSpec } from './llm.stream';
 
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 

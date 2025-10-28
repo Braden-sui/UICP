@@ -1,6 +1,7 @@
 import { BaseDirectory, exists, mkdir, readTextFile, remove, writeTextFile } from '@tauri-apps/plugin-fs';
 import { emitTelemetryEvent } from '../telemetry';
 import type { Envelope } from '../uicp/schemas';
+import { inv } from '../bridge/tauri';
 
 export type Decision = 'allow' | 'deny' | 'prompt';
 
@@ -311,6 +312,7 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
           const nextPolicy = await readPolicy();
           nextPolicy[key] = entry;
           await writePolicy(nextPolicy);
+          try { await inv<void>('reload_policies'); } catch {}
         }
       }
 
@@ -347,6 +349,7 @@ export async function setApiPolicyDecision(method: string, origin: string, decis
       const nextPolicy = await readPolicy();
       nextPolicy[key] = entry;
       await writePolicy(nextPolicy);
+      try { await inv<void>('reload_policies'); } catch {}
       return;
     }
   } catch { /* non-fatal */ }

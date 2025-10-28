@@ -19,6 +19,12 @@ fn provider_secret_id(provider: &str) -> Option<(&'static str, &'static str)> {
 /// Build provider-specific Authorization headers inside the backend only.
 /// UI never sees plaintext secrets.
 pub async fn build_provider_headers(provider: &str) -> Result<HashMap<String, String>, KeystoreError> {
+    // Host policy check: secret:<provider>:api_key
+    if !crate::authz::allow_secret(provider) {
+        return Err(KeystoreError::Permission(
+            format!("Denied by permissions.json (scope: secret:{}:api_key)", provider.to_ascii_lowercase()),
+        ));
+    }
     let Some((service, account)) = provider_secret_id(provider) else {
         return Err(KeystoreError::Other(format!("unknown provider: {provider}")));
     };

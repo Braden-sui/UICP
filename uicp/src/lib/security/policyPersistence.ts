@@ -16,11 +16,15 @@ const ensureDir = async () => {
 
 export const loadPersistedPolicy = async (): Promise<Policy | null> => {
   try {
+    const has = await exists(POLICY_PATH, { baseDir: BaseDirectory.AppData });
+    if (!has) return null;
     const txt = await readTextFile(POLICY_PATH, { baseDir: BaseDirectory.AppData });
     const obj = JSON.parse(txt);
     if (obj && typeof obj === 'object') return obj as Policy;
   } catch (err) {
-    console.warn('[policyPersistence] loadPersistedPolicy failed', err);
+    if ((import.meta as any)?.env?.DEV) {
+      console.debug('[policyPersistence] loadPersistedPolicy failed', err);
+    }
   }
   return null;
 };
@@ -33,3 +37,4 @@ export const persistPolicy = async (p: Policy): Promise<void> => {
     console.warn('[policyPersistence] persistPolicy failed', err);
   }
 };
+

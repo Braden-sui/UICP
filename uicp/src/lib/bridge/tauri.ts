@@ -15,6 +15,7 @@ import { type Result, createBridgeUnavailableError, toUICPError, UICPErrorCode }
 export type { Result } from './result';
 import { policyDecide } from '../provider/router';
 import { emitTelemetryEvent } from '../telemetry';
+import { mountIfPresent } from '../miniapp/runtime';
 
 let started = false;
 let unsubs: UnlistenFn[] = [];
@@ -211,6 +212,22 @@ type AgentsConfigPayload = {
 export const loadAgentsConfigFile = () => inv<AgentsConfigPayload>('load_agents_config_file');
 
 export const saveAgentsConfigFile = (contents: string) => inv<void>('save_agents_config_file', { contents });
+
+export type EgressRequest = {
+  method: string;
+  url: string;
+  headers?: Record<string, string>;
+  body?: number[]; // bytes
+};
+
+export type EgressResponse = {
+  status: number;
+  headers: Record<string, string>;
+  body: number[]; // bytes
+};
+
+export const egressFetch = (installedId: string, req: EgressRequest) =>
+  inv<EgressResponse>('egress_fetch', { installed_id: installedId, req });
 
 // Open a native browser window (WebView) to an external URL inside the app shell.
 // Returns { ok, label, url, safe } or a typed UICP error via Result.
@@ -838,6 +855,20 @@ export async function initializeTauriBridge() {
       if (!payload) return;
       const msg = payload.message ?? (payload.valid ? 'API key OK' : 'API key invalid');
       useAppStore.getState().pushToast({ variant: payload.valid ? 'success' : 'error', message: msg });
+    }),
+  );
+
+  // MiniApp: Host asks frontend to open an AppPack id. Mount iframe into any rendered uicp.miniapp wrapper(s).
+  unsubs.push(
+    await listen('apppack-open', (event) => {
+      try {
+        const payload = (event.payload ?? {}) as { id?: string };
+        const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+        if (!id) return;
+        mountIfPresent(id);
+      } catch (err) {
+        console.error('[miniapp] apppack-open handler failed', err);
+      }
     }),
   );
 

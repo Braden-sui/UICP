@@ -176,6 +176,7 @@ pub struct AppState {
     pub last_save_ok: RwLock<bool>,
     pub ollama_key: RwLock<Option<String>>,
     pub use_direct_cloud: RwLock<bool>,
+    pub allow_local_opt_in: RwLock<bool>,
     pub debug_enabled: RwLock<bool>,
     pub http: Client,
     pub ongoing: RwLock<HashMap<String, JoinHandle<()>>>,

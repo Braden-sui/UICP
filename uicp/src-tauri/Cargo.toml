@@ -38,6 +38,7 @@ semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+url = "2.5"
 tauri = { version = "2.4.1", features = ["webview-data-url"] }
 tauri-plugin-dialog = { version = "2.4", optional = true }
 tauri-plugin-fs = "2.4"

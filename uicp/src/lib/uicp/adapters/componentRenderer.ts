@@ -11,6 +11,10 @@ import type { DomApplier } from './domApplier';
 import type { OperationParamMap } from '../../schema';
 import { escapeHtml } from './adapter.security';
 import { createId } from '../../utils';
+// Inline the MiniApp preload JavaScript into iframe srcdoc safely
+// Vite raw import turns the file contents into a string
+// eslint-disable-next-line import/no-relative-packages
+import preloadSourceRaw from '../../miniapp/preload.js?raw';
 
 export interface ComponentRenderer {
   render(params: OperationParamMap['component.render']): Promise<void>;
@@ -132,6 +136,23 @@ register(
     },
     'id: string, source?: string, module?: object',
     '{ op: "component.render", params: { windowId: "win-app", target: "#root", type: "script.panel", props: { id: "panel-1" } } }'
+  );
+
+register(
+    'uicp.miniapp',
+    (params) => {
+      const props = asRecord(params.props);
+      const installedId = typeof props.installedId === 'string' && props.installedId.trim() ? props.installedId.trim() : '';
+      const title = readString(props.title, 'App');
+      const iframeName = installedId || createId('miniapp');
+      // Escape single quotes for inclusion inside srcdoc='...'
+      const preload = String(preloadSourceRaw ?? '').replace(/<\/-/g, '<\\/').replace(/'/g, '&#39;');
+      const srcdoc = `<!doctype html><meta charset='utf-8'><title>${escapeHtml(title)}</title><body><script>${preload}</script></body>`;
+      const safeSrcdoc = srcdoc.replace(/'/g, '&#39;');
+      return `<div class="h-full w-full overflow-hidden"><iframe sandbox="allow-scripts allow-forms allow-downloads" name="${escapeHtml(iframeName)}" style="width:100%;height:100%;border:0" srcdoc='${safeSrcdoc}'></iframe></div>`;
+    },
+    '{ installedId: string; title?: string }',
+    '{ op: "component.render", params: { windowId: "win", target: "#root", type: "uicp.miniapp", props: { installedId: "abc123", title: "Demo" } } }'
   );
 
 register(

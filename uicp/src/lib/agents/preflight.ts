@@ -259,6 +259,12 @@ const logResolvedChoices = (
   resolved: ResolvedProfiles,
   providers: Record<string, ProviderPreflight>,
 ): void => {
+  const sig = JSON.stringify({
+    planner: resolved.planner.map((c) => `${c.provider}:${c.model}:${c.alias ?? ''}`),
+    actor: resolved.actor.map((c) => `${c.provider}:${c.model}:${c.alias ?? ''}`),
+  });
+  if (logResolvedChoicesLastSig === sig) return;
+  logResolvedChoicesLastSig = sig;
   const plannerPrimary = resolved.planner[0];
   const actorPrimary = resolved.actor[0];
 
@@ -286,3 +292,5 @@ const logResolvedChoices = (
     );
   }
 };
+
+let logResolvedChoicesLastSig: string | null = null;

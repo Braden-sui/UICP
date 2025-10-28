@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { collectToolArgs } from './collectToolArgs';
-import type { StreamEvent } from './ollama';
+import type { StreamEvent } from './llm.stream';
 import { LLMError, LLMErrorCode } from './errors';
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

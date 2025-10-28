@@ -1,4 +1,4 @@
-import type { StreamEvent } from './ollama';
+import type { StreamEvent } from './llm.stream';
 import { LLMError, LLMErrorCode } from './errors';
 
 const withErrorCode = (code: string, message: string): string => `${code}: ${message}`;

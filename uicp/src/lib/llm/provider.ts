@@ -1,5 +1,5 @@
-import type { ToolSpec, StreamEvent, StreamMeta } from './ollama';
-import { streamOllamaCompletion } from './ollama';
+import type { ToolSpec, StreamEvent, StreamMeta } from './llm.stream';
+import { streamOllamaCompletion } from './llm.stream';
 import {
   getActorProfile,
   getPlannerProfile,

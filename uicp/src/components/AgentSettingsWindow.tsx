@@ -23,11 +23,10 @@ import {
   usePreferencesStore,
   type CodegenDefaultProvider,
 } from '../state/preferences';
-import { loadAgentsConfig, saveAgentsConfigFile, startWatcher, stopWatcher, resolveProfiles, refreshAgentsPreflight, subscribeAgentsPreflight, getPreflightSnapshot } from '../lib/agents/loader';
+import { loadAgentsConfig, saveAgentsConfigFile, startWatcher, stopWatcher } from '../lib/agents/loader';
 import type { AgentsFile, ProfileEntry, ProfileMode } from '../lib/agents/schema';
-import type { AgentsPreflight } from '../lib/agents/preflight';
-import { effectiveContext } from '../lib/agents/preflight';
 import { stringify } from 'yaml';
+import { useLLM, type ProviderKey } from '../state/llm';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -53,24 +52,6 @@ const PROVIDER_INFO: Record<
     connectLabel: 'Connect Claude',
     healthLabel: 'Check Claude',
   },
-};
-
-// Choose sensible defaults per provider for planner and actor
-const selectDefaultAliases = (
-  agents: AgentsFile | null,
-  providerKey: string,
-): { planner: string; actor: string } => {
-  const none = { planner: '', actor: '' };
-  if (!agents || !providerKey) return none;
-  const provider = agents.providers?.[providerKey];
-  if (!provider) return none;
-  const aliases = Object.keys(provider.model_aliases ?? {});
-  if (aliases.length === 0) return none;
-  const hasGPT = aliases.includes('gpt_default');
-  const hasClaude = aliases.includes('claude_default');
-  const planner = hasGPT ? 'gpt_default' : aliases[0];
-  const actor = hasClaude ? 'claude_default' : (aliases.find((a) => a !== planner) ?? aliases[0]);
-  return { planner, actor };
 };
 
 const describeStatus = (
@@ -335,17 +316,32 @@ const AgentSettingsWindow = () => {
   const actorProfile = useMemo(() => getActorProfile(actorProfileKey), [actorProfileKey]);
 
   const [agentsConfig, setAgentsConfig] = useState<AgentsFile | null>(null);
-  const [agentsLoading, setAgentsLoading] = useState<boolean>(false);
-  const [agentsError, setAgentsError] = useState<string | null>(null);
+  
   const [plannerState, setPlannerState] = useState<ProfileEditorState>({ ...EMPTY_PROFILE_STATE });
   const [actorState, setActorState] = useState<ProfileEditorState>({ ...EMPTY_PROFILE_STATE });
   const [globalProvider, setGlobalProvider] = useState<string>('');
   const [plannerCustomError, setPlannerCustomError] = useState<string | null>(null);
   const [actorCustomError, setActorCustomError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
-  const [preflight, setPreflight] = useState<AgentsPreflight | null>(null);
   const [newPlannerFallback, setNewPlannerFallback] = useState<string>('');
+
+  const llmStore = useLLM();
+  const [localFallbackLoading, setLocalFallbackLoading] = useState<boolean>(false);
   const [newActorFallback, setNewActorFallback] = useState<string>('');
+
+  useEffect(() => {
+    if (!hasTauriBridge()) return;
+    (async () => {
+      try {
+        const [, allowLocal] = await tauriInvoke<[boolean, boolean]>('get_ollama_mode');
+        if (allowLocal !== llmStore.allowLocalOllama) {
+          llmStore.setAllowLocalOllama(allowLocal);
+        }
+      } catch (err) {
+        console.warn('[AgentSettings] Failed to sync Ollama mode from backend:', err);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (!hasTauriBridge()) {
@@ -356,7 +352,6 @@ const AgentSettingsWindow = () => {
       setActorCustomError(null);
       return;
     }
-    setAgentsLoading(true);
     (async () => {
       try {
         const config = await loadAgentsConfig();
@@ -369,13 +364,9 @@ const AgentSettingsWindow = () => {
         setActorState((prev) => ({ ...prev, provider: initialProvider }));
         setPlannerCustomError(null);
         setActorCustomError(null);
-        setAgentsError(null);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setAgentsError(message);
         useAppStore.getState().pushToast({ variant: 'error', message: `Failed to load agent config: ${message}` });
-      } finally {
-        setAgentsLoading(false);
       }
     })();
   }, []);
@@ -387,15 +378,9 @@ const AgentSettingsWindow = () => {
       if (disposed) return;
       setAgentsConfig(agents);
     });
-    const unsub = subscribeAgentsPreflight((snapshot) => {
-      if (disposed) return;
-      setPreflight(snapshot);
-    });
-    setPreflight(getPreflightSnapshot());
     return () => {
       disposed = true;
       stopWatcher();
-      unsub();
     };
   }, []);
 
@@ -417,11 +402,6 @@ const AgentSettingsWindow = () => {
     setActorState((prev) => ({ ...prev, provider: initialProvider }));
     setPlannerCustomError(null);
     setActorCustomError(null);
-  }, [agentsConfig]);
-
-  const providerOptions = useMemo(() => {
-    if (!agentsConfig) return [] as Array<{ value: string; label: string }>;
-    return Object.keys(agentsConfig.providers ?? {}).map((key) => ({ value: key, label: key }));
   }, [agentsConfig]);
 
   const customModelPlaceholder = useCallback((providerKey: string, role: 'planner' | 'actor'): string => {
@@ -449,17 +429,6 @@ const AgentSettingsWindow = () => {
     [agentsConfig, globalProvider],
   );
 
-  const currentProviderEntry = useMemo(() => {
-    if (!agentsConfig || !globalProvider) return null;
-    return agentsConfig.providers?.[globalProvider] ?? null;
-  }, [agentsConfig, globalProvider]);
-
-  const currentProviderPreflight = useMemo(() => {
-    const snap = preflight;
-    if (!snap || !globalProvider) return null;
-    return snap.providers?.[globalProvider] ?? null;
-  }, [preflight, globalProvider]);
-
   // resolved model ids are internal; UI only shows friendly names
   const persistAgentsConfig = useCallback(
     async (updater: (draft: AgentsFile) => void) => {
@@ -470,10 +439,8 @@ const AgentSettingsWindow = () => {
         const yamlText = stringify(draft);
         await saveAgentsConfigFile(yamlText);
         setAgentsConfig(draft);
-        setAgentsError(null);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setAgentsError(message);
         useAppStore.getState().pushToast({ variant: 'error', message: `Failed to save agent config: ${message}` });
         throw err;
       }
@@ -523,8 +490,6 @@ const AgentSettingsWindow = () => {
     [agentsConfig, persistAgentsConfig],
   );
 
-  
-
   // Proxy settings
   const [proxyHttps, setProxyHttps] = useState<string>('');
   const [proxyNoProxy, setProxyNoProxy] = useState<string>('');
@@ -540,8 +505,6 @@ const AgentSettingsWindow = () => {
       }
     })();
   }, []);
-
-  
 
   const handleFirewallToggle = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -714,27 +677,6 @@ const AgentSettingsWindow = () => {
         .pushToast({ variant: 'error', message: `Standard health failed: ${(err as Error)?.message ?? String(err)}` });
     }
   }, [handleProviderHealth]);
-
-  const handlePullImage = useCallback(async (provider: ProviderName) => {
-    if (!hasTauriBridge()) {
-      useAppStore
-        .getState()
-        .pushToast({ variant: 'error', message: 'Image pull requires the desktop runtime' });
-      return;
-    }
-    try {
-      const res = (await tauriInvoke('provider_pull_image', { provider })) as { image?: string; runtime?: string };
-      const image = res?.image || '<unknown>';
-      const runtime = res?.runtime || '<runtime>';
-      useAppStore
-        .getState()
-        .pushToast({ variant: 'success', message: `Pulled ${image} via ${runtime}` });
-    } catch (err) {
-      useAppStore
-        .getState()
-        .pushToast({ variant: 'error', message: `Pull failed: ${(err as Error)?.message ?? String(err)}` });
-    }
-  }, []);
 
   const handlePlannerChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
@@ -949,8 +891,6 @@ const AgentSettingsWindow = () => {
     [beginConnect, completeConnect, failProvider],
   );
 
-  
-
   const handleProviderInstall = useCallback(
     async (provider: ProviderName) => {
       const info = PROVIDER_INFO[provider];
@@ -1074,41 +1014,6 @@ const AgentSettingsWindow = () => {
     }
   }, [modulesDir]);
 
-  const handleCheckProviders = useCallback(async () => {
-    try {
-      const agents = await loadAgentsConfig();
-      const resolved = resolveProfiles(agents);
-      await refreshAgentsPreflight(agents, resolved);
-      useAppStore.getState().pushToast({ variant: 'info', message: 'Preflight completed (see console for details)' });
-    } catch (err) {
-      useAppStore.getState().pushToast({ variant: 'error', message: `Preflight failed: ${(err as Error)?.message ?? String(err)}` });
-    }
-  }, []);
-
-  const preflightSummary = useMemo(() => {
-    const snapshot = preflight;
-    if (!snapshot) return null;
-    const providers = snapshot.providers || {};
-    const fmt = (c?: { provider: string; model: string; alias?: string }) => {
-      if (!c) return '';
-      const prov = providers[c.provider];
-      const has = prov && Array.isArray(prov.models) && prov.models.length > 0 ? prov.models.includes(c.model) : undefined;
-      const cap = prov?.caps?.[c.model];
-      const ctx = cap ? effectiveContext(cap) : undefined;
-      const ctxPart = typeof ctx === 'number' && ctx > 0 ? `, ctx ${ctx}` : '';
-      const label = c.alias ? `${c.provider} → ${c.model} (alias ${c.alias}${ctxPart})` : `${c.provider} → ${c.model}${ctxPart}`;
-      if (has === true) return `✓ ${label}`;
-      if (has === false) return `⚠ ${label}`;
-      return `• ${label}`;
-    };
-    const planner = snapshot.resolvedProfiles.planner;
-    const actor = snapshot.resolvedProfiles.actor;
-    return {
-      planner: [fmt(planner[0]), ...planner.slice(1).map(fmt)],
-      actor: [fmt(actor[0]), ...actor.slice(1).map(fmt)],
-    };
-  }, [preflight]);
-
   const handleVerifyModules = useCallback(async () => {
     try {
       if (!hasTauriBridge()) {
@@ -1165,142 +1070,87 @@ const AgentSettingsWindow = () => {
           </button>
         </div>
 
-        {/* Provider Selection */}
-        {bridgeAvailable && (
-          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 text-sm font-semibold text-slate-700">LLM Provider</div>
-            {agentsLoading && <div className="text-sm text-slate-500">Loading configuration...</div>}
-            {!agentsLoading && agentsError && (
-              <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                {agentsError}
-              </div>
-            )}
-            {currentProviderEntry && (
-              <div className="mt-3 grid grid-cols-1 gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 sm:grid-cols-3">
-                <div>
-                  <div className="font-semibold text-slate-700">Base URL</div>
-                  <div className="truncate">{currentProviderEntry.base_url}</div>
-                </div>
-                <div>
-                  <div className="font-semibold text-slate-700">Models</div>
-                  <div>
-                    {currentProviderPreflight?.models?.length ?? 0}
-                    {currentProviderPreflight?.fetchedAt ? ` (as of ${new Date(currentProviderPreflight.fetchedAt).toLocaleTimeString()})` : ''}
-                  </div>
-                </div>
-                <div>
-                  <div className="font-semibold text-slate-700">Status</div>
-                  <div className={currentProviderPreflight?.error ? 'text-rose-600' : 'text-emerald-600'}>
-                    {currentProviderPreflight?.error ? 'fetch error' : 'ok'}
-                  </div>
-                </div>
-              </div>
-            )}
-            {!agentsLoading && !agentsError && agentsConfig && (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {providerOptions.map((option) => {
-                  const isSelected = globalProvider === option.value;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => {
-                        if (!agentsConfig) return;
-                        const provider = option.value;
-                        const defaults = selectDefaultAliases(agentsConfig, provider);
-                        const nextPlanner: ProfileEditorState = {
-                          provider,
-                          mode: defaults.planner ? 'preset' : 'custom',
-                          presetModel: defaults.planner,
-                          customModel: plannerState.customModel,
-                        };
-                        const nextActor: ProfileEditorState = {
-                          provider,
-                          mode: defaults.actor ? 'preset' : 'custom',
-                          presetModel: defaults.actor,
-                          customModel: actorState.customModel,
-                        };
-                        setGlobalProvider(provider);
-                        setPlannerState(nextPlanner);
-                        setActorState(nextActor);
-                        setPlannerCustomError(null);
-                        setActorCustomError(null);
-                        void persistAgentsConfig((draft) => {
-                          const plannerProfileDraft = draft.profiles?.planner;
-                          if (plannerProfileDraft) {
-                            plannerProfileDraft.provider = provider;
-                            plannerProfileDraft.mode = nextPlanner.mode;
-                            plannerProfileDraft.preset_model = nextPlanner.presetModel.trim() || undefined;
-                            plannerProfileDraft.custom_model = nextPlanner.customModel.trim() || undefined;
-                            plannerProfileDraft.model =
-                              nextPlanner.mode === 'custom'
-                                ? nextPlanner.customModel.trim()
-                                : nextPlanner.presetModel.trim();
-                          }
-                          const actorProfileDraft = draft.profiles?.actor;
-                          if (actorProfileDraft) {
-                            actorProfileDraft.provider = provider;
-                            actorProfileDraft.mode = nextActor.mode;
-                            actorProfileDraft.preset_model = nextActor.presetModel.trim() || undefined;
-                            actorProfileDraft.custom_model = nextActor.customModel.trim() || undefined;
-                            actorProfileDraft.model =
-                              nextActor.mode === 'custom'
-                                ? nextActor.customModel.trim()
-                                : nextActor.presetModel.trim();
-                          }
-                        });
-                      }}
-                      className={`flex flex-col items-center gap-1.5 rounded-lg border-2 p-3 text-center transition-colors ${
-                        isSelected
-                          ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
-                      } ${!agentsConfig ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                    >
-                      <span className="text-xs font-semibold">{option.label}</span>
-                      {isSelected && <span className="text-[10px] text-emerald-600">Active</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            <div className="mt-3 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleCheckProviders}
-                disabled={!agentsConfig}
-                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        {/* Simplified LLM Configuration (Primary) */}
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 text-sm font-semibold text-slate-700">LLM Provider & Model</div>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Provider</label>
+              <select
+                value={llmStore.provider}
+                onChange={(e) => llmStore.setProviderModel(e.target.value as ProviderKey, llmStore.model)}
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
               >
-                Check Providers
-              </button>
+                <option value="ollama-cloud">Ollama Cloud (default)</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="ollama-local">Ollama Local</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                {llmStore.provider === 'ollama-cloud' && 'Hosted models with cloud API key'}
+                {llmStore.provider === 'openrouter' && 'Access to 100+ models via unified API'}
+                {llmStore.provider === 'openai' && 'GPT models from OpenAI'}
+                {llmStore.provider === 'anthropic' && 'Claude models from Anthropic'}
+                {llmStore.provider === 'ollama-local' && 'Local Ollama daemon (requires installation)'}
+              </p>
             </div>
-            {preflightSummary && (
-              <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-slate-600">
-                <div>
-                  <div className="font-semibold">Planner</div>
-                  <ul className="ml-4 list-disc">
-                    {preflightSummary.planner.filter(Boolean).map((line, i) => (
-                      <li key={`pf-plan-${i}`}>{line}</li>
-                    ))}
-                  </ul>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Model</label>
+              <input
+                type="text"
+                value={llmStore.model}
+                onChange={(e) => llmStore.setProviderModel(llmStore.provider, e.target.value)}
+                placeholder={llmStore.provider === 'openrouter' ? 'e.g., anthropic/claude-sonnet-4.5' : llmStore.provider === 'ollama-cloud' ? 'e.g., llama3.1-405b-instruct' : 'e.g., gpt-5'}
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                {llmStore.provider === 'openrouter' && 'Use provider/model-name format (e.g., openai/gpt-5, meta-llama/llama-3.3-70b)'}
+                {llmStore.provider === 'ollama-cloud' && 'Cloud-hosted model ID'}
+                {llmStore.provider === 'ollama-local' && 'Model name from your local Ollama installation'}
+              </p>
+            </div>
+            {llmStore.provider === 'ollama-cloud' && bridgeAvailable && (
+              <label className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+                <input
+                  type="checkbox"
+                  checked={llmStore.allowLocalOllama}
+                  disabled={localFallbackLoading}
+                  onChange={async (e) => {
+                    const allow = e.target.checked;
+                    setLocalFallbackLoading(true);
+                    try {
+                      llmStore.setAllowLocalOllama(allow);
+                      await tauriInvoke('set_allow_local_opt_in', { allow });
+                      useAppStore.getState().pushToast({
+                        variant: 'info',
+                        message: allow ? 'Local Ollama fallback enabled' : 'Local Ollama fallback disabled',
+                      });
+                    } catch (err) {
+                      llmStore.setAllowLocalOllama(!allow);
+                      useAppStore.getState().pushToast({
+                        variant: 'error',
+                        message: `Failed to toggle local fallback: ${(err as Error)?.message ?? String(err)}`,
+                      });
+                    } finally {
+                      setLocalFallbackLoading(false);
+                    }
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed"
+                />
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-sm font-medium text-slate-700">Allow local Ollama fallback when available</span>
+                  <span className="text-xs text-slate-500">
+                    If a local Ollama daemon is detected, use it instead of cloud (no API key required)
+                  </span>
                 </div>
-                <div>
-                  <div className="font-semibold">Actor</div>
-                  <ul className="ml-4 list-disc">
-                    {preflightSummary.actor.filter(Boolean).map((line, i) => (
-                      <li key={`pf-act-${i}`}>{line}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            )}
-            {!agentsLoading && !agentsError && !agentsConfig && (
-              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-                Configuration file not found. Using default settings.
-              </div>
+              </label>
             )}
           </div>
-        )}
-        {/* Planner Configuration */}
+        </div>
+
+        {/* Planner Configuration (Advanced) */}
+        {showAdvanced && (
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-3 text-sm font-semibold text-slate-700">Planner (Reasoning & Planning)</div>
           <div className="flex flex-col gap-3">
@@ -1358,8 +1208,10 @@ const AgentSettingsWindow = () => {
             )}
           </div>
         </div>
+        )}
 
-        {/* Actor Configuration */}
+          {/* Actor Configuration (Advanced) */}
+        {showAdvanced && (
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-3 text-sm font-semibold text-slate-700">Actor (Execution & Implementation)</div>
           <div className="flex flex-col gap-3">
@@ -1417,6 +1269,7 @@ const AgentSettingsWindow = () => {
             )}
           </div>
         </div>
+        )}
 
         {/* System Settings */}
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -1526,27 +1379,9 @@ const AgentSettingsWindow = () => {
                 Run Standard Health
               </button>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center justify-between">
               <span className="font-semibold">Step 2:</span>
-              <span>Optional: Install via container images (safer defaults)</span>
-              <div className="ml-auto flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handlePullImage('codex')}
-                  disabled={!bridgeAvailable}
-                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Pull Codex Image
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handlePullImage('claude')}
-                  disabled={!bridgeAvailable}
-                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Pull Claude Image
-                </button>
-              </div>
+              <span>Ensure CLI tooling is installed for secure defaults</span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold">Step 3:</span>

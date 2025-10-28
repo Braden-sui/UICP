@@ -1,4 +1,4 @@
-import { extractEventsFromChunk } from '../llm/ollama';
+import { extractEventsFromChunk } from '../llm/llm.stream';
 import { enqueueBatch } from './adapters/queue';
 import { normalizeBatchJson } from '../llm/jsonParsing';
 import { parseWilToBatch } from '../wil/batch';

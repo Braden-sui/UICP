@@ -1710,6 +1710,7 @@ const routeOperation = async (
           console.error('script.panel lifecycle failed', err);
         }
       }
+      // uicp.miniapp: no special handling here; iframe bootstrap handled by hostBridge/preload
       break;
     }
 

@@ -9,6 +9,34 @@
 import { getEffectivePolicy, onPolicyChange } from './policyLoader';
 import type { Policy } from './policy';
 
+type WindowLike = Window & typeof globalThis;
+
+let windowOverride: WindowLike | undefined;
+
+const getCurrentWindow = (): WindowLike | undefined => {
+  if (windowOverride) {
+    return windowOverride;
+  }
+  if (typeof window !== 'undefined') {
+    return window as WindowLike;
+  }
+  return undefined;
+};
+
+const getCurrentGlobal = (): any => windowOverride ?? globalThis;
+
+const withWindowOverride = <T>(win: WindowLike | undefined, fn: () => T): T => {
+  const previous = windowOverride;
+  if (win !== undefined) {
+    windowOverride = win;
+  }
+  try {
+    return fn();
+  } finally {
+    windowOverride = previous;
+  }
+};
+
 type GuardConfig = {
   enabled: boolean;
   monitorOnly: boolean;
@@ -994,9 +1022,9 @@ const shouldBlockHost = (host: string, port: string | number | null | undefined)
 
 const installFetchGuard = () => {
    
-  const g: any = globalThis as any;
+  const g: any = getCurrentGlobal();
    
-  const win: any = typeof window !== 'undefined' ? (window as any) : undefined;
+  const win: any = getCurrentWindow();
   const hasWindowFetch = !!(win && typeof win.fetch === 'function');
   const hasGlobalFetch = typeof g.fetch === 'function';
   if (!hasWindowFetch && !hasGlobalFetch) return;
@@ -1338,7 +1366,7 @@ const installWSGuard = () => {
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = WS.prototype;
    
-  setProp(window as any, 'WebSocket', Wrapped);
+  setProp((win as any), 'WebSocket', Wrapped);
   try { setProp(g, 'WebSocket', Wrapped); } catch { /* non-fatal */ }
 };
 
@@ -1387,7 +1415,7 @@ const installESGuard = () => {
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = ES.prototype;
    
-  setProp(window as any, 'EventSource', Wrapped);
+  setProp((win as any), 'EventSource', Wrapped);
   try { setProp(g, 'EventSource', Wrapped); } catch { /* non-fatal */ }
 };
 
@@ -1513,11 +1541,11 @@ const installWebTransportGuard = () => {
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = WT.prototype;
    
-  setProp(window as any, 'WebTransport', Wrapped);
+  setProp((win as any), 'WebTransport', Wrapped);
 };
 
 const installWorkerGuards = () => {
-  const w: any = typeof window !== 'undefined' ? window : undefined;
+  const w: any = getCurrentWindow();
   if (!w) return;
   if (w.Worker) {
      
@@ -1580,11 +1608,11 @@ const installWorkerGuards = () => {
   }
 };
 
-export function installNetworkGuard(custom?: Partial<GuardConfig>) {
+const installNetworkGuardInternal = (custom?: Partial<GuardConfig>) => {
   lastCustomConfig = custom;
 
   const env: any = (import.meta as any)?.env ?? {};
-  const g: any = globalThis as any;
+  const g: any = getCurrentGlobal();
   const installed = !!g.__UICP_NET_GUARD_INSTALLED__;
 
   const enabledEnv = String(env.VITE_NET_GUARD_ENABLED ?? '1').toLowerCase();

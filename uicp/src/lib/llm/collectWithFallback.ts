@@ -1,4 +1,4 @@
-import type { StreamEvent } from './ollama';
+import type { StreamEvent } from './llm.stream';
 import type { CollectedToolArgs } from './collectToolArgs';
 import { emitTelemetryEvent } from '../telemetry';
 import type { TelemetryEventPayload, TraceSpan } from '../telemetry/types';

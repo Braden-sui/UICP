@@ -54,6 +54,10 @@ mod registry;
 mod wasi_logging;
 mod keystore;
 mod providers;
+mod apppack;
+mod authz;
+mod egress;
+mod net;
 
 #[cfg(any(test, feature = "compute_harness"))]
 mod commands;
@@ -68,6 +72,8 @@ use core::{init_tracing, log_error, log_info, log_warn, CircuitBreakerConfig};
 use secrecy::SecretString;
 use crate::keystore::{get_or_init_keystore, UnlockStatus};
 use crate::providers::build_provider_headers;
+use crate::apppack::{apppack_validate, apppack_install, apppack_entry_html};
+use crate::egress::egress_fetch;
 use provider_cli::{ProviderHealthResult, ProviderLoginResult};
 
 // Re-export shared core items so crate::... references in submodules remain valid
@@ -89,6 +95,12 @@ static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
 pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
     let state: State<'_, AppState> = app_handle.state();
     state.ongoing.write().await.remove(request_id);
+}
+
+/// Reload host permission policies from AppData/uicp/permissions.json.
+#[tauri::command]
+async fn reload_policies(app: tauri::AppHandle) -> Result<(), String> {
+    crate::authz::reload_policies(&app)
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +589,35 @@ async fn compute_call(
             );
             return Ok(());
         }
+    }
+
+    // --- Host policy enforcement (coarse gate) ---
+    let task_key = {
+        let t = spec.task.as_str();
+        if let Some(at) = t.find('@') {
+            let (name, ver) = t.split_at(at);
+            let ver = &ver[1..];
+            let major = ver.split('.').next().unwrap_or(ver);
+            format!("{}@{}", name, major)
+        } else {
+            t.to_string()
+        }
+    };
+    if !crate::authz::allow_compute(&task_key) {
+        let payload = ComputeFinalErr {
+            ok: false,
+            job_id: spec.job_id.clone(),
+            task: spec.task.clone(),
+            code: "PolicyDenied".into(),
+            message: format!("Denied by permissions.json (scope: compute:{})", task_key),
+            metrics: None,
+        };
+        emit_or_log(
+            &window.app_handle(),
+            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            &payload,
+        );
+        return Ok(());
     }
 
     // --- Policy enforcement (Non-negotiables v1) ---
@@ -1507,9 +1548,12 @@ async fn chat_completion(
         let mut request_body = body_payload;
         let mut attempt_local: u8 = 0;
         let mut fallback_tried: bool = false;
+        let mut local_path_fallback: bool = false;
         'outer: loop {
             attempt_local += 1;
             let url = if use_cloud {
+                format!("{}/api/chat", base_url)
+            } else if local_path_fallback {
                 format!("{}/api/chat", base_url)
             } else {
                 format!("{}/chat/completions", base_url)
@@ -1609,22 +1653,47 @@ async fn chat_completion(
 
             // Inject provider headers when a provider is specified; otherwise use Ollama Cloud headers when enabled.
             if let Some(p) = provider_lower.as_deref() {
-                match build_provider_headers(p).await {
-                    Ok(headers) => {
-                        for (k, v) in headers.into_iter() {
-                            builder = builder.header(k, v);
+                if p == "ollama" {
+                    if use_cloud {
+                        if let Ok(headers) = build_provider_headers("ollama").await {
+                            for (k, v) in headers.into_iter() {
+                                builder = builder.header(k, v);
+                            }
                         }
                     }
-                    Err(e) => {
-                        emit_problem_detail(
-                            &app_handle,
-                            &rid_for_task,
-                            401,
-                            "E-UICP-SEC-LOCKED",
-                            &format!("provider headers unavailable: {}", e),
-                            None,
-                        );
-                        break;
+                } else {
+                    match build_provider_headers(p).await {
+                        Ok(headers) => {
+                            for (k, v) in headers.into_iter() {
+                                builder = builder.header(k, v);
+                            }
+                        }
+                        Err(e) => {
+                            match e {
+                                crate::keystore::KeystoreError::Permission(msg) => {
+                                    // Stable, structured denial for host policy
+                                    emit_problem_detail(
+                                        &app_handle,
+                                        &rid_for_task,
+                                        403,
+                                        "PolicyDenied",
+                                        &msg,
+                                        None,
+                                    );
+                                }
+                                other => {
+                                    emit_problem_detail(
+                                        &app_handle,
+                                        &rid_for_task,
+                                        401,
+                                        "E-UICP-SEC-LOCKED",
+                                        &format!("provider headers unavailable: {}", other),
+                                        None,
+                                    );
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             } else if use_cloud {
@@ -1764,6 +1833,20 @@ async fn chat_completion(
                                 tokio::spawn(append_trace(ev.clone()));
                                 tokio::spawn(emit_debug(ev));
                             }
+                        }
+
+                        if !use_cloud && status.as_u16() == 404 && !local_path_fallback {
+                            if debug_on {
+                                let ev = serde_json::json!({
+                                    "ts": Utc::now().timestamp_millis(),
+                                    "event": "retry_path_api_chat",
+                                    "requestId": rid_for_task,
+                                });
+                                tokio::spawn(append_trace(ev.clone()));
+                                tokio::spawn(emit_debug(ev));
+                            }
+                            local_path_fallback = true;
+                            continue 'outer;
                         }
 
                         let should_retry = (status.as_u16() == 429 || status.as_u16() == 503)
@@ -2167,6 +2250,40 @@ async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
     Ok(base)
 }
 
+async fn maybe_enable_local_ollama(state: &AppState) {
+    if !*state.allow_local_opt_in.read().await {
+        return;
+    }
+    let client = state.http.clone();
+    let url = format!("{}/models", crate::core::OLLAMA_LOCAL_BASE_DEFAULT);
+    let ok = match tokio::time::timeout(Duration::from_millis(600), client.get(url).send()).await {
+        Ok(Ok(resp)) => resp.status().is_success(),
+        _ => false,
+    };
+    if ok {
+        *state.use_direct_cloud.write().await = false;
+    }
+}
+
+#[tauri::command]
+async fn set_allow_local_opt_in(state: State<'_, AppState>, allow: bool) -> Result<(), String> {
+    *state.allow_local_opt_in.write().await = allow;
+    if allow {
+        maybe_enable_local_ollama(&state).await;
+    } else {
+        *state.use_direct_cloud.write().await = true;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_ollama_mode(state: State<'_, AppState>) -> Result<(bool, bool), String> {
+    Ok((
+        *state.use_direct_cloud.read().await,
+        *state.allow_local_opt_in.read().await,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::normalize_model_name;
@@ -2496,6 +2613,10 @@ fn main() {
         last_save_ok: RwLock::new(true),
         ollama_key: RwLock::new(None),
         use_direct_cloud: RwLock::new(true), // default to cloud mode
+        allow_local_opt_in: RwLock::new({
+            let raw = std::env::var("UICP_OLLAMA_LOCAL_OPTIN").unwrap_or_default();
+            matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
+        }),
         debug_enabled: RwLock::new({
             let raw = std::env::var("UICP_DEBUG").unwrap_or_default();
             matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
@@ -2666,6 +2787,19 @@ fn main() {
                     log_error(format!("health_quick_check failed: {err:?}"));
                 }
             });
+            // Load host policies (best-effort)
+            let handle2 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::authz::reload_policies(&handle2).await;
+            });
+            // If local opt-in is enabled by env or persisted UI toggle, probe local daemon once to enable fallback.
+            let handle3 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state: State<'_, AppState> = handle3.state();
+                if *state.allow_local_opt_in.read().await {
+                    maybe_enable_local_ollama(&state).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2701,14 +2835,13 @@ fn main() {
             compute_cancel,
             mint_job_token,
             debug_circuits,
-            kill_container,
             set_env_var,
             save_provider_api_key,
-            provider_pull_image,
             provider_login,
             provider_health,
             provider_resolve,
             provider_install,
+            egress_fetch,
             load_agents_config_file,
             save_agents_config_file,
             keystore_unlock,
@@ -2720,6 +2853,12 @@ fn main() {
             secret_set,
             secret_exists,
             secret_delete,
+            reload_policies,
+            apppack_validate,
+            apppack_install,
+            apppack_entry_html,
+            set_allow_local_opt_in,
+            get_ollama_mode,
             frontend_ready
         ])
         .run(tauri::generate_context!())
@@ -2745,6 +2884,16 @@ async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> 
     let key = name.trim();
     if key.is_empty() || key.contains('\0') || key.contains('=') {
         return Err("E-UICP-9201: invalid env var name".into());
+    }
+    let upper = key.to_ascii_uppercase();
+    const ALLOWED_PREFIXES: &[&str] = &["OLLAMA_", "UICP_"];
+    let allowed = ALLOWED_PREFIXES
+        .iter()
+        .any(|prefix| upper.starts_with(prefix));
+    if !allowed {
+        return Err(format!(
+            "E-UICP-9203: env var '{key}' not permitted (allowed prefixes: {ALLOWED_PREFIXES:?})"
+        ));
     }
     match value {
         Some(v) => std::env::set_var(key, v),
@@ -2774,43 +2923,6 @@ async fn save_provider_api_key(provider: String, key: String) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-/// Pull the container image for a provider (docker or podman). Returns the image name.
-/// ERROR: E-UICP-9204 runtime missing; E-UICP-9205 pull failed
-#[tauri::command]
-async fn provider_pull_image(provider: String) -> Result<serde_json::Value, String> {
-    fn try_pull(bin: &str, image: &str) -> Result<(), String> {
-        let out = std::process::Command::new(bin)
-            .arg("pull")
-            .arg(image)
-            .output()
-            .map_err(|e| format!("E-UICP-9204: spawn {bin} failed: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "E-UICP-9205: {bin} pull exited {}: {}",
-                out.status.code().unwrap_or(-1),
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        Ok(())
-    }
-
-    let normalized = provider.trim().to_ascii_lowercase();
-    let image = match normalized.as_str() {
-        "codex" => std::env::var("CODEX_IMAGE").unwrap_or_else(|_| "uicp/codex-cli:latest".into()),
-        "claude" => {
-            std::env::var("CLAUDE_IMAGE").unwrap_or_else(|_| "uicp/claude-code:latest".into())
-        }
-        other => return Err(format!("E-UICP-9202: invalid provider '{other}'")),
-    };
-    match try_pull("docker", &image) {
-        Ok(_) => Ok(serde_json::json!({ "image": image, "runtime": "docker" })),
-        Err(_e1) => match try_pull("podman", &image) {
-            Ok(_) => Ok(serde_json::json!({ "image": image, "runtime": "podman" })),
-            Err(e2) => Err(e2),
-        },
-    }
-}
-
 /// Get debug information for all circuit breakers.
 /// Returns per-host state including failures, open status, and telemetry counters.
 ///
@@ -2822,38 +2934,6 @@ async fn debug_circuits(
 ) -> Result<Vec<circuit::CircuitDebugInfo>, String> {
     let info = circuit::get_circuit_debug_info(&state.circuit_breakers).await;
     Ok(info)
-}
-
-/// Stop a running container by name using docker or podman.
-/// ERROR: E-UICP-9101 spawn failed; E-UICP-9102 runtime missing
-#[tauri::command]
-async fn kill_container(container_name: String) -> Result<(), String> {
-    fn try_stop(bin: &str, name: &str) -> Result<(), String> {
-        let out = std::process::Command::new(bin)
-            .arg("stop")
-            .arg(name)
-            .output()
-            .map_err(|e| format!("E-UICP-9101: spawn {bin} failed: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "E-UICP-9101: {bin} stop exited {}: {}",
-                out.status.code().unwrap_or(-1),
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        Ok(())
-    }
-
-    // Try docker then podman
-    match try_stop("docker", &container_name) {
-        Ok(_) => Ok(()),
-        Err(_e1) => match try_stop("podman", &container_name) {
-            Ok(_) => Ok(()),
-            Err(e2) => Err(format!(
-                "E-UICP-9102: container runtime missing or stop failed: {e2}"
-            )),
-        },
-    }
 }
 
 #[tauri::command]

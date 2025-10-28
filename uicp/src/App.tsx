@@ -21,6 +21,7 @@ import { onPolicyChange, setRuntimePolicy } from './lib/security/policyLoader';
 import { loadPersistedPolicy, persistPolicy } from './lib/security/policyPersistence';
 import { useKeystore } from './state/keystore';
 import { hasTauriBridge } from './lib/bridge/tauri';
+import './lib/miniapp/hostBridge';
 
 // App stitches the desktop canvas with the DockChat control surface and supporting overlays.
 // Includes ambient particles for premium visual polish.
