@@ -1,5 +1,5 @@
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -169,7 +169,6 @@ impl KeystoreConfig {
 }
 
 pub struct Keystore {
-    db_path: PathBuf,
     conn: AsyncConn,
     state: Arc<RwLock<KeystoreState>>,
     app_salt: Arc<Vec<u8>>,
@@ -207,7 +206,6 @@ impl Keystore {
         let app_salt = initialize_database(&conn, &db_path).await?;
 
         Ok(Self {
-            db_path,
             conn,
             state: Arc::new(RwLock::new(KeystoreState::default())),
             app_salt: Arc::new(app_salt),
@@ -680,10 +678,12 @@ fn derive_kek(passphrase: &str, app_salt: &[u8]) -> Result<SecretVec<u8>> {
 fn encrypt_secret(dek: &[u8], nonce: &[u8; 24], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new_from_slice(dek)
         .map_err(|err| KeystoreError::Crypto(err.to_string()))?;
-    let nonce = XNonce::from_slice(nonce);
+    let mut nonce_array = [0u8; 24];
+    nonce_array.clone_from_slice(nonce);
+    let nonce = XNonce::from(nonce_array);
     cipher
         .encrypt(
-            nonce,
+            &nonce,
             chacha20poly1305::aead::Payload {
                 msg: plaintext,
                 aad,
@@ -698,10 +698,10 @@ fn decrypt_secret(dek: &[u8], nonce: &[u8], aad: &[u8], ciphertext: &[u8]) -> Re
     let nonce_arr: [u8; 24] = nonce
         .try_into()
         .map_err(|_| KeystoreError::Crypto("nonce length mismatch".into()))?;
-    let nonce = XNonce::from_slice(&nonce_arr);
+    let nonce = XNonce::from(nonce_arr);
     cipher
         .decrypt(
-            nonce,
+            &nonce,
             chacha20poly1305::aead::Payload {
                 msg: ciphertext,
                 aad,
