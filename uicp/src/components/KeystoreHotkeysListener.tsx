@@ -21,7 +21,7 @@ const getPlatformTag = () => {
 };
 
 const KeystoreHotkeysListener = () => {
-  const ks = useKeystore();
+  const quickLock = useKeystore((s) => s.quickLock);
   useEffect(() => {
     const handler = async (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
@@ -31,7 +31,7 @@ const KeystoreHotkeysListener = () => {
       const isMod = platform === 'mac' ? event.metaKey : event.ctrlKey;
       if (key === 'l' && isMod && event.shiftKey) {
         try {
-          await ks.quickLock();
+          await quickLock();
           useAppStore.getState().pushToast({ variant: 'info', message: 'Keystore locked' });
         } catch (err) {
           useAppStore.getState().pushToast({ variant: 'error', message: `Quick Lock failed: ${(err as Error)?.message ?? String(err)}` });
@@ -40,7 +40,7 @@ const KeystoreHotkeysListener = () => {
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [ks]);
+  }, [quickLock]);
   return null;
 };
 

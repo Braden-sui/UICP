@@ -166,6 +166,7 @@ export type BlockEventDetail = {
   blocked: boolean;
   payload?: GuardBlockPayload;
   retryId?: string;
+  internal?: boolean;
 };
 
 type Deferred<T> = {
@@ -436,6 +437,17 @@ let lastCustomConfig: Partial<GuardConfig> | undefined;
 
 const getPolicyRpsForHost = (host: string): number | undefined => {
   try {
+    // Skip quotas for loopback and internal IPC pseudo-hosts
+    const lower = host.toLowerCase();
+    if (
+      lower === 'localhost' ||
+      lower === 'ipc.localhost' ||
+      lower === '127.0.0.1' ||
+      lower === '::1' ||
+      lower.endsWith('.localhost')
+    ) {
+      return undefined;
+    }
     const pol = getEffectivePolicy();
     const quotas = pol?.network?.quotas;
     if (!quotas) return undefined;
@@ -869,7 +881,7 @@ const defaultBlockDomains = new Set<string>([
   'doh.opendns.com',
 ]);
 
-const defaultAllowHosts = new Set<string>(['localhost']);
+const defaultAllowHosts = new Set<string>(['localhost', 'ipc.localhost']);
 const defaultAllowIPs = new Set<string>(['127.0.0.1', '::1']);
 
 let cfg: GuardConfig | null = null;
@@ -877,23 +889,41 @@ let cfg: GuardConfig | null = null;
 const emitBlockEvent = (detail: BlockEventDetail) => {
   try {
     const w: any = typeof window !== 'undefined' ? window : undefined;
-     
+
     if (!w || typeof w.dispatchEvent !== 'function' || typeof (w as any).CustomEvent !== 'function') return;
-     
-    const ev = new (w as any).CustomEvent('net-guard-block', { detail });
+
+    const host = getHostname(detail.url);
+    const enriched: BlockEventDetail = {
+      ...detail,
+      internal: detail.internal ?? (host ? isInternalHost(host) : false),
+    };
+    const ev = new (w as any).CustomEvent('net-guard-block', { detail: enriched });
     w.dispatchEvent(ev);
   } catch { /* non-fatal */ }
 };
 
-const emitAttemptEvent = (detail: { url: string; method?: string; api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon' }) => {
+const emitAttemptEvent = (detail: { url: string; method?: string; api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon'; internal: boolean }) => {
   try {
     const w: any = typeof window !== 'undefined' ? window : undefined;
-     
+
     if (!w || typeof w.dispatchEvent !== 'function' || typeof (w as any).CustomEvent !== 'function') return;
-     
+
     const ev = new (w as any).CustomEvent('net-guard-attempt', { detail });
     w.dispatchEvent(ev);
   } catch { /* non-fatal */ }
+};
+
+const isInternalHost = (host: string): boolean => {
+  try {
+    const lower = host.toLowerCase();
+    if (!lower) return false;
+    if (lower === 'localhost' || lower === 'ipc.localhost') return true;
+    if (lower === '127.0.0.1' || lower === '::1') return true;
+    if (lower.endsWith('.localhost')) return true;
+    return false;
+  } catch {
+    return false;
+  }
 };
 
 const maybeEmitAttempt = (api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon', url: string, method?: string) => {
@@ -901,7 +931,14 @@ const maybeEmitAttempt = (api: 'fetch' | 'xhr' | 'ws' | 'sse' | 'beacon', url: s
     const sample = cfg?.attemptSample;
     if (!sample || sample <= 0) return;
     if (sample === 1 || Math.floor(Math.random() * sample) === 0) {
-      emitAttemptEvent({ api, url, method });
+      let internal = false;
+      try {
+        const u = new URL(url);
+        internal = isInternalHost(u.hostname);
+      } catch {
+        internal = false;
+      }
+      emitAttemptEvent({ api, url, method, internal });
     }
   } catch { /* non-fatal */ }
 };

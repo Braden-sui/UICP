@@ -9,6 +9,9 @@ use std::{
 
 use std::cell::RefCell;
 
+#[cfg(test)]
+use std::path::PathBuf;
+
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use chacha20poly1305::{
@@ -169,6 +172,8 @@ impl KeystoreConfig {
 }
 
 pub struct Keystore {
+    #[cfg(test)]
+    db_path: PathBuf,
     conn: AsyncConn,
     state: Arc<RwLock<KeystoreState>>,
     app_salt: Arc<Vec<u8>>,
@@ -206,6 +211,8 @@ impl Keystore {
         let app_salt = initialize_database(&conn, &db_path).await?;
 
         Ok(Self {
+            #[cfg(test)]
+            db_path: db_path.clone(),
             conn,
             state: Arc::new(RwLock::new(KeystoreState::default())),
             app_salt: Arc::new(app_salt),
@@ -827,7 +834,7 @@ mod tests {
                 .map_err(|err| KeystoreError::Database(err.to_string()))?;
             let app_salt = initialize_database(&conn, &db_path).await?;
             Ok(Self {
-                db_path,
+                db_path: db_path.clone(),
                 conn,
                 state: Arc::new(RwLock::new(KeystoreState::default())),
                 app_salt: Arc::new(app_salt),

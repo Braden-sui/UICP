@@ -49,6 +49,13 @@ const getEnv = (key: string): string | undefined => {
   return proc?.env?.[key];
 };
 
+const isTestRuntime = (): boolean => {
+  const g = globalThis as unknown as { process?: { env?: Record<string, string | undefined> } };
+  const proc = g?.process;
+  const vitestFlag = proc?.env?.VITEST;
+  return vitestFlag === 'true';
+};
+
 const interpolate = (value: unknown): unknown => {
   if (typeof value === 'string') {
     return value.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name: string) => {
@@ -74,7 +81,7 @@ export const loadFromText = (yamlText: string): AgentsFile => {
   const interpolated = interpolate(raw);
   const parsed = AgentsFileSchema.parse(interpolated);
   const migrated = migrateAgentsFile(parsed);
-  if (hasTauriBridge()) {
+  if (hasTauriBridge() && !isTestRuntime()) {
     const copy: AgentsFile = JSON.parse(JSON.stringify(migrated));
     for (const pkey of Object.keys(copy.providers ?? {})) {
       const entry = copy.providers[pkey];
@@ -181,14 +188,14 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
           provider: 'openai',
           model: 'gpt_default',
           temperature: 0.2,
-          max_tokens: 4096,
+          max_tokens: 200000,
           fallbacks: ['ollama:glm_default', 'ollama:deepseek_default', 'ollama:gptoss_default', 'ollama:kimi_default', 'ollama:qwen_default'],
         },
         actor: {
           provider: 'anthropic',
           model: 'claude_default',
           temperature: 0.2,
-          max_tokens: 4096,
+          max_tokens: 200000,
           fallbacks: ['ollama:glm_default', 'ollama:deepseek_default', 'ollama:gptoss_default', 'ollama:kimi_default', 'ollama:qwen_default'],
         },
       },

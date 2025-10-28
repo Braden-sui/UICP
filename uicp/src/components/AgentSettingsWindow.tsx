@@ -298,12 +298,19 @@ const AgentSettingsWindow = () => {
   const [installingProvider, setInstallingProvider] = useState<ProviderName | null>(null);
 
   // Keystore state
-  const ks = useKeystore();
+  const refreshKeystoreStatus = useKeystore((s) => s.refreshStatus);
+  const keystoreLocked = useKeystore((s) => s.locked);
+  const keystoreTtl = useKeystore((s) => s.ttlRemainingSec);
+  const keystoreBusy = useKeystore((s) => s.busy);
+  const keystoreMethod = useKeystore((s) => s.method);
+  const keystoreError = useKeystore((s) => s.error);
+  const unlockKeystore = useKeystore((s) => s.unlock);
+  const quickLockKeystore = useKeystore((s) => s.quickLock);
   const [passphrase, setPassphrase] = useState<string>('');
   useEffect(() => {
     if (!hasTauriBridge()) return;
-    void ks.refreshStatus();
-  }, [ks]);
+    void refreshKeystoreStatus();
+  }, [refreshKeystoreStatus]);
 
   const formatTtl = (sec: number | null): string => {
     if (sec == null) return '';
@@ -325,23 +332,27 @@ const AgentSettingsWindow = () => {
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [newPlannerFallback, setNewPlannerFallback] = useState<string>('');
 
-  const llmStore = useLLM();
   const [localFallbackLoading, setLocalFallbackLoading] = useState<boolean>(false);
   const [newActorFallback, setNewActorFallback] = useState<string>('');
 
+  const provider = useLLM((s) => s.provider);
+  const model = useLLM((s) => s.model);
+  const setProviderModel = useLLM((s) => s.setProviderModel);
+  const allowLocalOllama = useLLM((s) => s.allowLocalOllama);
+  const setAllowLocalOllama = useLLM((s) => s.setAllowLocalOllama);
   useEffect(() => {
     if (!hasTauriBridge()) return;
     (async () => {
       try {
         const [, allowLocal] = await tauriInvoke<[boolean, boolean]>('get_ollama_mode');
-        if (allowLocal !== llmStore.allowLocalOllama) {
-          llmStore.setAllowLocalOllama(allowLocal);
+        if (allowLocal !== allowLocalOllama) {
+          setAllowLocalOllama(allowLocal);
         }
       } catch (err) {
         console.warn('[AgentSettings] Failed to sync Ollama mode from backend:', err);
       }
     })();
-  }, [llmStore]);
+  }, [allowLocalOllama, setAllowLocalOllama]);
 
   useEffect(() => {
     if (!hasTauriBridge()) {
@@ -570,30 +581,29 @@ const AgentSettingsWindow = () => {
   const [anthropicKey, setAnthropicKey] = useState<string>('');
   const [openrouterKey, setOpenrouterKey] = useState<string>('');
   const [ollamaKey, setOllamaKey] = useState<string>('');
-  const saveProviderKey = useCallback(
+  const saveProviderKeyToStore = useKeystore((state) => state.saveProviderKey);
+  const handleSaveProviderKey = useCallback(
     async (provider: 'openai' | 'anthropic' | 'openrouter' | 'ollama', key: string) => {
       if (!hasTauriBridge()) {
         useAppStore.getState().pushToast({ variant: 'error', message: 'Saving keys requires the desktop runtime' });
         return;
       }
-      if (ks.locked) {
+      if (keystoreLocked) {
         useAppStore.getState().pushToast({ variant: 'error', message: 'Unlock keystore first' });
         return;
       }
       try {
-        const ok = await ks.saveProviderKey(provider, key);
+        const ok = await saveProviderKeyToStore(provider, key);
         if (ok) {
           useAppStore.getState().pushToast({ variant: 'success', message: `${provider} key saved to keystore` });
         } else {
           useAppStore.getState().pushToast({ variant: 'error', message: `Failed to save ${provider} key` });
         }
       } catch (err) {
-        useAppStore
-          .getState()
-          .pushToast({ variant: 'error', message: `Save failed: ${(err as Error)?.message ?? String(err)}` });
+        useAppStore.getState().pushToast({ variant: 'error', message: `Save failed: ${(err as Error)?.message ?? String(err)}` });
       }
     },
-    [ks],
+    [keystoreLocked, saveProviderKeyToStore],
   );
 
   const handleProviderHealth = useCallback(
@@ -1077,8 +1087,8 @@ const AgentSettingsWindow = () => {
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600">Provider</label>
               <select
-                value={llmStore.provider}
-                onChange={(e) => llmStore.setProviderModel(e.target.value as ProviderKey, llmStore.model)}
+                value={provider}
+                onChange={(e) => setProviderModel(e.target.value as ProviderKey, model)}
                 className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
               >
                 <option value="ollama-cloud">Ollama Cloud (default)</option>
@@ -1088,46 +1098,46 @@ const AgentSettingsWindow = () => {
                 <option value="ollama-local">Ollama Local</option>
               </select>
               <p className="mt-1 text-xs text-slate-500">
-                {llmStore.provider === 'ollama-cloud' && 'Hosted models with cloud API key'}
-                {llmStore.provider === 'openrouter' && 'Access to 100+ models via unified API'}
-                {llmStore.provider === 'openai' && 'GPT models from OpenAI'}
-                {llmStore.provider === 'anthropic' && 'Claude models from Anthropic'}
-                {llmStore.provider === 'ollama-local' && 'Local Ollama daemon (requires installation)'}
+                {provider === 'ollama-cloud' && 'Hosted models with cloud API key'}
+                {provider === 'openrouter' && 'Access to 100+ models via unified API'}
+                {provider === 'openai' && 'GPT models from OpenAI'}
+                {provider === 'anthropic' && 'Claude models from Anthropic'}
+                {provider === 'ollama-local' && 'Local Ollama daemon (requires installation)'}
               </p>
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600">Model</label>
               <input
                 type="text"
-                value={llmStore.model}
-                onChange={(e) => llmStore.setProviderModel(llmStore.provider, e.target.value)}
-                placeholder={llmStore.provider === 'openrouter' ? 'e.g., anthropic/claude-sonnet-4.5' : llmStore.provider === 'ollama-cloud' ? 'e.g., llama3.1-405b-instruct' : 'e.g., gpt-5'}
+                value={model}
+                onChange={(e) => setProviderModel(provider, e.target.value)}
+                placeholder={provider === 'openrouter' ? 'e.g., anthropic/claude-sonnet-4.5' : provider === 'ollama-cloud' ? 'e.g., llama3.1-405b-instruct' : 'e.g., gpt-5'}
                 className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
               />
               <p className="mt-1 text-xs text-slate-500">
-                {llmStore.provider === 'openrouter' && 'Use provider/model-name format (e.g., openai/gpt-5, meta-llama/llama-3.3-70b)'}
-                {llmStore.provider === 'ollama-cloud' && 'Cloud-hosted model ID'}
-                {llmStore.provider === 'ollama-local' && 'Model name from your local Ollama installation'}
+                {provider === 'openrouter' && 'Use provider/model-name format (e.g., openai/gpt-5, meta-llama/llama-3.3-70b)'}
+                {provider === 'ollama-cloud' && 'Cloud-hosted model ID'}
+                {provider === 'ollama-local' && 'Model name from your local Ollama installation'}
               </p>
             </div>
-            {llmStore.provider === 'ollama-cloud' && bridgeAvailable && (
+            {provider === 'ollama-cloud' && bridgeAvailable && (
               <label className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
                 <input
                   type="checkbox"
-                  checked={llmStore.allowLocalOllama}
+                  checked={allowLocalOllama}
                   disabled={localFallbackLoading}
                   onChange={async (e) => {
                     const allow = e.target.checked;
                     setLocalFallbackLoading(true);
                     try {
-                      llmStore.setAllowLocalOllama(allow);
+                      setAllowLocalOllama(allow);
                       await tauriInvoke('set_allow_local_opt_in', { allow });
                       useAppStore.getState().pushToast({
                         variant: 'info',
                         message: allow ? 'Local Ollama fallback enabled' : 'Local Ollama fallback disabled',
                       });
                     } catch (err) {
-                      llmStore.setAllowLocalOllama(!allow);
+                      setAllowLocalOllama(!allow);
                       useAppStore.getState().pushToast({
                         variant: 'error',
                         message: `Failed to toggle local fallback: ${(err as Error)?.message ?? String(err)}`,
@@ -1308,7 +1318,7 @@ const AgentSettingsWindow = () => {
         <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Secrets (Keystore)</div>
           <div className="flex flex-col gap-3 text-sm">
-            {ks.locked ? (
+            {keystoreLocked ? (
               <div className="flex flex-col gap-2">
                 <div className="text-rose-600">Locked</div>
                 <div className="flex items-center gap-2">
@@ -1323,29 +1333,29 @@ const AgentSettingsWindow = () => {
                     type="button"
                     onClick={async () => {
                       if (!passphrase.trim()) return;
-                      const ok = await ks.unlock(passphrase);
+                      const ok = await unlockKeystore(passphrase);
                       if (!ok) {
-                        useAppStore.getState().pushToast({ variant: 'error', message: ks.error ?? 'Unlock failed' });
+                        useAppStore.getState().pushToast({ variant: 'error', message: keystoreError ?? 'Unlock failed' });
                       } else {
                         setPassphrase('');
                         useAppStore.getState().pushToast({ variant: 'success', message: 'Keystore unlocked' });
                       }
                     }}
-                    disabled={ks.busy || !passphrase.trim()}
+                    disabled={keystoreBusy || !passphrase.trim()}
                     className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {ks.busy ? 'Unlocking…' : 'Unlock'}
+                    {keystoreBusy ? 'Unlocking…' : 'Unlock'}
                   </button>
                 </div>
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-3">
                 <div className="text-emerald-600">Unlocked</div>
-                <div className="text-slate-600">Method: {ks.method ?? 'passphrase'}</div>
-                <div className="text-slate-600">Auto-lock in {formatTtl(ks.ttlRemainingSec)}</div>
+                <div className="text-slate-600">Method: {keystoreMethod ?? 'passphrase'}</div>
+                <div className="text-slate-600">Auto-lock in {formatTtl(keystoreTtl)}</div>
                 <button
                   type="button"
-                  onClick={() => ks.quickLock()}
+                  onClick={() => quickLockKeystore()}
                   className="ml-auto rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100"
                 >
                   Quick Lock
@@ -1400,7 +1410,7 @@ const AgentSettingsWindow = () => {
                 <div>
                   <button
                     type="button"
-                    onClick={() => saveProviderKey('openai', openaiKey)}
+                    onClick={() => handleSaveProviderKey('openai', openaiKey)}
                     disabled={!bridgeAvailable || !openaiKey.trim()}
                     className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -1420,7 +1430,7 @@ const AgentSettingsWindow = () => {
                 <div>
                   <button
                     type="button"
-                    onClick={() => saveProviderKey('anthropic', anthropicKey)}
+                    onClick={() => handleSaveProviderKey('anthropic', anthropicKey)}
                     disabled={!bridgeAvailable || !anthropicKey.trim()}
                     className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -1440,7 +1450,7 @@ const AgentSettingsWindow = () => {
                 <div>
                   <button
                     type="button"
-                    onClick={() => saveProviderKey('openrouter', openrouterKey)}
+                    onClick={() => handleSaveProviderKey('openrouter', openrouterKey)}
                     disabled={!bridgeAvailable || !openrouterKey.trim()}
                     className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -1460,7 +1470,7 @@ const AgentSettingsWindow = () => {
                 <div>
                   <button
                     type="button"
-                    onClick={() => saveProviderKey('ollama', ollamaKey)}
+                    onClick={() => handleSaveProviderKey('ollama', ollamaKey)}
                     disabled={!bridgeAvailable || !ollamaKey.trim()}
                     className="mt-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >

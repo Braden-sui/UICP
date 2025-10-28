@@ -8,6 +8,7 @@ import { startGuardRollout } from './lib/security/guardRollout';
 import { hasTauriBridge } from './lib/bridge/tauri';
 import { useKeystore } from './state/keystore';
 import KeystoreUnlockScreen from './components/KeystoreUnlockScreen';
+import './styles/global.css';
 
 const LOADER_ID = 'uicp-loading-screen';
 const MIN_LOADER_DISPLAY_MS = 300; // Minimum time to show loader (prevents flash)
@@ -166,7 +167,6 @@ const bootstrap = async () => {
   await waitForInitialUnlock();
 
   try {
-    await import('./styles/global.css');
     const { default: App } = await import('./App');
     const { default: ErrorBoundary } = await import('./components/ErrorBoundary');
 

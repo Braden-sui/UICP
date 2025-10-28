@@ -58,8 +58,14 @@ const OnboardingWelcomeModal = () => {
   const setWelcomeCompleted = useAppStore((state) => state.setWelcomeCompleted);
   const pushToast = useAppStore((state) => state.pushToast);
 
-  const keystore = useKeystore();
-  const { refreshStatus, refreshIds, knownIds, locked, saveProviderKey, error: keystoreError } = keystore;
+  const refreshStatus = useKeystore((state) => state.refreshStatus);
+  const refreshIds = useKeystore((state) => state.refreshIds);
+  const knownIds = useKeystore((state) => state.knownIds);
+  const locked = useKeystore((state) => state.locked);
+  const saveProviderKey = useKeystore((state) => state.saveProviderKey);
+  const keystoreError = useKeystore((state) => state.error);
+  const busy = useKeystore((state) => state.busy);
+  const unlock = useKeystore((state) => state.unlock);
 
   const [initializing, setInitializing] = useState(true);
   const [step, setStep] = useState<Step>('intro');
@@ -117,9 +123,9 @@ const OnboardingWelcomeModal = () => {
           type="button"
           className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
           onClick={handleCreatePassphrase}
-          disabled={!canSetPass || keystore.busy}
+          disabled={!canSetPass || busy}
         >
-          {keystore.busy ? 'Setting up…' : 'Create & Unlock'}
+          {busy ? 'Setting up…' : 'Create & Unlock'}
         </button>
       </div>
     </div>
@@ -178,14 +184,15 @@ const OnboardingWelcomeModal = () => {
 
   const handleCreatePassphrase = useCallback(async () => {
     if (!canSetPass) return;
-    const ok = await keystore.unlock(pass1);
+    const ok = await unlock(pass1);
     if (ok) {
       pushToast({ variant: 'success', message: 'Keystore initialized and unlocked.' });
       setStep('providers');
     } else {
-      pushToast({ variant: 'error', message: keystore.error ?? 'Failed to initialize keystore' });
+      const currentError = useKeystore.getState().error;
+      pushToast({ variant: 'error', message: currentError ?? 'Failed to initialize keystore' });
     }
-  }, [canSetPass, keystore, pass1, pushToast]);
+  }, [canSetPass, pass1, pushToast, unlock]);
 
   const handleRowProviderChange = useCallback((rowId: string, provider: ProviderId) => {
     setRows((prev) =>

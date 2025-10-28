@@ -6,6 +6,9 @@ import { useAppStore } from '../../src/state/app';
 vi.mock('@tauri-apps/api/core', async () => {
   return {
     invoke: vi.fn(async (cmd: string) => {
+      if (cmd === 'get_ollama_mode') {
+        return [true, false];
+      }
       if (cmd === 'get_modules_info') {
         throw new Error('simulated failure');
       }
@@ -28,6 +31,10 @@ describe('AgentSettingsWindow error handling', () => {
       const toasts = useAppStore.getState().toasts;
       expect(toasts.some((t) => /Failed to load modules info/.test(t.message))).toBe(true);
     });
+
+    // Reveal advanced controls to expose the Copy Path button
+    const advancedToggle = screen.getByRole('button', { name: /Show Advanced/i });
+    fireEvent.click(advancedToggle);
 
     // Clicking Copy Path should also surface an error toast (clipboard not available in test)
     const btn = await screen.findByRole('button', { name: /Copy Path/i });
