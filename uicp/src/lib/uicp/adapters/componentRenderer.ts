@@ -13,7 +13,6 @@ import { escapeHtml } from './adapter.security';
 import { createId } from '../../utils';
 // Inline the MiniApp preload JavaScript into iframe srcdoc safely
 // Vite raw import turns the file contents into a string
-// eslint-disable-next-line import/no-relative-packages
 import preloadSourceRaw from '../../miniapp/preload.js?raw';
 
 export interface ComponentRenderer {

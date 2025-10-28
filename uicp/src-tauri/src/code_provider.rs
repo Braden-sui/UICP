@@ -437,7 +437,9 @@ fn log_httpjail_applied(provider: &str) {
     );
     #[cfg(not(feature = "otel_spans"))]
     {
-        log_info(format!("httpjail allowlist enforced for provider {provider}"));
+        log_info(format!(
+            "httpjail allowlist enforced for provider {provider}"
+        ));
     }
 }
 

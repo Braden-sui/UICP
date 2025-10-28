@@ -1,6 +1,7 @@
 #![deny(clippy::print_stderr)]
 
 pub mod action_log;
+pub mod authz;
 pub mod policy;
 
 pub use action_log::{
@@ -23,9 +24,9 @@ pub mod compute;
 pub mod compute_cache;
 pub mod compute_input;
 pub mod core;
-pub mod registry;
 pub mod keystore;
 pub mod providers;
+pub mod registry;
 
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod provider_cli;

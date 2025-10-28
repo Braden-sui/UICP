@@ -34,6 +34,9 @@ use tokio_rusqlite::Connection as AsyncConn;
 use tokio_stream::StreamExt;
 
 mod action_log;
+mod anthropic;
+mod apppack;
+mod authz;
 mod circuit;
 #[cfg(test)]
 mod circuit_tests;
@@ -45,19 +48,16 @@ mod compute;
 mod compute_cache;
 mod compute_input;
 mod core;
+mod egress;
 mod events;
+mod keystore;
+mod net;
 mod policy;
-mod anthropic;
 mod provider_cli;
+mod providers;
 mod registry;
 #[cfg(feature = "wasm_compute")]
 mod wasi_logging;
-mod keystore;
-mod providers;
-mod apppack;
-mod authz;
-mod egress;
-mod net;
 
 #[cfg(any(test, feature = "compute_harness"))]
 mod commands;
@@ -67,14 +67,14 @@ pub use policy::{
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
-use compute_input::canonicalize_task_input;
-use core::{init_tracing, log_error, log_info, log_warn, CircuitBreakerConfig};
-use secrecy::SecretString;
+use crate::apppack::{apppack_entry_html, apppack_install, apppack_validate};
+use crate::egress::egress_fetch;
 use crate::keystore::{get_or_init_keystore, UnlockStatus};
 use crate::providers::build_provider_headers;
-use crate::apppack::{apppack_validate, apppack_install, apppack_entry_html};
-use crate::egress::egress_fetch;
+use compute_input::canonicalize_task_input;
+use core::{init_tracing, log_error, log_info, log_warn, CircuitBreakerConfig};
 use provider_cli::{ProviderHealthResult, ProviderLoginResult};
+use secrecy::SecretString;
 
 // Re-export shared core items so crate::... references in submodules remain valid
 pub use core::{
@@ -108,11 +108,17 @@ async fn reload_policies(app: tauri::AppHandle) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-async fn keystore_unlock(app: tauri::AppHandle, method: String, passphrase: Option<String>) -> Result<UnlockStatus, String> {
+async fn keystore_unlock(
+    app: tauri::AppHandle,
+    method: String,
+    passphrase: Option<String>,
+) -> Result<UnlockStatus, String> {
     let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
     match method.to_ascii_lowercase().as_str() {
         "passphrase" => {
-            let Some(p) = passphrase else { return Err("passphrase required".into()); };
+            let Some(p) = passphrase else {
+                return Err("passphrase required".into());
+            };
             let status = ks
                 .unlock_passphrase(SecretString::new(p))
                 .await
@@ -145,7 +151,11 @@ async fn keystore_lock(app: tauri::AppHandle) -> Result<(), String> {
     let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
     ks.lock();
     // Emit telemetry for manual lock
-    emit_or_log(&app, "keystore_autolock", serde_json::json!({ "reason": "manual" }));
+    emit_or_log(
+        &app,
+        "keystore_autolock",
+        serde_json::json!({ "reason": "manual" }),
+    );
     Ok(())
 }
 
@@ -170,7 +180,11 @@ async fn keystore_list_ids() -> Result<Vec<String>, String> {
 /// Emit an explicit keystore_autolock telemetry event with a reason.
 #[tauri::command]
 fn keystore_autolock_reason(app: tauri::AppHandle, reason: String) -> Result<(), String> {
-    emit_or_log(&app, "keystore_autolock", serde_json::json!({ "reason": reason }));
+    emit_or_log(
+        &app,
+        "keystore_autolock",
+        serde_json::json!({ "reason": reason }),
+    );
     Ok(())
 }
 
@@ -185,18 +199,25 @@ async fn secret_set(service: String, account: String, value: String) -> Result<(
 #[tauri::command]
 async fn secret_exists(service: String, account: String) -> Result<serde_json::Value, String> {
     let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    let exists = ks.secret_exists(&service, &account).await.map_err(|e| e.to_string())?;
+    let exists = ks
+        .secret_exists(&service, &account)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "exists": exists }))
 }
 
 #[tauri::command]
 async fn secret_delete(service: String, account: String) -> Result<(), String> {
     let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.secret_delete(&service, &account).await.map_err(|e| e.to_string())
+    ks.secret_delete(&service, &account)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // Import known provider env vars into keystore when unlocked. Best-effort; errors are logged but not surfaced.
-async fn import_env_secrets_into_keystore(ks: std::sync::Arc<crate::keystore::Keystore>) -> Result<(), String> {
+async fn import_env_secrets_into_keystore(
+    ks: std::sync::Arc<crate::keystore::Keystore>,
+) -> Result<(), String> {
     // (service, account, env_var)
     let mappings = [
         ("uicp", "openai:api_key", "OPENAI_API_KEY"),
@@ -372,7 +393,10 @@ struct AgentsConfigLoadResult {
 }
 
 const AGENTS_CONFIG_MAX_SIZE_BYTES: usize = 512 * 1024; // 512 KiB safety cap
-const AGENTS_CONFIG_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/agents.yaml.template"));
+const AGENTS_CONFIG_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../config/agents.yaml.template"
+));
 
 fn agents_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let resolver = app.path();
@@ -404,7 +428,8 @@ async fn load_agents_config_file(app: tauri::AppHandle) -> Result<AgentsConfigLo
                 if let Err(mkdir_err) = fs::create_dir_all(parent).await {
                     log_error(format!(
                         "agents config mkdir failed at {}: {}",
-                        parent.display(), mkdir_err
+                        parent.display(),
+                        mkdir_err
                     ));
                     return Err(format!("E-UICP-AGENTS-MKDIR: {}", mkdir_err));
                 }
@@ -413,7 +438,8 @@ async fn load_agents_config_file(app: tauri::AppHandle) -> Result<AgentsConfigLo
             if let Err(write_err) = fs::write(&tmp_path, AGENTS_CONFIG_TEMPLATE.as_bytes()).await {
                 log_error(format!(
                     "agents config temp write failed at {}: {}",
-                    tmp_path.display(), write_err
+                    tmp_path.display(),
+                    write_err
                 ));
                 return Err(format!("E-UICP-AGENTS-WRITE-TMP: {}", write_err));
             }
@@ -471,7 +497,8 @@ async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Res
         if let Err(err) = fs::create_dir_all(parent).await {
             log_error(format!(
                 "agents config mkdir failed at {}: {}",
-                parent.display(), err
+                parent.display(),
+                err
             ));
             return Err(format!("E-UICP-AGENTS-MKDIR: {}", err));
         }
@@ -482,7 +509,8 @@ async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Res
     if let Err(err) = fs::write(&tmp_path, contents.as_bytes()).await {
         log_error(format!(
             "agents config temp write failed at {}: {}",
-            tmp_path.display(), err
+            tmp_path.display(),
+            err
         ));
         return Err(format!("E-UICP-AGENTS-WRITE-TMP: {}", err));
     }
@@ -1390,7 +1418,10 @@ async fn chat_completion(
     // Avoid reading .env here; the UI selects the model per Agent Settings.
     let requested_model = model.unwrap_or_else(|| "qwen3-coder:480b".into());
     // Only normalize for Ollama-compatible routing. OpenAI/OpenRouter expect raw model ids.
-    let resolved_model = if matches!(provider_lower.as_deref(), Some("openai") | Some("openrouter")) {
+    let resolved_model = if matches!(
+        provider_lower.as_deref(),
+        Some("openai") | Some("openrouter")
+    ) {
         requested_model.clone()
     } else {
         normalize_model_name(&requested_model, use_cloud)
@@ -1504,11 +1535,19 @@ async fn chat_completion(
                     "anthropic" => format!("{}/v1/messages", base_url),
                     // Fallback to Ollama paths
                     _ => {
-                        if use_cloud { format!("{}/api/chat", base_url) } else { format!("{}/chat/completions", base_url) }
+                        if use_cloud {
+                            format!("{}/api/chat", base_url)
+                        } else {
+                            format!("{}/chat/completions", base_url)
+                        }
                     }
                 }
             } else {
-                if use_cloud { format!("{}/api/chat", base_url) } else { format!("{}/chat/completions", base_url) }
+                if use_cloud {
+                    format!("{}/api/chat", base_url)
+                } else {
+                    format!("{}/chat/completions", base_url)
+                }
             };
             let ev = serde_json::json!({
                 "ts": Utc::now().timestamp_millis(),
@@ -2790,7 +2829,9 @@ fn main() {
             // Load host policies (best-effort)
             let handle2 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let _ = crate::authz::reload_policies(&handle2).await;
+                if let Err(err) = crate::authz::reload_policies(&handle2) {
+                    log_warn(format!("reload_policies failed: {err}"));
+                }
             });
             // If local opt-in is enabled by env or persisted UI toggle, probe local daemon once to enable fallback.
             let handle3 = app.handle().clone();

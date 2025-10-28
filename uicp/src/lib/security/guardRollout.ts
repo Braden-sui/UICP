@@ -1,5 +1,3 @@
-/// <reference lib="dom" />
-/* global EventListener */
 import { installNetworkGuard, type BlockEventDetail } from './networkGuard';
 import { emitTelemetryEvent } from '../telemetry';
 import type { TelemetryEventName } from '../telemetry/types';
@@ -56,6 +54,8 @@ const getEnvMinAttempts = (): number => {
 };
 
 const STORAGE_KEY_DEFAULT = 'uicp:netguard:rollout';
+
+type WindowEventHandler = (event: Event) => void;
 
 const readState = (key: string): GuardRolloutState | null => {
   try {
@@ -116,23 +116,23 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
   // Persist initial
   writeState(storageKey, state);
 
-  const onBlock = (e: CustomEvent<BlockEventDetail>) => {
+  const onBlock: WindowEventHandler = (event) => {
     state.blockCount += 1;
     writeState(storageKey, state);
-    const detail = (e as CustomEvent<BlockEventDetail>).detail;
+    const detail = (event as CustomEvent<BlockEventDetail>).detail;
     const reason = detail?.payload?.reason ?? detail?.reason;
     const api = detail?.payload?.context?.api ?? detail?.api;
     emit('security.net_guard.block', { reason, api, blocks: state.blockCount });
   };
 
-  const onAttempt = () => {
+  const onAttempt: WindowEventHandler = () => {
     state.attemptCount += 1;
     writeState(storageKey, state);
   };
 
   try {
-    window.addEventListener('net-guard-block', onBlock as EventListener);
-    window.addEventListener('net-guard-attempt', onAttempt as EventListener);
+    window.addEventListener('net-guard-block', onBlock);
+    window.addEventListener('net-guard-attempt', onAttempt);
   } catch (err) {
     console.warn('[rollout] failed to attach listeners', err);
   }
@@ -191,10 +191,10 @@ export const startGuardRollout = (opts?: GuardRolloutOptions) => {
     getState: () => ({ ...state }),
     checkNow: () => checkEscalate(),
     stop: () => {
-      try { window.removeEventListener('net-guard-block', onBlock as EventListener); } catch (err) {
+      try { window.removeEventListener('net-guard-block', onBlock); } catch (err) {
         console.warn('[rollout] failed to remove block listener', err);
       }
-      try { window.removeEventListener('net-guard-attempt', onAttempt as EventListener); } catch (err) {
+      try { window.removeEventListener('net-guard-attempt', onAttempt); } catch (err) {
         console.warn('[rollout] failed to remove attempt listener', err);
       }
       window.clearInterval(interval);

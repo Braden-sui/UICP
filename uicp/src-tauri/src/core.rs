@@ -555,8 +555,12 @@ fn log_inner(level: LogLevel, event: LogEvent) {
                         context = %ctx,
                         "{message}"
                     ),
-                    (Some(code), None) => tracing::info!(target = "uicp", code = %code, "{message}"),
-                    (None, Some(ctx)) => tracing::info!(target = "uicp", context = %ctx, "{message}"),
+                    (Some(code), None) => {
+                        tracing::info!(target = "uicp", code = %code, "{message}")
+                    }
+                    (None, Some(ctx)) => {
+                        tracing::info!(target = "uicp", context = %ctx, "{message}")
+                    }
                     (None, None) => tracing::info!(target = "uicp", "{message}"),
                 },
                 LogLevel::Warn => match (code, context_value.as_ref()) {
@@ -566,8 +570,12 @@ fn log_inner(level: LogLevel, event: LogEvent) {
                         context = %ctx,
                         "{message}"
                     ),
-                    (Some(code), None) => tracing::warn!(target = "uicp", code = %code, "{message}"),
-                    (None, Some(ctx)) => tracing::warn!(target = "uicp", context = %ctx, "{message}"),
+                    (Some(code), None) => {
+                        tracing::warn!(target = "uicp", code = %code, "{message}")
+                    }
+                    (None, Some(ctx)) => {
+                        tracing::warn!(target = "uicp", context = %ctx, "{message}")
+                    }
                     (None, None) => tracing::warn!(target = "uicp", "{message}"),
                 },
                 LogLevel::Error => match (code, context_value.as_ref()) {
@@ -577,8 +585,12 @@ fn log_inner(level: LogLevel, event: LogEvent) {
                         context = %ctx,
                         "{message}"
                     ),
-                    (Some(code), None) => tracing::error!(target = "uicp", code = %code, "{message}"),
-                    (None, Some(ctx)) => tracing::error!(target = "uicp", context = %ctx, "{message}"),
+                    (Some(code), None) => {
+                        tracing::error!(target = "uicp", code = %code, "{message}")
+                    }
+                    (None, Some(ctx)) => {
+                        tracing::error!(target = "uicp", context = %ctx, "{message}")
+                    }
                     (None, None) => tracing::error!(target = "uicp", "{message}"),
                 },
             }

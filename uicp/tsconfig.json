@@ -11,7 +11,8 @@
       "@tauri-apps/plugin-fs",
       "react",
       "react-dom",
-      "vitest"
+      "vitest",
+      "@testing-library/jest-dom"
     ],
     "skipLibCheck": true,
 

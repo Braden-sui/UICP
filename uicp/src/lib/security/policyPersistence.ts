@@ -22,7 +22,9 @@ export const loadPersistedPolicy = async (): Promise<Policy | null> => {
     const obj = JSON.parse(txt);
     if (obj && typeof obj === 'object') return obj as Policy;
   } catch (err) {
-    if ((import.meta as any)?.env?.DEV) {
+    const metaEnv = (import.meta as { env?: Record<string, unknown> }).env;
+    const isDev = metaEnv?.DEV === true || metaEnv?.DEV === 'true';
+    if (isDev) {
       console.debug('[policyPersistence] loadPersistedPolicy failed', err);
     }
   }

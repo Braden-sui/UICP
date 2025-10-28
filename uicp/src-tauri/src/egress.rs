@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -7,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 
-use crate::{AppState, net::{parse_host, is_private_ip as net_is_private_ip, is_ip_literal as net_is_ip_literal}};
+use crate::{
+    net::{is_ip_literal as net_is_ip_literal, is_private_ip as net_is_private_ip, parse_host},
+    AppState,
+};
 
 #[derive(Clone, Copy)]
 struct Bucket {
@@ -54,7 +60,10 @@ mod tests {
         let digest = body_sha256(b"hello world");
         assert_eq!(digest.len(), 64);
         assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(digest, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(
+            digest,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 
     #[test]
@@ -73,11 +82,15 @@ mod tests {
     }
 }
 
-static RL: Lazy<Mutex<HashMap<(String, String), Bucket>>> = Lazy::new(|| Mutex::new(HashMap::new()));
-static CONC: Lazy<Mutex<HashMap<(String, String), usize>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static RL: Lazy<Mutex<HashMap<(String, String), Bucket>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static CONC: Lazy<Mutex<HashMap<(String, String), usize>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn cfg_rl_enabled() -> bool {
-    std::env::var("UICP_EGRESS_RL_ENABLED").map(|v| v != "0").unwrap_or(true)
+    std::env::var("UICP_EGRESS_RL_ENABLED")
+        .map(|v| v != "0")
+        .unwrap_or(true)
 }
 
 fn cfg_rps() -> f64 {
@@ -108,10 +121,10 @@ fn rate_limit_take(installed_id: &str, host: &str) -> Result<(), String> {
     let key = (installed_id.to_string(), host.to_string());
     let mut map = RL.lock();
     let now = Instant::now();
-    let mut bucket = map
-        .get(&key)
-        .cloned()
-        .unwrap_or(Bucket { tokens: cfg_burst(), last: now });
+    let mut bucket = map.get(&key).cloned().unwrap_or(Bucket {
+        tokens: cfg_burst(),
+        last: now,
+    });
     let elapsed = (now - bucket.last).as_secs_f64();
     bucket.tokens = (bucket.tokens + elapsed * cfg_rps()).min(cfg_burst());
     bucket.last = now;
@@ -207,7 +220,9 @@ pub async fn egress_fetch(
     // Build request
     let method = Method::from_bytes(req.method.as_bytes()).map_err(|e| e.to_string())?;
     let client: &Client = &state.http;
-    let mut builder = client.request(method, &req.url).timeout(Duration::from_secs(30));
+    let mut builder = client
+        .request(method, &req.url)
+        .timeout(Duration::from_secs(30));
 
     if let Some(h) = &req.headers {
         for (k, v) in h {
@@ -229,7 +244,9 @@ pub async fn egress_fetch(
     let status = resp.status().as_u16();
     let mut out_headers = HashMap::new();
     for (k, v) in resp.headers() {
-        if let Ok(s) = v.to_str() { out_headers.insert(k.to_string(), s.to_string()); }
+        if let Ok(s) = v.to_str() {
+            out_headers.insert(k.to_string(), s.to_string());
+        }
     }
     let body = match resp.bytes().await {
         Ok(b) => b,
@@ -263,5 +280,9 @@ pub async fn egress_fetch(
     let _ = state.action_log.append_json("egress", &rec).await;
 
     conc_leave(&installed_id, &host);
-    Ok(EgressResponse { status, headers: out_headers, body: body_vec })
+    Ok(EgressResponse {
+        status,
+        headers: out_headers,
+        body: body_vec,
+    })
 }

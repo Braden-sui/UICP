@@ -3,7 +3,7 @@ import { planWithProfile, actWithProfile } from '../../src/lib/llm/orchestrator'
 import { normalizeBatchJson } from '../../src/lib/llm/jsonParsing';
 import * as provider from '../../src/lib/llm/provider';
 import * as profiles from '../../src/lib/llm/profiles';
-import type { StreamEvent } from '../../src/lib/llm/ollama';
+import type { StreamEvent } from '../../src/lib/llm/llm.stream';
 
 async function* mockToolStream(events: StreamEvent[]): AsyncIterable<StreamEvent> {
   for (const event of events) {

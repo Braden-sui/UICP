@@ -10,6 +10,7 @@ export type PolicyDuration = 'once' | 'session' | 'forever';
 
 export type PolicyKey =
   | `api:${Uppercase<string>}:${string}`
+  | `api:NET:${string}`
   | `compute:${string}`
   | `media:${string}`;
 
@@ -168,6 +169,41 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
       const method = typeof methodRaw === 'string' ? methodRaw.toUpperCase() : 'GET';
       const urlStr = typeof urlRaw === 'string' ? urlRaw : '';
       const url = new URL(urlStr);
+      const hostCanonical = url.hostname ? url.hostname.toLowerCase().replace(/\.$/, '') : '';
+      const keyLegacy = `api:${method}:${url.origin}` as PolicyKey;
+      const keyNet = hostCanonical ? (`api:NET:${hostCanonical}` as PolicyKey) : null;
+
+      const evaluatePolicy = (
+        entry: PolicyEntry | undefined,
+        source: 'session' | 'persistent',
+        keyKind: 'legacy' | 'net',
+      ): Decision | null => {
+        if (!entry) return null;
+        const baseData: Record<string, unknown> = {
+          op: env.op,
+          origin: url.origin,
+          method,
+          source,
+        };
+        if (keyKind === 'net' && hostCanonical) {
+          baseData.host = hostCanonical;
+        }
+        if (entry.pathPrefix) {
+          if (!url.pathname.startsWith(entry.pathPrefix)) {
+            return null;
+          }
+          baseData.pathPrefix = entry.pathPrefix;
+        }
+        if (entry.decision === 'allow') {
+          recordDecision('allow', baseData);
+          return 'allow';
+        }
+        if (entry.decision === 'deny') {
+          recordDecision('deny', baseData);
+          return 'deny';
+        }
+        return null;
+      };
 
       // WHY: Internal schemes (uicp:, tauri:) are trusted for app-internal communication
       // INVARIANT: Only allow localhost/127.0.0.1 for http/https, not all http/https URLs
@@ -199,60 +235,18 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
         return 'deny';
       }
 
-      const key: PolicyKey = `api:${method}:${url.origin}` as PolicyKey;
-
       // Check session policies first (in-memory, not persisted)
-      const sessionEntry = sessionPolicies[key];
-      if (sessionEntry) {
-        const baseData = { op: env.op, origin: url.origin, method, source: 'session' as const };
-        if (sessionEntry.pathPrefix) {
-          if (!url.pathname.startsWith(sessionEntry.pathPrefix)) {
-            // Path doesn't match, continue to check persistent policies or prompt
-          } else if (sessionEntry.decision === 'allow') {
-            recordDecision('allow', { ...baseData, pathPrefix: sessionEntry.pathPrefix });
-            return 'allow';
-          } else if (sessionEntry.decision === 'deny') {
-            recordDecision('deny', { ...baseData, pathPrefix: sessionEntry.pathPrefix });
-            return 'deny';
-          }
-        } else {
-          if (sessionEntry.decision === 'allow') {
-            recordDecision('allow', baseData);
-            return 'allow';
-          }
-          if (sessionEntry.decision === 'deny') {
-            recordDecision('deny', baseData);
-            return 'deny';
-          }
-        }
-      }
+      const sessionDecision =
+        (keyNet && evaluatePolicy(sessionPolicies[keyNet], 'session', 'net')) ??
+        evaluatePolicy(sessionPolicies[keyLegacy], 'session', 'legacy');
+      if (sessionDecision) return sessionDecision;
 
       // Check persistent policies
       const persistentPolicies = await readPolicy();
-      const persistentEntry = persistentPolicies[key];
-      if (persistentEntry) {
-        const baseData = { op: env.op, origin: url.origin, method, source: 'persistent' as const };
-        if (persistentEntry.pathPrefix) {
-          if (!url.pathname.startsWith(persistentEntry.pathPrefix)) {
-            // Path doesn't match, continue to prompt
-          } else if (persistentEntry.decision === 'allow') {
-            recordDecision('allow', { ...baseData, pathPrefix: persistentEntry.pathPrefix });
-            return 'allow';
-          } else if (persistentEntry.decision === 'deny') {
-            recordDecision('deny', { ...baseData, pathPrefix: persistentEntry.pathPrefix });
-            return 'deny';
-          }
-        } else {
-          if (persistentEntry.decision === 'allow') {
-            recordDecision('allow', baseData);
-            return 'allow';
-          }
-          if (persistentEntry.decision === 'deny') {
-            recordDecision('deny', baseData);
-            return 'deny';
-          }
-        }
-      }
+      const persistentDecision =
+        (keyNet && evaluatePolicy(persistentPolicies[keyNet], 'persistent', 'net')) ??
+        evaluatePolicy(persistentPolicies[keyLegacy], 'persistent', 'legacy');
+      if (persistentDecision) return persistentDecision;
 
       // WHY: No matching policy found, so we must prompt the user
       // INVARIANT: NEVER auto-allow; always require explicit user decision
@@ -292,10 +286,16 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
 
         if (result.duration === 'session') {
           entry.sessionOnly = true;
-          sessionPolicies[key] = entry;
+          sessionPolicies[keyLegacy] = entry;
+          if (keyNet) {
+            sessionPolicies[keyNet] = entry;
+          }
         } else if (result.duration === 'forever') {
           const nextPolicy = await readPolicy();
-          nextPolicy[key] = entry;
+          nextPolicy[keyLegacy] = entry;
+          if (keyNet) {
+            nextPolicy[keyNet] = entry;
+          }
           await writePolicy(nextPolicy);
         }
       } else if (result.decision === 'deny' && result.duration && result.duration !== 'once') {
@@ -307,12 +307,23 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
 
         if (result.duration === 'session') {
           entry.sessionOnly = true;
-          sessionPolicies[key] = entry;
+          sessionPolicies[keyLegacy] = entry;
+          if (keyNet) {
+            sessionPolicies[keyNet] = entry;
+          }
         } else if (result.duration === 'forever') {
           const nextPolicy = await readPolicy();
-          nextPolicy[key] = entry;
+          nextPolicy[keyLegacy] = entry;
+          if (keyNet) {
+            nextPolicy[keyNet] = entry;
+          }
           await writePolicy(nextPolicy);
-          try { await inv<void>('reload_policies'); } catch {}
+          try {
+            // WHY: Log the error for debugging purposes
+            await inv<void>('reload_policies');
+          } catch (reloadErr) {
+            console.warn('[PermissionManager] reload_policies failed', reloadErr);
+          }
         }
       }
 
@@ -334,7 +345,20 @@ export async function checkPermission(env: Envelope, prompt: PromptFn = defaultP
 
 export async function setApiPolicyDecision(method: string, origin: string, decision: Decision, duration: 'session' | 'forever'): Promise<void> {
   try {
-    const key = `api:${String(method || 'GET').toUpperCase()}:${origin}` as PolicyKey;
+    const methodNormalized = String(method || 'GET').toUpperCase();
+    const keyLegacy = `api:${methodNormalized}:${origin}` as PolicyKey;
+    const host = (() => {
+      try {
+        return new URL(origin).host.toLowerCase().replace(/\.$/, '');
+      } catch {
+        const sanitized = String(origin || '')
+          .toLowerCase()
+          .replace(/^https?:\/\//, '')
+          .split('/')[0] ?? '';
+        return sanitized.replace(/\.$/, '');
+      }
+    })();
+    const keyNet = host ? (`api:NET:${host}` as PolicyKey) : null;
     const entry: PolicyEntry = {
       decision,
       duration,
@@ -342,15 +366,27 @@ export async function setApiPolicyDecision(method: string, origin: string, decis
     };
     if (duration === 'session') {
       entry.sessionOnly = true;
-      sessionPolicies[key] = entry;
+      sessionPolicies[keyLegacy] = entry;
+      if (keyNet) {
+        sessionPolicies[keyNet] = entry;
+      }
       return;
     }
     if (duration === 'forever') {
       const nextPolicy = await readPolicy();
-      nextPolicy[key] = entry;
+      nextPolicy[keyLegacy] = entry;
+      if (keyNet) {
+        nextPolicy[keyNet] = entry;
+      }
       await writePolicy(nextPolicy);
-      try { await inv<void>('reload_policies'); } catch {}
+      try {
+        await inv<void>('reload_policies');
+      } catch (err) {
+        console.warn('[PermissionManager] reload_policies failed', err);
+      }
       return;
     }
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    console.warn('[PermissionManager] failed to persist network API decision', err);
+  }
 }

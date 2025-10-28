@@ -22,6 +22,8 @@ use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
 use uuid::Uuid;
 
+use crate::keystore::get_or_init_keystore;
+use crate::providers::build_provider_headers;
 use crate::{
     code_provider::{
         ClaudeProvider, CodeProvider, CodeProviderError, CodeProviderJob, CodexProvider,
@@ -30,8 +32,6 @@ use crate::{
     compute_cache, emit_or_log, remove_compute_job, AppState, ComputeFinalErr, ComputeFinalOk,
     ComputeJobSpec,
 };
-use crate::providers::build_provider_headers;
-use crate::keystore::get_or_init_keystore;
 use secrecy::ExposeSecret;
 
 const TASK_PREFIX: &str = "codegen.run@";
@@ -863,8 +863,12 @@ fn provider_available(kind: ProviderKind) -> bool {
 
 fn provider_install_hint(kind: ProviderKind) -> &'static str {
     match kind {
-        ProviderKind::CodexCli => "Install Codex CLI by running `npm install -g @openai/codex-cli`.",
-        ProviderKind::ClaudeCli => "Install Claude CLI by running `npm install -g @anthropic-ai/claude-cli`.",
+        ProviderKind::CodexCli => {
+            "Install Codex CLI by running `npm install -g @openai/codex-cli`."
+        }
+        ProviderKind::ClaudeCli => {
+            "Install Claude CLI by running `npm install -g @anthropic-ai/claude-cli`."
+        }
         ProviderKind::OpenAiApi => "Install the required CLI provider and retry.",
     }
 }
@@ -878,7 +882,10 @@ fn missing_cli_error(labels: &[String]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for label in labels {
         let kind = provider_kind_from_label(label).unwrap_or(ProviderKind::CodexCli);
-        parts.push(format!("provider '{label}': {}", provider_install_hint(kind)));
+        parts.push(format!(
+            "provider '{label}': {}",
+            provider_install_hint(kind)
+        ));
     }
     format!(
         "{ERR_NO_CLI}: requested codegen provider(s) unavailable. {}",
@@ -1714,7 +1721,9 @@ Language must be {lang}. Include meta.modelId and meta.provider. Do not wrap out
         "messages": messages,
     });
 
-    let mut req = client.post(endpoint).header("Content-Type", "application/json");
+    let mut req = client
+        .post(endpoint)
+        .header("Content-Type", "application/json");
     // Inject headers from keystore-backed providers mapping
     let headers = build_provider_headers("openai").await?;
     for (k, v) in headers.into_iter() {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { StreamEvent } from '../../src/lib/llm/ollama';
+import type { StreamEvent } from '../../src/lib/llm/llm.stream';
 
 // Helpers
 function makeStream(events: StreamEvent[]): AsyncIterable<StreamEvent> {

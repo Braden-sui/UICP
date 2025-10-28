@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractEventsFromChunk, type StreamEvent } from '../../src/lib/llm/ollama';
+import { extractEventsFromChunk, type StreamEvent } from '../../src/lib/llm/llm.stream';
 
 describe('extractEventsFromChunk', () => {
   it('parses commentary content and tool_calls from a chunk', () => {

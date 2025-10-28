@@ -1,7 +1,7 @@
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use sha2::{Digest, Sha256};
 use tauri::State;
 
 use crate::{AppState, FILES_DIR};
@@ -49,8 +49,8 @@ pub async fn apppack_validate(dir: String) -> Result<AppPackManifest, String> {
     let root = PathBuf::from(&dir);
     let manifest_path = root.join("apppack.json");
     let manifest_text = read_to_string(&manifest_path)?;
-    let m: AppPackManifest = serde_json::from_str(&manifest_text)
-        .map_err(|e| format!("parse:{}", e))?;
+    let m: AppPackManifest =
+        serde_json::from_str(&manifest_text).map_err(|e| format!("parse:{}", e))?;
     if m.schema != "uicp.app/0.1" {
         return Err("E:unsupported-schema".into());
     }
@@ -68,19 +68,28 @@ pub struct AppPackInstall {
 }
 
 #[tauri::command]
-pub async fn apppack_install(_state: State<'_, AppState>, dir: String) -> Result<AppPackInstall, String> {
+pub async fn apppack_install(
+    _state: State<'_, AppState>,
+    dir: String,
+) -> Result<AppPackInstall, String> {
     let id = compute_id_from_dir(&dir);
     let dst = FILES_DIR.join("apps").join(&id);
     if !dst.exists() {
         std::fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
         copy_dir_recursive(&PathBuf::from(&dir), &dst).map_err(|e| e.to_string())?;
     }
-    Ok(AppPackInstall { installed_id: id.clone(), path: dst.display().to_string() })
+    Ok(AppPackInstall {
+        installed_id: id.clone(),
+        path: dst.display().to_string(),
+    })
 }
 
 #[tauri::command]
 pub async fn apppack_entry_html(installed_id: String) -> Result<String, String> {
-    let p = FILES_DIR.join("apps").join(&installed_id).join("index.html");
+    let p = FILES_DIR
+        .join("apps")
+        .join(&installed_id)
+        .join("index.html");
     read_to_string(&p)
 }
 

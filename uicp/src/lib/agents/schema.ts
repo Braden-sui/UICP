@@ -119,8 +119,9 @@ export const AgentsFileSchema = z
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['version'], message: 'version must be a non-empty string' });
     }
     const providers = data.providers ?? {};
+    const profiles = data.profiles ?? ({} as Partial<Record<'planner' | 'actor', z.infer<typeof ProfileEntrySchema>>>);
     const checkProfileFallbacks = (profileKey: 'planner' | 'actor') => {
-      const profile = (data.profiles as any)?.[profileKey] as z.infer<typeof ProfileEntrySchema> | undefined;
+      const profile = profiles?.[profileKey];
       if (!profile || !Array.isArray(profile.fallbacks)) return;
       for (let i = 0; i < profile.fallbacks.length; i++) {
         const fb = profile.fallbacks[i];

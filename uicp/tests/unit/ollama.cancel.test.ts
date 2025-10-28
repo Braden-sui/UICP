@@ -11,7 +11,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   emit: vi.fn(),
 }));
 
-import { streamOllamaCompletion } from '../../src/lib/llm/ollama';
+import { streamOllamaCompletion } from '../../src/lib/llm/llm.stream';
 
 describe('streamOllamaCompletion cancellation', () => {
   it('invokes cancel_chat when iterator is returned early', async () => {

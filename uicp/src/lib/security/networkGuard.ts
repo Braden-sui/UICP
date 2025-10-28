@@ -25,18 +25,6 @@ const getCurrentWindow = (): WindowLike | undefined => {
 
 const getCurrentGlobal = (): any => windowOverride ?? globalThis;
 
-const withWindowOverride = <T>(win: WindowLike | undefined, fn: () => T): T => {
-  const previous = windowOverride;
-  if (win !== undefined) {
-    windowOverride = win;
-  }
-  try {
-    return fn();
-  } finally {
-    windowOverride = previous;
-  }
-};
-
 type GuardConfig = {
   enabled: boolean;
   monitorOnly: boolean;
@@ -1024,7 +1012,7 @@ const installFetchGuard = () => {
    
   const g: any = getCurrentGlobal();
    
-  const win: any = getCurrentWindow();
+  const win = getCurrentWindow();
   const hasWindowFetch = !!(win && typeof win.fetch === 'function');
   const hasGlobalFetch = typeof g.fetch === 'function';
   if (!hasWindowFetch && !hasGlobalFetch) return;
@@ -1315,9 +1303,10 @@ const installXHRGuard = () => {
 const installWSGuard = () => {
    
   const g: any = globalThis as any;
-  if (typeof window === 'undefined' || !(window as any).WebSocket) return;
+  const win = getCurrentWindow();
+  if (!win || !(win as any).WebSocket) return;
    
-  const WS = (window as any).WebSocket as typeof WebSocket;
+  const WS = (win as any).WebSocket as typeof WebSocket;
    
   if ((WS as any).__uicpWrapped) return;
   const Wrapped = function (this: WebSocket, url: string | URL, protocols?: string | string[]) {
@@ -1373,9 +1362,10 @@ const installWSGuard = () => {
 const installESGuard = () => {
    
   const g: any = globalThis as any;
-  if (typeof window === 'undefined' || !(window as any).EventSource) return;
+  const win = getCurrentWindow();
+  if (!win || !(win as any).EventSource) return;
    
-  const ES = (window as any).EventSource as typeof EventSource;
+  const ES = (win as any).EventSource as typeof EventSource;
    
   if ((ES as any).__uicpWrapped) return;
   const Wrapped = function (this: EventSource, url: string | URL, eventSourceInitDict?: EventSourceInit) {
@@ -1474,9 +1464,10 @@ const installBeaconGuard = () => {
 };
 
 const installWebRTCGuard = () => {
-  if (typeof window === 'undefined') return;
+  const win = getCurrentWindow();
+  if (!win) return;
    
-  const PC: any = (window as any).RTCPeerConnection;
+  const PC: any = (win as any).RTCPeerConnection;
   if (!PC) return;
    
   if ((PC as any).__uicpWrapped) return;
@@ -1503,13 +1494,14 @@ const installWebRTCGuard = () => {
   (Wrapped as any).__uicpWrapped = true;
   Wrapped.prototype = PC.prototype;
    
-  setProp(window as any, 'RTCPeerConnection', Wrapped);
+  setProp(win as any, 'RTCPeerConnection', Wrapped);
 };
 
 const installWebTransportGuard = () => {
-  if (typeof window === 'undefined') return;
+  const win = getCurrentWindow();
+  if (!win) return;
    
-  const WT: any = (window as any).WebTransport;
+  const WT: any = (win as any).WebTransport;
   if (!WT) return;
    
   if ((WT as any).__uicpWrapped) return;
@@ -1545,11 +1537,11 @@ const installWebTransportGuard = () => {
 };
 
 const installWorkerGuards = () => {
-  const w: any = getCurrentWindow();
-  if (!w) return;
-  if (w.Worker) {
+  const win = getCurrentWindow();
+  if (!win) return;
+  if (win.Worker) {
      
-    const W = w.Worker as any;
+    const W = win.Worker as any;
      
     if (!(W as any).__uicpWrapped) {
       const Wrapped = function (this: any, ..._args: any[]) {
@@ -1563,12 +1555,12 @@ const installWorkerGuards = () => {
        
       (Wrapped as any).__uicpWrapped = true;
       Wrapped.prototype = W.prototype;
-      setProp(w, 'Worker', Wrapped);
+      setProp(win, 'Worker', Wrapped);
     }
   }
-  if (w.SharedWorker) {
+  if (win.SharedWorker) {
      
-    const SW = w.SharedWorker as any;
+    const SW = win.SharedWorker as any;
      
     if (!(SW as any).__uicpWrapped) {
       const Wrapped = function (this: any, ..._args: any[]) {
@@ -1582,15 +1574,15 @@ const installWorkerGuards = () => {
        
       (Wrapped as any).__uicpWrapped = true;
       Wrapped.prototype = SW.prototype;
-      setProp(w, 'SharedWorker', Wrapped);
+      setProp(win, 'SharedWorker', Wrapped);
     }
   }
    
-  if (w.navigator && (w.navigator as any).serviceWorker && typeof (w.navigator as any).serviceWorker.register === 'function') {
+  if (win.navigator && (win.navigator as any).serviceWorker && typeof (win.navigator as any).serviceWorker.register === 'function') {
      
-    const reg = (w.navigator as any).serviceWorker.register.bind((w.navigator as any).serviceWorker);
+    const reg = (win.navigator as any).serviceWorker.register.bind((win.navigator as any).serviceWorker);
      
-    const cur = (w.navigator as any).serviceWorker.register as any;
+    const cur = (win.navigator as any).serviceWorker.register as any;
      
     if (!(cur as any).__uicpWrapped) {
       const wrapped = ((scriptURL: string, options?: any) => {
@@ -1603,7 +1595,7 @@ const installWorkerGuards = () => {
        
       (wrapped as any).__uicpWrapped = true;
        
-      (w.navigator as any).serviceWorker.register = wrapped;
+      (win.navigator as any).serviceWorker.register = wrapped;
     }
   }
 };
@@ -1714,7 +1706,7 @@ const installNetworkGuardInternal = (custom?: Partial<GuardConfig>) => {
   if (!policyListenerTeardown) {
     try {
       policyListenerTeardown = onPolicyChange(() => {
-        installNetworkGuard(lastCustomConfig);
+        installNetworkGuardInternal(lastCustomConfig);
       });
     } catch (err) {
       console.warn('[net-guard] failed to subscribe to policy changes', err);
@@ -1768,6 +1760,10 @@ const installNetworkGuardInternal = (custom?: Partial<GuardConfig>) => {
   if (!installed) {
     g.__UICP_NET_GUARD_INSTALLED__ = true;
   }
+};
+
+export function installNetworkGuard(custom?: Partial<GuardConfig>): void {
+  installNetworkGuardInternal(custom);
 }
 
 export function addNetGuardSessionAllow(domain: string): boolean {

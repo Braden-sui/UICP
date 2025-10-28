@@ -4,15 +4,6 @@ import { render, screen, within, act } from '@testing-library/react';
 vi.mock('../../src/hooks/useDockReveal', () => ({
   useDockReveal: () => ({ chatOpen: true, onFocus: () => {}, onBlur: () => {}, setChatOpen: () => {} })
 }));
-vi.mock('../../src/hooks/useContainerStatus', () => ({
-  useContainerStatus: () => ({
-    loading: false,
-    containerStatus: { available: true },
-    networkCapabilities: { hasNetwork: true, restricted: false },
-    showWarning: false,
-    warningMessage: '',
-  }),
-}));
 import DockChat from '../../src/components/DockChat';
 import { useAppStore } from '../../src/state/app';
 import { useChatStore } from '../../src/state/chat';

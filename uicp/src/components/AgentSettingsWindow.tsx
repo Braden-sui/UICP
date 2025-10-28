@@ -303,7 +303,7 @@ const AgentSettingsWindow = () => {
   useEffect(() => {
     if (!hasTauriBridge()) return;
     void ks.refreshStatus();
-  }, []);
+  }, [ks]);
 
   const formatTtl = (sec: number | null): string => {
     if (sec == null) return '';
@@ -341,7 +341,7 @@ const AgentSettingsWindow = () => {
         console.warn('[AgentSettings] Failed to sync Ollama mode from backend:', err);
       }
     })();
-  }, []);
+  }, [llmStore]);
 
   useEffect(() => {
     if (!hasTauriBridge()) {
@@ -593,7 +593,7 @@ const AgentSettingsWindow = () => {
           .pushToast({ variant: 'error', message: `Save failed: ${(err as Error)?.message ?? String(err)}` });
       }
     },
-    [ks.locked],
+    [ks],
   );
 
   const handleProviderHealth = useCallback(

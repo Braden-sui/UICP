@@ -41,7 +41,7 @@ You can connect provider CLIs and verify access from the desktop.
 | `pnpm run dev`       | Start Vite dev server (UI only)                   |
 | `pnpm run build`     | Typecheck + bundle for production                 |
 | `pnpm run lint`      | ESLint (flat config) over `src/`                  |
-| `pnpm run typecheck` | `tsc --noEmit`                                    |
+| `pnpm run typecheck` | TypeScript CLI (`tsc --noEmit`)                   |
 | `pnpm run test`      | Vitest unit suite                                 |
 | `pnpm run test:e2e`  | Playwright flow (builds + preview) |
 

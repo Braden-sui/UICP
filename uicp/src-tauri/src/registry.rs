@@ -16,9 +16,9 @@ use tauri::{Manager, Runtime};
 
 use crate::log_error;
 #[cfg_attr(feature = "otel_spans", allow(unused_imports))]
-use crate::log_warn;
-#[cfg_attr(feature = "otel_spans", allow(unused_imports))]
 use crate::log_info;
+#[cfg_attr(feature = "otel_spans", allow(unused_imports))]
+use crate::log_warn;
 // Optional signature verification (if caller provides a public key)
 use anyhow::{bail, Result as AnyResult};
 use base64::engine::general_purpose::{
@@ -140,7 +140,10 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
         #[cfg(feature = "otel_spans")]
         tracing::debug!(target = "uicp", path = %target.display(), "module installer already active");
         #[cfg(not(feature = "otel_spans"))]
-        log_info(format!("module installer already active: {}", target.display()));
+        log_info(format!(
+            "module installer already active: {}",
+            target.display()
+        ));
         // Another process/thread is installing; skip to avoid races.
         return Ok(());
     }
@@ -159,7 +162,11 @@ pub fn install_bundled_modules_if_missing<R: Runtime>(app: &tauri::AppHandle<R>)
                 #[cfg(feature = "otel_spans")]
                 tracing::info!(target = "uicp", from = %src.display(), to = %target.display(), "modules installed from bundle");
                 #[cfg(not(feature = "otel_spans"))]
-                log_info(format!("modules installed from bundle: {} -> {}", src.display(), target.display()));
+                log_info(format!(
+                    "modules installed from bundle: {} -> {}",
+                    src.display(),
+                    target.display()
+                ));
                 if let Err(err) = verify_installed_modules(&target) {
                     log_error(format!("bundled modules verification failed: {err:#}"));
                 }
@@ -413,7 +420,10 @@ pub fn load_manifest<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ModuleMani
     }
     #[cfg(not(feature = "otel_spans"))]
     if parsed.is_ok() {
-        log_info(format!("modules manifest loaded: {}", manifest_path.display()));
+        log_info(format!(
+            "modules manifest loaded: {}",
+            manifest_path.display()
+        ));
     }
     parsed
 }
@@ -932,7 +942,10 @@ fn verify_installed_modules(target: &Path) -> Result<()> {
                 let _ = fs::remove_file(&path);
             }
             Err(err) => {
-                log_error(format!("failed verifying digest for {}: {err:#}", entry.filename));
+                log_error(format!(
+                    "failed verifying digest for {}: {err:#}",
+                    entry.filename
+                ));
                 let _ = fs::remove_file(&path);
             }
         }

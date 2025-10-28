@@ -1,26 +1,28 @@
 import { inv } from '../bridge/tauri';
 
-type Msg = {
+type MiniappMessage = {
   __uicp?: boolean;
   op?: string;
   reqId?: string;
   installedId?: string;
-  req?: any;
+  req?: unknown;
   name?: string;
-  options?: any;
+  options?: unknown;
 };
 
-function reply(win: Window, reqId: string, op: string, payload: any) {
+type ReplyPayload = Record<string, unknown>;
+
+function reply(win: Window, reqId: string, op: string, payload: ReplyPayload) {
   try {
     win.postMessage({ __uicp: true, op, reqId, ...payload }, '*');
-  } catch (err) {
-    // ignore
+  } catch (error) {
+    console.warn('[miniapp] failed to post reply', error);
   }
 }
 
 if (typeof window !== 'undefined') {
   window.addEventListener('message', async (ev) => {
-    const d = (ev?.data ?? {}) as Msg;
+    const d: MiniappMessage = (ev?.data ?? {}) as MiniappMessage;
     if (!d || d.__uicp !== true) return;
     const src = ev.source as Window | null;
     if (!src) return;
@@ -42,7 +44,9 @@ if (typeof window !== 'undefined') {
         return reply(src, reqId, 'egress.reply', { resp: res.value });
       }
       if (op === 'compute.call') {
-        const spec = d?.req?.spec ?? d?.options;
+        const reqPayload = d?.req as { spec?: unknown } | undefined;
+        const optionsPayload = d?.options as { spec?: unknown } | undefined;
+        const spec = reqPayload?.spec ?? optionsPayload?.spec;
         const res = await inv<void>('compute_call', { spec });
         if (!res.ok) throw new Error(res.error?.message || 'compute_call failed');
         return reply(src, reqId, 'compute.reply', { out: { ok: true } });
@@ -55,8 +59,8 @@ if (typeof window !== 'undefined') {
         throw new Error('fs.openDialog unsupported');
       }
       throw new Error(`unsupported op ${op}`);
-    } catch (e: any) {
-      const message = e?.message ? String(e.message) : String(e);
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : String(error);
       reply(src, reqId, 'error', { error: message });
     }
   });

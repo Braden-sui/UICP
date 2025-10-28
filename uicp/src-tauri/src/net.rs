@@ -2,12 +2,10 @@ use std::net::IpAddr;
 use url::Url;
 
 pub fn parse_host(u: &str) -> anyhow::Result<String> {
-    Ok(
-        Url::parse(u)?
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("no host"))?
-            .to_string(),
-    )
+    Ok(Url::parse(u)?
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("no host"))?
+        .to_string())
 }
 
 pub fn is_ip_literal(h: &str) -> bool {

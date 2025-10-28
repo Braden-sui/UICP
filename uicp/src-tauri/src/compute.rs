@@ -26,9 +26,9 @@ use crate::compute_input::{
 };
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
+use crate::ComputeJobSpec;
 #[cfg(not(feature = "otel_spans"))]
 use crate::{log_error, log_warn};
-use crate::ComputeJobSpec;
 
 /// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
@@ -2533,8 +2533,8 @@ mod with_runtime {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::core::files_dir_path;
         use crate::compute_input::{fs_read_allowed, sanitize_ws_files_path};
+        use crate::core::files_dir_path;
 
         #[test]
         fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {

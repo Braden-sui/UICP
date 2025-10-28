@@ -10,12 +10,12 @@ use std::{
 use std::cell::RefCell;
 
 use argon2::{Algorithm, Argon2, Params, Version};
+use base64::Engine as _;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
 };
 use chrono::Utc;
-use base64::Engine as _;
 use hkdf::Hkdf;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
@@ -228,10 +228,7 @@ impl Keystore {
             },
             KeystoreState::Unlocked(state) => {
                 let now = Instant::now();
-                let remaining = state
-                    .expires_at
-                    .saturating_duration_since(now)
-                    .as_secs();
+                let remaining = state.expires_at.saturating_duration_since(now).as_secs();
                 UnlockStatus {
                     locked: false,
                     ttl_remaining_sec: Some(remaining),
@@ -241,10 +238,7 @@ impl Keystore {
         }
     }
 
-    pub async fn unlock_passphrase(
-        &self,
-        passphrase: SecretString,
-    ) -> Result<UnlockStatus> {
+    pub async fn unlock_passphrase(&self, passphrase: SecretString) -> Result<UnlockStatus> {
         if self.mode != KeystoreMode::Passphrase {
             return Err(KeystoreError::Unauthorized);
         }
@@ -299,8 +293,7 @@ impl Keystore {
         let id = secret_id(service, account);
         self.conn
             .call(move |conn| {
-                conn
-                    .execute("DELETE FROM secrets WHERE id = ?1", params![id])
+                conn.execute("DELETE FROM secrets WHERE id = ?1", params![id])
                     .map_err(tokio_rusqlite::Error::from)
                     .map(|_| ())
             })
@@ -338,29 +331,24 @@ impl Keystore {
         let ct = ciphertext;
         self.conn
             .call(move |conn| {
-                conn
-                    .execute(
-                        "INSERT INTO secrets (id, nonce, aad, ciphertext, created_at, last_used_at)
+                conn.execute(
+                    "INSERT INTO secrets (id, nonce, aad, ciphertext, created_at, last_used_at)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                          ON CONFLICT(id) DO UPDATE SET
                            nonce = excluded.nonce,
                            aad = excluded.aad,
                            ciphertext = excluded.ciphertext",
-                        params![id, nonce_vec, aad_bytes, ct, created_at, last_used_at],
-                    )
-                    .map_err(tokio_rusqlite::Error::from)
-                    .map(|_| ())
+                    params![id, nonce_vec, aad_bytes, ct, created_at, last_used_at],
+                )
+                .map_err(tokio_rusqlite::Error::from)
+                .map(|_| ())
             })
             .await
             .map_err(|err| KeystoreError::Database(err.to_string()))?;
         Ok(())
     }
 
-    pub async fn read_internal(
-        &self,
-        service: &str,
-        account: &str,
-    ) -> Result<SecretVec<u8>> {
+    pub async fn read_internal(&self, service: &str, account: &str) -> Result<SecretVec<u8>> {
         let snapshot = self.snapshot_unlocked()?;
         let id = secret_id(service, account);
         let query_id = id.clone();
@@ -453,18 +441,17 @@ impl Keystore {
         let id_owned = id.to_string();
         self.conn
             .call(move |conn| {
-                conn
-                    .execute(
-                        "INSERT INTO secrets (id, nonce, aad, ciphertext, created_at, last_used_at)
+                conn.execute(
+                    "INSERT INTO secrets (id, nonce, aad, ciphertext, created_at, last_used_at)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                          ON CONFLICT(id) DO UPDATE SET
                            nonce = excluded.nonce,
                            aad = excluded.aad,
                            ciphertext = excluded.ciphertext",
-                        params![id_owned, nonce, aad, ciphertext, created_at, created_at],
-                    )
-                    .map_err(tokio_rusqlite::Error::from)
-                    .map(|_| ())
+                    params![id_owned, nonce, aad, ciphertext, created_at, created_at],
+                )
+                .map_err(tokio_rusqlite::Error::from)
+                .map(|_| ())
             })
             .await
             .map_err(|err| KeystoreError::Database(err.to_string()))?;
@@ -491,14 +478,8 @@ impl Keystore {
             let ct = encrypt_secret(&dek, &nonce_arr, aad.as_bytes(), SENTINEL_PLAINTEXT)?;
             dek.zeroize();
             let created_at = chrono::Utc::now().timestamp_millis();
-            self.put_secret_raw(
-                &id,
-                nonce_arr.to_vec(),
-                aad.into_bytes(),
-                ct,
-                created_at,
-            )
-            .await
+            self.put_secret_raw(&id, nonce_arr.to_vec(), aad.into_bytes(), ct, created_at)
+                .await
         }
     }
 
@@ -596,7 +577,10 @@ pub async fn get_or_init_keystore() -> Result<Arc<Keystore>> {
         "mock" => KeystoreMode::Mock,
         _ => KeystoreMode::Passphrase,
     };
-    let cfg = KeystoreConfig { ttl: Duration::from_secs(ttl_sec), mode };
+    let cfg = KeystoreConfig {
+        ttl: Duration::from_secs(ttl_sec),
+        mode,
+    };
     let ks = Keystore::open(cfg).await?;
     let arc = Arc::new(ks);
     let mut guard = KEYSTORE_SINGLETON.lock();
@@ -644,9 +628,7 @@ async fn initialize_database(conn: &AsyncConn, db_path: &Path) -> Result<Vec<u8>
     let salt_bytes = match app_salt {
         Some(encoded) => base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|err| {
-                KeystoreError::Database(format!("invalid salt encoding: {err}"))
-            })?,
+            .map_err(|err| KeystoreError::Database(format!("invalid salt encoding: {err}")))?,
         None => {
             let mut salt = vec![0u8; 32];
             OsRng
@@ -700,7 +682,13 @@ fn encrypt_secret(dek: &[u8], nonce: &[u8; 24], aad: &[u8], plaintext: &[u8]) ->
         .map_err(|err| KeystoreError::Crypto(err.to_string()))?;
     let nonce = XNonce::from_slice(nonce);
     cipher
-        .encrypt(nonce, chacha20poly1305::aead::Payload { msg: plaintext, aad })
+        .encrypt(
+            nonce,
+            chacha20poly1305::aead::Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|err| KeystoreError::Crypto(err.to_string()))
 }
 
@@ -712,7 +700,13 @@ fn decrypt_secret(dek: &[u8], nonce: &[u8], aad: &[u8], ciphertext: &[u8]) -> Re
         .map_err(|_| KeystoreError::Crypto("nonce length mismatch".into()))?;
     let nonce = XNonce::from_slice(&nonce_arr);
     cipher
-        .decrypt(nonce, chacha20poly1305::aead::Payload { msg: ciphertext, aad })
+        .decrypt(
+            nonce,
+            chacha20poly1305::aead::Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|err| KeystoreError::Crypto(err.to_string()))
 }
 
@@ -781,9 +775,7 @@ fn best_effort_lock(secret: &SecretVec<u8>, warned: &AtomicBool) {
     }
     unsafe {
         if mlock(ptr, len) != 0 && !warned.swap(true, Ordering::SeqCst) {
-            log_warn(
-                "mlock unavailable for keystore KEK. Continuing without locked memory.",
-            );
+            log_warn("mlock unavailable for keystore KEK. Continuing without locked memory.");
         }
     }
 }
@@ -798,9 +790,7 @@ fn best_effort_lock(secret: &SecretVec<u8>, warned: &AtomicBool) {
     }
     unsafe {
         if VirtualLock(ptr as *mut _, len) == 0 && !warned.swap(true, Ordering::SeqCst) {
-            log_warn(
-                "VirtualLock unavailable for keystore KEK. Continuing without locked memory.",
-            );
+            log_warn("VirtualLock unavailable for keystore KEK. Continuing without locked memory.");
         }
     }
 }
@@ -821,7 +811,9 @@ mod tests {
         async fn open_for_dir(dir: &Path, config: KeystoreConfig) -> Result<Self> {
             config.validate()?;
             if !cfg!(debug_assertions) && matches!(config.mode, KeystoreMode::Mock) {
-                return Err(KeystoreError::Config("mock mode forbidden in release".into()));
+                return Err(KeystoreError::Config(
+                    "mock mode forbidden in release".into(),
+                ));
             }
             let keystore_dir = dir.join(KEYSTORE_DIR);
             ensure_owner_only_dir(&keystore_dir)?;
@@ -849,18 +841,31 @@ mod tests {
     #[tokio::test]
     async fn locked_read_returns_locked() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_secs(60),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
-        let err = ks.read_internal("uicp", "openai:api_key").await.err().unwrap();
+        let err = ks
+            .read_internal("uicp", "openai:api_key")
+            .await
+            .err()
+            .unwrap();
         matches!(err, KeystoreError::Locked);
     }
 
     #[tokio::test]
     async fn upsert_does_not_bump_last_used_at_on_write() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_secs(60),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
-        let _ = ks.unlock_passphrase(SecretString::new("pass".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("pass".into()))
+            .await
+            .unwrap();
         // First write
         ks.secret_set("uicp", "openai:api_key", SecretString::new("k1".into()))
             .await
@@ -899,7 +904,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(before, after_upsert, "last_used_at must not change on upsert");
+        assert_eq!(
+            before, after_upsert,
+            "last_used_at must not change on upsert"
+        );
 
         // Read bumps last_used_at
         let _ = ks.read_internal("uicp", "openai:api_key").await.unwrap();
@@ -924,49 +932,86 @@ mod tests {
     #[tokio::test]
     async fn unlock_with_wrong_passphrase_fails() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_secs(60),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
         // First unlock initializes sentinel with this passphrase
-        let _ = ks.unlock_passphrase(SecretString::new("correct-pass".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("correct-pass".into()))
+            .await
+            .unwrap();
         ks.lock();
         // Wrong passphrase should be rejected
-        let err = ks.unlock_passphrase(SecretString::new("wrong-pass".into())).await.err().unwrap();
+        let err = ks
+            .unlock_passphrase(SecretString::new("wrong-pass".into()))
+            .await
+            .err()
+            .unwrap();
         matches!(err, KeystoreError::BadPassphrase);
     }
 
     #[tokio::test]
     async fn unlock_again_with_correct_passphrase_succeeds() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_secs(60),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
         // First unlock initializes sentinel
-        let _ = ks.unlock_passphrase(SecretString::new("my-pass".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("my-pass".into()))
+            .await
+            .unwrap();
         ks.lock();
         // Unlock with the same passphrase should succeed
-        let status = ks.unlock_passphrase(SecretString::new("my-pass".into())).await.unwrap();
-        assert!(!status.locked, "status should be unlocked after correct passphrase");
+        let status = ks
+            .unlock_passphrase(SecretString::new("my-pass".into()))
+            .await
+            .unwrap();
+        assert!(
+            !status.locked,
+            "status should be unlocked after correct passphrase"
+        );
     }
 
     #[tokio::test]
     async fn hkdf_derives_different_deks_for_different_ids() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_secs(60),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
-        let _ = ks.unlock_passphrase(SecretString::new("pass".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("pass".into()))
+            .await
+            .unwrap();
         let id1 = "env:uicp:openai:api_key";
         let id2 = "env:uicp:anthropic:api_key";
         let snapshot = ks.snapshot_unlocked().unwrap();
         let dek1 = ks.derive_dek(&snapshot.kek, id1).unwrap();
         let dek2 = ks.derive_dek(&snapshot.kek, id2).unwrap();
-        assert_ne!(dek1, dek2, "HKDF must derive different DEKs for different SecretIds");
+        assert_ne!(
+            dek1, dek2,
+            "HKDF must derive different DEKs for different SecretIds"
+        );
     }
 
     #[tokio::test]
     async fn status_expires_after_ttl() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_millis(10), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_millis(10),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
-        let _ = ks.unlock_passphrase(SecretString::new("pass".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("pass".into()))
+            .await
+            .unwrap();
         // Wait beyond TTL
         tokio::time::sleep(Duration::from_millis(20)).await;
         let s = ks.status();
@@ -976,25 +1021,45 @@ mod tests {
     #[tokio::test]
     async fn read_after_expiry_returns_locked() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_millis(20), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_millis(20),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
-        let _ = ks.unlock_passphrase(SecretString::new("pass".into())).await.unwrap();
-        ks.secret_set("uicp", "openai:api_key", SecretString::new("k1".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("pass".into()))
+            .await
+            .unwrap();
+        ks.secret_set("uicp", "openai:api_key", SecretString::new("k1".into()))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
-        let err = ks.read_internal("uicp", "openai:api_key").await.err().unwrap();
+        let err = ks
+            .read_internal("uicp", "openai:api_key")
+            .await
+            .err()
+            .unwrap();
         matches!(err, KeystoreError::Locked);
     }
 
     #[tokio::test]
     async fn db_does_not_contain_kek_bytes() {
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_secs(60), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_secs(60),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
-        let _ = ks.unlock_passphrase(SecretString::new("pass".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("pass".into()))
+            .await
+            .unwrap();
         let snap = ks.snapshot_unlocked().unwrap();
         let kek = snap.kek.expose_secret().clone();
         drop(snap);
-        ks.secret_set("uicp", "openai:api_key", SecretString::new("k1".into())).await.unwrap();
+        ks.secret_set("uicp", "openai:api_key", SecretString::new("k1".into()))
+            .await
+            .unwrap();
         let bytes = std::fs::read(ks.db_path_for_testing()).unwrap();
         let found = bytes.windows(kek.len()).any(|w| w == kek.as_slice());
         assert!(!found, "DB must not contain KEK bytes");
@@ -1003,11 +1068,21 @@ mod tests {
     #[tokio::test]
     async fn rng_failure_propagates() {
         // Arrange: inject RNG hook that fails with our stable code
-        set_test_rng_hook(Some(|_| Err(KeystoreError::Other(format!("{RNG_FAILURE_CODE}: injected")))));
+        set_test_rng_hook(Some(|_| {
+            Err(KeystoreError::Other(format!(
+                "{RNG_FAILURE_CODE}: injected"
+            )))
+        }));
         let tmp = tempdir().unwrap();
-        let cfg = KeystoreConfig { ttl: Duration::from_secs(30), mode: KeystoreMode::Passphrase };
+        let cfg = KeystoreConfig {
+            ttl: Duration::from_secs(30),
+            mode: KeystoreMode::Passphrase,
+        };
         let ks = Keystore::open_for_dir(tmp.path(), cfg).await.unwrap();
-        let _ = ks.unlock_passphrase(SecretString::new("pass".into())).await.unwrap();
+        let _ = ks
+            .unlock_passphrase(SecretString::new("pass".into()))
+            .await
+            .unwrap();
 
         // Act: attempt to set secret, expecting failure
         let err = ks
@@ -1017,7 +1092,10 @@ mod tests {
 
         // Assert: error string includes RNG failure code
         let msg = err.to_string();
-        assert!(msg.contains(RNG_FAILURE_CODE), "error should include RNG failure code; got: {msg}");
+        assert!(
+            msg.contains(RNG_FAILURE_CODE),
+            "error should include RNG failure code; got: {msg}"
+        );
 
         // Cleanup: remove hook
         set_test_rng_hook(None);

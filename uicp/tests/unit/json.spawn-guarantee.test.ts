@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { actWithProfile } from '../../src/lib/llm/orchestrator';
 import * as provider from '../../src/lib/llm/provider';
 import * as profiles from '../../src/lib/llm/profiles';
-import type { StreamEvent } from '../../src/lib/llm/ollama';
+import type { StreamEvent } from '../../src/lib/llm/llm.stream';
 
 async function* mockEvents(events: StreamEvent[]): AsyncIterable<StreamEvent> {
   for (const e of events) yield e;

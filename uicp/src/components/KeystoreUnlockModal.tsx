@@ -9,14 +9,14 @@ const KeystoreUnlockModal = () => {
   const [pass, setPass] = useState('');
 
   useEffect(() => {
-    const onRequest = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { id?: string } | undefined;
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string }>).detail;
       const id = (detail?.id ?? '').toString();
       setOpen(true);
       if (id) setPendingIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
     };
-    window.addEventListener('keystore-unlock-request', onRequest as EventListener);
-    return () => window.removeEventListener('keystore-unlock-request', onRequest as EventListener);
+    window.addEventListener('keystore-unlock-request', onRequest);
+    return () => window.removeEventListener('keystore-unlock-request', onRequest);
   }, []);
 
   const close = useCallback(() => {
@@ -34,9 +34,7 @@ const KeystoreUnlockModal = () => {
     }
     // Resume all pending actions
     for (const id of pendingIds) {
-      try {
-        window.dispatchEvent(new CustomEvent('keystore-unlock-resume', { detail: { id } }));
-      } catch {}
+      window.dispatchEvent(new CustomEvent('keystore-unlock-resume', { detail: { id } }));
     }
     useAppStore.getState().pushToast({ variant: 'success', message: 'Keystore unlocked' });
     close();

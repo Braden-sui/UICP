@@ -131,7 +131,7 @@ const waitForUnlockOutcome = (resumeId: string, timeoutMs = 120000): Promise<'re
           cleanup();
           resolve('resume');
         }
-      } catch {}
+      } catch (_err) { void _err; }
     };
     const onCancel = (e: Event) => {
       try {
@@ -141,11 +141,11 @@ const waitForUnlockOutcome = (resumeId: string, timeoutMs = 120000): Promise<'re
           cleanup();
           resolve('cancel');
         }
-      } catch {}
+      } catch (_err) { void _err; }
     };
     const cleanup = () => {
-      w.removeEventListener('keystore-unlock-resume', onResume as EventListener);
-      w.removeEventListener('keystore-unlock-cancel', onCancel as EventListener);
+      w.removeEventListener('keystore-unlock-resume', onResume);
+      w.removeEventListener('keystore-unlock-cancel', onCancel);
     };
     setTimeout(() => {
       if (done) return;
@@ -153,8 +153,8 @@ const waitForUnlockOutcome = (resumeId: string, timeoutMs = 120000): Promise<'re
       cleanup();
       resolve('cancel');
     }, timeoutMs);
-    w.addEventListener('keystore-unlock-resume', onResume as EventListener);
-    w.addEventListener('keystore-unlock-cancel', onCancel as EventListener);
+    w.addEventListener('keystore-unlock-resume', onResume);
+    w.addEventListener('keystore-unlock-cancel', onCancel);
     // Clear timer on resolve
     const origResolve = resolve;
     // Note: TS helper; no-op since resolve is immediate above

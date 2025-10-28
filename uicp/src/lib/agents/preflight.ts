@@ -32,6 +32,9 @@ export type AgentsPreflight = {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+type FetchInput = Parameters<typeof fetch>[0];
+type FetchInit = NonNullable<Parameters<typeof fetch>[1]>;
+
 type ListModelsConfig = Required<NonNullable<AgentsFile['providers'][string]['list_models']>>;
 
 const isFetchAvailable = (): boolean => typeof fetch === 'function';
@@ -91,7 +94,7 @@ const extractStringsByPath = (source: unknown, path: string): string[] => {
   return uniqueStrings(results);
 };
 
-const toFetchHeaders = (headers: Record<string, string>): HeadersInit => {
+const toFetchHeaders = (headers: Record<string, string>): Record<string, string> => {
   const normalized: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (typeof value === 'string') {
@@ -101,7 +104,7 @@ const toFetchHeaders = (headers: Record<string, string>): HeadersInit => {
   return normalized;
 };
 
-const timeoutFetch = async (input: RequestInfo, init: RequestInit, timeoutMs: number): Promise<Response> => {
+const timeoutFetch = async (input: FetchInput, init: FetchInit, timeoutMs: number): Promise<Response> => {
   if (!isAbortControllerAvailable()) {
     return fetch(input, init);
   }
@@ -155,27 +158,32 @@ const fetchProviderModels = async (
     let caps: Record<string, ModelCaps> | undefined;
     if (providerKey.toLowerCase() === 'openrouter') {
       try {
-        const data = Array.isArray((body as any)?.data) ? (body as any).data : [];
+        const dataRaw = (body as Record<string, unknown> | null | undefined)?.data as unknown;
+        const arr = Array.isArray(dataRaw) ? dataRaw : [];
         const set = new Set<string>(requestedIds);
-        const entries = data
-          .filter((m: any) => typeof m?.id === 'string' && (set.size === 0 || set.has(m.id)))
-          .map((m: any) => [
-            m.id,
-            {
-              id: m.id,
-              context_length: typeof m.context_length === 'number' ? m.context_length : undefined,
-              provider_context_length:
-                typeof m?.top_provider?.context_length === 'number'
-                  ? m.top_provider.context_length
-                  : undefined,
-              provider_max_completion:
-                typeof m?.top_provider?.max_completion_tokens === 'number'
-                  ? m.top_provider.max_completion_tokens
-                  : undefined,
-              supported_parameters: Array.isArray(m?.supported_parameters) ? m.supported_parameters : undefined,
-              tokenizer: typeof m?.architecture?.tokenizer === 'string' ? m.architecture.tokenizer : undefined,
-            } as ModelCaps,
-          ] as const);
+        const entries = arr
+          .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null && typeof (m as Record<string, unknown>)['id'] === 'string' && (set.size === 0 || set.has(String((m as Record<string, unknown>)['id']))))
+          .map((m) => {
+            const mo = m as Record<string, unknown>;
+            const id = String(mo['id']);
+            const top = (mo['top_provider'] as Record<string, unknown> | undefined) ?? undefined;
+            const context_length = typeof mo['context_length'] === 'number' ? (mo['context_length'] as number) : undefined;
+            const provider_context_length = typeof top?.['context_length'] === 'number' ? (top['context_length'] as number) : undefined;
+            const provider_max_completion = typeof top?.['max_completion_tokens'] === 'number' ? (top['max_completion_tokens'] as number) : undefined;
+            const supported_parameters = Array.isArray(mo['supported_parameters']) ? (mo['supported_parameters'] as string[]) : undefined;
+            const tokenizer = typeof (mo['architecture'] as Record<string, unknown> | undefined)?.['tokenizer'] === 'string'
+              ? String((mo['architecture'] as Record<string, unknown>)['tokenizer'])
+              : undefined;
+            const capsEntry: ModelCaps = {
+              id,
+              context_length,
+              provider_context_length,
+              provider_max_completion,
+              supported_parameters,
+              tokenizer,
+            };
+            return [id, capsEntry] as const;
+          });
         caps = Object.fromEntries(entries);
       } catch {
         // ignore caps errors; keep models list

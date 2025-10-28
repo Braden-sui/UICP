@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { collectToolArgs, collectAllToolCalls } from '../../src/lib/llm/collectToolArgs';
-import type { StreamEvent } from '../../src/lib/llm/ollama';
+import type { StreamEvent } from '../../src/lib/llm/llm.stream';
 
 async function* mockStream(events: StreamEvent[]): AsyncIterable<StreamEvent> {
   for (const event of events) {

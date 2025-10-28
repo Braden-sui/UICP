@@ -13,6 +13,7 @@ import { readStringEnv } from '../env/values';
 import { runAgentsPreflight, type AgentsPreflight } from './preflight';
 import { hasTauriBridge, inv } from '../bridge/tauri';
 import type { UICPError } from '../bridge/result';
+import { BaseDirectory, exists, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 
 // In-memory snapshot with hot-reload support (simple polling watcher)
 let snapshot: { data: AgentsFile; loadedAt: number; source: 'appdata' | 'builtin' | 'test'; rawHash: string } | null = null;
@@ -29,18 +30,6 @@ type AgentsConfigCommandPayload = {
 };
 
 
-type FsModule = typeof import('@tauri-apps/plugin-fs');
-let fsMod: FsModule | null = null;
-const getFs = async (): Promise<FsModule> => {
-  if (fsMod) return fsMod;
-  try {
-    fsMod = await import('@tauri-apps/plugin-fs');
-  } catch (err) {
-    throw new Error('[agents] filesystem module unavailable');
-  }
-  return fsMod;
-};
-
 const hashString = (s: string): string => {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
@@ -55,9 +44,8 @@ const getEnv = (key: string): string | undefined => {
   const viaVite = readStringEnv(key);
   if (viaVite !== undefined) return viaVite;
   // Fallback to process.env for tests/node
-  // eslint-disable-next-line no-restricted-globals
-  const anyGlobal = (globalThis as any);
-  const proc = anyGlobal?.process as { env?: Record<string, string | undefined> } | undefined;
+  const g = globalThis as unknown as { process?: { env?: Record<string, string | undefined> } };
+  const proc = g?.process;
   return proc?.env?.[key];
 };
 
@@ -116,9 +104,8 @@ export const readAgentsConfigRaw = async (): Promise<{ text: string; source: 'ap
     return { text: res.value.contents, source: 'appdata' };
   }
   try {
-    const fs = await getFs();
-    if (await fs.exists(CONFIG_PATH, { baseDir: fs.BaseDirectory.AppData })) {
-      const txt = await fs.readTextFile(CONFIG_PATH, { baseDir: fs.BaseDirectory.AppData });
+    if (await exists(CONFIG_PATH, { baseDir: BaseDirectory.AppData })) {
+      const txt = await readTextFile(CONFIG_PATH, { baseDir: BaseDirectory.AppData });
       return { text: txt, source: 'appdata' };
     }
   } catch {
@@ -136,8 +123,7 @@ const writeConfigFile = async (yamlText: string): Promise<void> => {
     }
     return;
   }
-  const fs = await getFs();
-  await fs.writeTextFile(CONFIG_PATH, yamlText, { baseDir: fs.BaseDirectory.AppData });
+  await writeTextFile(CONFIG_PATH, yamlText, { baseDir: BaseDirectory.AppData });
 };
 
 export const loadAgentsConfig = async (): Promise<AgentsFile> => {
@@ -461,7 +447,6 @@ export const startWatcher = async (
   if (watchTimer !== null) return; // already watching
   let lastHash = snapshot?.rawHash ?? '';
   const intervalMs = 2500;
-  // eslint-disable-next-line @typescript-eslint/no-misused-promises
   watchTimer = setInterval(async () => {
     try {
       const file = await readAgentsConfigRaw();

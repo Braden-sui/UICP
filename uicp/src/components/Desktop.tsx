@@ -139,7 +139,7 @@ export const Desktop = () => {
             await inv('keystore_lock');
           }
         }
-      } catch (err) {
+      } catch {
         // ignore UI-level errors; backend is source of truth
       }
     };
@@ -153,13 +153,13 @@ export const Desktop = () => {
       }
     };
     document.addEventListener('visibilitychange', onVis);
-    const uiHandler = ((e: Event) => {
+    const uiHandler = (e: Event) => {
       const detail = (e as CustomEvent).detail as Record<string, unknown> | undefined;
       if (!detail || typeof detail.event !== 'string') return;
       if (detail.event === 'stream_closed') {
         void onStreamClosed();
       }
-    }) as EventListener;
+    };
     window.addEventListener('ui-debug-log', uiHandler);
     return () => {
       document.removeEventListener('visibilitychange', onVis);

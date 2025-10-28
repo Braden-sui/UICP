@@ -1,8 +1,11 @@
- use std::collections::HashMap;
-use std::path::PathBuf;
+
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use tauri::Manager;
+use url::Url;
 
 // In-memory decision cache: key -> "allow" | "deny"
 static POLICIES: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
@@ -22,8 +25,37 @@ fn set_cache(map: HashMap<String, String>) {
 
 fn normalize_key(raw: &str) -> String {
     if let Some(rest) = raw.strip_prefix("api:NET:") {
-        return format!("api:NET:{}", rest.to_ascii_lowercase());
+        let host = rest.trim().trim_end_matches('.').to_ascii_lowercase();
+        return if host.is_empty() {
+            raw.to_string()
+        } else {
+            format!("api:NET:{}", host)
+        };
     }
+
+    if let Some(rest) = raw.strip_prefix("api:") {
+        if let Some((_, origin)) = rest.split_once(':') {
+            let trimmed = origin.trim();
+            if trimmed.is_empty() {
+                return raw.to_string();
+            }
+
+            let host = if let Ok(url) = Url::parse(trimmed) {
+                url.host_str().map(|s| s.to_string()).unwrap_or_else(|| trimmed.to_string())
+            } else if let Ok(url) = Url::parse(&format!("https://{}", trimmed)) {
+                url.host_str().map(|s| s.to_string()).unwrap_or_else(|| trimmed.to_string())
+            } else {
+                trimmed.to_string()
+            };
+
+            let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+            if host.is_empty() {
+                return raw.to_string();
+            }
+            return format!("api:NET:{}", host);
+        }
+    }
+
     raw.to_string()
 }
 
@@ -60,7 +92,8 @@ pub fn reload_policies(app: &tauri::AppHandle) -> Result<(), String> {
             return Ok(());
         }
     };
-    let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Object(serde_json::Map::new()));
+    let parsed: Value =
+        serde_json::from_str(&text).unwrap_or(Value::Object(serde_json::Map::new()));
     let map = parse_policies(&parsed);
     set_cache(map);
     Ok(())

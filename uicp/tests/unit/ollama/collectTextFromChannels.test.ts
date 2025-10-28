@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { collectTextFromChannels } from '../../../src/lib/orchestrator/collectTextFromChannels';
-import type { StreamEvent } from '../../../src/lib/llm/ollama';
+import type { StreamEvent } from '../../../src/lib/llm/llm.stream';
 
 async function* fakeStream(): AsyncIterable<StreamEvent> {
   yield { type: 'content', channel: 'text', text: 'create window ' };

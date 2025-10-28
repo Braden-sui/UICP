@@ -65,13 +65,20 @@ fn normalize_content_block_start(input: &Value) -> Option<Value> {
                 .and_then(|v| v.as_u64())
                 .map(|v| v as i64)
                 .unwrap_or(0);
-            let name = content_block.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let id = content_block.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = content_block
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let id = content_block
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let input_payload = content_block
                 .get("input")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let arguments = serde_json::to_string(&input_payload).unwrap_or_else(|_| "{}".to_string());
+            let arguments =
+                serde_json::to_string(&input_payload).unwrap_or_else(|_| "{}".to_string());
             Some(json!({
                 "choices": [{
                     "delta": {

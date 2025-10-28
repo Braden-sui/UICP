@@ -10,18 +10,8 @@ const mocks = vi.hoisted(() => ({
   })()),
 }));
 
-vi.mock("../../src/lib/llm/ollama", () => ({
+vi.mock("../../src/lib/llm/llm.stream", () => ({
   streamOllamaCompletion: mocks.streamMock,
-}));
-
-vi.mock("../../src/hooks/useContainerStatus", () => ({
-  useContainerStatus: () => ({
-    loading: false,
-    containerStatus: { available: true },
-    networkCapabilities: { hasNetwork: true, restricted: false },
-    showWarning: false,
-    warningMessage: '',
-  }),
 }));
 
 const ensureCrypto = () => {

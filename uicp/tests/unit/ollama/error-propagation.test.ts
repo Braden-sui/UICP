@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listenMock }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (cmd: string, args?: any) => mocks.invokeMock(cmd, args) }));
 
-import { streamOllamaCompletion } from '../../../src/lib/llm/ollama';
+import { streamOllamaCompletion } from '../../../src/lib/llm/llm.stream';
 import { collectTextFromChannels } from '../../../src/lib/orchestrator/collectTextFromChannels';
 
 describe('streamOllamaCompletion error propagation', () => {

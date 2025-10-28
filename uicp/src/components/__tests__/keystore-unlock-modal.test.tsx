@@ -28,7 +28,7 @@ describe('KeystoreUnlockModal', () => {
       const d = (e as CustomEvent).detail as { id?: string } | undefined;
       if (d?.id) resumes.push(d.id);
     };
-    window.addEventListener('keystore-unlock-resume', onResume as EventListener);
+    window.addEventListener('keystore-unlock-resume', onResume);
 
     // Arrange: mock keystore_unlock to succeed
     setInvOverride(async <T,>(command: string): Promise<Result<T>> => {
@@ -64,6 +64,6 @@ describe('KeystoreUnlockModal', () => {
     await tick();
     expect(screen.queryByRole('dialog')).toBeNull();
 
-    window.removeEventListener('keystore-unlock-resume', onResume as EventListener);
+    window.removeEventListener('keystore-unlock-resume', onResume);
   });
 });
