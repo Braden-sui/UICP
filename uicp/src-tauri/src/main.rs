@@ -1375,7 +1375,7 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     };
 
     if use_cloud {
-        normalize_base(base_part)
+        base_part.to_string()
     } else {
         let base = normalize_base(base_part);
         if had_cloud_suffix {
