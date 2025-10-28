@@ -132,6 +132,10 @@ impl ComputeTestHarness {
             last_save_ok: RwLock::new(true),
             ollama_key: RwLock::new(None),
             use_direct_cloud: RwLock::new(true),
+            allow_local_opt_in: RwLock::new({
+                let raw = std::env::var("UICP_OLLAMA_LOCAL_OPTIN").unwrap_or_default();
+                matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
+            }),
             debug_enabled: RwLock::new(false),
             http: Client::builder()
                 .connect_timeout(Duration::from_secs(5))
