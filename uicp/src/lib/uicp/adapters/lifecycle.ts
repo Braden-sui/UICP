@@ -23,6 +23,7 @@ import type { WindowManager } from './windowManager';
 import { createDomApplier } from './domApplier';
 import type { DomApplier } from './domApplier';
 import { createComponentRenderer } from './componentRenderer';
+import { dispatchCommand, type CommandExecutorDeps } from './adapter.commands';
 import type { ComponentRenderer } from './componentRenderer';
 import { createPermissionGate } from './permissionGate';
 import { createAdapterTelemetry, AdapterEvents } from './adapter.telemetry';
@@ -1200,6 +1201,79 @@ const routeOperation = async (
   const { windowManager, domApplier, componentRenderer, telemetry, outcome } = context;
 
   switch (envelope.op) {
+    case 'needs.code': {
+      const deps: CommandExecutorDeps = {
+        executeDomSet: async (params) => {
+          try {
+            await domApplier.apply({
+              windowId: params.windowId,
+              target: params.target,
+              html: String(params.html ?? ''),
+              sanitize: params.sanitize !== false,
+              mode: (params as { mode?: 'set' | 'replace' | 'append' }).mode ?? 'set',
+            });
+            return { success: true, value: params.windowId };
+          } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        },
+        executeComponentRender: async (params) => {
+          try {
+            await componentRenderer.render(params);
+            return { success: true, value: (params.id ?? params.windowId) };
+          } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        },
+        ensureWindowExists: async (id, hint) => {
+          try {
+            if (!windowManager.exists(id)) {
+              await windowManager.create({ id, title: hint?.title || id, width: hint?.width, height: hint?.height });
+            }
+            return { success: true, value: id };
+          } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        },
+        setStateValue: (params) => {
+          try {
+            commitStateValue({ scope: params.scope as any, key: params.key, value: params.value, windowId: (params as unknown as { windowId?: string }).windowId });
+          } catch (error) {
+            console.error('setStateValue failed', error);
+          }
+        },
+        getStateValue: (params) => {
+          try {
+            const p = params as unknown as { scope: 'window' | 'workspace' | 'global'; key: string; windowId?: string };
+            return readStateValue(p.scope, p.key, p.windowId);
+          } catch (error) {
+            return undefined;
+          }
+        },
+        windows: (() => {
+          const map = new Map<string, { id: string; wrapper: HTMLElement; content: HTMLElement; titleText: HTMLElement; styleSelector: string }>();
+          // Reflect current windows registered in WindowManager by listing via list()
+          try {
+            for (const { id } of windowManager.list()) {
+              const rec = windowManager.getRecord(id);
+              if (rec) map.set(id, rec);
+            }
+          } catch {
+            // ignore
+          }
+          return map;
+        })(),
+      };
+
+      const runId = typeof envelope.traceId === 'string' ? envelope.traceId : undefined;
+      const result = await dispatchCommand(envelope, { runId }, deps);
+      if (result.success) {
+        outcome.applied += 1;
+      } else {
+        outcome.errors.push(`needs.code failed: ${result.error}`);
+      }
+      break;
+    }
     case 'window.create': {
       const params = envelope.params as Parameters<typeof windowManager.create>[0];
       const { windowId } = await windowManager.create(params);

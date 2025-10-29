@@ -335,6 +335,7 @@ const AgentSettingsWindow = () => {
 
   const [localFallbackLoading, setLocalFallbackLoading] = useState<boolean>(false);
   const [newActorFallback, setNewActorFallback] = useState<string>('');
+  const [authPreflight, setAuthPreflight] = useState<{ state: 'idle' | 'checking' | 'ok' | 'error' | 'na'; code?: string; detail?: string }>({ state: 'idle' });
 
   const provider = useLLM((s) => s.provider);
   const model = useLLM((s) => s.model);
@@ -1105,6 +1106,64 @@ const AgentSettingsWindow = () => {
                 {provider === 'anthropic' && 'Claude models from Anthropic'}
                 {provider === 'ollama-local' && 'Local Ollama daemon (requires installation)'}
               </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const map = (k: ProviderKey): string | null => {
+                      if (k === 'openai') return 'openai';
+                      if (k === 'anthropic') return 'anthropic';
+                      if (k === 'openrouter') return 'openrouter';
+                      if (k === 'ollama-cloud') return 'ollama';
+                      if (k === 'ollama-local') return null;
+                      return null;
+                    };
+                    const mapped = map(provider as ProviderKey);
+                    if (!mapped) {
+                      setAuthPreflight({ state: 'na' });
+                      return;
+                    }
+                    if (!bridgeAvailable) {
+                      useAppStore.getState().pushToast({ variant: 'error', message: 'Desktop runtime required' });
+                      return;
+                    }
+                    setAuthPreflight({ state: 'checking' });
+                    try {
+                      const res = (await tauriInvoke('auth_preflight', { provider: mapped })) as { ok?: boolean; code?: string; detail?: string } | undefined;
+                      if (res?.ok) {
+                        setAuthPreflight({ state: 'ok', code: res.code ?? 'OK' });
+                      } else {
+                        setAuthPreflight({ state: 'error', code: res?.code ?? 'AuthMissing', detail: res?.detail });
+                      }
+                    } catch (err) {
+                      const msg = (err as Error)?.message ?? String(err);
+                      setAuthPreflight({ state: 'error', code: 'Error', detail: msg });
+                    }
+                  }}
+                  disabled={!bridgeAvailable}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Auth Preflight
+                </button>
+                {authPreflight.state !== 'idle' && (
+                  <span
+                    className={
+                      authPreflight.state === 'ok'
+                        ? 'text-xs font-medium text-emerald-600'
+                        : authPreflight.state === 'checking'
+                        ? 'text-xs font-medium text-slate-600'
+                        : authPreflight.state === 'na'
+                        ? 'text-xs font-medium text-slate-500'
+                        : 'text-xs font-medium text-rose-600'
+                    }
+                  >
+                    {authPreflight.state === 'ok' && (authPreflight.code || 'OK')}
+                    {authPreflight.state === 'checking' && 'Checking…'}
+                    {authPreflight.state === 'na' && 'Not applicable'}
+                    {authPreflight.state === 'error' && (authPreflight.code || 'Error')}
+                  </span>
+                )}
+              </div>
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600">Model</label>

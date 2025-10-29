@@ -194,6 +194,59 @@ export function lintBatch(batch: Batch): LintResult {
     }
   }
 
+  // Rule 4 (E-UICP-0406): First render must target #root or create a window
+  const hasDomOps = batch.some((env) => env.op === 'dom.set' || env.op === 'dom.replace' || env.op === 'dom.append');
+  const hasWindowCreate = batch.some((env) => env.op === 'window.create');
+  if (hasDomOps && !hasWindowCreate) {
+    const hasRootTarget = batch.some((env) => {
+      if (!(env.op === 'dom.set' || env.op === 'dom.replace' || env.op === 'dom.append')) return false;
+      const params = env.params as { target?: unknown };
+      const target = typeof params?.target === 'string' ? params.target.trim() : '';
+      return target === '#root';
+    });
+    if (!hasRootTarget) {
+      return {
+        ok: false,
+        code: 'E-UICP-0406',
+        reason: 'First render must target #root or create a window',
+        hint: 'Add window.create to establish a container or target #root in an initial dom.* operation.',
+      };
+    }
+  }
+
+  // Rule 5 (E-UICP-0407): window.create must include explicit id matching subsequent operations
+  if (hasWindowCreate) {
+    const referencedIds = new Set<string>();
+    for (const env of batch) {
+      if (env.op === 'dom.set' || env.op === 'dom.replace' || env.op === 'dom.append' || env.op === 'window.update') {
+        const params = env.params as { windowId?: unknown };
+        const winId = typeof params?.windowId === 'string' ? params.windowId.trim() : '';
+        if (winId) referencedIds.add(winId);
+      }
+    }
+    if (referencedIds.size > 0) {
+      const created = batch.find((env) => env.op === 'window.create');
+      const createdId = created ? (created.params as { id?: unknown })?.id : undefined;
+      const idStr = typeof createdId === 'string' ? createdId.trim() : '';
+      if (!idStr) {
+        return {
+          ok: false,
+          code: 'E-UICP-0407',
+          reason: 'window.create must include explicit id when subsequent operations reference a window',
+          hint: 'Include id in window.create and reference the same id via params.windowId in dom.* operations.',
+        };
+      }
+      if (![...referencedIds].some((rid) => rid === idStr)) {
+        return {
+          ok: false,
+          code: 'E-UICP-0407',
+          reason: 'Referenced windowId does not match created window id',
+          hint: 'Ensure window.create id matches params.windowId used by subsequent dom.* operations.',
+        };
+      }
+    }
+  }
+
   return { ok: true };
 }
 

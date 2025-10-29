@@ -1,6 +1,7 @@
 import { getPlannerClient, getActorClient } from './provider';
 import { getPlannerProfile, getActorProfile, type PlannerProfileKey, type ActorProfileKey } from './profiles';
 import { validatePlan, validateBatch, type Plan, type Batch, type Envelope, type OperationParamMap } from '../uicp/schemas';
+import { validateBatchForApply } from '../orchestrator/validators';
 import { createId } from '../utils';
 import { collectTextFromChannels } from '../orchestrator/collectTextFromChannels';
 import { composeClarifier } from '../orchestrator/clarifier';
@@ -896,9 +897,30 @@ export async function runIntent(
     traceId: env.traceId ?? traceId,
     txnId: env.txnId ?? txnId,
   }));
-
-  // Orchestrator wiring to preview/apply is handled by chat/UI layers
   const actMs = Math.max(0, Math.round(now() - actingStarted));
+  
+  const vres = validateBatchForApply(plan, stamped);
+  if (!vres.ok) {
+    if (import.meta.env.DEV) { console.warn('[orchestrator] validator rejected batch', vres); }
+    emitTelemetryEvent('batch_lint_rejected', {
+      traceId,
+      span: 'queue',
+      status: 'error',
+      data: { code: vres.code, reason: vres.reason, from: 'orchestrator' },
+    });
+    return {
+      plan,
+      batch: validateBatch([]),
+      notice,
+      traceId,
+      timings: { planMs, actMs },
+      channels: { planner: plannerChannelUsed, actor: actorChannelUsed, taskSpec: taskSpecChannelUsed },
+      failures: { ...failures, actor: vres.reason },
+      taskSpec,
+      models: Object.keys(modelSelections).length > 0 ? modelSelections : undefined,
+    };
+  }
+
   emitTelemetryEvent('actor_finish', {
     traceId,
     span: 'actor',

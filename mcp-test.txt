@@ -1,0 +1,11 @@
+This is a test file to demonstrate the MCP filesystem server capabilities.
+
+The filesystem MCP server is now configured and should be able to:
+- Read files
+- Write files
+- List directories
+- Search for files
+- Get file metadata
+- And much more!
+
+This demonstrates that the server is working correctly.

@@ -3452,6 +3452,7 @@ fn main() {
             debug_circuits,
             set_env_var,
             save_provider_api_key,
+            auth_preflight,
             provider_login,
             provider_health,
             provider_resolve,
@@ -3492,6 +3493,33 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[derive(Clone, Serialize)]
+struct AuthPreflightResult {
+    ok: bool,
+    code: String,
+    detail: Option<String>,
+}
+
+#[tauri::command]
+async fn auth_preflight(provider: String) -> Result<AuthPreflightResult, String> {
+    let p = provider.trim().to_ascii_lowercase();
+    match build_provider_headers(&p).await {
+        Ok(_) => Ok(AuthPreflightResult { ok: true, code: "OK".into(), detail: None }),
+        Err(e) => {
+            let msg = e.to_string();
+            let low = msg.to_ascii_lowercase();
+            let code = if low.contains("denied") {
+                "PolicyDenied".to_string()
+            } else if low.contains("unknown provider") {
+                "UnknownProvider".to_string()
+            } else {
+                "AuthMissing".to_string()
+            };
+            Ok(AuthPreflightResult { ok: false, code, detail: Some(msg) })
+        }
+    }
 }
 
 #[tauri::command]

@@ -3,6 +3,7 @@ import { validateBatch } from "./schemas";
 import { applyBatch, deferBatchIfNotReady, type ApplyOutcome } from "./adapter";
 import { emitTelemetryEvent } from "../../telemetry";
 import { lintBatch, formatLintError } from "./batchLinter";
+import { useAppStore } from "../../../state/app";
 
 // Per-window FIFO queue with idempotency and txn cancel support.
 // - Commands with the same windowId run sequentially
@@ -194,10 +195,24 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
     
     const run = async (): Promise<ApplyOutcome> => {
       const t0 = performance.now();
+      try {
+        const app = useAppStore.getState();
+        app.transitionOrchestrator('ApplyStart', { windowId: capturedWindowId, batchSize: capturedGroup.length });
+        app.transitionAgentPhase('applying');
+      } catch {
+        // ignore orchestrator transition errors in queue path
+      }
       const outcome = await applyBatch(capturedGroup);
       const ms = Math.max(0, performance.now() - t0);
       if (outcome.success) {
         for (const fn of appliedListeners) fn({ windowId: capturedWindowId, applied: outcome.applied, ms });
+        try {
+          const app = useAppStore.getState();
+          app.transitionOrchestrator('ApplySucceeded', { windowId: capturedWindowId, applied: outcome.applied, ms });
+          app.transitionAgentPhase('complete', { applyMs: Math.round(ms) });
+        } catch {
+          // ignore orchestrator transition errors in queue path
+        }
       }
       for (const [traceId, count] of capturedTraceCounts.entries()) {
         emitTelemetryEvent('enqueue_applied', {

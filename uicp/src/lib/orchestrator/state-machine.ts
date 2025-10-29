@@ -19,6 +19,7 @@ export const OrchestratorEvent = {
   PlannerCompleted: 'PlannerCompleted',
   PlannerFailed: 'PlannerFailed',
   RequirePreview: 'RequirePreview',
+  ApplyStart: 'ApplyStart',
   AutoApply: 'AutoApply',
   PreviewAccepted: 'PreviewAccepted',
   ApplySucceeded: 'ApplySucceeded',
@@ -51,10 +52,12 @@ const transitionTable: Record<OrchestratorState, Partial<Record<OrchestratorEven
   },
   acting: {
     [OrchestratorEvent.RequirePreview]: 'previewing',
+    [OrchestratorEvent.ApplyStart]: 'applying',
     [OrchestratorEvent.AutoApply]: 'applying',
     [OrchestratorEvent.Cancel]: 'cancelled',
   },
   previewing: {
+    [OrchestratorEvent.ApplyStart]: 'applying',
     [OrchestratorEvent.PreviewAccepted]: 'applying',
     [OrchestratorEvent.Cancel]: 'cancelled',
   },

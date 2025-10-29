@@ -72,10 +72,10 @@ export interface CommandExecutorDeps {
   ensureWindowExists?: (id: string, hint?: Partial<OperationParamMap["window.create"]>) => Promise<CommandResult<string>>;
   
   // DOM operations
-  executeDomSet?: (params: OperationParamMap["dom.set"]) => CommandResult<string>;
+  executeDomSet?: (params: OperationParamMap["dom.set"]) => CommandResult<string> | Promise<CommandResult<string>>;
   
   // Component operations
-  executeComponentRender?: (params: OperationParamMap["component.render"]) => CommandResult<string>;
+  executeComponentRender?: (params: OperationParamMap["component.render"]) => CommandResult<string> | Promise<CommandResult<string>>;
   updateComponent?: (params: OperationParamMap["component.update"]) => void;
   destroyComponent?: (params: OperationParamMap["component.destroy"]) => void;
   
@@ -317,19 +317,51 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         title ? ` title="${escapeHtml(title)}"` : ''
       }>${escapeHtml(label)}</button>`;
 
-    const writeProgress = (status: string, actionsHtml?: string) => {
-      if (!params.progressWindowId || !params.progressSelector || !deps.executeDomSet) return;
-      const result = deps.executeDomSet({
-        windowId: params.progressWindowId,
-        target: params.progressSelector,
-        html: `<div class="flex items-center gap-2 text-xs text-slate-600"><span>${escapeHtml(status)}</span>${
-          actionsHtml ? `<span class="ml-2 flex items-center gap-2">${actionsHtml}</span>` : ''
-        }</div>`,
-        sanitize: true,
-        mode: 'set',
-      });
-      if (result && !result.success) {
-        console.warn('needs.code progress update failed', result.error);
+    const writeProgress = async (status: string, actionsHtml?: string) => {
+      try {
+        if (!params.progressWindowId || !params.progressSelector || !deps.executeDomSet) {
+          return;
+        }
+        // Ensure the progress window exists so cross-partition ordering doesn't drop the update
+        if (deps.ensureWindowExists) {
+          try {
+            await deps.ensureWindowExists(params.progressWindowId, { id: params.progressWindowId, title: params.progressWindowId });
+          } catch (ensureErr) {
+            console.warn('needs.code progress ensure window failed', ensureErr);
+          }
+        }
+        const result = await Promise.resolve(deps.executeDomSet({
+          windowId: params.progressWindowId,
+          target: params.progressSelector,
+          html: `<div class="flex items-center gap-2 text-xs text-slate-600"><span>${escapeHtml(status)}</span>${
+            actionsHtml ? `<span class="ml-2 flex items-center gap-2">${actionsHtml}</span>` : ''
+          }</div>`,
+          sanitize: true,
+          mode: 'set',
+        }));
+        if (result && !result.success) {
+          // Fallback: if progressSelector is a [data-testid="..."] and element isn't present yet, inject under #root
+          const m = /^\[data-testid="([^"]+)"\]$/.exec(String(params.progressSelector));
+          if (m) {
+            const testId = m[1];
+            const fb = await Promise.resolve(deps.executeDomSet({
+              windowId: params.progressWindowId,
+              target: '#root',
+              html: `<div data-testid="${escapeHtml(testId)}" class="flex items-center gap-2 text-xs text-slate-600"><span>${escapeHtml(status)}</span>${
+                actionsHtml ? `<span class=\"ml-2 flex items-center gap-2\">${actionsHtml}</span>` : ''
+              }</div>`,
+              sanitize: true,
+              mode: 'append',
+            }));
+            if (fb && !fb.success) {
+              console.warn('needs.code progress fallback append failed', fb.error);
+            }
+          } else {
+            console.warn('needs.code progress update failed', result.error);
+          }
+        }
+      } catch (err) {
+        console.warn('needs.code writeProgress failed', err);
       }
     };
 
@@ -346,7 +378,7 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
             openAgentSettingsCmd,
             'Open Agent Settings to toggle Safe Mode',
           );
-          writeProgress('Safe Mode is on — code generation is disabled.', openAgentSettingsBtn);
+          await writeProgress('Safe Mode is on — code generation is disabled.', openAgentSettingsBtn);
           return {
             success: false,
             error: 'Safe Mode is enabled. Open Agent Settings to allow code generation.',
@@ -359,9 +391,7 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
       // Initial status with Cancel affordance
       const cancelCmd = `compute.cancel:${jobId}`;
       const cancelBtn = buildActionButton('Cancel', cancelCmd, 'Cancel this codegen job');
-      writeProgress('Queued code generation...', cancelBtn);
-      await window.uicpComputeCall(jobSpec);
-      writeProgress('Generating code...', cancelBtn);
+      await writeProgress('Queued code generation...', cancelBtn);
 
       const persistArtifactAndInstall = async (final: ComputeFinalEvent) => {
         if (!final.ok || !isRecord(final.output)) {
@@ -440,20 +470,20 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
 
             if (deps.executeComponentRender) {
               installAttempted = true;
-              const renderResult = deps.executeComponentRender({
+              const renderResult = await Promise.resolve(deps.executeComponentRender({
                 id: panelId,
                 windowId,
                 target,
                 type: 'script.panel',
                 props,
-              } as OperationParamMap["component.render"]);
+              } as OperationParamMap["component.render"]));
               if (renderResult && !renderResult.success) {
                 console.warn('needs.code auto install render failed', renderResult.error);
               } else {
                 installSucceeded = true;
                 try {
                   const status = `Installed to panel ${panelId}`;
-                  writeProgress(status);
+                  await writeProgress(status);
                 } catch (progressError) {
                   console.warn('needs.code install progress update failed', progressError);
                 }
@@ -513,9 +543,11 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
             }
           }
 
+          const cached = final.metrics?.cacheHit ? ' (cache hit)' : '';
           if (actions.length > 0) {
-            const cached = final.metrics?.cacheHit ? ' (cache hit)' : '';
-            writeProgress(`Code ready${cached ? ' - cached result' : ''}`, actions.join(''));
+            await writeProgress(`Code ready${cached ? ' - cached result' : ''}`, actions.join(''));
+          } else {
+            await writeProgress(`Code ready${cached ? ' - cached result' : ''}`);
           }
         } catch (uiError) {
           console.warn('needs.code: post-success actions failed', uiError);
@@ -542,6 +574,7 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
         }
       };
 
+      // Register for final BEFORE invoking compute to avoid race
       void waitForComputeFinalEvent(jobId)
         .then(async (final) => {
           if (final.ok) {
@@ -551,29 +584,24 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
               console.error('needs.code post-final handling failed', postError);
             }
           } else {
-            writeProgress(`Code generation failed: ${final.message ?? 'Unknown error'}`);
+            await writeProgress(`Code generation failed: ${final.message ?? 'Unknown error'}`);
           }
         })
-        .catch((error) => {
+        .catch(async (error) => {
           const message = error instanceof Error ? error.message : String(error);
-          writeProgress(`Code generation failed: ${message}`);
+          await writeProgress(`Code generation failed: ${message}`);
         });
 
-      return {
-        success: true,
-        value: `Code generation job ${jobId} submitted`,
-      };
+      await window.uicpComputeCall(jobSpec);
+      await writeProgress('Generating code...', cancelBtn);
+      return { success: true, value: `Code generation job ${jobId} submitted` };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       writeProgress(`Code generation failed: ${message}`);
-      return {
-        success: false,
-        error: message,
-      };
+      return { success: false, error: message };
     }
   },
 });
-
 /**
  * Creates command executor for api.call operations.
  */
@@ -862,4 +890,3 @@ export const dispatchCommand = async (
   
   return await executor.execute(command, ctx, deps);
 };
-

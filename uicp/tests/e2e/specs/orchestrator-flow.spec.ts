@@ -15,9 +15,14 @@ const enabled = !!process.env.E2E_ORCHESTRATOR;
 
   // Grant full control before interacting with chat (overlay intercepts pointer)
   const grant = page.getByRole('button', { name: 'Grant full control' });
-  if (await grant.isVisible()) {
+  if (await grant.isVisible().catch(() => false)) {
     await grant.click({ force: true });
-    await page.getByRole('dialog').getByRole('button', { name: 'Grant full control' }).click();
+    // Some builds open a confirm dialog; others toggle inline. Handle both.
+    const dialog = page.getByRole('dialog');
+    const hasDialog = await dialog.isVisible({ timeout: 1000 }).catch(() => false);
+    if (hasDialog) {
+      await dialog.getByRole('button', { name: 'Grant full control' }).click();
+    }
   }
 
   // Reveal chat, send intent

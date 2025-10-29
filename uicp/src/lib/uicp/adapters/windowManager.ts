@@ -167,6 +167,8 @@ export const createWindowManager = (
     // Create new window
     const wrapper = document.createElement('div');
     wrapper.dataset.windowId = id;
+    // Back-compat test selector
+    wrapper.setAttribute('data-desktop-window', id);
     const styleSelector = `[data-window-id="${escapeForSelector(id)}"]`;
     wrapper.className = 'workspace-window pointer-events-auto';
 

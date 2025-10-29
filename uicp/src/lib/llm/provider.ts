@@ -2,6 +2,7 @@ import type { ToolSpec, StreamEvent, StreamMeta } from './llm.stream';
 import { streamOllamaCompletion } from './llm.stream';
 import { route } from './router';
 import { isProviderRouterV1Enabled } from '../flags';
+import { emitTelemetryEvent } from '../telemetry';
 import {
   getActorProfile,
   getPlannerProfile,
@@ -133,6 +134,12 @@ export function getPlannerClient(): PlannerClient {
       }
       const useRouter = isProviderRouterV1Enabled();
       const streamer = useRouter ? route : streamOllamaCompletion;
+      if (useRouter && typeof meta.traceId === 'string' && meta.traceId.trim().length > 0) {
+        emitTelemetryEvent('provider_decision', {
+          traceId: meta.traceId,
+          data: { role: 'planner', provider: options?.provider, baseUrl: options?.baseUrl, model },
+        });
+      }
       return streamer(messages, model, tools, requestOptions);
     },
   };
@@ -195,6 +202,12 @@ export function getActorClient(): ActorClient {
       }
       const useRouter = isProviderRouterV1Enabled();
       const streamer = useRouter ? route : streamOllamaCompletion;
+      if (useRouter && typeof meta.traceId === 'string' && meta.traceId.trim().length > 0) {
+        emitTelemetryEvent('provider_decision', {
+          traceId: meta.traceId,
+          data: { role: 'actor', provider: options?.provider, baseUrl: options?.baseUrl, model },
+        });
+      }
       return streamer(messages, model, tools, requestOptions);
     },
   };
