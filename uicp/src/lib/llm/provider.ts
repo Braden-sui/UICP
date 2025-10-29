@@ -1,5 +1,7 @@
 import type { ToolSpec, StreamEvent, StreamMeta } from './llm.stream';
 import { streamOllamaCompletion } from './llm.stream';
+import { route } from './router';
+import { isProviderRouterV1Enabled } from '../flags';
 import {
   getActorProfile,
   getPlannerProfile,
@@ -129,7 +131,9 @@ export function getPlannerClient(): PlannerClient {
         requestOptions.reasoning = reasoningPayload;
         requestOptions.ollamaOptions = { reasoning: reasoningPayload };
       }
-      return streamOllamaCompletion(messages, model, tools, requestOptions);
+      const useRouter = isProviderRouterV1Enabled();
+      const streamer = useRouter ? route : streamOllamaCompletion;
+      return streamer(messages, model, tools, requestOptions);
     },
   };
 }
@@ -189,7 +193,9 @@ export function getActorClient(): ActorClient {
         requestOptions.reasoning = reasoningPayload;
         requestOptions.ollamaOptions = { reasoning: reasoningPayload };
       }
-      return streamOllamaCompletion(messages, model, tools, requestOptions);
+      const useRouter = isProviderRouterV1Enabled();
+      const streamer = useRouter ? route : streamOllamaCompletion;
+      return streamer(messages, model, tools, requestOptions);
     },
   };
 }

@@ -2,6 +2,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { createOllamaAggregator } from '../uicp/stream';
+import { readBooleanEnv } from '../env/values';
 import { enqueueBatch, addQueueAppliedListener } from '../uicp/adapters/queue';
 import { finalEventSchema, type JobSpec, type ComputeFinalEvent } from '../../compute/types';
 import { useComputeStore } from '../../state/compute';
@@ -417,12 +418,9 @@ export async function initializeTauriBridge() {
         prunePending();
         useComputeStore.getState().upsertJob({ jobId: spec.jobId, task: spec.task, status: 'running' });
         const finalSpec: JobSpec = { ...spec, workspaceId: spec.workspaceId ?? 'default' };
-        const final = await computeFn(finalSpec);
-        const parsed = finalEventSchema.safeParse(final);
-        if (!parsed.success) {
-          throw new Error('Test compute stub returned invalid final payload');
-        }
-        applyFinalEvent(parsed.data);
+        await computeFn(finalSpec);
+        // In web E2E mode, the test compute stub dispatches 'uicp-compute-final' directly.
+        // Adapter UI listens to that event; no return value required here.
       } catch (error) {
         pendingBinds.delete(spec.jobId);
         useComputeStore
@@ -456,6 +454,21 @@ export async function initializeTauriBridge() {
           ? bridgeWindow.__UICP_TEST_COMPUTE_CANCEL__
           : undefined;
       setupTestComputeFallback(bridgeWindow, testCompute, testCancel);
+    }
+    // Expose compute and app stores for E2E even without Tauri bridge
+    if (!bridgeWindow.__UICP_COMPUTE_STORE__) {
+      Object.defineProperty(bridgeWindow, '__UICP_COMPUTE_STORE__', {
+        value: useComputeStore,
+        configurable: true,
+        writable: false,
+      });
+    }
+    if (!bridgeWindow.__UICP_APP_STORE__) {
+      Object.defineProperty(bridgeWindow, '__UICP_APP_STORE__', {
+        value: useAppStore,
+        configurable: true,
+        writable: false,
+      });
     }
     return;
   }
@@ -834,6 +847,136 @@ export async function initializeTauriBridge() {
     }),
   );
 
+  const useNormalizedAggregator = readBooleanEnv('VITE_STREAM_V1', false);
+
+  const attachNormalizedAggregator = async () =>
+    await listen('uicp-stream-v1', async (event) => {
+      const payload = event.payload as { requestId?: string; event?: Record<string, unknown> } | undefined;
+      if (!payload || !payload.event) return;
+      const ev = payload.event as Record<string, unknown>;
+      const evType = typeof ev['type'] === 'string' ? (ev['type'] as string) : '';
+
+      if (evType === 'done') {
+        if (activeStream !== streamGen) return;
+        const agg = aggregators.get(activeStream);
+        if (!agg) return;
+        let flushed = false;
+        let wasCancelled = false;
+        try {
+          const flushResult = await agg.flush();
+          flushed = !flushResult?.cancelled;
+          wasCancelled = flushResult?.cancelled ?? false;
+        } catch (error) {
+          handleAggregatorError(error);
+        }
+        useAppStore.getState().setStreaming(false);
+        if (lockWhenStreamCloses) {
+          lockWhenStreamCloses = false;
+          try { await invoke('keystore_lock'); } catch (err) { console.warn('[keystore] deferred lock failed', err); }
+        }
+        if (flushed) {
+          aggregatorFailed = false;
+        }
+        const closeReason = wasCancelled ? 'user_cancel' : 'normal';
+        if (currentTraceId) {
+          console.info('[uicp-stream-v1] stream finished', { traceId: currentTraceId, gen: activeStream, reason: closeReason });
+          emitUiDebug('stream_finished', { traceId: currentTraceId, gen: activeStream, flushed, reason: closeReason });
+          emitUiDebug('stream_closed', { traceId: currentTraceId, gen: activeStream, reason: closeReason });
+          currentTraceId = null;
+        }
+        aggregators.delete(activeStream);
+        return;
+      }
+
+      if (evType === 'error') {
+        const code = typeof ev['code'] === 'string' ? (ev['code'] as string) : 'Error';
+        const detail = typeof ev['detail'] === 'string' ? (ev['detail'] as string) : 'Request failed';
+        const rid = typeof ev['requestId'] === 'string' ? (ev['requestId'] as string) : undefined;
+        const msg = `[${code}] ${detail}${rid ? ` req=${rid}` : ''}`;
+        useAppStore.getState().pushToast({ variant: 'error', message: msg });
+        useChatStore.getState().pushSystemMessage(`Chat error ${msg}`, 'ollama_stream_error');
+        // End current stream lifecycle similar to done
+        if (activeStream === streamGen) {
+          const agg = aggregators.get(activeStream);
+          if (agg) {
+            try { await agg.flush(); } catch (err) { handleAggregatorError(err); }
+          }
+          useAppStore.getState().setStreaming(false);
+          if (currentTraceId) {
+            emitUiDebug('stream_error', { traceId: currentTraceId, gen: activeStream, message: msg });
+            currentTraceId = null;
+          }
+          aggregators.delete(activeStream);
+        }
+        return;
+      }
+
+      if (evType === 'content' || evType === 'tool_call') {
+        try {
+          if (!useAppStore.getState().streaming) {
+            // Cancel previous if any
+            const prevAgg = aggregators.get(activeStream);
+            if (prevAgg) {
+              prevAgg.cancel();
+              if (import.meta.env.DEV) console.debug('[uicp-stream-v1] cancelling superseded stream', { gen: activeStream });
+            }
+            activeStream = ++streamGen;
+            aggregatorFailed = false;
+            currentTraceId = createId('trace');
+            console.info('[uicp-stream-v1] stream started', { traceId: currentTraceId, gen: activeStream });
+            emitUiDebug('stream_started', { traceId: currentTraceId, gen: activeStream });
+            aggregators.set(activeStream, makeAggregator());
+          }
+          if (activeStream !== streamGen) return;
+          const agg = aggregators.get(activeStream);
+          if (!agg) return;
+
+          // Map v1 event to aggregator-compatible JSON chunk string
+          if (evType === 'content') {
+            const channel = typeof ev['channel'] === 'string' ? (ev['channel'] as string) : undefined;
+            const text = typeof ev['text'] === 'string' ? (ev['text'] as string) : '';
+            if (text.trim().length === 0) return;
+            const chunk = {
+              choices: [
+                {
+                  delta: {
+                    ...(channel ? { channel } : {}),
+                    content: [{ type: 'text', text }],
+                  },
+                },
+              ],
+            };
+            await agg.processDelta(JSON.stringify(chunk));
+            useAppStore.getState().setStreaming(true);
+            return;
+          }
+
+          if (evType === 'tool_call') {
+            const index = Number.isFinite(ev['index'] as number) ? (ev['index'] as number) : 0;
+            const id = typeof ev['id'] === 'string' ? (ev['id'] as string) : undefined;
+            const name = typeof ev['name'] === 'string' ? (ev['name'] as string) : undefined;
+            const args = ev['arguments'];
+            const toolCall: Record<string, unknown> = {
+              index,
+              ...(id ? { id } : {}),
+              function: {
+                ...(name ? { name } : {}),
+                arguments: args,
+              },
+            };
+            const chunk = { choices: [{ delta: { tool_calls: [toolCall] } }] };
+            await agg.processDelta(JSON.stringify(chunk));
+            useAppStore.getState().setStreaming(true);
+            return;
+          }
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          handleAggregatorError(error);
+          emitUiDebug('stream_error', { traceId: currentTraceId ?? undefined, message: msg });
+        }
+      }
+    });
+
   // Health and Safe Mode
   unsubs.push(
     await listen('replay-issue', (event) => {
@@ -872,7 +1015,7 @@ export async function initializeTauriBridge() {
     }),
   );
 
-  unsubs.push(
+  const attachLegacyAggregator = async () =>
     await listen('ollama-completion', async (event) => {
       const payload = event.payload as OllamaEvent | undefined;
       if (!payload) return;
@@ -969,8 +1112,10 @@ export async function initializeTauriBridge() {
           emitUiDebug('stream_error', { traceId: currentTraceId ?? undefined, message: msg });
         }
       }
-    }),
-  );
+    });
+
+  // Attach aggregator listener depending on flag
+  unsubs.push(await (useNormalizedAggregator ? attachNormalizedAggregator() : attachLegacyAggregator()));
 
   // Compute plane: debug telemetry for cancellations/timeouts
   unsubs.push(

@@ -25,6 +25,8 @@ Purpose: a single landing page that lists the canonical docs. Anything not linke
 - Model choices and profiles: docs/MODEL_CHOICES.md
 - Provider setup guides: uicp/src/lib/providers/setupGuides.ts
 - Providers (CLI, health, keystore): docs/providers.md
+- LLM Chat Protocol v1: docs/llm-chat-protocol-v1.md
+- Stream Event v1: docs/stream-event-v1.md
 
 ## Operations
 - Backend commands reference: docs/backend-commands.md

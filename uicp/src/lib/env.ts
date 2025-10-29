@@ -3,6 +3,7 @@
 // without leaking PII or excessive DOM content. This improves correctness (e.g., reusing
 // existing window ids) and reduces unknown-window errors.
 import { useAppStore } from '../state/app';
+import { flagsSummary } from './flags';
 
 const clamp = (value: string, max = 160): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`;
@@ -57,6 +58,7 @@ export const buildEnvironmentSnapshot = (opts?: EnvSnapshotOptions): string => {
   lines.push('Environment Snapshot');
   lines.push(`- Agent: phase=${phase}, fullControl=${fullControl}, streaming=${streaming}`);
   lines.push(`- Flags: devMode=${devMode}, platform=${platform}`);
+  lines.push(`- FeatureFlags: ${flagsSummary()}`);
   lines.push(`- LastTrace: ${trace}${app.agentStatus.error ? ` (error=${app.agentStatus.error})` : ''}`);
   lines.push(`- WorkspaceWindows: ${windowCount}`);
   if (windowLines) lines.push(windowLines);

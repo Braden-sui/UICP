@@ -6,3 +6,6 @@ pub const EVENT_COMPUTE_RESULT_PARTIAL: &str = "compute-result-partial";
 
 // WHY: UI debug stream uses a dedicated event channel that the frontend listens to.
 pub const EVENT_UI_DEBUG: &str = "ui-debug-log";
+
+// WHY: Normalized LLM StreamEvent v1 channel (backend emits normalized content/tool_call/done/error events)
+pub const EVENT_STREAM_V1: &str = "uicp-stream-v1";

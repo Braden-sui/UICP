@@ -31,7 +31,7 @@ const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
   if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
     return profile.defaultModel;
   }
-  return 'deepseek-v3.1:671b';
+  return 'minimax-m2';
 };
 
 const getActorModel = (profileKey?: ActorProfileKey): string => {
@@ -39,20 +39,7 @@ const getActorModel = (profileKey?: ActorProfileKey): string => {
   if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
     return profile.defaultModel;
   }
-  switch (profile?.key ?? profileKey) {
-    case 'qwen':
-      return 'qwen3-coder:480b';
-    case 'deepseek':
-      return 'deepseek-v3.1:671b';
-    case 'glm':
-      return 'glm-4.6';
-    case 'gpt-oss':
-      return 'gpt-oss:120b';
-    case 'kimi':
-      return 'kimi-k2:1t';
-    default:
-      return 'qwen3-coder:480b';
-  }
+  return 'minimax-m2';
 };
 
 type CandidateStack = ResolvedProfiles | null;
@@ -661,16 +648,6 @@ export async function runIntent(
   const plannerCandidates = candidateStack?.planner;
   const actorCandidates = candidateStack?.actor;
 
-  if (cfg.profilesMode === 'yaml' && /^\s*(code\.|needs\.code)/i.test(text)) {
-    console.warn('[runIntent] blocking code.* request in interactive mode', {
-      traceId,
-      textPreview: text.slice(0, 120),
-    });
-    throw new LLMError(
-      LLMErrorCode.CodeRouteGuard,
-      'E-UICP-0911: code.* requests require CLI. Run `pnpm codegen <task>` instead.',
-    );
-  }
 
   // Phase 0 (Optional): Generate TaskSpec if two-phase planner enabled
   const twoPhaseEnabled = options?.plannerTwoPhaseEnabled ?? false;

@@ -363,6 +363,26 @@ fn emit_problem_detail(
         "ollama-completion",
         serde_json::json!({ "done": true, "error": error }),
     );
+    // Also emit normalized error event when StreamEvent v1 is enabled
+    if is_stream_v1_enabled() {
+        let evt = serde_json::json!({
+            "type": "error",
+            "code": code,
+            "detail": detail,
+        });
+        emit_or_log(
+            app_handle,
+            crate::events::EVENT_STREAM_V1,
+            serde_json::json!({ "requestId": request_id, "event": evt }),
+        );
+        // Terminal done after error for v1 channel
+        let done_evt = serde_json::json!({ "type": "done" });
+        emit_or_log(
+            app_handle,
+            crate::events::EVENT_STREAM_V1,
+            serde_json::json!({ "requestId": request_id, "event": done_evt }),
+        );
+    }
 }
 
 // AppState is re-exported from core
@@ -1197,7 +1217,6 @@ async fn delete_window_commands(
                         if id_match {
                             to_delete.push(id);
                         }
-                    }
                     if !to_delete.is_empty() {
                         let tx = conn.transaction().map_err(tokio_rusqlite::Error::from)?;
                         for id in to_delete {
@@ -1483,6 +1502,263 @@ fn transform_request_for_anthropic(body: serde_json::Value) -> Result<serde_json
     // (stream is handled at HTTP level, not in body)
 
     Ok(anthropic_body)
+}
+
+// Feature flag: enable backend emission of normalized StreamEvent v1 alongside legacy events
+fn is_stream_v1_enabled() -> bool {
+    match std::env::var("UICP_STREAM_V1") {
+        Ok(v) => {
+            let s = v.trim().to_ascii_lowercase();
+            matches!(s.as_str(), "1" | "true" | "on" | "yes")
+        }
+        Err(_) => false,
+    }
+}
+
+// Minimal extractor that converts OpenAI-like delta JSON into StreamEvent v1 events.
+// Assumes Anthropic has been pre-normalized to OpenAI-like deltas via anthropic::normalize_message.
+fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<&str>) -> Vec<serde_json::Value> {
+    use serde_json::Value;
+    let mut events: Vec<Value> = Vec::new();
+
+    let push_content = |events: &mut Vec<Value>, channel: Option<&str>, text: &str| {
+        if text.trim().is_empty() {
+            return;
+        }
+        let mut evt = serde_json::json!({
+            "type": "content",
+            "text": text,
+        });
+        if let Some(ch) = channel {
+            if let Some(obj) = evt.as_object_mut() {
+                obj.insert("channel".into(), serde_json::json!(ch));
+            }
+        }
+        events.push(evt);
+    };
+
+    let push_tool_call = |
+        events: &mut Vec<Value>,
+        index: i64,
+        id: Option<&str>,
+        name: Option<&str>,
+        arguments: Value,
+    | {
+        let mut evt = serde_json::json!({
+            "type": "tool_call",
+            "index": index,
+            "arguments": arguments,
+            "isDelta": true,
+        });
+        if let Some(i) = id {
+            if let Some(obj) = evt.as_object_mut() {
+                obj.insert("id".into(), serde_json::json!(i));
+            }
+        }
+        if let Some(n) = name {
+            if let Some(obj) = evt.as_object_mut() {
+                obj.insert("name".into(), serde_json::json!(n));
+            }
+        }
+        events.push(evt);
+    };
+
+    // Helper: handle content values that may be string, array of parts, or object
+    fn handle_content_value(
+        events: &mut Vec<Value>,
+        channel: Option<&str>,
+        value: &Value,
+        push_content: &dyn Fn(&mut Vec<Value>, Option<&str>, &str),
+        push_tool_call: &dyn Fn(&mut Vec<Value>, i64, Option<&str>, Option<&str>, Value),
+    ) {
+        match value {
+            Value::String(s) => {
+                push_content(events, channel, s);
+            }
+            Value::Array(arr) => {
+                for entry in arr {
+                    if let Value::String(s) = entry {
+                        push_content(events, channel, s);
+                        continue;
+                    }
+                    if let Value::Object(map) = entry {
+                        if let Some(t) = map.get("type").and_then(|v| v.as_str()) {
+                            // Some providers encode tool deltas inside content array
+                            if t.eq_ignore_ascii_case("tool_call") || t.eq_ignore_ascii_case("tool_call_delta") {
+                                let index = map
+                                    .get("index")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
+                                // function or delta.function may contain arguments/name
+                                let function_obj = map
+                                    .get("function")
+                                    .or_else(|| map.get("delta").and_then(|d| d.get("function")));
+                                let name = map
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .or_else(|| function_obj.and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                                let arguments = map
+                                    .get("arguments")
+                                    .cloned()
+                                    .or_else(|| function_obj.and_then(|f| f.get("arguments").cloned()))
+                                    .unwrap_or_else(|| Value::Null);
+                                let id = map
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .or_else(|| map.get("tool_call_id").and_then(|v| v.as_str()));
+                                push_tool_call(events, index, id, name, arguments);
+                                continue;
+                            }
+                        }
+                        if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
+                            push_content(events, channel, text);
+                            continue;
+                        }
+                        if let Some(val) = map.get("value").and_then(|v| v.as_str()) {
+                            push_content(events, channel, val);
+                            continue;
+                        }
+                    }
+                }
+            }
+            Value::Object(obj) => {
+                if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                    push_content(events, channel, text);
+                } else if let Some(val) = obj.get("value").and_then(|v| v.as_str()) {
+                    push_content(events, channel, val);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 1) OpenAI-like choices[].delta...
+    if let Some(choices) = chunk.get("choices").and_then(|v| v.as_array()) {
+        for ch in choices {
+            let delta = ch
+                .get("delta")
+                .or_else(|| ch.get("message"))
+                .or_else(|| ch.get("update"));
+            if let Some(d) = delta.and_then(|v| v.as_object()) {
+                if let Some(content_val) = d.get("content") {
+                    handle_content_value(
+                        &mut events,
+                        default_channel,
+                        content_val,
+                        &push_content,
+                        &push_tool_call,
+                    );
+                }
+                if let Some(tool_calls) = d.get("tool_calls").and_then(|v| v.as_array()) {
+                    for (idx, tc) in tool_calls.iter().enumerate() {
+                        let index = d.get("index").and_then(|v| v.as_i64()).unwrap_or(idx as i64);
+                        let id = tc
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
+                        let name = tc
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                        let arguments = tc
+                            .get("arguments")
+                            .cloned()
+                            .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
+                            .unwrap_or_else(|| Value::Null);
+                        push_tool_call(&mut events, index, id, name, arguments);
+                    }
+                }
+                if let Some(tool_call) = d.get("tool_call") {
+                    let id = tool_call
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| tool_call.get("tool_call_id").and_then(|v| v.as_str()));
+                    let name = tool_call
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| tool_call.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                    let arguments = tool_call
+                        .get("arguments")
+                        .cloned()
+                        .or_else(|| tool_call.get("function").and_then(|f| f.get("arguments").cloned()))
+                        .unwrap_or_else(|| Value::Null);
+                    push_tool_call(&mut events, 0, id, name, arguments);
+                }
+            }
+        }
+    }
+
+    // 2) Root-level delta.tool_calls
+    if let Some(delta) = chunk.get("delta").and_then(|v| v.as_object()) {
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+            for (idx, tc) in tool_calls.iter().enumerate() {
+                let id = tc
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
+                let name = tc
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                let arguments = tc
+                    .get("arguments")
+                    .cloned()
+                    .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
+                    .unwrap_or_else(|| Value::Null);
+                push_tool_call(&mut events, idx as i64, id, name, arguments);
+            }
+        }
+    }
+
+    // 3) Root-level tool_calls
+    if let Some(tool_calls) = chunk.get("tool_calls").and_then(|v| v.as_array()) {
+        for (idx, tc) in tool_calls.iter().enumerate() {
+            let id = tc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
+            let name = tc
+                .get("name")
+                .and_then(|v| v.as_str())
+                .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+            let arguments = tc
+                .get("arguments")
+                .cloned()
+                .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
+                .unwrap_or_else(|| Value::Null);
+            push_tool_call(&mut events, idx as i64, id, name, arguments);
+        }
+    }
+
+    // 4) Root-level content or message.content
+    if let Some(content) = chunk.get("content") {
+        handle_content_value(&mut events, default_channel, content, &push_content, &push_tool_call);
+    }
+    if let Some(msg) = chunk.get("message").and_then(|v| v.as_object()) {
+        if let Some(content) = msg.get("content") {
+            handle_content_value(&mut events, default_channel, content, &push_content, &push_tool_call);
+        }
+        if let Some(tcs) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+            for (idx, tc) in tcs.iter().enumerate() {
+                let id = tc
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
+                let name = tc
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                let arguments = tc
+                    .get("arguments")
+                    .cloned()
+                    .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
+                    .unwrap_or_else(|| Value::Null);
+                push_tool_call(&mut events, idx as i64, id, name, arguments);
+            }
+        }
+    }
+
+    events
 }
 
 #[tauri::command]
@@ -2098,6 +2374,9 @@ async fn chat_completion(
                         }
                     };
 
+                    // Feature flag: also emit normalized StreamEvent v1 alongside legacy events
+                    let is_stream_v1_on = is_stream_v1_enabled();
+
                     // Helper to process a complete SSE payload line (assembled in event_buf)
                     let process_payload = |payload_str: &str,
                                            app_handle: &tauri::AppHandle,
@@ -2117,6 +2396,14 @@ async fn chat_completion(
                                 "ollama-completion",
                                 serde_json::json!({ "done": true }),
                             );
+                            if is_stream_v1_on {
+                                let done_evt = serde_json::json!({ "type": "done" });
+                                emit_or_log(
+                                    app_handle,
+                                    crate::events::EVENT_STREAM_V1,
+                                    serde_json::json!({ "requestId": rid, "event": done_evt }),
+                                );
+                            }
                             return;
                         }
                         match serde_json::from_str::<serde_json::Value>(payload_str) {
@@ -2146,6 +2433,14 @@ async fn chat_completion(
                                         "ollama-completion",
                                         serde_json::json!({ "done": true }),
                                     );
+                                    if is_stream_v1_on {
+                                        let done_evt = serde_json::json!({ "type": "done" });
+                                        emit_or_log(
+                                            app_handle,
+                                            crate::events::EVENT_STREAM_V1,
+                                            serde_json::json!({ "requestId": rid, "event": done_evt }),
+                                        );
+                                    }
                                     return;
                                 }
                                 if debug_on {
@@ -2167,6 +2462,15 @@ async fn chat_completion(
                                     "ollama-completion",
                                     serde_json::json!({ "done": false, "delta": payload_ref, "kind": "json" }),
                                 );
+                                if is_stream_v1_on {
+                                    for evt in extract_events_from_chunk(payload_ref, Some("json")) {
+                                        emit_or_log(
+                                            app_handle,
+                                            crate::events::EVENT_STREAM_V1,
+                                            serde_json::json!({ "requestId": rid, "event": evt }),
+                                        );
+                                    }
+                                }
                             }
                             Err(_) => {
                                 if debug_on {
@@ -2187,12 +2491,26 @@ async fn chat_completion(
                                     "ollama-completion",
                                     serde_json::json!({ "done": false, "delta": payload_str, "kind": "text" }),
                                 );
+                                if is_stream_v1_on {
+                                    let text = payload_str.to_string();
+                                    if !text.trim().is_empty() {
+                                        let evt = serde_json::json!({
+                                            "type": "content",
+                                            "channel": "text",
+                                            "text": text,
+                                        });
+                                        emit_or_log(
+                                            app_handle,
+                                            crate::events::EVENT_STREAM_V1,
+                                            serde_json::json!({ "requestId": rid, "event": evt }),
+                                        );
+                                    }
+                                }
                             }
                         }
                     };
 
                     loop {
-                        // Enforce idle timeout between streamed chunks
                         let next = tokio::time::timeout(idle_timeout, stream.next()).await;
                         match next {
                             Err(_) => {
@@ -2238,6 +2556,14 @@ async fn chat_completion(
                                     "ollama-completion",
                                     serde_json::json!({ "done": true }),
                                 );
+                                if is_stream_v1_on {
+                                    let done_evt = serde_json::json!({ "type": "done" });
+                                    emit_or_log(
+                                        &app_handle,
+                                        crate::events::EVENT_STREAM_V1,
+                                        serde_json::json!({ "requestId": &rid_for_task, "event": done_evt }),
+                                    );
+                                }
                                 break;
                             }
                             Ok(Some(chunk)) => match chunk {
@@ -2444,6 +2770,9 @@ async fn get_ollama_mode(state: State<'_, AppState>) -> Result<(bool, bool), Str
 #[cfg(test)]
 mod tests {
     use super::normalize_model_name;
+    use super::extract_events_from_chunk;
+    use serde_json::json;
+    use crate::anthropic;
 
     #[test]
     fn cloud_keeps_colon_tags() {
@@ -2468,6 +2797,133 @@ mod tests {
     #[test]
     fn local_preserves_colon_for_daemon() {
         assert_eq!(normalize_model_name("llama3:70b", false), "llama3:70b");
+    }
+
+    #[test]
+    fn extract_content_from_openai_delta() {
+        let v = json!({
+            "choices": [{ "delta": { "content": "Hello" } }]
+        });
+        let events = extract_events_from_chunk(&v, None);
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("type").and_then(|v| v.as_str()), Some("content"));
+        assert_eq!(e.get("text").and_then(|v| v.as_str()), Some("Hello"));
+        assert!(e.get("channel").is_none());
+    }
+
+    #[test]
+    fn extract_tool_call_from_openai_delta() {
+        let v = json!({
+            "choices": [{
+                "delta": { "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "function": { "name": "foo", "arguments": "{\"a\":1}" }
+                }]}
+            }]
+        });
+        let events = extract_events_from_chunk(&v, None);
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("type").and_then(|v| v.as_str()), Some("tool_call"));
+        assert_eq!(e.get("index").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(e.get("id").and_then(|v| v.as_str()), Some("call_1"));
+        assert_eq!(e.get("name").and_then(|v| v.as_str()), Some("foo"));
+    }
+
+    #[test]
+    fn extract_from_message_object_and_root_tool_calls() {
+        let v = json!({
+            "message": { "content": [ {"type":"text","text":"Hi"} ], "tool_calls": [{
+                "id": "abc",
+                "function": { "name": "bar", "arguments": "{}" }
+            }]},
+            "tool_calls": [{ "name": "baz", "arguments": "{}" }]
+        });
+        let events = extract_events_from_chunk(&v, None);
+        assert!(events.iter().any(|e| e.get("type").and_then(|v| v.as_str()) == Some("content")));
+        assert!(events.iter().filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("tool_call")).count() >= 2);
+    }
+
+    #[test]
+    fn default_channel_is_injected_for_json() {
+        let v = json!({ "content": [{"type":"text","text":"A"}] });
+        let events = extract_events_from_chunk(&v, Some("json"));
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("type").and_then(|v| v.as_str()), Some("content"));
+        assert_eq!(e.get("channel").and_then(|v| v.as_str()), Some("json"));
+    }
+
+    #[test]
+    fn anthropic_text_delta_normalizes_to_content() {
+        let raw = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "Hi" }
+        });
+        let normalized = anthropic::normalize_message(raw).expect("normalize");
+        let events = extract_events_from_chunk(&normalized, Some("json"));
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("type").and_then(|v| v.as_str()), Some("content"));
+        assert_eq!(e.get("text").and_then(|v| v.as_str()), Some("Hi"));
+        assert_eq!(e.get("channel").and_then(|v| v.as_str()), Some("json"));
+    }
+
+    #[test]
+    fn anthropic_tool_use_start_normalizes_to_tool_call() {
+        let raw = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "tool_abc",
+                "name": "run_cmd",
+                "input": { "cmd": "echo hi" }
+            }
+        });
+        let normalized = anthropic::normalize_message(raw).expect("normalize");
+        let events = extract_events_from_chunk(&normalized, Some("json"));
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("type").and_then(|v| v.as_str()), Some("tool_call"));
+        assert_eq!(e.get("id").and_then(|v| v.as_str()), Some("tool_abc"));
+        assert_eq!(e.get("name").and_then(|v| v.as_str()), Some("run_cmd"));
+    }
+
+    #[test]
+    fn openai_delta_content_injects_json_channel() {
+        let v = json!({
+            "choices": [{ "delta": { "content": "Hello" } }]
+        });
+        let events = extract_events_from_chunk(&v, Some("json"));
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("type").and_then(|v| v.as_str()), Some("content"));
+        assert_eq!(e.get("text").and_then(|v| v.as_str()), Some("Hello"));
+        assert_eq!(e.get("channel").and_then(|v| v.as_str()), Some("json"));
+    }
+
+    #[test]
+    fn openrouter_delta_tool_calls_maps_to_tool_call() {
+        let v = json!({
+            "choices": [{
+                "delta": { "tool_calls": [{
+                    "index": 0,
+                    "id": "call_0",
+                    "function": { "name": "emit_batch", "arguments": "{\"batch\":[]}" }
+                }]}
+            }]
+        });
+        let events = extract_events_from_chunk(&v, Some("json"));
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("type").and_then(|v| v.as_str()), Some("tool_call"));
+        assert_eq!(e.get("index").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(e.get("id").and_then(|v| v.as_str()), Some("call_0"));
+        assert_eq!(e.get("name").and_then(|v| v.as_str()), Some("emit_batch"));
     }
 }
 

@@ -3,6 +3,7 @@ import type { ChangeEvent } from 'react';
 import DesktopWindow from './DesktopWindow';
 import { useAppSelector, useAppStore } from '../state/app';
 import { selectSafeMode } from '../state/app';
+import { getActiveFlags } from '../lib/flags';
 import {
   listPlannerProfiles,
   listActorProfiles,
@@ -1575,6 +1576,18 @@ const AgentSettingsWindow = () => {
               <span className="text-xs text-slate-500">Never add NET_ADMIN/NET_RAW to containers. Use when firewall is disabled or external egress control is enforced.</span>
             </div>
           </label>
+        </div>
+        )}
+        {showAdvanced && (
+        <div className="rounded border border-slate-200 bg-slate-50/30 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Feature Flags (runtime)</div>
+          <ul className="list-disc pl-5 text-xs text-slate-600">
+            {Object.entries(getActiveFlags()).map(([k, v]) => (
+              <li key={k}>
+                <span className="font-mono">{k}</span>: {v ? 'on' : 'off'}
+              </li>
+            ))}
+          </ul>
         </div>
         )}
         {showAdvanced && (

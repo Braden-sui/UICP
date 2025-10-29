@@ -36,7 +36,9 @@ pub async fn build_provider_headers(
     let ks = get_or_init_keystore().await?;
     let secret = ks.read_internal(service, account).await?; // SecretVec<u8>
     let key = String::from_utf8(secret.expose_secret().clone())
-        .map_err(|_| KeystoreError::Crypto("provider key is not valid UTF-8".into()))?;
+        .map_err(|_| KeystoreError::Crypto("provider key is not valid UTF-8".into()))?
+        .trim()
+        .to_string();
 
     let mut headers = HashMap::new();
     match provider.to_ascii_lowercase().as_str() {

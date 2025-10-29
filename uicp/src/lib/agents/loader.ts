@@ -163,6 +163,7 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
           base_url: 'https://ollama.com/v1',
           headers: { Authorization: 'Bearer ${OLLAMA_API_KEY}' },
           model_aliases: {
+            minimax_default: { id: 'minimax-m2', limits: { max_context_tokens: 200_000 } },
             glm_default: { id: 'glm-4.6', limits: { max_context_tokens: 200_000 } },
             deepseek_default: { id: 'deepseek-v3.1', limits: { max_context_tokens: 128_000 } },
             gptoss_default: { id: 'gpt-oss:120b', limits: { max_context_tokens: 131_072 } },
@@ -185,15 +186,15 @@ export const loadAgentsConfig = async (): Promise<AgentsFile> => {
       },
       profiles: {
         planner: {
-          provider: 'openai',
-          model: 'gpt_default',
+          provider: 'ollama',
+          model: 'minimax_default',
           temperature: 0.2,
           max_tokens: 200000,
           fallbacks: ['ollama:glm_default', 'ollama:deepseek_default', 'ollama:gptoss_default', 'ollama:kimi_default', 'ollama:qwen_default'],
         },
         actor: {
-          provider: 'anthropic',
-          model: 'claude_default',
+          provider: 'ollama',
+          model: 'minimax_default',
           temperature: 0.2,
           max_tokens: 200000,
           fallbacks: ['ollama:glm_default', 'ollama:deepseek_default', 'ollama:gptoss_default', 'ollama:kimi_default', 'ollama:qwen_default'],
@@ -404,9 +405,23 @@ export const migrateProfileEntry = (profile: ProfileEntry): ProfileEntry => {
 };
 
 export const migrateAgentsFile = (agents: AgentsFile): AgentsFile => {
+  // Ensure Ollama provider includes minimax alias (non-destructive)
+  const providers = { ...(agents.providers ?? {}) } as AgentsFile['providers'];
+  const ollama = (providers['ollama'] ?? {
+    base_url: 'https://ollama.com/v1',
+    headers: {},
+    model_aliases: {},
+  }) as NonNullable<AgentsFile['providers']['ollama']>;
+  const aliases = { ...(ollama.model_aliases ?? {}) };
+  if (!Object.prototype.hasOwnProperty.call(aliases, 'minimax_default')) {
+    aliases['minimax_default'] = { id: 'minimax-m2', limits: { max_context_tokens: 200_000 } };
+  }
+  providers['ollama'] = { ...ollama, model_aliases: aliases } as typeof ollama;
+
   return {
     ...agents,
     version: '1',
+    providers,
     profiles: {
       planner: migrateProfileEntry(agents.profiles.planner),
       actor: migrateProfileEntry(agents.profiles.actor),

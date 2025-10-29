@@ -1,5 +1,6 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { hasTauriBridge, tauriInvoke } from '../bridge/tauri';
+import { readBooleanEnv } from '../env/values';
 
 // Streamed event union returned by the async iterator
 export type StreamEvent =
@@ -350,7 +351,10 @@ export function streamOllamaCompletion(
   });
 
   // Attach the event listener first to avoid missing early chunks
-  void listen('ollama-completion', (event) => {
+  const useNormalizedStream = readBooleanEnv('VITE_STREAM_V1', false);
+  // Dev panel indicator only; not shown in UI
+  emitUiDebug('llm_stream_mode', { ...logCtx(), normalized: useNormalizedStream, version: 'v1' });
+  const attachLegacyListener = () => listen('ollama-completion', (event) => {
     // WHY: The backend may terminate a stream with an error payload
     // (e.g., HTTP 404/429/503) and `done: true`. Previously we treated
     // this as a normal completion which caused upstream callers to see
@@ -540,7 +544,75 @@ export function streamOllamaCompletion(
         queue.fail(err instanceof Error ? err : new Error(String(err)));
       }
     }
-  }).then((off) => {
+  });
+
+  const attachNormalizedListener = () => listen('uicp-stream-v1', (event) => {
+    const payload = event.payload as { requestId?: string; event?: Record<string, unknown> } | undefined;
+    if (!payload || !payload.event) return;
+    const ev = payload.event as Record<string, unknown>;
+    const evType = typeof ev['type'] === 'string' ? (ev['type'] as string) : '';
+    if (evType === 'done') {
+      const durationMs = Date.now() - startedAt;
+      const transcriptsObject = Object.fromEntries(transcripts.entries());
+      const toolCalls = [...toolCallMap.values()].map((call) => ({ index: call.index, id: call.id, name: call.name, chunks: call.chunks }));
+      emitUiDebug('llm_complete', {
+        ...logCtx(),
+        model,
+        durationMs,
+        firstDeltaMs: firstDeltaAt ? firstDeltaAt - startedAt : null,
+        contentDeltaCount,
+        transcripts: transcriptsObject,
+        toolCalls,
+      });
+      queue.push({ type: 'done' });
+      if (timeoutId) { clearTimeout(timeoutId); timeoutId = undefined; }
+      if (unlisten) { try { unlisten(); } catch (err) { logError('iterator_return_unlisten', err as Error); } unlisten = null; }
+      if (activeRequestId === requestId) { activeRequestId = null; }
+      queue.end();
+      return;
+    }
+    if (evType === 'error') {
+      const code = typeof ev['code'] === 'string' ? (ev['code'] as string) : 'Error';
+      const detail = typeof ev['detail'] === 'string' ? (ev['detail'] as string) : 'Request failed';
+      const msg = `[${code}] ${detail}`;
+      logError('upstream_error', new Error(msg));
+      if (timeoutId) { clearTimeout(timeoutId); timeoutId = undefined; }
+      if (unlisten) { try { unlisten(); } catch (err) { logError('iterator_return_unlisten', err as Error); } unlisten = null; }
+      if (activeRequestId === requestId) { activeRequestId = null; }
+      queue.fail(new Error(msg));
+      queue.end();
+      return;
+    }
+    if (evType === 'content') {
+      const channel = typeof ev['channel'] === 'string' ? (ev['channel'] as string) : 'text';
+      const text = typeof ev['text'] === 'string' ? (ev['text'] as string) : '';
+      if (text.trim().length > 0) {
+        const existing = transcripts.get(channel) ?? '';
+        transcripts.set(channel, existing + text);
+        contentDeltaCount += 1;
+        if (!firstDeltaAt) firstDeltaAt = Date.now();
+        emitDeltaLog(channel, text);
+        queue.push({ type: 'content', channel, text });
+      }
+      return;
+    }
+    if (evType === 'tool_call') {
+      const index = Number.isFinite(ev['index'] as number) ? (ev['index'] as number) : 0;
+      const id = typeof ev['id'] === 'string' ? (ev['id'] as string) : undefined;
+      const name = typeof ev['name'] === 'string' ? (ev['name'] as string) : undefined;
+      const args = ev['arguments'];
+      const existing = toolCallMap.get(index) ?? { index, id: undefined as string | undefined, name: undefined as string | undefined, chunks: [] as unknown[] };
+      if (id) existing.id = id;
+      if (name) existing.name = name;
+      existing.chunks.push(args);
+      toolCallMap.set(index, existing);
+      emitUiDebug('llm_tool_call_delta', { ...logCtx(), model, index, id, name });
+      queue.push({ type: 'tool_call', index, id, name, arguments: args, isDelta: true });
+      return;
+    }
+  });
+
+  void (useNormalizedStream ? attachNormalizedListener() : attachLegacyListener()).then((off) => {
     unlisten = off;
     // Fire the backend request after listener is ready
     if (!started) {

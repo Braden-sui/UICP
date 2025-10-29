@@ -15,7 +15,7 @@ export const useLLM = create<LLMState>()(
   persist(
     (set) => ({
       provider: 'ollama-cloud',
-      model: 'glm-4.6',
+      model: 'minimax-m2',
       allowLocalOllama: false,
       setProviderModel: (provider, model) => set({ provider, model }),
       setAllowLocalOllama: (v) => set({ allowLocalOllama: v }),

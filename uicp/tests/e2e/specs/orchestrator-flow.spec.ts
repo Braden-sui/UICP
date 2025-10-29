@@ -7,11 +7,16 @@ const enabled = !!process.env.E2E_ORCHESTRATOR;
 
 (enabled ? test : test.skip)('orchestrator notepad flow (Full Control ON)', async ({ page }) => {
   await page.goto('/');
+  // Dismiss First Run permissions sheet if present
+  const acceptButton = page.getByRole('button', { name: 'Accept' });
+  if (await acceptButton.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await acceptButton.click({ force: true });
+  }
 
-  // Grant full control
-  const grant = page.getByText('Grant full control');
+  // Grant full control before interacting with chat (overlay intercepts pointer)
+  const grant = page.getByRole('button', { name: 'Grant full control' });
   if (await grant.isVisible()) {
-    await grant.click();
+    await grant.click({ force: true });
     await page.getByRole('dialog').getByRole('button', { name: 'Grant full control' }).click();
   }
 
@@ -21,7 +26,14 @@ const enabled = !!process.env.E2E_ORCHESTRATOR;
   await expect(input).toBeVisible();
 
   await input.fill('make a notepad');
-  await page.locator('button[aria-label="Send"]').click();
+  const sendButton = page.locator('button[aria-label="Send"]');
+  await sendButton.scrollIntoViewIfNeeded();
+  // Ensure visibility within the viewport and force click to bypass overlay jitter
+  await page.evaluate(() => {
+    const el = document.querySelector('button[aria-label="Send"]') as HTMLElement | null;
+    el?.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
+  });
+  await sendButton.click({ force: true });
 
   // Expect at least one window within 30s (cloud latency)
   const workspaceWindows = page.locator('.workspace-window');

@@ -14,7 +14,7 @@ const getPlannerModel = (profileKey?: PlannerProfileKey): string => {
   if (profile?.defaultModel && typeof profile.defaultModel === 'string') {
     return profile.defaultModel;
   }
-  return 'deepseek-v3.1:671b';
+  return 'minimax-m2';
 };
 
 const toError = (input: unknown): Error => (input instanceof Error ? input : new Error(String(input)));

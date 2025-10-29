@@ -11,6 +11,13 @@ defaults:
   tools_enabled: true
 
 providers:
+  ollama:
+    base_url: https://ollama.com/v1
+    headers:
+      Authorization: "Bearer ${OLLAMA_API_KEY}"
+    model_aliases:
+      minimax_default: { id: minimax-m2, limits: { max_context_tokens: 200000 } }
+    list_models: { method: GET, url: https://ollama.com/api/models, id_path: "data[].name" }
   openrouter:
     base_url: https://openrouter.ai/api/v1
     headers:
@@ -24,22 +31,22 @@ providers:
 
 profiles:
   planner:
-    provider: openrouter
+    provider: ollama
     mode: preset
-    preset_model: claude_default
-    temperature: 0.2
-    max_tokens: 4096
-    fallbacks:
-      - openrouter:gpt_default
-
-  actor:
-    provider: openrouter
-    mode: preset
-    preset_model: gpt_default
+    preset_model: minimax_default
     temperature: 0.2
     max_tokens: 4096
     fallbacks:
       - openrouter:claude_default
+
+  actor:
+    provider: ollama
+    mode: preset
+    preset_model: minimax_default
+    temperature: 0.2
+    max_tokens: 4096
+    fallbacks:
+      - openrouter:gpt_default
 
 codegen:
   engine: "cli"

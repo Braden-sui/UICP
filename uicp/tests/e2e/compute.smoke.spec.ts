@@ -18,7 +18,9 @@ const finalEvents = new Map<string, ComputeFinalEvent>();
 const CACHE_RELATIVE_THRESHOLD = 0.5;
 const CACHE_ABSOLUTE_THRESHOLD_MS = 200;
 
-test.describe('compute harness via headless host', () => {
+const computeEnabled = !!process.env.E2E_COMPUTE;
+
+(computeEnabled ? test.describe : test.describe.skip)('compute harness via headless host', () => {
   let dataDir: string;
   const pending = new Map<string, ReturnType<typeof spawn>>();
 
@@ -131,6 +133,11 @@ test.describe('compute harness via headless host', () => {
     });
 
     await page.goto('/');
+    await page.waitForFunction(
+      () => typeof (window as typeof window & { uicpComputeCall?: unknown }).uicpComputeCall === 'function',
+      undefined,
+      { timeout: 5000 },
+    );
   });
 
   test.afterEach(async () => {
