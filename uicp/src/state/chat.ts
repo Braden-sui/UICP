@@ -3,10 +3,93 @@ import type { StoreApi } from "zustand";
 import { applyBatch } from "../lib/uicp/adapters/adapter";
 import type { Batch, Envelope } from "../lib/uicp/adapters/schemas";
 import { UICPValidationError, validateBatch, validatePlan } from "../lib/uicp/adapters/schemas";
+import type { ProblemDetail } from "../lib/llm/protocol/errors";
+import { LLMError, LLMErrorCode } from "../lib/llm/errors";
 import { createId } from "../lib/utils";
 import { useAppStore } from "./app";
 import { runIntent } from "../lib/llm/orchestrator";
 import { OrchestratorEvent } from "../lib/orchestrator/state-machine";
+
+/**
+ * Convert an LLM error to a ProblemDetail for banner display
+ */
+const llmErrorToProblemDetail = (error: unknown): ProblemDetail | null => {
+  if (error instanceof LLMError) {
+    // Map LLM error codes to categories
+    const category = (() => {
+      switch (error.code) {
+        case LLMErrorCode.PlannerModelMissing:
+        case LLMErrorCode.ActorModelMissing:
+          return 'policy';
+        case LLMErrorCode.StreamTimeout:
+        case LLMErrorCode.ToolCollectionTimeout:
+        case LLMErrorCode.CollectionTimeout:
+          return 'rate_limit';
+        case LLMErrorCode.StreamUpstreamError:
+        case LLMErrorCode.StreamBridgeUnavailable:
+          return 'transport';
+        default:
+          return 'policy';
+      }
+    })();
+
+    return {
+      code: error.code,
+      category,
+      detail: error.message,
+      hint: getErrorHint(error.code),
+      retryable: isRetryableError(error.code),
+    };
+  }
+
+  if (error instanceof UICPValidationError) {
+    return {
+      code: 'validation_error',
+      category: 'schema',
+      detail: error.message,
+      hint: 'Check your input format and try again.',
+      retryable: false,
+    };
+  }
+
+  return null;
+};
+
+/**
+ * Get remediation hints for common error codes
+ */
+const getErrorHint = (code: string): string => {
+  switch (code) {
+    case LLMErrorCode.PlannerModelMissing:
+    case LLMErrorCode.ActorModelMissing:
+      return 'Choose a model in Agent Settings or provide a model via environment variables.';
+    case LLMErrorCode.StreamTimeout:
+      return 'Try again with a shorter request or check your network connection.';
+    case LLMErrorCode.StreamUpstreamError:
+      return 'Check your internet connection and API keys, then try again.';
+    case LLMErrorCode.PlannerEmpty:
+    case LLMErrorCode.ActorEmpty:
+      return 'The AI model produced no response. Try rephrasing your request.';
+    default:
+      return 'Try again or contact support if the problem persists.';
+  }
+};
+
+/**
+ * Determine if an error is retryable
+ */
+const isRetryableError = (code: string): boolean => {
+  switch (code) {
+    case LLMErrorCode.StreamTimeout:
+    case LLMErrorCode.StreamUpstreamError:
+    case LLMErrorCode.PlannerEmpty:
+    case LLMErrorCode.ActorEmpty:
+    case LLMErrorCode.ToolCollectionTimeout:
+      return true;
+    default:
+      return false;
+  }
+};
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -516,6 +599,13 @@ const handleSendError = ({
       : error instanceof Error
         ? error.message
         : String(error);
+  
+  // Try to convert to ProblemDetail and show banner if applicable
+  const problemDetail = llmErrorToProblemDetail(error);
+  if (problemDetail) {
+    app.showProblemDetail(session.traceId || 'send-error', problemDetail);
+  }
+  
   set((state) => ({
     error: message,
     messages: [

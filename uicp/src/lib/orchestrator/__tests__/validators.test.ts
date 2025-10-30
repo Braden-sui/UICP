@@ -55,4 +55,71 @@ describe('orchestrator.validators', () => {
     const res = validateBatchForApply(plan, batch);
     expect(res.ok).toBe(true);
   });
+
+  it('E-UICP-0408: fails when dynamic cues present without needs.code or code component', () => {
+    const plan = mkPlan();
+    const batch: Batch = [
+      { op: 'window.create', params: { id: 'win-a', title: 'App' } },
+      {
+        op: 'dom.set',
+        params: {
+          windowId: 'win-a',
+          target: '#root',
+          html: '<button data-command="say-hi">Hi</button>',
+        },
+      },
+    ];
+    const res = validateBatchForApply(plan, batch);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('E-UICP-0408');
+  });
+
+  it('passes when needs.code marker is included', () => {
+    const plan = mkPlan();
+    const batch: Batch = [
+      { op: 'needs.code', params: { spec: 'test spec', language: 'ts', provider: 'auto', strategy: 'sequential-fallback' } },
+      { op: 'window.create', params: { id: 'win-a', title: 'App' } },
+      {
+        op: 'dom.append',
+        params: {
+          windowId: 'win-a',
+          target: '#root',
+          html: '<form onsubmit="return false"><input /></form>',
+        },
+      },
+    ];
+    const res = validateBatchForApply(plan, batch);
+    expect(res.ok).toBe(true);
+  });
+
+  it('passes when a code/applet component is present', () => {
+    const plan = mkPlan();
+    const batch: Batch = [
+      { op: 'window.create', params: { id: 'win-a', title: 'App' } },
+      {
+        op: 'component.render',
+        params: { id: 'comp-a', windowId: 'win-a', target: '#root', type: 'applet.quickjs', props: { script: 'counter-applet' } },
+      },
+      {
+        op: 'dom.replace',
+        params: {
+          windowId: 'win-a',
+          target: '#root',
+          html: '<div><button onclick="void 0">Click</button></div>',
+        },
+      },
+    ];
+    const res = validateBatchForApply(plan, batch);
+    expect(res.ok).toBe(true);
+  });
+
+  it('passes for static DOM-only content without dynamic cues', () => {
+    const plan = mkPlan();
+    const batch: Batch = [
+      { op: 'window.create', params: { id: 'win-a', title: 'Static' } },
+      { op: 'dom.set', params: { windowId: 'win-a', target: '#root', html: '<div>hello</div>' } },
+    ];
+    const res = validateBatchForApply(plan, batch);
+    expect(res.ok).toBe(true);
+  });
 });

@@ -127,3 +127,21 @@ export const SlidersIcon = (props: SVGProps<SVGSVGElement>) => (
     </g>
   </svg>
 );
+
+// ShieldIcon: Premium security/resilience icon with shield shape
+export const ShieldIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+    <g strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      {/* Shield outline */}
+      <path 
+        d="M12 2l4 2v6c0 4-4 7-4 7s-4-3-4-7V4l4-2z" 
+        opacity="0.9" 
+      />
+      {/* Checkmark for security */}
+      <path 
+        d="M9 12l2 2 4-4" 
+        opacity="0.85" 
+      />
+    </g>
+  </svg>
+);

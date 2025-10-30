@@ -12,12 +12,12 @@ pub type PolicyMap = HashMap<String, PolicyEntry>;
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct PolicyEntry {
     pub decision: String, // "allow" | "deny"
-    #[serde(default)]
+    #[serde(default, alias = "duration")]
     pub duration: String, // "session" | "forever" | ""
-    #[serde(default)]
-    pub createdAt: i64,
-    #[serde(default)]
-    pub sessionOnly: bool,
+    #[serde(default, alias = "createdAt")]
+    pub created_at: i64,
+    #[serde(default, alias = "sessionOnly")]
+    pub session_only: bool,
 }
 
 pub trait PolicyStore: Send + Sync {
@@ -51,8 +51,8 @@ impl PolicyStore for FilePolicyStore {
                             PolicyEntry {
                                 decision: s,
                                 duration: String::new(),
-                                createdAt: 0,
-                                sessionOnly: false,
+                                created_at: 0,
+                                session_only: false,
                             },
                         );
                     }
@@ -68,15 +68,19 @@ impl PolicyStore for FilePolicyStore {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let created_at = obj.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
-                            let session_only = obj.get("sessionOnly").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let created_at =
+                                obj.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let session_only = obj
+                                .get("sessionOnly")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             out.insert(
                                 k,
                                 PolicyEntry {
                                     decision,
                                     duration,
-                                    createdAt: created_at,
-                                    sessionOnly: session_only,
+                                    created_at,
+                                    session_only,
                                 },
                             );
                         }

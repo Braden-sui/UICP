@@ -15,6 +15,10 @@ export type TelemetryEventName =
   | 'permissions_allow'
   | 'permissions_deny'
   | 'api_call'
+  | 'llm_stream_start'
+  | 'llm_stream_complete'
+  | 'llm_stream_error'
+  | 'provider_error_mapped'
   | 'safe_write'
   | 'adapter.apply.start'
   | 'adapter.apply.end'
@@ -32,15 +36,30 @@ export type TelemetryEventName =
   | 'adapter.ui.command'
   | 'needs_code_artifact'
   | 'provider_decision'
+  | 'apply_handshake_start'
+  | 'apply_handshake_ack'
+  | 'router_provider_selected'
+  | 'auth_preflight_result'
+  | 'collector_source'
+  | 'linter_reject'
   | 'ui.anim.window.enter'
   | 'ui.anim.window.exit'
   | 'ui.anim.panel.enter'
   | 'ui.anim.panel.exit'
-  | 'ui.anim.frame_drop'
+  | 'ui.anim.frame.drop'
   | 'security.net_guard.block'
-  | 'security.net_guard.rollout_state';
+  | 'security.net_guard.rollout_state'
+  // Resilience and circuit breaker events
+  | 'resilience.retry_attempt'
+  | 'resilience.circuit_opened'
+  | 'resilience.circuit_closed'
+  | 'resilience.circuit_half_open'
+  | 'resilience.failure_injected'
+  | 'resilience.failure_stopped'
+  | 'resilience.provider_health_check'
+  | 'resilience.metrics_summary';
 
-export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs' | 'compute' | 'ui';
+export type TraceSpan = 'planner' | 'actor' | 'collector' | 'queue' | 'batch' | 'permissions' | 'api' | 'fs' | 'compute' | 'ui' | 'resilience';
 
 export type TraceEventStatus = 'ok' | 'error' | 'timeout' | 'prompt' | 'dropped' | 'skipped';
 

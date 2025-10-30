@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { readDir, readTextFile } from '@tauri-apps/plugin-fs';
 import { summarizeComputeJobs, useComputeStore } from '../state/compute';
 import { hasTauriBridge, inv } from '../lib/bridge/tauri';
+import LLMTraceViewer from './LLMTraceViewer';
+import EnhancedNetworkInspector from './EnhancedNetworkInspector';
 
 type DevtoolsComputePanelProps = {
   /**
@@ -39,7 +41,7 @@ const formatMs = (value?: number | null) => (value == null ? 'n/a' : `${Math.rou
 // Accessibility: treat as a lightweight dialog with ESC to close and focus management.
 const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
   const jobs = useComputeStore((s) => s.jobs);
-  const [tab, setTab] = useState<'compute' | 'code'>('compute');
+  const [tab, setTab] = useState<'compute' | 'code' | 'trace' | 'network'>('compute');
   const [codeJobs, setCodeJobs] = useState<Array<{ key: string; provider?: string; durationMs?: number; tokens?: string; risk?: string; containerName?: string }>>([]);
   const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
   const [selectedJobDetail, setSelectedJobDetail] = useState<{ artifact?: unknown; diffs?: { files: string[] } | null; transcript?: string; state?: { containerName?: string } | null } | null>(null);
@@ -381,6 +383,20 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
         >
           Jobs
         </button>
+        <button
+          className={`rounded border px-2 py-1 ${tab === 'trace' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 text-slate-700'}`}
+          aria-pressed={tab === 'trace'}
+          onClick={() => setTab('trace')}
+        >
+          LLM Trace
+        </button>
+        <button
+          className={`rounded border px-2 py-1 ${tab === 'network' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 text-slate-700'}`}
+          aria-pressed={tab === 'network'}
+          onClick={() => setTab('network')}
+        >
+          Network
+        </button>
       </div>
       {tab === 'compute' && indicatorChips.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
@@ -649,6 +665,16 @@ const DevtoolsComputePanel = ({ defaultOpen }: DevtoolsComputePanelProps) => {
               </div>
             )}
           </div>
+        </div>
+      )}
+      {tab === 'trace' && (
+        <div className="mt-2">
+          <LLMTraceViewer />
+        </div>
+      )}
+      {tab === 'network' && (
+        <div className="mt-2">
+          <EnhancedNetworkInspector />
         </div>
       )}
     </div>

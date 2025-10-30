@@ -1,19 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Hoisted mocks to satisfy Vitest's module mocking order
+const mocks = vi.hoisted(() => {
+  const emitted: Array<{ name: string; traceId?: string; data?: Record<string, unknown> }> = [];
+  return {
+    emitted,
+    emitTelemetryEvent: vi.fn((name: string, payload: { traceId?: string; data?: Record<string, unknown> }) => {
+      emitted.push({ name, traceId: payload?.traceId, data: payload?.data });
+    }),
+  };
+});
+
 vi.mock('../flags', async () => {
   return {
     isProviderRouterV1Enabled: () => true,
   };
 });
 
-const emitted: Array<{ name: string; traceId?: string; data?: Record<string, unknown> }> = [];
-vi.mock('../telemetry', async () => {
-  return {
-    emitTelemetryEvent: (name: string, payload: { traceId?: string; data?: Record<string, unknown> }) => {
-      emitted.push({ name, traceId: payload?.traceId, data: payload?.data });
-    },
-  };
-});
+vi.mock('../../telemetry', () => ({ emitTelemetryEvent: mocks.emitTelemetryEvent }));
+vi.mock('../telemetry', () => ({ emitTelemetryEvent: mocks.emitTelemetryEvent }));
 
 // Minimal async iterable of a single done event
 const doneIterable: AsyncIterable<{ type: 'done' }> = {
@@ -21,9 +26,9 @@ const doneIterable: AsyncIterable<{ type: 'done' }> = {
     let done = false;
     return {
       async next() {
-        if (done) return { value: undefined as any, done: true };
+        if (done) return { value: undefined, done: true };
         done = true;
-        return { value: { type: 'done' }, done: false } as any;
+        return { value: { type: 'done' }, done: false };
       },
     };
   },
@@ -31,7 +36,7 @@ const doneIterable: AsyncIterable<{ type: 'done' }> = {
 
 vi.mock('../router', async () => {
   return {
-    route: () => doneIterable as any,
+    route: () => doneIterable,
   };
 });
 
@@ -39,7 +44,7 @@ import { getPlannerClient, getActorClient } from '../provider';
 
 describe('provider router telemetry', () => {
   beforeEach(() => {
-    emitted.length = 0;
+    mocks.emitted.length = 0;
   });
 
   it('emits provider_decision for planner when router is enabled', async () => {
@@ -48,13 +53,13 @@ describe('provider router telemetry', () => {
       model: 'gpt-oss:120b',
       provider: 'openai',
       baseUrl: 'https://api.openai.com/v1',
-      meta: { traceId: 't-planner' } as any,
-    } as any);
+      meta: { traceId: 't-planner' },
+    });
     // Drain iterable
     for await (const _ of stream) {
       void _;
     }
-    const evt = emitted.find((e) => e.name === 'provider_decision');
+    const evt = mocks.emitted.find((e) => e.name === 'provider_decision');
     expect(evt?.traceId).toBe('t-planner');
     expect(evt?.data?.role).toBe('planner');
     expect(evt?.data?.provider).toBe('openai');
@@ -66,19 +71,19 @@ describe('provider router telemetry', () => {
       model: 'gpt-oss:120b',
       provider: 'openai',
       baseUrl: 'https://api.openai.com/v1',
-      meta: { traceId: 't-actor' } as any,
-    } as any);
+      meta: { traceId: 't-actor' },
+    });
     for await (const _ of stream) {
       void _;
     }
     const idx = (() => {
-      let i = emitted.length - 1;
+      let i = mocks.emitted.length - 1;
       for (; i >= 0; i--) {
-        if (emitted[i] && emitted[i]!.name === 'provider_decision') return i;
+        if (mocks.emitted[i] && mocks.emitted[i]!.name === 'provider_decision') return i;
       }
       return -1;
     })();
-    const evt = idx >= 0 ? emitted[idx] : undefined;
+    const evt = idx >= 0 ? mocks.emitted[idx] : undefined;
     expect(evt?.traceId).toBe('t-actor');
     expect(evt?.data?.role).toBe('actor');
     expect(evt?.data?.provider).toBe('openai');

@@ -3,8 +3,8 @@ use std::fs;
 use std::io;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 use tauri::State;
+use walkdir::WalkDir;
 
 use crate::{AppState, FILES_DIR};
 

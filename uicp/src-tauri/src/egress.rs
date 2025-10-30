@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
+use crate::authz::net_decision_with;
+use crate::hostctx::HostCtx;
 use crate::{
     net::{is_ip_literal as net_is_ip_literal, is_private_ip as net_is_private_ip, parse_host},
     AppState,
 };
-use crate::authz::net_decision_with;
-use crate::hostctx::HostCtx;
 
 #[derive(Clone, Copy)]
 struct Bucket {
@@ -105,7 +105,9 @@ mod tests {
         let _mock = server
             .mock_async(|when, then| {
                 when.method("GET").path("/data");
-                then.status(200).header("Content-Type", "text/plain").body(body);
+                then.status(200)
+                    .header("Content-Type", "text/plain")
+                    .body(body);
             })
             .await;
 
@@ -116,8 +118,8 @@ mod tests {
             PolicyEntry {
                 decision: "allow".into(),
                 duration: String::new(),
-                createdAt: 0,
-                sessionOnly: false,
+                created_at: 0,
+                session_only: false,
             },
         );
         let policy_store = Arc::new(StaticPolicyStore(policies));

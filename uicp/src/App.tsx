@@ -14,6 +14,9 @@ import NetGuardToastBridge from './components/NetGuardToastBridge';
 import PermissionsToastBridge from './components/PermissionsToastBridge';
 import ComputeToastBridge from './components/ComputeToastBridge';
 import PolicyOverlay from './components/PolicyOverlay';
+import ProblemDetailBanner from './components/ProblemDetailBanner';
+import ResilienceDashboard from './components/ResilienceDashboard';
+import { ProblemDetailProvider } from './lib/problemDetailContext';
 import { useApplyTheme } from './state/preferences';
 import { useAppStore } from './state/app';
 import { isReducedMotion } from './lib/ui/animation';
@@ -29,6 +32,10 @@ import './lib/miniapp/hostBridge';
 const App = () => {
   // Apply theme preferences to DOM
   useApplyTheme();
+
+  // Get ProblemDetail banners from app store
+  const problemDetails = useAppStore((state) => state.problemDetails);
+  const dismissProblemDetail = useAppStore((state) => state.dismissProblemDetail);
 
   // Feature flag: Motion animations enabled
   const motionEnabled = useAppStore((state) => state.motionEnabled);
@@ -76,22 +83,34 @@ const App = () => {
 
   return (
     <MotionConfig reducedMotion={reducedMotion}>
-      <div className="relative min-h-screen w-full bg-background text-foreground">
-        <AmbientParticles />
-        <SystemBanner />
-        <PolicyOverlay />
-        <Desktop />
-        <DockChat />
-        <OnboardingWelcomeModal />
-        <GrantModal />
-        <KeystoreUnlockModal />
-        <PermissionPromptHost />
-        <NetGuardToastBridge />
-        <PermissionsToastBridge />
-        <SystemToast />
-        <ComputeToastBridge />
-        {import.meta.env.DEV ? <DevtoolsComputePanel /> : null}
-      </div>
+      <ProblemDetailProvider>
+        <div className="relative min-h-screen w-full bg-background text-foreground">
+          <AmbientParticles />
+          <SystemBanner />
+          <PolicyOverlay />
+          <Desktop />
+          <DockChat />
+          <OnboardingWelcomeModal />
+          <GrantModal />
+          <KeystoreUnlockModal />
+          <PermissionPromptHost />
+          <NetGuardToastBridge />
+          <PermissionsToastBridge />
+          <SystemToast />
+          <ComputeToastBridge />
+          <ResilienceDashboard />
+          {import.meta.env.DEV ? <DevtoolsComputePanel /> : null}
+          
+          {/* ProblemDetail Banners */}
+          {Object.entries(problemDetails).map(([id, problem]) => (
+            <ProblemDetailBanner
+              key={id}
+              problem={problem}
+              onDismiss={() => dismissProblemDetail(id)}
+            />
+          ))}
+        </div>
+      </ProblemDetailProvider>
     </MotionConfig>
   );
 };

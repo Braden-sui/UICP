@@ -146,7 +146,7 @@ async fn test_circuit_transitions_to_half_open_after_timeout() {
         max_failures: 2,
         open_duration_ms: 100, // Short timeout for testing
     };
-    let (events, emit) = create_telemetry_sink();
+    let (_events, emit) = create_telemetry_sink();
     let host = "api.example.com";
 
     // Open circuit

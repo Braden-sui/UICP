@@ -13,5 +13,9 @@ export default defineConfig({
     host: '127.0.0.1'
   },
   envPrefix: ['VITE_', 'TAURI_'],
-  clearScreen: false
+  clearScreen: false,
+  build: {
+    // Vision: richer operator tooling keeps the UI bundle intentionally large.
+    chunkSizeWarningLimit: 1200
+  }
 });

@@ -195,8 +195,15 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
     
     const run = async (): Promise<ApplyOutcome> => {
       const t0 = performance.now();
+      const traceId = capturedGroup[0]?.traceId || 'unknown';
       try {
         const app = useAppStore.getState();
+        // Emit apply handshake start telemetry
+        emitTelemetryEvent('apply_handshake_start', {
+          traceId,
+          span: 'queue',
+          data: { windowId: capturedWindowId, batchSize: capturedGroup.length }
+        });
         app.transitionOrchestrator('ApplyStart', { windowId: capturedWindowId, batchSize: capturedGroup.length });
         app.transitionAgentPhase('applying');
       } catch {
@@ -208,6 +215,27 @@ export const enqueueBatch = async (input: Batch | unknown): Promise<ApplyOutcome
         for (const fn of appliedListeners) fn({ windowId: capturedWindowId, applied: outcome.applied, ms });
         try {
           const app = useAppStore.getState();
+          if (typeof app.awaitApplyAck === 'function') {
+            try { 
+              await app.awaitApplyAck(capturedWindowId, 1500); 
+              // Emit apply handshake ack telemetry
+              emitTelemetryEvent('apply_handshake_ack', {
+                traceId,
+                span: 'queue',
+                durationMs: Math.max(0, performance.now() - t0),
+                data: { windowId: capturedWindowId, acknowledged: true }
+              });
+            } catch { 
+              // Emit apply handshake ack timeout telemetry
+              emitTelemetryEvent('apply_handshake_ack', {
+                traceId,
+                span: 'queue',
+                status: 'timeout',
+                durationMs: Math.max(0, performance.now() - t0),
+                data: { windowId: capturedWindowId, acknowledged: false, timeoutMs: 1500 }
+              });
+            }
+          }
           app.transitionOrchestrator('ApplySucceeded', { windowId: capturedWindowId, applied: outcome.applied, ms });
           app.transitionAgentPhase('complete', { applyMs: Math.round(ms) });
         } catch {

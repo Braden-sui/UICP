@@ -9,5 +9,7 @@
 #![cfg(any(test, feature = "compute_harness"))]
 
 mod harness;
+pub mod streaming_fixtures;
 
 pub use harness::ComputeTestHarness;
+pub use streaming_fixtures::*;

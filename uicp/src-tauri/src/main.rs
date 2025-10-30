@@ -37,6 +37,7 @@ mod action_log;
 mod anthropic;
 mod apppack;
 mod authz;
+mod chaos;
 mod circuit;
 #[cfg(test)]
 mod circuit_tests;
@@ -54,14 +55,23 @@ mod hostctx;
 mod keystore;
 mod net;
 mod policy;
+mod provider_adapters;
+mod provider_circuit;
 mod provider_cli;
 mod providers;
 mod registry;
+mod resilience;
+#[cfg(test)]
+mod resilience_tests;
 #[cfg(feature = "wasm_compute")]
 mod wasi_logging;
 
-#[cfg(any(test, feature = "compute_harness"))]
+// New module structure
 mod commands;
+mod initialization;
+
+#[cfg(any(test, feature = "compute_harness"))]
+pub mod commands_harness;
 
 pub use policy::{
     enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
@@ -71,9 +81,10 @@ pub use policy::{
 use crate::apppack::{apppack_entry_html, apppack_install, apppack_validate};
 use crate::egress::egress_fetch;
 use crate::keystore::{get_or_init_keystore, UnlockStatus};
+use crate::provider_adapters::create_adapter;
 use crate::providers::build_provider_headers;
 use compute_input::canonicalize_task_input;
-use core::{init_tracing, log_error, log_info, log_warn, CircuitBreakerConfig};
+use core::{log_error, log_info, log_warn, CircuitBreakerConfig};
 use provider_cli::{ProviderHealthResult, ProviderLoginResult};
 use secrecy::SecretString;
 
@@ -561,355 +572,7 @@ async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Res
 }
 
 #[tauri::command]
-async fn compute_call(
-    window: tauri::Window,
-    state: State<'_, AppState>,
-    spec: ComputeJobSpec,
-) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!(
-        "compute_call",
-        job_id = %spec.job_id,
-        task = %spec.task,
-        cache = %spec.cache
-    );
-    // Reject duplicate job ids
-    if state
-        .compute_ongoing
-        .read()
-        .await
-        .contains_key(&spec.job_id)
-    {
-        return Err(format!("Duplicate job id {}", spec.job_id));
-    }
 
-    if let Err(err) = state
-        .action_log
-        .append_json(
-            "compute.job.submit",
-            &serde_json::json!({
-                "jobId": spec.job_id.clone(),
-                "task": spec.task.clone(),
-                "cache": spec.cache.clone(),
-                "workspaceId": spec.workspace_id.clone(),
-                "ts": chrono::Utc::now().timestamp_millis(),
-            }),
-        )
-        .await
-    {
-        return Err(format!("Action log append failed: {err}"));
-    }
-
-    let app_handle = window.app_handle().clone();
-
-    let require_tokens = match std::env::var("UICP_REQUIRE_TOKENS") {
-        Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"),
-        Err(_) => false,
-    };
-    if require_tokens {
-        let expected = {
-            let key = &state.job_token_key;
-            let mut mac: Hmac<Sha256> = Hmac::new_from_slice(key).map_err(|e| e.to_string())?;
-            mac.update(b"UICP-TOKENv1\x00");
-            mac.update(spec.job_id.as_bytes());
-            mac.update(b"|");
-            mac.update(spec.task.as_bytes());
-            mac.update(b"|");
-            mac.update(spec.workspace_id.as_bytes());
-            mac.update(b"|");
-            mac.update(spec.provenance.env_hash.as_bytes());
-            let tag = mac.finalize().into_bytes();
-            hex::encode(tag)
-        };
-        let provided = spec.token.as_deref().unwrap_or("");
-        if provided != expected {
-            let payload = ComputeFinalErr {
-                ok: false,
-                job_id: spec.job_id.clone(),
-                task: spec.task.clone(),
-                code: "Compute.CapabilityDenied".into(),
-                message: "E-UICP-0701: missing or invalid job token".into(),
-                metrics: None,
-            };
-            emit_or_log(
-                &window.app_handle(),
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
-                &payload,
-            );
-            return Ok(());
-        }
-    }
-
-    // --- Host policy enforcement (coarse gate) ---
-    let task_key = {
-        let t = spec.task.as_str();
-        if let Some(at) = t.find('@') {
-            let (name, ver) = t.split_at(at);
-            let ver = &ver[1..];
-            let major = ver.split('.').next().unwrap_or(ver);
-            format!("{}@{}", name, major)
-        } else {
-            t.to_string()
-        }
-    };
-    if !crate::authz::allow_compute(&task_key) {
-        let payload = ComputeFinalErr {
-            ok: false,
-            job_id: spec.job_id.clone(),
-            task: spec.task.clone(),
-            code: "PolicyDenied".into(),
-            message: format!("Denied by permissions.json (scope: compute:{})", task_key),
-            metrics: None,
-        };
-        emit_or_log(
-            &window.app_handle(),
-            crate::events::EVENT_COMPUTE_RESULT_FINAL,
-            &payload,
-        );
-        return Ok(());
-    }
-
-    // --- Policy enforcement (Non-negotiables v1) ---
-    if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log(
-            &app_handle,
-            crate::events::EVENT_COMPUTE_RESULT_FINAL,
-            &deny,
-        );
-        return Ok(());
-    }
-
-    let normalized_input = match canonicalize_task_input(&spec) {
-        Ok(value) => value,
-        Err(err) => {
-            let payload = ComputeFinalErr {
-                ok: false,
-                job_id: spec.job_id.clone(),
-                task: spec.task.clone(),
-                code: err.code.into(),
-                message: err.message,
-                metrics: None,
-            };
-            emit_or_log(
-                &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
-                &payload,
-            );
-            return Ok(());
-        }
-    };
-
-    // Provider decision telemetry (host-owned)
-    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
-        .ok()
-        .flatten()
-        .is_some();
-    let provider_kind = if crate::codegen::is_codegen_task(&spec.task) {
-        "codegen"
-    } else if is_module_task {
-        "wasm"
-    } else {
-        "local"
-    };
-    emit_or_log(
-        &app_handle,
-        "provider-decision",
-        serde_json::json!({
-            "jobId": spec.job_id.clone(),
-            "task": spec.task.clone(),
-            "provider": provider_kind,
-            "workspaceId": spec.workspace_id.clone(),
-            "policyVersion": std::env::var("UICP_POLICY_VERSION").unwrap_or_default(),
-            "caps": {
-                "fsRead": &spec.capabilities.fs_read,
-                "fsWrite": &spec.capabilities.fs_write,
-                "net": &spec.capabilities.net,
-                "time": spec.capabilities.time,
-                "random": spec.capabilities.random,
-                "longRun": spec.capabilities.long_run,
-                "memHigh": spec.capabilities.mem_high
-            },
-            "limits": {
-                "memLimitMb": spec.mem_limit_mb,
-                "timeoutMs": spec.timeout_ms,
-                "fuel": spec.fuel
-            },
-            "cacheMode": spec.cache.clone(),
-        }),
-    );
-
-    // Content-addressed cache lookup when enabled (normalize policy casing)
-    let cache_mode = spec.cache.to_lowercase();
-    if cache_mode == "readwrite" || cache_mode == "readonly" {
-        let use_v2 = std::env::var("UICP_CACHE_V2")
-            .ok()
-            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
-            .unwrap_or(false);
-        let module_meta = crate::registry::find_module(&app_handle, &spec.task)
-            .ok()
-            .flatten();
-        let invariants = {
-            let mut parts: Vec<String> = Vec::new();
-            if let Some(m) = &module_meta {
-                parts.push(format!("modsha={}", m.entry.digest_sha256));
-                parts.push(format!("modver={}", m.entry.version));
-                if let Some(world) = m.provenance.as_ref().and_then(|p| p.wit_world.clone()) {
-                    if !world.is_empty() {
-                        parts.push(format!("world={}", world));
-                    }
-                }
-                parts.push("abi=wasi-p2".to_string());
-            }
-            if let Ok(pver) = std::env::var("UICP_POLICY_VERSION") {
-                if !pver.is_empty() {
-                    parts.push(format!("policy={}", pver));
-                }
-            }
-            parts.join("|")
-        };
-        let key = if use_v2 {
-            compute_cache::compute_key_v2_plus(&spec, &normalized_input, &invariants)
-        } else {
-            compute_cache::compute_key(&spec.task, &normalized_input, &spec.provenance.env_hash)
-        };
-        if let Ok(Some(mut cached)) =
-            compute_cache::lookup(&app_handle, &spec.workspace_id, &key).await
-        {
-            // Mark cache hit in metrics if possible
-            if let Some(obj) = cached.as_object_mut() {
-                let metrics = obj
-                    .entry("metrics")
-                    .or_insert_with(|| serde_json::json!({}));
-                if metrics.is_object() {
-                    // SAFETY: Checked is_object() above
-                    metrics
-                        .as_object_mut()
-                        .expect("metrics.is_object() checked above")
-                        .insert("cacheHit".into(), serde_json::json!(true));
-                } else {
-                    *metrics = serde_json::json!({ "cacheHit": true });
-                }
-            }
-            emit_or_log(
-                &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
-                cached,
-            );
-            return Ok(());
-        } else if cache_mode == "readonly" {
-            let payload = ComputeFinalErr {
-                ok: false,
-                job_id: spec.job_id.clone(),
-                task: spec.task.clone(),
-                code: "Runtime.Fault".into(),
-                message: "Cache miss under ReadOnly cache policy".into(),
-                metrics: None,
-            };
-            emit_or_log(
-                &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
-                &payload,
-            );
-            return Ok(());
-        }
-    }
-
-    // Spawn the job via compute host (feature-gated implementation), respecting concurrency caps per provider.
-    let queued_at = Instant::now();
-    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
-        .ok()
-        .flatten()
-        .is_some();
-    let permit = if is_module_task {
-        state
-            .wasm_sem
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        state
-            .compute_sem
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| e.to_string())?
-    };
-    let queue_wait_ms = queued_at
-        .elapsed()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX);
-    // Pass a normalized cache policy down to the host
-    let mut spec_norm = spec.clone();
-    spec_norm.cache = cache_mode;
-    spec_norm.input = normalized_input;
-    #[cfg(feature = "otel_spans")]
-    tracing::info!(target = "uicp", job_id = %spec.job_id, wait_ms = queue_wait_ms, "compute queued permit acquired");
-    let join = if codegen::is_codegen_task(&spec_norm.task) {
-        codegen::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
-    } else {
-        compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
-    };
-    // Bookkeeping: track the running job so we can cancel/cleanup later.
-    state
-        .compute_ongoing
-        .write()
-        .await
-        .insert(spec.job_id.clone(), join);
-    Ok(())
-}
-
-#[tauri::command]
-async fn compute_cancel(
-    state: State<'_, AppState>,
-    job_id: String,
-    window: tauri::Window,
-) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    tracing::info!(target = "uicp", job_id = %job_id, "compute_cancel invoked");
-    // Emit telemetry: cancel requested
-    let app_handle = window.app_handle().clone();
-    let _ = app_handle.emit(
-        "compute-debug",
-        serde_json::json!({ "jobId": job_id, "event": "cancel_requested" }),
-    );
-
-    // Signal cancellation to the job if it registered a cancel channel
-    if let Some(tx) = state.compute_cancel.read().await.get(&job_id).cloned() {
-        let _ = tx.send(true);
-    }
-
-    // Give 250ms grace, then hard abort if still running
-    let jid = job_id.clone();
-    spawn(async move {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let state: State<'_, AppState> = app_handle.state();
-        let aborted = {
-            let ongoing = state.compute_ongoing.read().await;
-            if let Some(handle) = ongoing.get(&jid) {
-                handle.abort();
-                true
-            } else {
-                false
-            }
-        };
-
-        if aborted {
-            // Emit telemetry and clean up maps to avoid leaks when the host did not finalize
-            let _ = app_handle.emit(
-                "compute-debug",
-                serde_json::json!({ "jobId": jid, "event": "cancel_aborted_after_grace" }),
-            );
-            {
-                let state: State<'_, AppState> = app_handle.state();
-                state.compute_cancel.write().await.remove(&jid);
-                state.compute_ongoing.write().await.remove(&jid);
-            }
-        }
-    });
-    Ok(())
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -948,19 +611,9 @@ struct ChatCompletionRequest {
     options: Option<serde_json::Value>,
 }
 
-#[tauri::command]
-async fn get_paths() -> Result<serde_json::Value, String> {
-    // Return canonical string paths so downstream logic receives stable values.
-    Ok(serde_json::json!({
-        "dataDir": DATA_DIR.display().to_string(),
-        "dbPath": DB_PATH.display().to_string(),
-        "envPath": ENV_PATH.display().to_string(),
-        "filesDir": FILES_DIR.display().to_string(),
-    }))
-}
 
 #[tauri::command]
-async fn load_api_key(state: State<'_, AppState>) -> Result<Option<String>, String> {
+async fn load_api_key(_state: State<'_, AppState>) -> Result<Option<String>, String> {
     // Do not return plaintext secrets via Tauri commands.
     Ok(None)
 }
@@ -972,7 +625,7 @@ async fn set_debug(state: State<'_, AppState>, enabled: bool) -> Result<(), Stri
 }
 
 #[tauri::command]
-async fn save_api_key(state: State<'_, AppState>, key: String) -> Result<(), String> {
+async fn save_api_key(_state: State<'_, AppState>, key: String) -> Result<(), String> {
     let key_trimmed = key.trim().to_string();
     // Store in embedded keystore under uicp:ollama:api_key
     let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
@@ -1217,6 +870,7 @@ async fn delete_window_commands(
                         if id_match {
                             to_delete.push(id);
                         }
+                    }
                     if !to_delete.is_empty() {
                         let tx = conn.transaction().map_err(tokio_rusqlite::Error::from)?;
                         for id in to_delete {
@@ -1365,13 +1019,6 @@ async fn save_workspace(
     }
 }
 
-#[tauri::command]
-async fn cancel_chat(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
-    if let Some(handle) = state.ongoing.write().await.remove(&request_id) {
-        handle.abort();
-    }
-    Ok(())
-}
 
 fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     let trimmed = raw.trim();
@@ -1394,7 +1041,7 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     };
 
     if use_cloud {
-        base_part.to_string()
+        normalize_base(base_part)
     } else {
         let base = normalize_base(base_part);
         if had_cloud_suffix {
@@ -1403,105 +1050,6 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
             base
         }
     }
-}
-
-/// Transform OpenAI-compatible request body to Anthropic Messages API format.
-/// INVARIANT: Anthropic expects different schema than OpenAI/Ollama.
-/// - system: top-level field (not a message with role="system")
-/// - messages: only user/assistant/tool roles (no developer role)
-/// - no response_format, format, or stream fields
-/// - max_tokens: required field
-fn transform_request_for_anthropic(body: serde_json::Value) -> Result<serde_json::Value, String> {
-    let mut anthropic_body = serde_json::json!({});
-
-    // Copy model as-is
-    if let Some(model) = body.get("model") {
-        anthropic_body["model"] = model.clone();
-    }
-
-    // Extract system message from messages array and set as top-level field
-    let messages = body
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .ok_or_else(|| "messages must be an array".to_string())?;
-
-    let mut system_content = String::new();
-    let mut filtered_messages = Vec::new();
-
-    for msg in messages {
-        let msg_obj = msg
-            .as_object()
-            .ok_or_else(|| "each message must be an object".to_string())?;
-        let role = msg_obj
-            .get("role")
-            .and_then(|r| r.as_str())
-            .ok_or_else(|| "message must have a role".to_string())?;
-
-        // WHY: Anthropic doesn't support role="developer"; map it to system or user
-        let normalized_role = match role {
-            "developer" => "user",
-            "system" => {
-                // Collect system content; we'll set it as top-level field
-                if let Some(content) = msg_obj.get("content") {
-                    if let Some(text) = content.as_str() {
-                        if !system_content.is_empty() {
-                            system_content.push('\n');
-                        }
-                        system_content.push_str(text);
-                    }
-                }
-                continue; // Skip this message; it's now in system field
-            }
-            other => other,
-        };
-
-        // Build Anthropic-compatible message
-        let mut anthropic_msg = serde_json::json!({
-            "role": normalized_role,
-        });
-
-        // Copy content as-is (Anthropic accepts string or array of content blocks)
-        if let Some(content) = msg_obj.get("content") {
-            anthropic_msg["content"] = content.clone();
-        }
-
-        // Copy tool_call_id if present (for tool result messages)
-        if let Some(tool_call_id) = msg_obj.get("tool_call_id") {
-            anthropic_msg["tool_use_id"] = tool_call_id.clone();
-        }
-
-        filtered_messages.push(anthropic_msg);
-    }
-
-    anthropic_body["messages"] = serde_json::json!(filtered_messages);
-
-    // Set system field if we collected any system messages
-    if !system_content.is_empty() {
-        anthropic_body["system"] = serde_json::json!(system_content);
-    }
-
-    // Set max_tokens (required by Anthropic; default to 4096 if not provided)
-    let max_tokens = body
-        .get("max_tokens")
-        .or_else(|| body.get("options").and_then(|o| o.get("max_tokens")))
-        .and_then(|m| m.as_i64())
-        .unwrap_or(200000);
-    anthropic_body["max_tokens"] = serde_json::json!(max_tokens);
-
-    // Copy tools if present (Anthropic supports tool_use)
-    if let Some(tools) = body.get("tools") {
-        anthropic_body["tools"] = tools.clone();
-    }
-
-    // Copy tool_choice if present
-    if let Some(tool_choice) = body.get("tool_choice") {
-        anthropic_body["tool_choice"] = tool_choice.clone();
-    }
-
-    // Anthropic doesn't support response_format, format, or stream in the same way
-    // (stream is handled at HTTP level, not in body)
-
-    Ok(anthropic_body)
 }
 
 // Feature flag: enable backend emission of normalized StreamEvent v1 alongside legacy events
@@ -1517,7 +1065,10 @@ fn is_stream_v1_enabled() -> bool {
 
 // Minimal extractor that converts OpenAI-like delta JSON into StreamEvent v1 events.
 // Assumes Anthropic has been pre-normalized to OpenAI-like deltas via anthropic::normalize_message.
-fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<&str>) -> Vec<serde_json::Value> {
+fn extract_events_from_chunk(
+    chunk: &serde_json::Value,
+    default_channel: Option<&str>,
+) -> Vec<serde_json::Value> {
     use serde_json::Value;
     let mut events: Vec<Value> = Vec::new();
 
@@ -1537,13 +1088,11 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
         events.push(evt);
     };
 
-    let push_tool_call = |
-        events: &mut Vec<Value>,
-        index: i64,
-        id: Option<&str>,
-        name: Option<&str>,
-        arguments: Value,
-    | {
+    let push_tool_call = |events: &mut Vec<Value>,
+                          index: i64,
+                          id: Option<&str>,
+                          name: Option<&str>,
+                          arguments: Value| {
         let mut evt = serde_json::json!({
             "type": "tool_call",
             "index": index,
@@ -1584,23 +1133,24 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
                     if let Value::Object(map) = entry {
                         if let Some(t) = map.get("type").and_then(|v| v.as_str()) {
                             // Some providers encode tool deltas inside content array
-                            if t.eq_ignore_ascii_case("tool_call") || t.eq_ignore_ascii_case("tool_call_delta") {
-                                let index = map
-                                    .get("index")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0);
+                            if t.eq_ignore_ascii_case("tool_call")
+                                || t.eq_ignore_ascii_case("tool_call_delta")
+                            {
+                                let index = map.get("index").and_then(|v| v.as_i64()).unwrap_or(0);
                                 // function or delta.function may contain arguments/name
                                 let function_obj = map
                                     .get("function")
                                     .or_else(|| map.get("delta").and_then(|d| d.get("function")));
-                                let name = map
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .or_else(|| function_obj.and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                                let name = map.get("name").and_then(|v| v.as_str()).or_else(|| {
+                                    function_obj
+                                        .and_then(|f| f.get("name").and_then(|v| v.as_str()))
+                                });
                                 let arguments = map
                                     .get("arguments")
                                     .cloned()
-                                    .or_else(|| function_obj.and_then(|f| f.get("arguments").cloned()))
+                                    .or_else(|| {
+                                        function_obj.and_then(|f| f.get("arguments").cloned())
+                                    })
                                     .unwrap_or_else(|| Value::Null);
                                 let id = map
                                     .get("id")
@@ -1651,19 +1201,24 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
                 }
                 if let Some(tool_calls) = d.get("tool_calls").and_then(|v| v.as_array()) {
                     for (idx, tc) in tool_calls.iter().enumerate() {
-                        let index = d.get("index").and_then(|v| v.as_i64()).unwrap_or(idx as i64);
+                        let index = d
+                            .get("index")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(idx as i64);
                         let id = tc
                             .get("id")
                             .and_then(|v| v.as_str())
                             .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
-                        let name = tc
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                        let name = tc.get("name").and_then(|v| v.as_str()).or_else(|| {
+                            tc.get("function")
+                                .and_then(|f| f.get("name").and_then(|v| v.as_str()))
+                        });
                         let arguments = tc
                             .get("arguments")
                             .cloned()
-                            .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
+                            .or_else(|| {
+                                tc.get("function").and_then(|f| f.get("arguments").cloned())
+                            })
                             .unwrap_or_else(|| Value::Null);
                         push_tool_call(&mut events, index, id, name, arguments);
                     }
@@ -1673,14 +1228,19 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
                         .get("id")
                         .and_then(|v| v.as_str())
                         .or_else(|| tool_call.get("tool_call_id").and_then(|v| v.as_str()));
-                    let name = tool_call
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| tool_call.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                    let name = tool_call.get("name").and_then(|v| v.as_str()).or_else(|| {
+                        tool_call
+                            .get("function")
+                            .and_then(|f| f.get("name").and_then(|v| v.as_str()))
+                    });
                     let arguments = tool_call
                         .get("arguments")
                         .cloned()
-                        .or_else(|| tool_call.get("function").and_then(|f| f.get("arguments").cloned()))
+                        .or_else(|| {
+                            tool_call
+                                .get("function")
+                                .and_then(|f| f.get("arguments").cloned())
+                        })
                         .unwrap_or_else(|| Value::Null);
                     push_tool_call(&mut events, 0, id, name, arguments);
                 }
@@ -1696,10 +1256,10 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
                     .get("id")
                     .and_then(|v| v.as_str())
                     .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
-                let name = tc
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                let name = tc.get("name").and_then(|v| v.as_str()).or_else(|| {
+                    tc.get("function")
+                        .and_then(|f| f.get("name").and_then(|v| v.as_str()))
+                });
                 let arguments = tc
                     .get("arguments")
                     .cloned()
@@ -1717,10 +1277,10 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
                 .get("id")
                 .and_then(|v| v.as_str())
                 .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
-            let name = tc
-                .get("name")
-                .and_then(|v| v.as_str())
-                .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+            let name = tc.get("name").and_then(|v| v.as_str()).or_else(|| {
+                tc.get("function")
+                    .and_then(|f| f.get("name").and_then(|v| v.as_str()))
+            });
             let arguments = tc
                 .get("arguments")
                 .cloned()
@@ -1732,11 +1292,23 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
 
     // 4) Root-level content or message.content
     if let Some(content) = chunk.get("content") {
-        handle_content_value(&mut events, default_channel, content, &push_content, &push_tool_call);
+        handle_content_value(
+            &mut events,
+            default_channel,
+            content,
+            &push_content,
+            &push_tool_call,
+        );
     }
     if let Some(msg) = chunk.get("message").and_then(|v| v.as_object()) {
         if let Some(content) = msg.get("content") {
-            handle_content_value(&mut events, default_channel, content, &push_content, &push_tool_call);
+            handle_content_value(
+                &mut events,
+                default_channel,
+                content,
+                &push_content,
+                &push_tool_call,
+            );
         }
         if let Some(tcs) = msg.get("tool_calls").and_then(|v| v.as_array()) {
             for (idx, tc) in tcs.iter().enumerate() {
@@ -1744,10 +1316,10 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
                     .get("id")
                     .and_then(|v| v.as_str())
                     .or_else(|| tc.get("tool_call_id").and_then(|v| v.as_str()));
-                let name = tc
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| tc.get("function").and_then(|f| f.get("name").and_then(|v| v.as_str())));
+                let name = tc.get("name").and_then(|v| v.as_str()).or_else(|| {
+                    tc.get("function")
+                        .and_then(|f| f.get("name").and_then(|v| v.as_str()))
+                });
                 let arguments = tc
                     .get("arguments")
                     .cloned()
@@ -1761,942 +1333,6 @@ fn extract_events_from_chunk(chunk: &serde_json::Value, default_channel: Option<
     events
 }
 
-#[tauri::command]
-async fn chat_completion(
-    window: tauri::Window,
-    state: State<'_, AppState>,
-    request_id: Option<String>,
-    request: ChatCompletionRequest,
-    provider: Option<String>,
-    base_url: Option<String>,
-) -> Result<(), String> {
-    let ChatCompletionRequest {
-        model,
-        messages,
-        stream,
-        tools,
-        format,
-        response_format,
-        tool_choice,
-        reasoning,
-        options,
-    } = request;
-
-    if messages.is_empty() {
-        return Err("messages cannot be empty".into());
-    }
-
-    let use_cloud = *state.use_direct_cloud.read().await;
-    let debug_on = *state.debug_enabled.read().await;
-    let provider_lower = provider.as_ref().map(|s| s.to_ascii_lowercase());
-
-    // Default actor model favors Qwen3-Coder for consistent cloud/local pairing when provider not specified.
-    // Avoid reading .env here; the UI selects the model per Agent Settings.
-    let requested_model = model.unwrap_or_else(|| "qwen3-coder:480b".into());
-    // Only normalize for Ollama-compatible routing. OpenAI/OpenRouter expect raw model ids.
-    let resolved_model = if matches!(
-        provider_lower.as_deref(),
-        Some("openai") | Some("openrouter")
-    ) {
-        requested_model.clone()
-    } else {
-        normalize_model_name(&requested_model, use_cloud)
-    };
-
-    let mut body = serde_json::json!({
-        "model": resolved_model,
-        "messages": messages,
-        "stream": stream.unwrap_or(true),
-        "tools": tools,
-    });
-    if let Some(format_val) = format {
-        body["format"] = format_val;
-    }
-    if let Some(response_format_val) = response_format {
-        body["response_format"] = response_format_val;
-    }
-    if let Some(tool_choice_val) = tool_choice {
-        body["tool_choice"] = tool_choice_val;
-    }
-    if let Some(reasoning_val) = reasoning.clone() {
-        body["reasoning"] = reasoning_val.clone();
-        if use_cloud {
-            if let Some(options_val) = options.clone() {
-                body["options"] = options_val;
-            } else {
-                body["options"] = serde_json::json!({ "reasoning": reasoning_val });
-            }
-        }
-    } else if use_cloud {
-        if let Some(options_val) = options {
-            body["options"] = options_val;
-        }
-    }
-
-    // Transform request body for Anthropic Messages API (different schema from OpenAI)
-    if let Some(p) = provider_lower.as_deref() {
-        if p == "anthropic" {
-            body = transform_request_for_anthropic(body)?;
-        }
-    }
-
-    let base = get_ollama_base_url(&state).await?;
-
-    // Simple retry/backoff policy for rate limits and transient network failures
-    let max_attempts = 3u8;
-
-    let rid = request_id.unwrap_or_else(|| format!("req-{}", Utc::now().timestamp_millis()));
-    let app_handle = window.app_handle().clone();
-    let client = state.http.clone();
-    let base_url = base.clone();
-    let body_payload = body.clone();
-    // No plaintext secret propagation; headers will be injected from keystore when needed.
-    let logs_dir = LOGS_DIR.clone();
-    let rid_for_task = rid.clone();
-    let stream_flag_for_task = body_payload
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let circuit_breakers = Arc::clone(&state.circuit_breakers);
-    let base_host = Url::parse(&base_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()));
-    let handshake_timeout = Duration::from_secs(60);
-    // Idle timeout for streaming chunks: if no delta arrives within this window, cancel the stream.
-    let idle_timeout = Duration::from_millis(
-        std::env::var("CHAT_IDLE_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(35_000),
-    );
-    let circuit_config = state.circuit_config.clone();
-    let user_agent = format!("{}/tauri {}", APP_NAME, env!("CARGO_PKG_VERSION"));
-
-    let join: JoinHandle<()> = spawn(async move {
-        // best-effort logs dir
-        if debug_on {
-            let _ = tokio::fs::create_dir_all(&logs_dir).await;
-        }
-        let trace_path = logs_dir.join(format!("trace-{}.ndjson", rid_for_task));
-
-        let append_trace = |event: serde_json::Value| {
-            let path = trace_path.clone();
-            async move {
-                let line = format!("{event}\n");
-                if let Ok(mut f) = tokio::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .await
-                {
-                    let _ = f.write_all(line.as_bytes()).await;
-                }
-            }
-        };
-
-        let emit_debug = |payload: serde_json::Value| {
-            let handle = app_handle.clone();
-            async move {
-                let _ = handle.emit("debug-log", payload);
-            }
-        };
-
-        let emit_circuit_telemetry = |event_name: &str, payload: serde_json::Value| {
-            let handle = app_handle.clone();
-            let name = event_name.to_string();
-            tokio::spawn(async move {
-                let _ = handle.emit(&name, payload);
-            });
-        };
-
-        if debug_on {
-            let url = if let Some(p) = provider_lower.as_deref() {
-                match p {
-                    // OpenAI-compatible routes
-                    "openai" | "openrouter" => format!("{}/chat/completions", base_url),
-                    // Anthropic Messages API (basic routing; event shape differs and may require future transformation)
-                    "anthropic" => format!("{}/v1/messages", base_url),
-                    // Fallback to Ollama paths
-                    _ => {
-                        if use_cloud {
-                            format!("{}/api/chat", base_url)
-                        } else {
-                            format!("{}/chat/completions", base_url)
-                        }
-                    }
-                }
-            } else {
-                if use_cloud {
-                    format!("{}/api/chat", base_url)
-                } else {
-                    format!("{}/chat/completions", base_url)
-                }
-            };
-            let ev = serde_json::json!({
-                "ts": Utc::now().timestamp_millis(),
-                "event": "request_started",
-                "requestId": rid_for_task,
-                "useCloud": use_cloud,
-                "url": url,
-                "model": body_payload.get("model").cloned().unwrap_or(serde_json::json!(null)),
-                "stream": body_payload.get("stream").cloned().unwrap_or(serde_json::json!(true)),
-            });
-            tokio::spawn(append_trace(ev.clone()));
-            tokio::spawn(emit_debug(ev));
-
-            // request metadata snapshot (no secrets)
-            let messages_len = body_payload
-                .get("messages")
-                .and_then(|m| m.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            let format_present = body_payload.get("format").is_some();
-            let tools_count = body_payload
-                .get("tools")
-                .and_then(|t| t.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            let meta = serde_json::json!({
-                "ts": Utc::now().timestamp_millis(),
-                "event": "request_body_meta",
-                "requestId": rid_for_task,
-                "messages": messages_len,
-                "format": format_present,
-                "tools": tools_count,
-            });
-            tokio::spawn(append_trace(meta.clone()));
-            tokio::spawn(emit_debug(meta));
-        }
-        let mut request_body = body_payload;
-        let mut attempt_local: u8 = 0;
-        let mut fallback_tried: bool = false;
-        let mut local_path_fallback: bool = false;
-        'outer: loop {
-            attempt_local += 1;
-            let url = if use_cloud {
-                format!("{}/api/chat", base_url)
-            } else if local_path_fallback {
-                format!("{}/api/chat", base_url)
-            } else {
-                format!("{}/chat/completions", base_url)
-            };
-
-            let host_for_attempt = Url::parse(&url)
-                .ok()
-                .and_then(|u| u.host_str().map(|h| h.to_string()))
-                .or_else(|| base_host.clone());
-
-            let mut half_open_probe = false;
-            if let Some(host) = host_for_attempt.as_deref() {
-                match circuit::circuit_is_open(&circuit_breakers, host).await {
-                    Some(until) => {
-                        let wait_ms =
-                            until.saturating_duration_since(Instant::now()).as_millis() as u64;
-                        if debug_on {
-                            let ev = serde_json::json!({
-                                "ts": Utc::now().timestamp_millis(),
-                                "event": "circuit_blocked",
-                                "requestId": rid_for_task,
-                                "host": host,
-                                "retryMs": wait_ms,
-                            });
-                            tokio::spawn(append_trace(ev.clone()));
-                            tokio::spawn(emit_debug(ev));
-                        }
-                        emit_problem_detail(
-                            &app_handle,
-                            &rid_for_task,
-                            503,
-                            "CircuitOpen",
-                            "Remote temporarily unavailable",
-                            Some(wait_ms),
-                        );
-                        break;
-                    }
-                    None => {
-                        let mut guard = circuit_breakers.write().await;
-                        if let Some(state) = guard.get_mut(host) {
-                            if state.half_open && !state.half_open_probe_in_flight {
-                                state.half_open_probe_in_flight = true;
-                                half_open_probe = true;
-                                if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "circuit_probe",
-                                        "requestId": rid_for_task,
-                                        "host": host,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                emit_or_log(
-                                    &app_handle,
-                                    "circuit-half-open-probe",
-                                    serde_json::json!({
-                                        "requestId": rid_for_task,
-                                        "host": host,
-                                    }),
-                                );
-                            } else if state.half_open && state.half_open_probe_in_flight {
-                                let wait_ms = circuit_config.open_duration_ms;
-                                if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "circuit_probe_skipped",
-                                        "requestId": rid_for_task,
-                                        "host": host,
-                                        "retryMs": wait_ms,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                emit_problem_detail(
-                                    &app_handle,
-                                    &rid_for_task,
-                                    503,
-                                    "CircuitHalfOpen",
-                                    "Probe already in flight",
-                                    Some(wait_ms),
-                                );
-                                break;
-                            }
-                        }
-                        drop(guard);
-                    }
-                }
-            }
-
-            let mut builder = client
-                .post(&url)
-                .json(&request_body)
-                .header("X-Request-Id", &rid_for_task)
-                .header("Idempotency-Key", &rid_for_task)
-                .header("User-Agent", user_agent.as_str());
-
-            // Inject provider headers when a provider is specified; otherwise use Ollama Cloud headers when enabled.
-            if let Some(p) = provider_lower.as_deref() {
-                if p == "ollama" {
-                    if use_cloud {
-                        if let Ok(headers) = build_provider_headers("ollama").await {
-                            for (k, v) in headers.into_iter() {
-                                builder = builder.header(k, v);
-                            }
-                        }
-                    }
-                } else {
-                    match build_provider_headers(p).await {
-                        Ok(headers) => {
-                            for (k, v) in headers.into_iter() {
-                                builder = builder.header(k, v);
-                            }
-                        }
-                        Err(e) => {
-                            match e {
-                                crate::keystore::KeystoreError::Permission(msg) => {
-                                    // Stable, structured denial for host policy
-                                    emit_problem_detail(
-                                        &app_handle,
-                                        &rid_for_task,
-                                        403,
-                                        "PolicyDenied",
-                                        &msg,
-                                        None,
-                                    );
-                                }
-                                other => {
-                                    emit_problem_detail(
-                                        &app_handle,
-                                        &rid_for_task,
-                                        401,
-                                        "E-UICP-SEC-LOCKED",
-                                        &format!("provider headers unavailable: {}", other),
-                                        None,
-                                    );
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            } else if use_cloud {
-                if let Ok(headers) = build_provider_headers("ollama").await {
-                    for (k, v) in headers.into_iter() {
-                        builder = builder.header(k, v);
-                    }
-                }
-            }
-
-            if stream_flag_for_task {
-                builder = builder.header("Accept", "text/event-stream");
-            }
-
-            let resp_res = timeout(handshake_timeout, builder.send()).await;
-
-            let resp = match resp_res {
-                Err(_) => {
-                    if debug_on {
-                        let ev = serde_json::json!({
-                            "ts": Utc::now().timestamp_millis(),
-                            "event": "request_timeout",
-                            "requestId": rid_for_task,
-                            "elapsedMs": handshake_timeout.as_millis() as u64,
-                        });
-                        tokio::spawn(append_trace(ev.clone()));
-                        tokio::spawn(emit_debug(ev));
-                    }
-                    if let Some(host) = host_for_attempt.as_deref() {
-                        circuit::circuit_record_failure(
-                            &circuit_breakers,
-                            host,
-                            &circuit_config,
-                            emit_circuit_telemetry,
-                        )
-                        .await;
-                        if half_open_probe {
-                            let mut guard = circuit_breakers.write().await;
-                            if let Some(state) = guard.get_mut(host) {
-                                state.half_open_probe_in_flight = false;
-                            }
-                        }
-                    }
-                    if attempt_local < max_attempts {
-                        let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
-                        tokio::time::sleep(Duration::from_millis(backoff_ms.min(5_000))).await;
-                        continue 'outer;
-                    }
-                    emit_problem_detail(
-                        &app_handle,
-                        &rid_for_task,
-                        408,
-                        "RequestTimeout",
-                        "Upstream handshake timed out",
-                        None,
-                    );
-                    break;
-                }
-                Ok(res) => res,
-            };
-
-            match resp {
-                Err(err) => {
-                    if debug_on {
-                        let ev = serde_json::json!({
-                            "ts": Utc::now().timestamp_millis(),
-                            "event": "request_error",
-                            "requestId": rid_for_task,
-                            "kind": "transport",
-                            "error": err.to_string(),
-                        });
-                        tokio::spawn(append_trace(ev.clone()));
-                        tokio::spawn(emit_debug(ev));
-                    }
-                    if let Some(host) = host_for_attempt.as_deref() {
-                        circuit::circuit_record_failure(
-                            &circuit_breakers,
-                            host,
-                            &circuit_config,
-                            emit_circuit_telemetry,
-                        )
-                        .await;
-                    }
-                    let transient = err.is_timeout() || err.is_connect();
-                    if transient && attempt_local < max_attempts {
-                        let backoff_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
-                        tokio::time::sleep(Duration::from_millis(backoff_ms.min(5_000))).await;
-                        continue 'outer;
-                    }
-                    emit_problem_detail(
-                        &app_handle,
-                        &rid_for_task,
-                        503,
-                        "TransportError",
-                        &err.to_string(),
-                        None,
-                    );
-                    break;
-                }
-                Ok(resp) => {
-                    let status = resp.status();
-                    if debug_on {
-                        let ev = serde_json::json!({
-                            "ts": Utc::now().timestamp_millis(),
-                            "event": "response_status",
-                            "requestId": rid_for_task,
-                            "status": status.as_u16(),
-                        });
-                        tokio::spawn(append_trace(ev.clone()));
-                        tokio::spawn(emit_debug(ev));
-                    }
-                    if !status.is_success() {
-                        let retry_after_ms = resp
-                            .headers()
-                            .get("retry-after")
-                            .and_then(|h| h.to_str().ok())
-                            .and_then(|raw| raw.parse::<u64>().ok())
-                            .map(|secs| secs.saturating_mul(1_000));
-
-                        if let Some(host) = host_for_attempt.as_deref() {
-                            circuit::circuit_record_failure(
-                                &circuit_breakers,
-                                host,
-                                &circuit_config,
-                                emit_circuit_telemetry,
-                            )
-                            .await;
-                            if debug_on {
-                                let ev = serde_json::json!({
-                                    "ts": Utc::now().timestamp_millis(),
-                                    "event": "response_failure",
-                                    "requestId": rid_for_task,
-                                    "status": status.as_u16(),
-                                    "host": host,
-                                    "retryMs": retry_after_ms,
-                                });
-                                tokio::spawn(append_trace(ev.clone()));
-                                tokio::spawn(emit_debug(ev));
-                            }
-                        }
-
-                        if !use_cloud && status.as_u16() == 404 && !local_path_fallback {
-                            if debug_on {
-                                let ev = serde_json::json!({
-                                    "ts": Utc::now().timestamp_millis(),
-                                    "event": "retry_path_api_chat",
-                                    "requestId": rid_for_task,
-                                });
-                                tokio::spawn(append_trace(ev.clone()));
-                                tokio::spawn(emit_debug(ev));
-                            }
-                            local_path_fallback = true;
-                            continue 'outer;
-                        }
-
-                        let should_retry = (status.as_u16() == 429 || status.as_u16() == 503)
-                            && attempt_local < max_attempts;
-                        if should_retry {
-                            let fallback_ms = 200u64.saturating_mul(1u64 << (attempt_local as u32));
-                            let wait_ms = retry_after_ms.unwrap_or(fallback_ms).min(10_000);
-                            if debug_on {
-                                let ev = serde_json::json!({
-                                    "ts": Utc::now().timestamp_millis(),
-                                    "event": "retry_backoff",
-                                    "requestId": rid_for_task,
-                                    "waitMs": wait_ms,
-                                });
-                                tokio::spawn(append_trace(ev.clone()));
-                                tokio::spawn(emit_debug(ev));
-                            }
-                            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-                            continue 'outer;
-                        }
-
-                        if use_cloud && !fallback_tried {
-                            if let Some(orig_model) = request_body
-                                .get("model")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                            {
-                                match std::env::var("FALLBACK_CLOUD_MODEL") {
-                                    Ok(fallback_model)
-                                        if !fallback_model.is_empty()
-                                            && fallback_model != orig_model =>
-                                    {
-                                        if debug_on {
-                                            let ev = serde_json::json!({
-                                                "ts": Utc::now().timestamp_millis(),
-                                                "event": "retry_with_fallback_model",
-                                                "requestId": rid_for_task,
-                                                "from": orig_model,
-                                                "to": fallback_model,
-                                            });
-                                            tokio::spawn(append_trace(ev.clone()));
-                                            tokio::spawn(emit_debug(ev));
-                                        }
-                                        request_body["model"] = serde_json::json!(fallback_model);
-                                        fallback_tried = true;
-                                        continue 'outer;
-                                    }
-                                    Err(_) if debug_on => {
-                                        let ev = serde_json::json!({
-                                            "ts": Utc::now().timestamp_millis(),
-                                            "event": "no_fallback_configured",
-                                            "requestId": rid_for_task,
-                                            "from": orig_model,
-                                        });
-                                        tokio::spawn(append_trace(ev.clone()));
-                                        tokio::spawn(emit_debug(ev));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        let detail = match resp.text().await {
-                            Ok(text) if !text.is_empty() => text,
-                            _ => status
-                                .canonical_reason()
-                                .unwrap_or("Upstream failure")
-                                .to_string(),
-                        };
-                        emit_problem_detail(
-                            &app_handle,
-                            &rid_for_task,
-                            status.as_u16(),
-                            "UpstreamFailure",
-                            &detail,
-                            retry_after_ms,
-                        );
-                        break;
-                    }
-
-                    let mut stream = resp.bytes_stream();
-                    let mut stream_failed = false;
-                    // SSE assembly state
-                    let mut carry = String::new();
-                    let mut event_buf = String::new();
-                    let is_anthropic = matches!(provider_lower.as_deref(), Some("anthropic"));
-
-                    const DEBUG_PREVIEW_CHARS: usize = 512;
-                    let preview_payload = |input: &str| -> (String, bool) {
-                        let mut iter = input.chars();
-                        let mut out = String::new();
-                        for _ in 0..DEBUG_PREVIEW_CHARS {
-                            match iter.next() {
-                                Some(ch) => out.push(ch),
-                                None => return (out, false),
-                            }
-                        }
-                        if iter.next().is_some() {
-                            out.push_str("...");
-                            (out, true)
-                        } else {
-                            (out, false)
-                        }
-                    };
-
-                    // Feature flag: also emit normalized StreamEvent v1 alongside legacy events
-                    let is_stream_v1_on = is_stream_v1_enabled();
-
-                    // Helper to process a complete SSE payload line (assembled in event_buf)
-                    let process_payload = |payload_str: &str,
-                                           app_handle: &tauri::AppHandle,
-                                           rid: &str| {
-                        if payload_str == "[DONE]" {
-                            if debug_on {
-                                let ev = serde_json::json!({
-                                    "ts": Utc::now().timestamp_millis(),
-                                    "event": "stream_done",
-                                    "requestId": rid,
-                                });
-                                tokio::spawn(append_trace(ev.clone()));
-                                tokio::spawn(emit_debug(ev));
-                            }
-                            emit_or_log(
-                                app_handle,
-                                "ollama-completion",
-                                serde_json::json!({ "done": true }),
-                            );
-                            if is_stream_v1_on {
-                                let done_evt = serde_json::json!({ "type": "done" });
-                                emit_or_log(
-                                    app_handle,
-                                    crate::events::EVENT_STREAM_V1,
-                                    serde_json::json!({ "requestId": rid, "event": done_evt }),
-                                );
-                            }
-                            return;
-                        }
-                        match serde_json::from_str::<serde_json::Value>(payload_str) {
-                            Ok(val) => {
-                                let normalized = if is_anthropic {
-                                    crate::anthropic::normalize_message(val.clone())
-                                } else {
-                                    None
-                                };
-                                let payload_ref = normalized.as_ref().unwrap_or(&val);
-                                if payload_ref
-                                    .get("done")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false)
-                                {
-                                    if debug_on {
-                                        let ev = serde_json::json!({
-                                            "ts": Utc::now().timestamp_millis(),
-                                            "event": "delta_done",
-                                            "requestId": rid,
-                                        });
-                                        tokio::spawn(append_trace(ev.clone()));
-                                        tokio::spawn(emit_debug(ev));
-                                    }
-                                    emit_or_log(
-                                        app_handle,
-                                        "ollama-completion",
-                                        serde_json::json!({ "done": true }),
-                                    );
-                                    if is_stream_v1_on {
-                                        let done_evt = serde_json::json!({ "type": "done" });
-                                        emit_or_log(
-                                            app_handle,
-                                            crate::events::EVENT_STREAM_V1,
-                                            serde_json::json!({ "requestId": rid, "event": done_evt }),
-                                        );
-                                    }
-                                    return;
-                                }
-                                if debug_on {
-                                    let (preview, truncated) = preview_payload(payload_str);
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "delta_json",
-                                        "requestId": rid,
-                                        "len": payload_str.len(),
-                                        "payload": payload_ref.clone(),
-                                        "preview": preview,
-                                        "truncated": truncated,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                emit_or_log(
-                                    app_handle,
-                                    "ollama-completion",
-                                    serde_json::json!({ "done": false, "delta": payload_ref, "kind": "json" }),
-                                );
-                                if is_stream_v1_on {
-                                    for evt in extract_events_from_chunk(payload_ref, Some("json")) {
-                                        emit_or_log(
-                                            app_handle,
-                                            crate::events::EVENT_STREAM_V1,
-                                            serde_json::json!({ "requestId": rid, "event": evt }),
-                                        );
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                if debug_on {
-                                    let (preview, truncated) = preview_payload(payload_str);
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "delta_text",
-                                        "requestId": rid,
-                                        "len": payload_str.len(),
-                                        "text": preview,
-                                        "truncated": truncated,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                emit_or_log(
-                                    app_handle,
-                                    "ollama-completion",
-                                    serde_json::json!({ "done": false, "delta": payload_str, "kind": "text" }),
-                                );
-                                if is_stream_v1_on {
-                                    let text = payload_str.to_string();
-                                    if !text.trim().is_empty() {
-                                        let evt = serde_json::json!({
-                                            "type": "content",
-                                            "channel": "text",
-                                            "text": text,
-                                        });
-                                        emit_or_log(
-                                            app_handle,
-                                            crate::events::EVENT_STREAM_V1,
-                                            serde_json::json!({ "requestId": rid, "event": evt }),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    };
-
-                    loop {
-                        let next = tokio::time::timeout(idle_timeout, stream.next()).await;
-                        match next {
-                            Err(_) => {
-                                stream_failed = true;
-                                if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "stream_idle_timeout",
-                                        "requestId": rid_for_task,
-                                        "idleMs": idle_timeout.as_millis() as u64,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                emit_problem_detail(
-                                    &app_handle,
-                                    &rid_for_task,
-                                    408,
-                                    "RequestTimeout",
-                                    "Streaming idle timeout",
-                                    None,
-                                );
-                                break;
-                            }
-                            Ok(None) => {
-                                // Stream ended gracefully
-                                if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "stream_eof",
-                                        "requestId": rid_for_task,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                // Process any trailing payload still buffered
-                                if !event_buf.trim().is_empty() {
-                                    process_payload(&event_buf, &app_handle, &rid_for_task);
-                                    event_buf.clear();
-                                }
-                                emit_or_log(
-                                    &app_handle,
-                                    "ollama-completion",
-                                    serde_json::json!({ "done": true }),
-                                );
-                                if is_stream_v1_on {
-                                    let done_evt = serde_json::json!({ "type": "done" });
-                                    emit_or_log(
-                                        &app_handle,
-                                        crate::events::EVENT_STREAM_V1,
-                                        serde_json::json!({ "requestId": &rid_for_task, "event": done_evt }),
-                                    );
-                                }
-                                break;
-                            }
-                            Ok(Some(chunk)) => match chunk {
-                                Err(err) => {
-                                    stream_failed = true;
-                                    if debug_on {
-                                        let ev = serde_json::json!({
-                                            "ts": Utc::now().timestamp_millis(),
-                                            "event": "stream_error",
-                                            "requestId": rid_for_task,
-                                            "error": err.to_string(),
-                                        });
-                                        tokio::spawn(append_trace(ev.clone()));
-                                        tokio::spawn(emit_debug(ev));
-                                    }
-                                    emit_problem_detail(
-                                        &app_handle,
-                                        &rid_for_task,
-                                        502,
-                                        "StreamError",
-                                        "Streaming response terminated unexpectedly",
-                                        None,
-                                    );
-                                    break;
-                                }
-                                Ok(bytes) => {
-                                    // Append chunk and process complete lines only; keep remainder in carry.
-                                    carry.push_str(&String::from_utf8_lossy(&bytes));
-                                    loop {
-                                        if let Some(idx) = carry.find('\n') {
-                                            let mut line = carry[..idx].to_string();
-                                            // drain including newline
-                                            carry.drain(..=idx);
-                                            // handle CRLF
-                                            if line.ends_with('\r') {
-                                                line.pop();
-                                            }
-                                            let trimmed = line.trim();
-                                            if trimmed.is_empty() {
-                                                // blank line terminates one SSE event
-                                                if !event_buf.is_empty() {
-                                                    let payload = std::mem::take(&mut event_buf);
-                                                    process_payload(
-                                                        &payload,
-                                                        &app_handle,
-                                                        &rid_for_task,
-                                                    );
-                                                }
-                                                continue;
-                                            }
-                                            if let Some(stripped) = trimmed.strip_prefix("data:") {
-                                                let content = stripped.trim();
-                                                if content == "[DONE]" {
-                                                    process_payload(
-                                                        "[DONE]",
-                                                        &app_handle,
-                                                        &rid_for_task,
-                                                    );
-                                                    // reset event buffer
-                                                    event_buf.clear();
-                                                    continue;
-                                                }
-                                                if !event_buf.is_empty() {
-                                                    event_buf.push('\n');
-                                                }
-                                                event_buf.push_str(content);
-                                                continue;
-                                            }
-                                            // Fallback: treat line as payload content (non-SSE providers)
-                                            event_buf.push_str(trimmed);
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                }
-                            },
-                        }
-                    }
-
-                    if stream_failed {
-                        if let Some(host) = host_for_attempt.as_deref() {
-                            circuit::circuit_record_failure(
-                                &circuit_breakers,
-                                host,
-                                &circuit_config,
-                                emit_circuit_telemetry,
-                            )
-                            .await;
-                        }
-                        break;
-                    }
-
-                    if let Some(host) = host_for_attempt.as_deref() {
-                        circuit::circuit_record_success(
-                            &circuit_breakers,
-                            host,
-                            emit_circuit_telemetry,
-                        )
-                        .await;
-                        if half_open_probe {
-                            let mut guard = circuit_breakers.write().await;
-                            if let Some(state) = guard.get_mut(host) {
-                                state.half_open_probe_in_flight = false;
-                            }
-                        }
-                    }
-
-                    if debug_on {
-                        let ev = serde_json::json!({
-                            "ts": Utc::now().timestamp_millis(),
-                            "event": "completed",
-                            "requestId": rid_for_task,
-                        });
-                        tokio::spawn(append_trace(ev.clone()));
-                        tokio::spawn(emit_debug(ev));
-                    }
-                    emit_or_log(
-                        &app_handle,
-                        "ollama-completion",
-                        serde_json::json!({ "done": true }),
-                    );
-                    break;
-                }
-            }
-        }
-
-        // Ensure we always cleanup the request handle on any terminal exit of the outer loop.
-        remove_chat_request(&app_handle, &rid_for_task).await;
-    });
-
-    state.ongoing.write().await.insert(rid.clone(), join);
-    Ok(())
-}
 
 // Database schema management is implemented in core::init_database and helpers.
 
@@ -2769,10 +1405,10 @@ async fn get_ollama_mode(state: State<'_, AppState>) -> Result<(bool, bool), Str
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_model_name;
     use super::extract_events_from_chunk;
-    use serde_json::json;
+    use super::normalize_model_name;
     use crate::anthropic;
+    use serde_json::json;
 
     #[test]
     fn cloud_keeps_colon_tags() {
@@ -2842,8 +1478,16 @@ mod tests {
             "tool_calls": [{ "name": "baz", "arguments": "{}" }]
         });
         let events = extract_events_from_chunk(&v, None);
-        assert!(events.iter().any(|e| e.get("type").and_then(|v| v.as_str()) == Some("content")));
-        assert!(events.iter().filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("tool_call")).count() >= 2);
+        assert!(events
+            .iter()
+            .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("content")));
+        assert!(
+            events
+                .iter()
+                .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("tool_call"))
+                .count()
+                >= 2
+        );
     }
 
     #[test]
@@ -3251,6 +1895,9 @@ fn main() {
         safe_reason: RwLock::new(None),
         circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
         circuit_config: CircuitBreakerConfig::from_env(),
+        provider_circuit_manager: crate::provider_circuit::ProviderCircuitManager::new(),
+        chaos_engine: crate::chaos::ChaosEngine::new(),
+        resilience_metrics: crate::chaos::ResilienceMetrics::new(),
         action_log,
         job_token_key,
     };
@@ -3418,15 +2065,30 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_paths,
+            // Chat commands
+            commands::chat_completion,
+            commands::cancel_chat,
+            // Compute commands
+            commands::compute_call,
+            commands::compute_cancel,
+            commands::get_paths,
+            // Provider commands
+            commands::provider_login,
+            commands::provider_health,
+            commands::provider_resolve,
+            commands::provider_install,
+            commands::verify_modules,
+            commands::save_provider_api_key,
+            commands::load_api_key,
+            commands::test_api_key,
+            commands::auth_preflight,
+            // Other commands
             copy_into_files,
             export_from_files,
             get_modules_info,
             get_modules_registry,
             get_action_log_stats,
-            verify_modules,
             open_path,
-            load_api_key,
             save_api_key,
             set_debug,
             test_api_key,
@@ -3444,19 +2106,19 @@ fn main() {
             delete_window_commands,
             load_workspace,
             save_workspace,
-            chat_completion,
-            cancel_chat,
-            compute_call,
-            compute_cancel,
             mint_job_token,
             debug_circuits,
+            debug_provider_circuits,
+            circuit_control,
+            chaos_configure_failure,
+            chaos_stop_failure,
+            chaos_get_configs,
+            get_circuit_debug_info,
+            reset_circuit,
+            force_open_circuit,
+            force_close_circuit,
+            get_resilience_metrics,
             set_env_var,
-            save_provider_api_key,
-            auth_preflight,
-            provider_login,
-            provider_health,
-            provider_resolve,
-            provider_install,
             egress_fetch,
             load_agents_config_file,
             save_agents_config_file,
@@ -3503,10 +2165,35 @@ struct AuthPreflightResult {
 }
 
 #[tauri::command]
-async fn auth_preflight(provider: String) -> Result<AuthPreflightResult, String> {
+async fn auth_preflight(
+    provider: String,
+    app_handle: tauri::AppHandle,
+) -> Result<AuthPreflightResult, String> {
     let p = provider.trim().to_ascii_lowercase();
+    let start_time = std::time::Instant::now();
+
     match build_provider_headers(&p).await {
-        Ok(_) => Ok(AuthPreflightResult { ok: true, code: "OK".into(), detail: None }),
+        Ok(_) => {
+            let result = AuthPreflightResult {
+                ok: true,
+                code: "OK".into(),
+                detail: None,
+            };
+
+            // Emit successful auth preflight telemetry
+            emit_or_log(
+                &app_handle,
+                "auth_preflight_result",
+                serde_json::json!({
+                    "provider": p,
+                    "success": true,
+                    "code": "OK",
+                    "durationMs": start_time.elapsed().as_millis(),
+                }),
+            );
+
+            Ok(result)
+        }
         Err(e) => {
             let msg = e.to_string();
             let low = msg.to_ascii_lowercase();
@@ -3517,7 +2204,26 @@ async fn auth_preflight(provider: String) -> Result<AuthPreflightResult, String>
             } else {
                 "AuthMissing".to_string()
             };
-            Ok(AuthPreflightResult { ok: false, code, detail: Some(msg) })
+            let result = AuthPreflightResult {
+                ok: false,
+                code: code.clone(),
+                detail: Some(msg.clone()),
+            };
+
+            // Emit failed auth preflight telemetry
+            emit_or_log(
+                &app_handle,
+                "auth_preflight_result",
+                serde_json::json!({
+                    "provider": p,
+                    "success": false,
+                    "code": code,
+                    "detail": msg,
+                    "durationMs": start_time.elapsed().as_millis(),
+                }),
+            );
+
+            Ok(result)
         }
     }
 }
@@ -3579,42 +2285,123 @@ async fn debug_circuits(
     Ok(info)
 }
 
+/// Returns provider-aware circuit breaker state with provider isolation.
 #[tauri::command]
-async fn provider_login(provider: String) -> Result<ProviderLoginResult, String> {
-    let normalized = provider.trim().to_ascii_lowercase();
-    provider_cli::login(&normalized).await
+async fn debug_provider_circuits(
+    state: State<'_, AppState>,
+) -> Result<Vec<provider_circuit::ProviderCircuitDebugInfo>, String> {
+    let info = state.provider_circuit_manager.get_debug_info().await;
+    Ok(info)
 }
 
+/// Execute manual circuit control commands for operators.
 #[tauri::command]
-async fn provider_health(provider: String) -> Result<ProviderHealthResult, String> {
-    let normalized = provider.trim().to_ascii_lowercase();
-    provider_cli::health(&normalized).await
+async fn circuit_control(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    command: provider_circuit::CircuitControlCommand,
+) -> Result<(), String> {
+    let emit_circuit_telemetry = move |event_name: &str, payload: serde_json::Value| {
+        let handle = app_handle.clone();
+        let name = event_name.to_string();
+        tauri::async_runtime::spawn(async move {
+            let _ = handle.emit(&name, payload);
+        });
+    };
+
+    state
+        .provider_circuit_manager
+        .execute_control_command(command, emit_circuit_telemetry)
+        .await
 }
 
+/// Configure synthetic failure injection for chaos testing.
 #[tauri::command]
-async fn provider_resolve(provider: String) -> Result<serde_json::Value, String> {
-    let normalized = provider.trim().to_ascii_lowercase();
-    let res = provider_cli::resolve(&normalized)?;
-    Ok(serde_json::json!({ "exe": res.exe, "via": res.via }))
-}
-
-#[tauri::command]
-async fn provider_install(
+async fn chaos_configure_failure(
+    state: State<'_, AppState>,
     provider: String,
-    version: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let normalized = provider.trim().to_ascii_lowercase();
-    match provider_cli::install(&normalized, version.as_deref()).await {
-        Ok(r) => Ok(serde_json::json!({
-            "ok": r.ok,
-            "provider": r.provider,
-            "exe": r.exe,
-            "via": r.via,
-            "detail": r.detail,
-        })),
-        Err(e) => Err(e),
-    }
+    config: chaos::FailureConfig,
+) -> Result<(), String> {
+    state.chaos_engine.configure_failure(provider, config).await
 }
+
+/// Stop synthetic failure injection for a provider.
+#[tauri::command]
+async fn chaos_stop_failure(state: State<'_, AppState>, provider: String) -> Result<(), String> {
+    state.chaos_engine.stop_failure(&provider).await;
+    Ok(())
+}
+
+/// Get current chaos configuration for all providers.
+#[tauri::command]
+async fn chaos_get_configs(
+    state: State<'_, AppState>,
+) -> Result<HashMap<String, chaos::FailureConfig>, String> {
+    Ok(state.chaos_engine.get_all_configs().await)
+}
+
+/// Get circuit breaker debug information for all providers.
+#[tauri::command]
+async fn get_circuit_debug_info(
+    state: State<'_, AppState>,
+) -> Result<Vec<provider_circuit::ProviderCircuitDebugInfo>, String> {
+    Ok(state.provider_circuit_manager.get_debug_info().await)
+}
+
+/// Reset a circuit breaker to closed state.
+#[tauri::command]
+async fn reset_circuit(
+    state: State<'_, AppState>,
+    provider: String,
+    host: String,
+) -> Result<(), String> {
+    let cmd = provider_circuit::CircuitControlCommand::Reset { provider, host };
+    state.provider_circuit_manager.execute_control_command(cmd, |_, _| {}).await
+}
+
+/// Force open a circuit breaker for testing.
+#[tauri::command]
+async fn force_open_circuit(
+    state: State<'_, AppState>,
+    provider: String,
+    host: String,
+    duration_ms: u64,
+) -> Result<(), String> {
+    let cmd = provider_circuit::CircuitControlCommand::ForceOpen { provider, host, duration_ms };
+    state.provider_circuit_manager.execute_control_command(cmd, |_, _| {}).await
+}
+
+/// Force close a circuit breaker.
+#[tauri::command]
+async fn force_close_circuit(
+    state: State<'_, AppState>,
+    provider: String,
+    host: String,
+) -> Result<(), String> {
+    let cmd = provider_circuit::CircuitControlCommand::ForceClose { provider, host };
+    state.provider_circuit_manager.execute_control_command(cmd, |_, _| {}).await
+}
+
+/// Get resilience metrics for all providers.
+#[tauri::command]
+async fn get_resilience_metrics(
+    state: State<'_, AppState>,
+) -> Result<Vec<chaos::ResilienceMetricsSummary>, String> {
+    let providers = ["openai", "openrouter", "anthropic", "ollama"];
+    let mut metrics = Vec::new();
+    
+    for provider in providers.iter() {
+        if let Some(summary) = state.resilience_metrics.get_metrics(provider).await {
+            metrics.push(summary);
+        }
+    }
+    
+    Ok(metrics)
+}
+
+
+
+
 
 // Removed unused proxy env commands (get_proxy_env, set_proxy_env) to avoid dead code.
 

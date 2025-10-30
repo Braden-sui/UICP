@@ -1,4 +1,4 @@
-
+use crate::hostctx::{PolicyMap as StorePolicyMap, PolicyStore};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::Manager;
 use url::Url;
-use crate::hostctx::{PolicyMap as StorePolicyMap, PolicyStore};
 
 // In-memory decision cache: key -> "allow" | "deny"
 static POLICIES: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
@@ -42,9 +41,13 @@ fn normalize_key(raw: &str) -> String {
             }
 
             let host = if let Ok(url) = Url::parse(trimmed) {
-                url.host_str().map(|s| s.to_string()).unwrap_or_else(|| trimmed.to_string())
+                url.host_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| trimmed.to_string())
             } else if let Ok(url) = Url::parse(&format!("https://{}", trimmed)) {
-                url.host_str().map(|s| s.to_string()).unwrap_or_else(|| trimmed.to_string())
+                url.host_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| trimmed.to_string())
             } else {
                 trimmed.to_string()
             };
@@ -210,7 +213,7 @@ pub(crate) fn clear_policies_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hostctx::{PolicyEntry, PolicyStore, PolicyMap};
+    use crate::hostctx::{PolicyEntry, PolicyMap, PolicyStore};
 
     struct MapStore(pub PolicyMap);
 
@@ -228,8 +231,8 @@ mod tests {
             PolicyEntry {
                 decision: "allow".into(),
                 duration: String::new(),
-                createdAt: 0,
-                sessionOnly: false,
+                created_at: 0,
+                session_only: false,
             },
         );
         let store = MapStore(map);

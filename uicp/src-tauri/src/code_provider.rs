@@ -1489,9 +1489,10 @@ mod tests {
             _env: &HashMap<String, String>,
             input: Option<&str>,
         ) -> Result<CommandExecution, CodeProviderError> {
-            assert_eq!(program, self.program);
+            // Store the program that was actually called
             {
                 let mut guard = self.observed_args.lock();
+                guard.push(program.to_string());
                 guard.extend(args.iter().cloned());
             }
             if let Some(payload) = input {
@@ -1660,16 +1661,18 @@ mod tests {
         }
 
         assert!(
-            observed.len() >= 4,
+            observed.len() >= 5,
             "expected httpjail wrapper arguments to be present"
         );
-        assert_eq!(observed[0], "--js");
+        // The first argument should be the httpjail executable
+        assert!(observed[0].contains("httpjail"), "first argument should be httpjail, got: {}", observed[0]);
+        assert_eq!(observed[1], "--js");
         assert!(
-            observed[1].contains("api.anthropic.com"),
+            observed[2].contains("api.anthropic.com"),
             "predicate should include Anthropics hosts"
         );
-        assert_eq!(observed[2], "--");
-        assert_eq!(observed[3], "claude");
+        assert_eq!(observed[3], "--");
+        assert_eq!(observed[4], "claude");
     }
 
     #[test]
@@ -1711,9 +1714,10 @@ mod tests {
             "expected codex arguments to be captured"
         );
         assert_eq!(
-            observed[0], "exec",
+            observed[0], "codex",
             "command should execute without httpjail wrapper when binary missing"
         );
+        assert_eq!(observed[1], "exec");
     }
 
     #[test]

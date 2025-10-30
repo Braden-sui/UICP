@@ -108,7 +108,7 @@ describe('batchLinter', () => {
   describe('Rule 3: No inert text-only appends (E-UICP-0403)', () => {
     it('rejects batch with only plain text dom.append', () => {
       const batch: Batch = [
-        { op: 'window.create', params: { title: 'Test' } },
+        { op: 'window.create', params: { id: 'win-1', title: 'Test' } },
         { op: 'dom.append', params: { windowId: 'win-1', target: '#root', html: 'Just some text' } },
       ];
       const result = lintBatch(batch);
@@ -121,7 +121,7 @@ describe('batchLinter', () => {
 
     it('allows dom.append with interactive elements (button)', () => {
       const batch: Batch = [
-        { op: 'window.create', params: { title: 'Test' } },
+        { op: 'window.create', params: { id: 'win-1', title: 'Test' } },
         { op: 'dom.append', params: { windowId: 'win-1', target: '#root', html: '<button>Click</button>' } },
       ];
       const result = lintBatch(batch);
@@ -130,7 +130,7 @@ describe('batchLinter', () => {
 
     it('allows dom.append with data-command attribute', () => {
       const batch: Batch = [
-        { op: 'window.create', params: { title: 'Test' } },
+        { op: 'window.create', params: { id: 'win-1', title: 'Test' } },
         { op: 'dom.append', params: { windowId: 'win-1', target: '#root', html: '<div data-command="[]">Action</div>' } },
       ];
       const result = lintBatch(batch);
@@ -139,7 +139,7 @@ describe('batchLinter', () => {
 
     it('allows dom.append with input field', () => {
       const batch: Batch = [
-        { op: 'window.create', params: { title: 'Test' } },
+        { op: 'window.create', params: { id: 'win-1', title: 'Test' } },
         { op: 'dom.append', params: { windowId: 'win-1', target: '#root', html: '<input type="text" />' } },
       ];
       const result = lintBatch(batch);
@@ -148,7 +148,7 @@ describe('batchLinter', () => {
 
     it('allows dom.append with link', () => {
       const batch: Batch = [
-        { op: 'window.create', params: { title: 'Test' } },
+        { op: 'window.create', params: { id: 'win-1', title: 'Test' } },
         { op: 'dom.append', params: { windowId: 'win-1', target: '#root', html: '<a href="https://example.com">Link</a>' } },
       ];
       const result = lintBatch(batch);
@@ -157,7 +157,7 @@ describe('batchLinter', () => {
 
     it('allows batch with component.render', () => {
       const batch: Batch = [
-        { op: 'window.create', params: { title: 'Test' } },
+        { op: 'window.create', params: { id: 'win-1', title: 'Test' } },
         { op: 'component.render', params: { windowId: 'win-1', target: '#root', type: 'data.table', props: { columns: ['a'], rows: [] } } },
       ];
       const result = lintBatch(batch);
@@ -166,7 +166,7 @@ describe('batchLinter', () => {
 
     it('allows dom.set (not just append)', () => {
       const batch: Batch = [
-        { op: 'window.create', params: { title: 'Test' } },
+        { op: 'window.create', params: { id: 'win-1', title: 'Test' } },
         { op: 'dom.set', params: { windowId: 'win-1', target: '#root', html: 'Plain text is ok in dom.set' } },
       ];
       const result = lintBatch(batch);

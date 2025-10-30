@@ -1,7 +1,7 @@
 import type { ToolSpec, StreamEvent, StreamMeta } from './llm.stream';
 import { streamOllamaCompletion } from './llm.stream';
 import { route } from './router';
-import { isProviderRouterV1Enabled } from '../flags';
+import { isProviderRouterV1Enabled, isProviderRouterCanaryEnabled } from '../flags';
 import { emitTelemetryEvent } from '../telemetry';
 import {
   getActorProfile,
@@ -132,7 +132,10 @@ export function getPlannerClient(): PlannerClient {
         requestOptions.reasoning = reasoningPayload;
         requestOptions.ollamaOptions = { reasoning: reasoningPayload };
       }
-      const useRouter = isProviderRouterV1Enabled();
+      const v1 = isProviderRouterV1Enabled();
+      const canary = isProviderRouterCanaryEnabled();
+      const isCanaryProvider = (options?.provider ?? '').toLowerCase() === 'openai' || (options?.provider ?? '').toLowerCase() === 'openrouter';
+      const useRouter = v1 || (canary && isCanaryProvider);
       const streamer = useRouter ? route : streamOllamaCompletion;
       if (useRouter && typeof meta.traceId === 'string' && meta.traceId.trim().length > 0) {
         emitTelemetryEvent('provider_decision', {
@@ -200,7 +203,10 @@ export function getActorClient(): ActorClient {
         requestOptions.reasoning = reasoningPayload;
         requestOptions.ollamaOptions = { reasoning: reasoningPayload };
       }
-      const useRouter = isProviderRouterV1Enabled();
+      const v1 = isProviderRouterV1Enabled();
+      const canary = isProviderRouterCanaryEnabled();
+      const isCanaryProvider = (options?.provider ?? '').toLowerCase() === 'openai' || (options?.provider ?? '').toLowerCase() === 'openrouter';
+      const useRouter = v1 || (canary && isCanaryProvider);
       const streamer = useRouter ? route : streamOllamaCompletion;
       if (useRouter && typeof meta.traceId === 'string' && meta.traceId.trim().length > 0) {
         emitTelemetryEvent('provider_decision', {

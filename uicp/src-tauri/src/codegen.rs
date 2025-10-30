@@ -533,14 +533,8 @@ async fn run_codegen<R: Runtime>(
         total_queue_ms = total_queue_ms.saturating_add(wait_ms);
         run_timer = Some(timer);
         _codegen_permit = Some(permit);
-        let (artifact, workspace_dir) = execute_with_strategy(
-            app,
-            spec,
-            &plan,
-            &provider_queue,
-            &state.http,
-        )
-        .await?;
+        let (artifact, workspace_dir) =
+            execute_with_strategy(app, spec, &plan, &provider_queue, &state.http).await?;
         maybe_auto_install_pack(app, Some(workspace_dir.as_path())).await;
         artifact
     };
@@ -1233,10 +1227,7 @@ async fn run_provider<R: Runtime>(
     }
 }
 
-async fn maybe_auto_install_pack<R: Runtime>(
-    app: &AppHandle<R>,
-    workspace_dir: Option<&Path>,
-) {
+async fn maybe_auto_install_pack<R: Runtime>(app: &AppHandle<R>, workspace_dir: Option<&Path>) {
     let Some(workspace_dir) = workspace_dir else {
         return;
     };
@@ -1247,7 +1238,10 @@ async fn maybe_auto_install_pack<R: Runtime>(
         return;
     }
 
-    if apppack_validate(pack_root.display().to_string()).await.is_err() {
+    if apppack_validate(pack_root.display().to_string())
+        .await
+        .is_err()
+    {
         return;
     }
 

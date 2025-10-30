@@ -189,6 +189,9 @@ pub struct AppState {
     pub safe_reason: RwLock<Option<String>>,
     pub circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
     pub circuit_config: CircuitBreakerConfig,
+    pub provider_circuit_manager: crate::provider_circuit::ProviderCircuitManager,
+    pub chaos_engine: crate::chaos::ChaosEngine,
+    pub resilience_metrics: crate::chaos::ResilienceMetrics,
     pub action_log: action_log::ActionLogHandle,
     pub job_token_key: [u8; 32],
 }

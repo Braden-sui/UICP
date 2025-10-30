@@ -12,10 +12,30 @@
 
 import type { Batch } from './schemas';
 import { getComponentCatalogSummary } from './componentRenderer';
+import { emitTelemetryEvent } from '../../telemetry';
 
 export type LintResult =
   | { ok: true }
   | { ok: false; code: string; reason: string; hint: string };
+
+/**
+ * Emit telemetry for linter rejections
+ */
+const emitLintReject = (code: string, reason: string, batch: Batch) => {
+  const traceId = batch[0]?.traceId;
+  if (traceId) {
+    emitTelemetryEvent('linter_reject', {
+      traceId,
+      span: 'batch',
+      data: {
+        code,
+        reason,
+        batchSize: batch.length,
+        operations: batch.map(env => env.op),
+      }
+    });
+  }
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -89,7 +109,8 @@ function isInertTextOnly(batch: Batch): boolean {
 
   // All dom ops must be append-only with no interactive content for batch to be inert
   const onlyInertAppends = domOps.every((env) => {
-    if (env.op !== 'dom.append') return false;
+    // dom.set and dom.replace are allowed and not considered inert
+    if (env.op === 'dom.set' || env.op === 'dom.replace') return false;
     const params = env.params as { html?: unknown };
     const html = typeof params?.html === 'string' ? params.html : '';
     if (!html.trim()) return true; // Empty is inert
@@ -141,33 +162,39 @@ export function lintBatch(batch: Batch): LintResult {
   // Rule 1: Batch must create at least one visible effect
   if (!hasVisualEffect(batch)) {
     const catalog = getComponentCatalogSummary();
-    return {
+    const result = {
       ok: false,
       code: 'E-UICP-0401',
       reason: 'Batch creates no visible UI effect',
       hint: `Add window.create, component.render, or dom.set operation.\n\n${catalog}`,
-    };
+    } as const;
+    emitLintReject(result.code, result.reason, batch);
+    return result;
   }
 
   // Rule 2: If batch targets DOM selectors, it must establish a window
   if (hasDanglingSelectors(batch)) {
-    return {
+    const result = {
       ok: false,
       code: 'E-UICP-0402',
       reason: 'Batch targets DOM selectors without creating or specifying window',
       hint: 'Add window.create operation or include windowId in params',
-    };
+    } as const;
+    emitLintReject(result.code, result.reason, batch);
+    return result;
   }
 
   // Rule 3: Batch must not be inert text-only appends
   if (isInertTextOnly(batch)) {
     const catalog = getComponentCatalogSummary();
-    return {
+    const result = {
       ok: false,
       code: 'E-UICP-0403',
       reason: 'Batch only appends plain text without interactive elements or structure',
       hint: `Use component.render for structured UI, or add interactive elements (buttons, forms, data-command attributes).\n\n${catalog}`,
-    };
+    } as const;
+    emitLintReject(result.code, result.reason, batch);
+    return result;
   }
 
   const hasNeedsCode = batch.some((env) => env.op === 'needs.code');
@@ -185,12 +212,14 @@ export function lintBatch(batch: Batch): LintResult {
       return isRecord(maybe.into);
     });
     if (!hasComponentEffect && !hasVisualInto) {
-      return {
+      const result = {
         ok: false,
         code: 'E-UICP-0404',
         reason: 'needs.code must be paired with visible UI updates or an into sink.',
         hint: 'Add component.render/component.update/dom.* in the same batch or attach an api.call with an into sink that drives a watched state key.',
-      };
+      } as const;
+      emitLintReject(result.code, result.reason, batch);
+      return result;
     }
   }
 
@@ -205,12 +234,14 @@ export function lintBatch(batch: Batch): LintResult {
       return target === '#root';
     });
     if (!hasRootTarget) {
-      return {
+      const result = {
         ok: false,
         code: 'E-UICP-0406',
         reason: 'First render must target #root or create a window',
         hint: 'Add window.create to establish a container or target #root in an initial dom.* operation.',
-      };
+      } as const;
+      emitLintReject(result.code, result.reason, batch);
+      return result;
     }
   }
 
@@ -229,20 +260,24 @@ export function lintBatch(batch: Batch): LintResult {
       const createdId = created ? (created.params as { id?: unknown })?.id : undefined;
       const idStr = typeof createdId === 'string' ? createdId.trim() : '';
       if (!idStr) {
-        return {
+        const result = {
           ok: false,
           code: 'E-UICP-0407',
           reason: 'window.create must include explicit id when subsequent operations reference a window',
           hint: 'Include id in window.create and reference the same id via params.windowId in dom.* operations.',
-        };
+        } as const;
+        emitLintReject(result.code, result.reason, batch);
+        return result;
       }
       if (![...referencedIds].some((rid) => rid === idStr)) {
-        return {
+        const result = {
           ok: false,
           code: 'E-UICP-0407',
           reason: 'Referenced windowId does not match created window id',
           hint: 'Ensure window.create id matches params.windowId used by subsequent dom.* operations.',
-        };
+        } as const;
+        emitLintReject(result.code, result.reason, batch);
+        return result;
       }
     }
   }

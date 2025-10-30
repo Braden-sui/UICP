@@ -187,5 +187,17 @@ export async function collectWithFallback(
     });
   }
 
+  // Emit collector source telemetry
+  const source = toolResult ? 'tool' : textContent.trim().startsWith('{') ? 'json' : 'text';
+  emit('collector_source', {
+    data: {
+      source,
+      target: targetToolName,
+      hasToolResult: !!toolResult,
+      textLength: textContent.length,
+      candidatesFound: candidates.length,
+    },
+  });
+
   return { toolResult, textContent };
 }

@@ -348,7 +348,7 @@ const createNeedsCodeExecutor = (): CommandExecutor => ({
               windowId: params.progressWindowId,
               target: '#root',
               html: `<div data-testid="${escapeHtml(testId)}" class="flex items-center gap-2 text-xs text-slate-600"><span>${escapeHtml(status)}</span>${
-                actionsHtml ? `<span class=\"ml-2 flex items-center gap-2\">${actionsHtml}</span>` : ''
+                actionsHtml ? `<span class="ml-2 flex items-center gap-2">${actionsHtml}</span>` : ''
               }</div>`,
               sanitize: true,
               mode: 'append',

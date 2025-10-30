@@ -28,6 +28,7 @@ import { loadAgentsConfig, saveAgentsConfigFile, startWatcher, stopWatcher } fro
 import type { AgentsFile, ProfileEntry, ProfileMode } from '../lib/agents/schema';
 import { stringify } from 'yaml';
 import { useLLM, type ProviderKey } from '../state/llm';
+import { emitTelemetryEvent } from '../lib/telemetry';
 
 const plannerProfiles = listPlannerProfiles();
 const actorProfiles = listActorProfiles();
@@ -1132,12 +1133,24 @@ const AgentSettingsWindow = () => {
                       const res = (await tauriInvoke('auth_preflight', { provider: mapped })) as { ok?: boolean; code?: string; detail?: string } | undefined;
                       if (res?.ok) {
                         setAuthPreflight({ state: 'ok', code: res.code ?? 'OK' });
+                        emitTelemetryEvent('auth_preflight_result', {
+                          traceId: 'auth-preflight',
+                          data: { provider: mapped, result: 'ok', code: res.code ?? 'OK' }
+                        });
                       } else {
                         setAuthPreflight({ state: 'error', code: res?.code ?? 'AuthMissing', detail: res?.detail });
+                        emitTelemetryEvent('auth_preflight_result', {
+                          traceId: 'auth-preflight',
+                          data: { provider: mapped, result: 'error', code: res?.code ?? 'AuthMissing', detail: res?.detail }
+                        });
                       }
                     } catch (err) {
                       const msg = (err as Error)?.message ?? String(err);
                       setAuthPreflight({ state: 'error', code: 'Error', detail: msg });
+                      emitTelemetryEvent('auth_preflight_result', {
+                        traceId: 'auth-preflight',
+                        data: { provider: mapped, result: 'exception', code: 'Error', detail: msg }
+                      });
                     }
                   }}
                   disabled={!bridgeAvailable}

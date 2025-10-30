@@ -25,6 +25,8 @@ import {
  
 
 } from '../lib/orchestrator/state-machine';
+import { isApplyHandshakeV1Enabled } from '../lib/flags';
+import type { ProblemDetail } from '../lib/llm/protocol/errors';
 
 // AppState keeps cross-cutting UI control flags so DockChat, modal flows, and transport logic stay in sync.
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -158,6 +160,7 @@ export type DevtoolsAnalyticsContext = {
   preferencesOpen: boolean;
   computeDemoOpen: boolean;
   moduleRegistryOpen: boolean;
+  resilienceDashboardOpen: boolean;
   workspaceWindows: number;
   devMode: boolean;
   fullControl: boolean;
@@ -210,6 +213,8 @@ export type AppState = {
   agentTraceOpen: boolean;
   policyViewerOpen: boolean;
   networkInspectorOpen: boolean;
+  resilienceDashboardOpen: boolean;
+  telemetryDashboardOpen: boolean;
   // When opening the Policy Viewer from a toast or inspector, seed the rule input
   policyViewerSeedRule: string | null;
   firstRunPermissionsReviewed: boolean;
@@ -230,6 +235,8 @@ export type AppState = {
   pinnedWindows: Record<string, { title: string }>;
   // Mirrors workspace windows produced via adapter so the desktop menu stays in sync.
   workspaceWindows: Record<string, WorkspaceWindowMeta>;
+  // ProblemDetail banners for structured error display
+  problemDetails: Record<string, ProblemDetail>;
   telemetryBuffer: TelemetryBuffer;
   telemetry: IntentTelemetry[];
   traceEvents: Record<string, TraceEvent[]>;
@@ -261,6 +268,8 @@ export type AppState = {
   setPolicyViewerOpen: (value: boolean) => void;
   setPolicyViewerSeedRule: (rule: string | null) => void;
   setNetworkInspectorOpen: (value: boolean) => void;
+  setResilienceDashboardOpen: (value: boolean) => void;
+  setTelemetryDashboardOpen: (value: boolean) => void;
   setFirstRunPermissionsReviewed: (value: boolean) => void;
   setWelcomeCompleted: (value: boolean) => void;
   setFilesystemScopesOpen: (value: boolean) => void;
@@ -277,6 +286,10 @@ export type AppState = {
   unpinWindow: (windowId: string) => void;
   upsertWorkspaceWindow: (meta: WorkspaceWindowMeta) => void;
   removeWorkspaceWindow: (id: string) => void;
+  // ProblemDetail banner management
+  showProblemDetail: (id: string, problem: ProblemDetail) => void;
+  dismissProblemDetail: (id: string) => void;
+  clearProblemDetails: () => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
   dismissToast: (id: string) => void;
   transitionAgentPhase: (phase: AgentPhase, patch?: Partial<Omit<AgentStatus, 'phase'>>) => void;
@@ -295,7 +308,13 @@ export type AppState = {
   canAutoApply: () => boolean;
   // Set last-used models for current/most recent run
   setLastModels: (models: { planner?: SelectedModelInfo; actor?: SelectedModelInfo } | undefined) => void;
+  awaitApplyAck: (windowId?: string, timeoutMs?: number) => Promise<void>;
+  ackApply: (windowId?: string) => void;
 };
+
+const APPLY_ACK_GLOBAL_KEY = '__global__';
+const applyAckWaiters = new Map<string, Array<{ resolve: () => void; timer: ReturnType<typeof setTimeout> }>>();
+const applyAckTokens = new Map<string, number>();
 
 export const useAppStore = create<AppState>()(
   persist(
@@ -330,6 +349,8 @@ export const useAppStore = create<AppState>()(
       policyViewerOpen: false,
       policyViewerSeedRule: null,
       networkInspectorOpen: false,
+      resilienceDashboardOpen: false,
+      telemetryDashboardOpen: false,
       firstRunPermissionsReviewed: false,
       welcomeCompleted: false,
       filesystemScopesOpen: false,
@@ -343,6 +364,7 @@ export const useAppStore = create<AppState>()(
       desktopShortcuts: {},
       pinnedWindows: {},
       workspaceWindows: {},
+      problemDetails: {},
       telemetryBuffer: createTelemetryBuffer(),
       telemetry: [],
       traceEvents: {},
@@ -400,6 +422,8 @@ export const useAppStore = create<AppState>()(
       setPolicyViewerOpen: (value) => set({ policyViewerOpen: value }),
       setPolicyViewerSeedRule: (rule) => set({ policyViewerSeedRule: rule }),
       setNetworkInspectorOpen: (value) => set({ networkInspectorOpen: value }),
+      setResilienceDashboardOpen: (value) => set({ resilienceDashboardOpen: value }),
+      setTelemetryDashboardOpen: (value: boolean) => set({ telemetryDashboardOpen: value }),
       setFirstRunPermissionsReviewed: (value) => set({ firstRunPermissionsReviewed: value }),
       setWelcomeCompleted: (value) => set({ welcomeCompleted: value }),
       setFilesystemScopesOpen: (value) => set({ filesystemScopesOpen: value }),
@@ -478,6 +502,25 @@ export const useAppStore = create<AppState>()(
           delete next[id];
           return { workspaceWindows: next };
         }),
+      // ProblemDetail banner management
+      showProblemDetail: (id, problem) =>
+        set((state) => ({
+          problemDetails: {
+            ...state.problemDetails,
+            [id]: problem,
+          },
+        })),
+      dismissProblemDetail: (id) =>
+        set((state) => {
+          if (!state.problemDetails[id]) return {};
+          const next = { ...state.problemDetails };
+          delete next[id];
+          return { problemDetails: next };
+        }),
+      clearProblemDetails: () =>
+        set(() => ({
+          problemDetails: {},
+        })),
       pushToast: (toast) =>
         set((state) => ({
           toasts: [...state.toasts, { id: createId('toast'), ...toast }],
@@ -746,6 +789,16 @@ export const useAppStore = create<AppState>()(
               });
             }
 
+            if (isApplyHandshakeV1Enabled()) {
+              const ev = result.transition.event;
+              if (ev === 'ApplyStart' || ev === 'AutoApply' || ev === 'PreviewAccepted') {
+                const win = typeof (metadata && (metadata as Record<string, unknown>)['windowId']) === 'string'
+                  ? ((metadata as Record<string, unknown>)['windowId'] as string)
+                  : undefined;
+                try { get().ackApply(win); } catch { /* ignore */ }
+              }
+            }
+
             return { orchestratorContext: result.context };
           } catch (error) {
             // WHY: Invalid transitions should be logged but not crash the app
@@ -769,6 +822,51 @@ export const useAppStore = create<AppState>()(
         }),
       canAutoApply: () => can_auto_apply(get().orchestratorContext),
       setLastModels: (models) => set({ lastModels: models }),
+      awaitApplyAck: (windowId, timeoutMs = 1500) => {
+        if (!isApplyHandshakeV1Enabled()) return Promise.resolve();
+        const key = typeof windowId === 'string' && windowId.trim().length > 0 ? windowId.trim() : APPLY_ACK_GLOBAL_KEY;
+        const tokens = applyAckTokens.get(key) ?? 0;
+        if (tokens > 0) {
+          applyAckTokens.set(key, tokens - 1);
+          return Promise.resolve();
+        }
+        return new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            const arr = applyAckWaiters.get(key);
+            if (arr) {
+              const idx = arr.findIndex((w) => w.resolve === resolve);
+              if (idx >= 0) arr.splice(idx, 1);
+              if (arr.length === 0) applyAckWaiters.delete(key);
+            }
+            reject(new Error('apply_ack_timeout'));
+          }, Math.max(0, timeoutMs));
+          const list = applyAckWaiters.get(key) ?? [];
+          list.push({ resolve, timer });
+          applyAckWaiters.set(key, list);
+        });
+      },
+      ackApply: (windowId) => {
+        if (!isApplyHandshakeV1Enabled()) return;
+        const keys: string[] = [];
+        if (typeof windowId === 'string' && windowId.trim().length > 0) {
+          keys.push(windowId.trim());
+        }
+        keys.push(APPLY_ACK_GLOBAL_KEY);
+        for (const k of keys) {
+          const waiters = applyAckWaiters.get(k);
+          if (waiters && waiters.length) {
+            const arr = waiters.splice(0, waiters.length);
+            applyAckWaiters.delete(k);
+            for (const w of arr) {
+              try { clearTimeout(w.timer); } catch { /* noop */ }
+              try { w.resolve(); } catch { /* noop */ }
+            }
+          } else {
+            const cur = applyAckTokens.get(k) ?? 0;
+            applyAckTokens.set(k, cur + 1);
+          }
+        }
+      },
     })),
     {
       name: 'uicp-app',

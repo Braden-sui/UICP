@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { hasTauriBridge, tauriInvoke } from '../bridge/tauri';
 import { readBooleanEnv } from '../env/values';
+import { emitTelemetryEvent } from '../telemetry';
 
 // Streamed event union returned by the async iterator
 export type StreamEvent =
@@ -349,6 +350,19 @@ export function streamOllamaCompletion(
     timeoutMs: options?.signal ? null : DEFAULT_CHAT_TIMEOUT_MS,
     intent: truncatedIntent,
   });
+  if (meta.traceId) {
+    emitTelemetryEvent('llm_stream_start', {
+      traceId: meta.traceId,
+      span: 'api',
+      data: {
+        provider: options?.provider,
+        model,
+        messagesCount: messages.length,
+        toolsCount: Array.isArray(tools) ? tools.length : 0,
+      },
+      kind: 'span_start',
+    });
+  }
 
   // Attach the event listener first to avoid missing early chunks
   const useNormalizedStream = readBooleanEnv('VITE_STREAM_V1', false);
@@ -374,6 +388,20 @@ export function streamOllamaCompletion(
           const retry = typeof payload.error['retryAfterMs'] === 'number' ? payload.error['retryAfterMs'] : undefined;
           const msg = `[${code}] ${detail}${status ? ` (status=${status})` : ''}${rid ? ` req=${rid}` : ''}${retry ? ` retryIn=${Math.round(retry)}ms` : ''}`;
           logError('upstream_error', new Error(msg));
+          if (meta.traceId) {
+            emitTelemetryEvent('llm_stream_error', {
+              traceId: meta.traceId,
+              span: 'api',
+              status: 'error',
+              data: { provider: options?.provider, model, code, status, requestId: rid },
+            });
+            emitTelemetryEvent('provider_error_mapped', {
+              traceId: meta.traceId,
+              span: 'api',
+              status: 'error',
+              data: { code, status, detail },
+            });
+          }
           queue.fail(new Error(msg));
         } catch (e) {
           logError('upstream_error_parse', e);
@@ -397,6 +425,26 @@ export function streamOllamaCompletion(
           transcripts: transcriptsObject,
           toolCalls,
         });
+        if (meta.traceId) {
+          try {
+            const channels = Object.keys(transcriptsObject);
+            emitTelemetryEvent('llm_stream_complete', {
+              traceId: meta.traceId,
+              span: 'api',
+              durationMs,
+              data: {
+                provider: options?.provider,
+                model,
+                contentDeltaCount,
+                toolCallCount: toolCalls.length,
+                channels,
+              },
+              kind: 'span_finish',
+            });
+          } catch {
+            // ignore telemetry errors
+          }
+        }
         if (timeoutId) {
           clearTimeout(timeoutId);
           timeoutId = undefined;
@@ -564,6 +612,26 @@ export function streamOllamaCompletion(
         transcripts: transcriptsObject,
         toolCalls,
       });
+      if (meta.traceId) {
+        try {
+          const channels = Object.keys(transcriptsObject);
+          emitTelemetryEvent('llm_stream_complete', {
+            traceId: meta.traceId,
+            span: 'api',
+            durationMs,
+            data: {
+              provider: options?.provider,
+              model,
+              contentDeltaCount,
+              toolCallCount: toolCalls.length,
+              channels,
+            },
+            kind: 'span_finish',
+          });
+        } catch {
+          // ignore telemetry errors
+        }
+      }
       queue.push({ type: 'done' });
       if (timeoutId) { clearTimeout(timeoutId); timeoutId = undefined; }
       if (unlisten) { try { unlisten(); } catch (err) { logError('iterator_return_unlisten', err as Error); } unlisten = null; }
@@ -576,6 +644,20 @@ export function streamOllamaCompletion(
       const detail = typeof ev['detail'] === 'string' ? (ev['detail'] as string) : 'Request failed';
       const msg = `[${code}] ${detail}`;
       logError('upstream_error', new Error(msg));
+      if (meta.traceId) {
+        emitTelemetryEvent('llm_stream_error', {
+          traceId: meta.traceId,
+          span: 'api',
+          status: 'error',
+          data: { provider: options?.provider, model, code },
+        });
+        emitTelemetryEvent('provider_error_mapped', {
+          traceId: meta.traceId,
+          span: 'api',
+          status: 'error',
+          data: { code, detail },
+        });
+      }
       if (timeoutId) { clearTimeout(timeoutId); timeoutId = undefined; }
       if (unlisten) { try { unlisten(); } catch (err) { logError('iterator_return_unlisten', err as Error); } unlisten = null; }
       if (activeRequestId === requestId) { activeRequestId = null; }

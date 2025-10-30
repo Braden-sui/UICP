@@ -1237,16 +1237,16 @@ const routeOperation = async (
         },
         setStateValue: (params) => {
           try {
-            commitStateValue({ scope: params.scope as any, key: params.key, value: params.value, windowId: (params as unknown as { windowId?: string }).windowId });
-          } catch (error) {
-            console.error('setStateValue failed', error);
+            commitStateValue({ scope: params.scope as 'window' | 'workspace' | 'global', key: params.key, value: params.value, windowId: (params as unknown as { windowId?: string }).windowId });
+          } catch (err) {
+            console.error('setStateValue failed', err);
           }
         },
         getStateValue: (params) => {
           try {
             const p = params as unknown as { scope: 'window' | 'workspace' | 'global'; key: string; windowId?: string };
             return readStateValue(p.scope, p.key, p.windowId);
-          } catch (error) {
+          } catch {
             return undefined;
           }
         },

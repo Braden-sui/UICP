@@ -67,5 +67,64 @@ export function validateBatchForApply(plan: Plan, batch: Batch): ValidatorResult
   if (!a.ok) return a;
   const b = validateWindowIdConsistency(plan, batch);
   if (!b.ok) return b;
+  const c = validateNeedsCode(plan, batch);
+  if (!c.ok) return c;
   return { ok: true };
+}
+
+// Heuristic validator: if the batch relies on dynamic behavior, require a code artifact
+// to be present (either via needs.code marker or a code/applet component).
+// Dynamic cues include:
+// - api.call with an `into` sink (drives state/view updates)
+// - dom.* HTML containing common interactive markers (data-command, on* handlers)
+// Pass conditions include:
+// - presence of a needs.code op, or
+// - component.render params that indicate a script/applet-like component
+export function validateNeedsCode(_plan: Plan, batch: Batch): ValidatorResult {
+  const hasNeedsCode = batch.some((env) => env.op === 'needs.code');
+
+  // Detect dynamic behavior cues
+  let requiresCode = false;
+  for (const env of batch) {
+    if (env.op === 'api.call') {
+      const params = env.params as { into?: unknown };
+      const intoSink = params && typeof params.into === 'object' && params.into !== null;
+      if (intoSink) {
+        requiresCode = true;
+        break;
+      }
+    }
+    if (isDomOp(env.op)) {
+      const params = env.params as { html?: unknown };
+      const html = typeof params?.html === 'string' ? params.html : '';
+      if (html && /data-command\s*=|\bon(click|input|submit|change|keyup|keydown)\b/i.test(html)) {
+        requiresCode = true;
+        break;
+      }
+    }
+  }
+
+  if (!requiresCode) return { ok: true };
+  if (hasNeedsCode) return { ok: true };
+
+  // Try to detect presence of a code/applet component
+  const hasCodeComponent = batch.some((env) => {
+    if (env.op !== 'component.render') return false;
+    const params = env.params as Record<string, unknown>;
+    // Look for obvious keys/values suggestive of script/applet components
+    for (const [k, v] of Object.entries(params)) {
+      if (typeof v === 'string' && /(script|applet|code|quickjs)/i.test(v)) return true;
+      if (/(script|applet|code|quickjs)/i.test(k)) return true;
+    }
+    return false;
+  });
+
+  if (hasCodeComponent) return { ok: true };
+
+  return {
+    ok: false,
+    code: 'E-UICP-0408',
+    reason: 'Batch relies on dynamic behavior but no code component or needs.code marker is present',
+    hint: 'Add a needs.code operation to the batch or render a code/applet component to handle interactive logic.',
+  };
 }

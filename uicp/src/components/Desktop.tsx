@@ -14,7 +14,8 @@ import DesktopIcon from './DesktopIcon';
 import DesktopMenuBar, { type DesktopMenu } from './DesktopMenuBar';
 import NotepadWindow from './NotepadWindow';
 import MetricsPanel from './MetricsPanel';
-import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon, SlidersIcon } from '../icons';
+import { LogsIcon, NotepadIcon, GaugeIcon, GearIcon, SlidersIcon, ShieldIcon } from '../icons';
+import { BarChart3 } from 'lucide-react';
 import ComputeDemoWindow from './ComputeDemoWindow';
 import ModuleRegistryWindow from './ModuleRegistryWindow';
 import AgentTraceWindow from './AgentTraceWindow';
@@ -29,6 +30,8 @@ import { inv } from '../lib/bridge/tauri';
 import DesktopClock from './DesktopClock';
 import PolicyViewer from './PolicyViewer';
 import NetworkInspector from './NetworkInspector';
+import ResilienceDashboard from './ResilienceDashboard';
+import TelemetryDashboard from './TelemetryDashboard';
 import FirstRunPermissionsSheet from './FirstRunPermissionsSheet';
 import FilesystemScopesWindow from './FilesystemScopesWindow';
 
@@ -49,9 +52,13 @@ const AGENT_TRACE_SHORTCUT_DEFAULT = { x: 32, y: 608 } as const;
 const POLICY_VIEWER_SHORTCUT_ID = 'policy-viewer';
 const POLICY_VIEWER_SHORTCUT_DEFAULT = { x: 200, y: 32 } as const;
 const NETWORK_INSPECTOR_SHORTCUT_ID = 'network-inspector';
+const RESILIENCE_DASHBOARD_SHORTCUT_ID = 'resilience-dashboard';
 const NETWORK_INSPECTOR_SHORTCUT_DEFAULT = { x: 200, y: 128 } as const;
+const RESILIENCE_DASHBOARD_SHORTCUT_DEFAULT = { x: 200, y: 224 } as const;
+const TELEMETRY_DASHBOARD_SHORTCUT_ID = 'telemetry-dashboard';
+const TELEMETRY_DASHBOARD_SHORTCUT_DEFAULT = { x: 200, y: 320 } as const;
 const FILESYSTEM_SCOPES_SHORTCUT_ID = 'filesystem-scopes';
-const FILESYSTEM_SCOPES_SHORTCUT_DEFAULT = { x: 200, y: 224 } as const;
+const FILESYSTEM_SCOPES_SHORTCUT_DEFAULT = { x: 200, y: 416 } as const;
 
 // Desktop hosts the empty canvas the agent mutates via the adapter and surfaces shortcuts for manual control.
 export const Desktop = () => {
@@ -76,6 +83,10 @@ export const Desktop = () => {
   const setPolicyViewerOpen = useAppSelector((s) => s.setPolicyViewerOpen);
   const networkInspectorOpen = useAppSelector((s) => s.networkInspectorOpen);
   const setNetworkInspectorOpen = useAppSelector((s) => s.setNetworkInspectorOpen);
+  const resilienceDashboardOpen = useAppSelector((s) => s.resilienceDashboardOpen);
+  const setResilienceDashboardOpen = useAppSelector((s) => s.setResilienceDashboardOpen);
+  const telemetryDashboardOpen = useAppSelector((s) => s.telemetryDashboardOpen);
+  const setTelemetryDashboardOpen = useAppSelector((s) => s.setTelemetryDashboardOpen);
   const filesystemScopesOpen = useAppSelector((s) => s.filesystemScopesOpen);
   const setFilesystemScopesOpen = useAppSelector((s) => s.setFilesystemScopesOpen);
   const devMode = useAppSelector((s) => s.devMode);
@@ -177,6 +188,8 @@ export const Desktop = () => {
     ensureShortcut(COMPUTE_DEMO_SHORTCUT_ID, { ...COMPUTE_DEMO_SHORTCUT_DEFAULT });
     ensureShortcut(POLICY_VIEWER_SHORTCUT_ID, { ...POLICY_VIEWER_SHORTCUT_DEFAULT });
     ensureShortcut(NETWORK_INSPECTOR_SHORTCUT_ID, { ...NETWORK_INSPECTOR_SHORTCUT_DEFAULT });
+    ensureShortcut(RESILIENCE_DASHBOARD_SHORTCUT_ID, { ...RESILIENCE_DASHBOARD_SHORTCUT_DEFAULT });
+    ensureShortcut(TELEMETRY_DASHBOARD_SHORTCUT_ID, { ...TELEMETRY_DASHBOARD_SHORTCUT_DEFAULT });
     ensureShortcut(FILESYSTEM_SCOPES_SHORTCUT_ID, { ...FILESYSTEM_SCOPES_SHORTCUT_DEFAULT });
     const shouldShowAgentTrace = devMode || import.meta.env.DEV;
     if (shouldShowAgentTrace) {
@@ -190,6 +203,7 @@ export const Desktop = () => {
     upsertWorkspaceWindow({ id: 'compute-demo', title: 'Compute Demo', kind: 'local' });
     upsertWorkspaceWindow({ id: 'policy-viewer', title: 'Policy Viewer', kind: 'local' });
     upsertWorkspaceWindow({ id: 'network-inspector', title: 'Network Inspector', kind: 'local' });
+    upsertWorkspaceWindow({ id: 'resilience-dashboard', title: 'Resilience Dashboard', kind: 'local' });
     upsertWorkspaceWindow({ id: 'filesystem-scopes', title: 'Filesystem Scopes', kind: 'local' });
     if (shouldShowAgentTrace) {
       upsertWorkspaceWindow({ id: 'agent-trace', title: 'Agent Trace', kind: 'local' });
@@ -204,6 +218,7 @@ export const Desktop = () => {
       removeWorkspaceWindow('compute-demo');
       removeWorkspaceWindow('policy-viewer');
       removeWorkspaceWindow('network-inspector');
+      removeWorkspaceWindow('resilience-dashboard');
       removeWorkspaceWindow('filesystem-scopes');
       if (shouldShowAgentTrace) {
         removeWorkspaceWindow('agent-trace');
@@ -241,6 +256,8 @@ export const Desktop = () => {
   const agentTracePosition = shortcutPositions[AGENT_TRACE_SHORTCUT_ID] ?? AGENT_TRACE_SHORTCUT_DEFAULT;
   const policyViewerPosition = shortcutPositions[POLICY_VIEWER_SHORTCUT_ID] ?? POLICY_VIEWER_SHORTCUT_DEFAULT;
   const networkInspectorPosition = shortcutPositions[NETWORK_INSPECTOR_SHORTCUT_ID] ?? NETWORK_INSPECTOR_SHORTCUT_DEFAULT;
+  const resilienceDashboardPosition = shortcutPositions[RESILIENCE_DASHBOARD_SHORTCUT_ID] ?? RESILIENCE_DASHBOARD_SHORTCUT_DEFAULT;
+  const telemetryDashboardPosition = shortcutPositions[TELEMETRY_DASHBOARD_SHORTCUT_ID] ?? TELEMETRY_DASHBOARD_SHORTCUT_DEFAULT;
   const filesystemScopesPosition = shortcutPositions[FILESYSTEM_SCOPES_SHORTCUT_ID] ?? FILESYSTEM_SCOPES_SHORTCUT_DEFAULT;
 
   const handleOpenLogs = useCallback(() => {
@@ -450,6 +467,16 @@ export const Desktop = () => {
             ],
           } satisfies DesktopMenu;
         }
+        if (meta.id === 'resilience-dashboard') {
+          return {
+            id: meta.id,
+            label: meta.title,
+            actions: [
+              { id: 'open', label: 'Open Resilience Dashboard', onSelect: () => setResilienceDashboardOpen(true), disabled: resilienceDashboardOpen },
+              { id: 'hide', label: 'Hide Resilience Dashboard', onSelect: () => setResilienceDashboardOpen(false), disabled: !resilienceDashboardOpen },
+            ],
+          } satisfies DesktopMenu;
+        }
         if (meta.id === 'filesystem-scopes') {
           return {
             id: meta.id,
@@ -607,6 +634,26 @@ export const Desktop = () => {
             active={networkInspectorOpen}
           />
           <DesktopIcon
+            id="resilience-dashboard-shortcut"
+            label="Resilience Dashboard"
+            position={resilienceDashboardPosition}
+            containerRef={overlayRef}
+            onOpen={() => setResilienceDashboardOpen(true)}
+            onPositionChange={(pos) => setShortcutPosition(RESILIENCE_DASHBOARD_SHORTCUT_ID, pos)}
+            icon={<ShieldIcon className="h-8 w-8" />}
+            active={resilienceDashboardOpen}
+          />
+          <DesktopIcon
+            id="telemetry-dashboard-shortcut"
+            label="Telemetry Dashboard"
+            position={telemetryDashboardPosition}
+            containerRef={overlayRef}
+            onOpen={() => setTelemetryDashboardOpen(true)}
+            onPositionChange={(pos) => setShortcutPosition(TELEMETRY_DASHBOARD_SHORTCUT_ID, pos)}
+            icon={<BarChart3 className="h-8 w-8" />}
+            active={telemetryDashboardOpen}
+          />
+          <DesktopIcon
             id="filesystem-scopes-shortcut"
             label="Filesystem Scopes"
             position={filesystemScopesPosition}
@@ -679,6 +726,8 @@ export const Desktop = () => {
       <AgentTraceWindow />
       <PolicyViewer />
       <NetworkInspector />
+      <ResilienceDashboard />
+      <TelemetryDashboard />
       <FirstRunPermissionsSheet />
       <FilesystemScopesWindow />
     </div>

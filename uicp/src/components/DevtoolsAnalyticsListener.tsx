@@ -52,6 +52,7 @@ const DevtoolsAnalyticsListener = () => {
         preferencesOpen: store.preferencesOpen,
         computeDemoOpen: store.computeDemoOpen,
         moduleRegistryOpen: store.moduleRegistryOpen,
+        resilienceDashboardOpen: store.resilienceDashboardOpen,
         workspaceWindows: Object.keys(store.workspaceWindows).length,
         devMode: store.devMode,
         fullControl: store.fullControl,

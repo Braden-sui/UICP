@@ -153,6 +153,9 @@ impl ComputeTestHarness {
             safe_reason: RwLock::new(None),
             circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
             circuit_config: crate::core::CircuitBreakerConfig::from_env(),
+            provider_circuit_manager: crate::provider_circuit::ProviderCircuitManager::new(),
+            chaos_engine: crate::chaos::ChaosEngine::new(),
+            resilience_metrics: crate::chaos::ResilienceMetrics::new(),
             action_log,
             job_token_key: [0u8; 32],
         };

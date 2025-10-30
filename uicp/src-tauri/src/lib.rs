@@ -1,8 +1,9 @@
 #![deny(clippy::print_stderr)]
 
 pub mod action_log;
-pub mod authz;
+pub mod anthropic;
 pub mod apppack;
+pub mod authz;
 pub mod policy;
 
 pub use action_log::{
@@ -19,6 +20,8 @@ pub mod events;
 pub use events::EVENT_COMPUTE_RESULT_FINAL;
 #[cfg(any(test, feature = "wasm_compute", feature = "compute_harness"))]
 pub use events::EVENT_COMPUTE_RESULT_PARTIAL;
+pub mod chaos;
+pub mod circuit;
 pub mod code_provider;
 pub mod codegen;
 pub mod compute;
@@ -27,8 +30,11 @@ pub mod compute_input;
 pub mod core;
 pub mod hostctx;
 pub mod keystore;
+pub mod provider_adapters;
+pub mod provider_circuit;
 pub mod providers;
 pub mod registry;
+pub mod resilience;
 
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod provider_cli;
