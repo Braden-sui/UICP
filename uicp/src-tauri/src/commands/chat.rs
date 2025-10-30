@@ -3,19 +3,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
-use base64::Engine as _;
 use chrono::Utc;
-use once_cell::sync::Lazy;
 use reqwest::Url;
 use serde_json::Value;
 use tauri::{
-    async_runtime::spawn, JoinHandle, Emitter, Manager, State, WebviewUrl,
+    async_runtime::{spawn, JoinHandle},
+    Emitter, Manager, State,
 };
+use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
-use crate::core::{emit_or_log, log_error, log_info, log_warn, APP_NAME, LOGS_DIR};
+use crate::core::{emit_or_log, APP_NAME, LOGS_DIR};
 use crate::events::{emit_problem_detail, extract_events_from_chunk, is_stream_v1_enabled};
 use crate::provider_adapters::create_adapter;
 use crate::providers::build_provider_headers;
@@ -1046,30 +1045,22 @@ pub async fn cancel_chat(state: State<'_, AppState>, request_id: String) -> Resu
 // Helper to get the appropriate Ollama base URL with validation
 async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
     let use_cloud = *state.use_direct_cloud.read().await;
-    if use_cloud {
-        let cloud_host = state
-            .ollama_cloud_host
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| crate::core::OLLAMA_CLOUD_HOST_DEFAULT.to_string());
-        Ok(cloud_host)
+    let base = if use_cloud {
+        std::env::var("OLLAMA_CLOUD_URL").unwrap_or_else(|_| "https://ollama.ai".into())
     } else {
-        let local_base = state
-            .ollama_local_base
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| crate::core::OLLAMA_LOCAL_BASE_DEFAULT.to_string());
-        Ok(local_base)
-    }
+        std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into())
+    };
+    Ok(base)
 }
 
 // Helper to remove an ongoing chat request
 async fn remove_chat_request(app: &tauri::AppHandle, request_id: &str) {
     let state: State<'_, AppState> = app.state();
     state.ongoing.write().await.remove(request_id);
-    let _ = app.emit("chat-cancelled", serde_json::json!({ "requestId": request_id }));
+    let _ = app.emit(
+        "chat-cancelled",
+        serde_json::json!({ "requestId": request_id }),
+    );
 }
 
 fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
@@ -1135,7 +1126,10 @@ mod tests {
 
     #[test]
     fn local_appends_cloud_suffix_when_present() {
-        assert_eq!(normalize_model_name("llama3:70b-cloud", false), "llama3:70b-cloud");
+        assert_eq!(
+            normalize_model_name("llama3:70b-cloud", false),
+            "llama3:70b-cloud"
+        );
     }
 
     #[test]

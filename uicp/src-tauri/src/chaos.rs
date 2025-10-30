@@ -80,9 +80,9 @@ impl ChaosEngine {
     }
 
     /// Set telemetry event emitter
-    pub fn set_telemetry_emitter<F>(&mut self, emitter: F) 
-    where 
-        F: Fn(&str, serde_json::Value) + Send + Sync + 'static
+    pub fn set_telemetry_emitter<F>(&mut self, emitter: F)
+    where
+        F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
     {
         self.telemetry_emitter = Some(Arc::new(emitter));
     }
@@ -106,18 +106,21 @@ impl ChaosEngine {
 
         let mut configs = self.failure_configs.write().await;
         configs.insert(provider.clone(), config.clone());
-        
+
         // Emit telemetry event
-        self.emit_telemetry("resilience_failure_injected", serde_json::json!({
-            "provider": provider,
-            "failure_rate": config.failure_rate,
-            "category": config.category,
-            "http_status": config.http_status,
-            "inject_timeout": config.inject_timeout,
-            "inject_connect_failure": config.inject_connect_failure,
-            "delay_ms": config.delay_ms
-        }));
-        
+        self.emit_telemetry(
+            "resilience_failure_injected",
+            serde_json::json!({
+                "provider": provider,
+                "failure_rate": config.failure_rate,
+                "category": config.category,
+                "http_status": config.http_status,
+                "inject_timeout": config.inject_timeout,
+                "inject_connect_failure": config.inject_connect_failure,
+                "delay_ms": config.delay_ms
+            }),
+        );
+
         Ok(())
     }
 
@@ -129,11 +132,14 @@ impl ChaosEngine {
         // Reset counter
         let mut counters = self.request_counters.write().await;
         counters.remove(provider);
-        
+
         // Emit telemetry event
-        self.emit_telemetry("resilience_failure_stopped", serde_json::json!({
-            "provider": provider
-        }));
+        self.emit_telemetry(
+            "resilience_failure_stopped",
+            serde_json::json!({
+                "provider": provider
+            }),
+        );
     }
 
     /// Check if failure should be injected for this request
@@ -318,7 +324,11 @@ impl ResilienceMetrics {
         let circuit_opens = *metrics.circuit_openings.get(provider).unwrap_or(&0);
         let total_latency = *metrics.total_latency_ms.get(provider).unwrap_or(&0);
 
-        let recovery_times = metrics.recovery_times_ms.get(provider).cloned().unwrap_or_default();
+        let recovery_times = metrics
+            .recovery_times_ms
+            .get(provider)
+            .cloned()
+            .unwrap_or_default();
 
         Some(ResilienceMetricsSummary {
             provider: provider.to_string(),
@@ -338,11 +348,7 @@ impl ResilienceMetrics {
             } else {
                 0.0
             },
-            average_latency_ms: if total > 0 {
-                total_latency / total
-            } else {
-                0
-            },
+            average_latency_ms: if total > 0 { total_latency / total } else { 0 },
             mean_time_to_recovery_ms: if recovery_times.is_empty() {
                 0
             } else {
@@ -460,7 +466,10 @@ mod tests {
         metrics.record_success("test", 100).await;
 
         let summary = metrics.get_metrics("test").await;
-        assert!(summary.is_some(), "metrics summary should exist after recording");
+        assert!(
+            summary.is_some(),
+            "metrics summary should exist after recording"
+        );
         let summary = summary.unwrap();
         assert_eq!(summary.total_requests, 1);
         assert_eq!(summary.success_rate, 1.0);

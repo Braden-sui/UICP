@@ -1665,7 +1665,11 @@ mod tests {
             "expected httpjail wrapper arguments to be present"
         );
         // The first argument should be the httpjail executable
-        assert!(observed[0].contains("httpjail"), "first argument should be httpjail, got: {}", observed[0]);
+        assert!(
+            observed[0].contains("httpjail"),
+            "first argument should be httpjail, got: {}",
+            observed[0]
+        );
         assert_eq!(observed[1], "--js");
         assert!(
             observed[2].contains("api.anthropic.com"),

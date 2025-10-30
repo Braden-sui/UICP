@@ -17,21 +17,16 @@ use once_cell::sync::Lazy;
 use reqwest::{Client, Url};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tauri::{
-    async_runtime::{spawn, JoinHandle},
-    Emitter, Manager, State, WebviewUrl,
-};
+use sha2::Sha256;
+use tauri::{async_runtime::spawn, Emitter, Manager, State, WebviewUrl};
 
 use rand::RngCore;
 use tokio::{
     fs,
-    io::AsyncWriteExt,
     sync::{RwLock, Semaphore},
-    time::{interval, timeout},
+    time::interval,
 };
 use tokio_rusqlite::Connection as AsyncConn;
-use tokio_stream::StreamExt;
 
 mod action_log;
 mod anthropic;
@@ -81,11 +76,7 @@ pub use policy::{
 use crate::apppack::{apppack_entry_html, apppack_install, apppack_validate};
 use crate::egress::egress_fetch;
 use crate::keystore::{get_or_init_keystore, UnlockStatus};
-use crate::provider_adapters::create_adapter;
-use crate::providers::build_provider_headers;
-use compute_input::canonicalize_task_input;
 use core::{log_error, log_info, log_warn, CircuitBreakerConfig};
-use provider_cli::{ProviderHealthResult, ProviderLoginResult};
 use secrecy::SecretString;
 
 // Re-export shared core items so crate::... references in submodules remain valid
@@ -571,12 +562,9 @@ async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Res
     Ok(())
 }
 
-#[tauri::command]
-
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct WindowStatePayload {
+pub struct WindowStatePayload {
     id: String,
     title: String,
     x: f64,
@@ -587,9 +575,9 @@ struct WindowStatePayload {
     content: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct ChatMessageInput {
+pub struct ChatMessageInput {
     role: String,
     // Accept structured developer payloads (objects) and legacy string messages.
     content: serde_json::Value,
@@ -597,7 +585,7 @@ struct ChatMessageInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ChatCompletionRequest {
+pub struct ChatCompletionRequest {
     model: Option<String>,
     messages: Vec<ChatMessageInput>,
     stream: Option<bool>,
@@ -609,13 +597,6 @@ struct ChatCompletionRequest {
     tool_choice: Option<serde_json::Value>,
     reasoning: Option<serde_json::Value>,
     options: Option<serde_json::Value>,
-}
-
-
-#[tauri::command]
-async fn load_api_key(_state: State<'_, AppState>) -> Result<Option<String>, String> {
-    // Do not return plaintext secrets via Tauri commands.
-    Ok(None)
 }
 
 #[tauri::command]
@@ -634,61 +615,6 @@ async fn save_api_key(_state: State<'_, AppState>, key: String) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn test_api_key(
-    state: State<'_, AppState>,
-    window: tauri::Window,
-) -> Result<ApiKeyStatus, String> {
-    let client = state.http.clone();
-    let base = get_ollama_base_url(&state).await?;
-    let use_cloud = *state.use_direct_cloud.read().await;
-    let url = if use_cloud {
-        format!("{}/api/tags", base)
-    } else {
-        // Local OpenAI-compatible server exposes /v1/models; base already includes /v1
-        format!("{}/models", base)
-    };
-
-    let mut req = client.get(url);
-    if use_cloud {
-        let headers = build_provider_headers("ollama")
-            .await
-            .map_err(|e| e.to_string())?;
-        for (k, v) in headers.into_iter() {
-            req = req.header(k, v);
-        }
-    }
-    let result = req.send().await.map_err(|e| format!("HTTP error: {e}"))?;
-
-    if result.status().is_success() {
-        emit_or_log(
-            &window.app_handle(),
-            "api-key-status",
-            ApiKeyStatus {
-                valid: true,
-                message: Some("API key validated against Ollama Cloud".into()),
-            },
-        );
-        Ok(ApiKeyStatus {
-            valid: true,
-            message: Some("API key validated against Ollama Cloud".into()),
-        })
-    } else {
-        let msg = format!("Ollama responded with status {}", result.status());
-        emit_or_log(
-            &window.app_handle(),
-            "api-key-status",
-            ApiKeyStatus {
-                valid: false,
-                message: Some(msg.clone()),
-            },
-        );
-        Ok(ApiKeyStatus {
-            valid: false,
-            message: Some(msg),
-        })
-    }
-}
 // EASTER EGG ^.^ - IF YOU SEE THIS, THANK YOU FROM THE BOTTOM OF MY HEART FOR EVEN READING MY FILES. THIS IS THE FIRST
 // TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY to DAY.
 #[tauri::command]
@@ -1019,7 +945,6 @@ async fn save_workspace(
     }
 }
 
-
 fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     let trimmed = raw.trim();
     let (base_part, had_cloud_suffix) = if let Some(stripped) = trimmed.strip_suffix("-cloud") {
@@ -1332,7 +1257,6 @@ fn extract_events_from_chunk(
 
     events
 }
-
 
 // Database schema management is implemented in core::init_database and helpers.
 
@@ -2066,22 +1990,21 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             // Chat commands
-            commands::chat_completion,
-            commands::cancel_chat,
+            commands::chat::chat_completion,
+            commands::chat::cancel_chat,
             // Compute commands
-            commands::compute_call,
-            commands::compute_cancel,
-            commands::get_paths,
+            commands::compute::compute_call,
+            commands::compute::compute_cancel,
+            commands::compute::get_paths,
             // Provider commands
-            commands::provider_login,
-            commands::provider_health,
-            commands::provider_resolve,
-            commands::provider_install,
-            commands::verify_modules,
-            commands::save_provider_api_key,
-            commands::load_api_key,
-            commands::test_api_key,
-            commands::auth_preflight,
+            commands::providers::provider_login,
+            commands::providers::provider_health,
+            commands::providers::provider_resolve,
+            commands::providers::provider_install,
+            commands::providers::verify_modules,
+            commands::providers::save_provider_api_key,
+            commands::providers::load_api_key,
+            commands::providers::auth_preflight,
             // Other commands
             copy_into_files,
             export_from_files,
@@ -2091,7 +2014,6 @@ fn main() {
             open_path,
             save_api_key,
             set_debug,
-            test_api_key,
             persist_command,
             save_checkpoint,
             health_quick_check,
@@ -2165,70 +2087,6 @@ struct AuthPreflightResult {
 }
 
 #[tauri::command]
-async fn auth_preflight(
-    provider: String,
-    app_handle: tauri::AppHandle,
-) -> Result<AuthPreflightResult, String> {
-    let p = provider.trim().to_ascii_lowercase();
-    let start_time = std::time::Instant::now();
-
-    match build_provider_headers(&p).await {
-        Ok(_) => {
-            let result = AuthPreflightResult {
-                ok: true,
-                code: "OK".into(),
-                detail: None,
-            };
-
-            // Emit successful auth preflight telemetry
-            emit_or_log(
-                &app_handle,
-                "auth_preflight_result",
-                serde_json::json!({
-                    "provider": p,
-                    "success": true,
-                    "code": "OK",
-                    "durationMs": start_time.elapsed().as_millis(),
-                }),
-            );
-
-            Ok(result)
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            let low = msg.to_ascii_lowercase();
-            let code = if low.contains("denied") {
-                "PolicyDenied".to_string()
-            } else if low.contains("unknown provider") {
-                "UnknownProvider".to_string()
-            } else {
-                "AuthMissing".to_string()
-            };
-            let result = AuthPreflightResult {
-                ok: false,
-                code: code.clone(),
-                detail: Some(msg.clone()),
-            };
-
-            // Emit failed auth preflight telemetry
-            emit_or_log(
-                &app_handle,
-                "auth_preflight_result",
-                serde_json::json!({
-                    "provider": p,
-                    "success": false,
-                    "code": code,
-                    "detail": msg,
-                    "durationMs": start_time.elapsed().as_millis(),
-                }),
-            );
-
-            Ok(result)
-        }
-    }
-}
-
-#[tauri::command]
 async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> {
     let key = name.trim();
     if key.is_empty() || key.contains('\0') || key.contains('=') {
@@ -2252,26 +2110,6 @@ async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> 
 }
 
 /// Save a provider API key to the embedded keystore.
-/// provider: "openai" or "anthropic"
-/// ERROR: E-UICP-9202 invalid provider; E-UICP-SEC-LOCKED when keystore locked
-#[tauri::command]
-async fn save_provider_api_key(provider: String, key: String) -> Result<(), String> {
-    let account = match provider.trim().to_ascii_lowercase().as_str() {
-        "openai" => "openai:api_key",
-        "anthropic" => "anthropic:api_key",
-        "openrouter" => "openrouter:api_key",
-        "ollama" => "ollama:api_key",
-        _ => {
-            return Err(format!("E-UICP-9202 unknown provider '{provider}'"));
-        }
-    };
-    let key_trimmed = key.trim().to_string();
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.secret_set("uicp", account, secrecy::SecretString::new(key_trimmed))
-        .await
-        .map_err(|e| e.to_string())
-}
-
 /// Get debug information for all circuit breakers.
 /// Returns per-host state including failures, open status, and telemetry counters.
 ///
@@ -2356,7 +2194,10 @@ async fn reset_circuit(
     host: String,
 ) -> Result<(), String> {
     let cmd = provider_circuit::CircuitControlCommand::Reset { provider, host };
-    state.provider_circuit_manager.execute_control_command(cmd, |_, _| {}).await
+    state
+        .provider_circuit_manager
+        .execute_control_command(cmd, |_, _| {})
+        .await
 }
 
 /// Force open a circuit breaker for testing.
@@ -2367,8 +2208,15 @@ async fn force_open_circuit(
     host: String,
     duration_ms: u64,
 ) -> Result<(), String> {
-    let cmd = provider_circuit::CircuitControlCommand::ForceOpen { provider, host, duration_ms };
-    state.provider_circuit_manager.execute_control_command(cmd, |_, _| {}).await
+    let cmd = provider_circuit::CircuitControlCommand::ForceOpen {
+        provider,
+        host,
+        duration_ms,
+    };
+    state
+        .provider_circuit_manager
+        .execute_control_command(cmd, |_, _| {})
+        .await
 }
 
 /// Force close a circuit breaker.
@@ -2379,7 +2227,10 @@ async fn force_close_circuit(
     host: String,
 ) -> Result<(), String> {
     let cmd = provider_circuit::CircuitControlCommand::ForceClose { provider, host };
-    state.provider_circuit_manager.execute_control_command(cmd, |_, _| {}).await
+    state
+        .provider_circuit_manager
+        .execute_control_command(cmd, |_, _| {})
+        .await
 }
 
 /// Get resilience metrics for all providers.
@@ -2389,113 +2240,17 @@ async fn get_resilience_metrics(
 ) -> Result<Vec<chaos::ResilienceMetricsSummary>, String> {
     let providers = ["openai", "openrouter", "anthropic", "ollama"];
     let mut metrics = Vec::new();
-    
+
     for provider in providers.iter() {
         if let Some(summary) = state.resilience_metrics.get_metrics(provider).await {
             metrics.push(summary);
         }
     }
-    
+
     Ok(metrics)
 }
 
-
-
-
-
 // Removed unused proxy env commands (get_proxy_env, set_proxy_env) to avoid dead code.
-
-/// Verify that all module entries listed in the manifest exist and match their digests.
-#[tauri::command]
-async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("verify_modules");
-    use crate::registry::{load_manifest, modules_dir};
-    let dir = modules_dir(&app);
-    let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
-
-    // Optional Ed25519 signature verification public key (32-byte). Accept hex or base64.
-    let pubkey_opt: Option<[u8; 32]> = std::env::var("UICP_MODULES_PUBKEY").ok().and_then(|s| {
-        let b64 = BASE64_ENGINE.decode(s.as_bytes()).ok();
-        let hexed = if b64.is_none() {
-            hex::decode(&s).ok()
-        } else {
-            None
-        };
-        b64.or(hexed).and_then(|v| v.try_into().ok())
-    });
-
-    let mut failures: Vec<serde_json::Value> = Vec::new();
-    for entry in manifest.entries.iter() {
-        let path = dir.join(&entry.filename);
-        // Async existence check via metadata
-        let exists = tokio::fs::metadata(&path).await.is_ok();
-        if !exists {
-            failures.push(serde_json::json!({
-                "filename": entry.filename,
-                "reason": "missing",
-            }));
-            continue;
-        }
-
-        // Async read file, then hash on a blocking thread to avoid starving the runtime.
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(b) => b,
-            Err(err) => {
-                failures.push(serde_json::json!({
-                    "filename": entry.filename,
-                    "reason": "io_error",
-                    "message": err.to_string(),
-                }));
-                continue;
-            }
-        };
-
-        let calc_hex = tokio::task::spawn_blocking(move || {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            hex::encode(hasher.finalize())
-        })
-        .await
-        .map_err(|e| format!("hash join error: {e}"))?;
-
-        if !entry.digest_sha256.eq_ignore_ascii_case(&calc_hex) {
-            failures.push(serde_json::json!({
-                "filename": entry.filename,
-                "reason": "digest_mismatch",
-                "expected": entry.digest_sha256,
-                "actual": calc_hex,
-            }));
-            continue;
-        }
-
-        // Optional signature verification when both signature and public key are present.
-        if let (Some(_sig), Some(pk)) = (&entry.signature, pubkey_opt.as_ref()) {
-            match crate::registry::verify_entry_signature(entry, pk) {
-                Ok(crate::registry::SignatureStatus::Verified) => {}
-                Ok(crate::registry::SignatureStatus::Invalid)
-                | Ok(crate::registry::SignatureStatus::Missing) => {
-                    failures.push(serde_json::json!({
-                        "filename": entry.filename,
-                        "reason": "signature_mismatch",
-                    }))
-                }
-                Err(err) => failures.push(serde_json::json!({
-                    "filename": entry.filename,
-                    "reason": "signature_error",
-                    "message": err.to_string(),
-                })),
-            }
-        }
-    }
-
-    Ok(serde_json::json!({
-        "ok": failures.is_empty(),
-        "dir": dir.display().to_string(),
-        "failures": failures,
-        "count": manifest.entries.len(),
-    }))
-}
 
 /// Copy a host file into the workspace files directory and return its ws:/ path.
 #[tauri::command]

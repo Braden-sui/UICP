@@ -45,6 +45,7 @@ const RNG_FAILURE_CODE: &str = "E-UICP-SEC-RNG";
 
 /// Legacy environment variable mappings used during migration from plaintext .env files.
 /// Tuple layout: (service namespace, account identifier, environment variable name)
+#[allow(dead_code)]
 pub const ENV_SECRET_MAPPINGS: &[(&str, &str, &str)] = &[
     ("uicp", "openai:api_key", "OPENAI_API_KEY"),
     ("uicp", "anthropic:api_key", "ANTHROPIC_API_KEY"),

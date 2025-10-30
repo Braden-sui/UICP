@@ -1,11 +1,11 @@
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
-use serde_json::Value;
-use tauri::{Emitter, Manager, State, WebviewUrl};
+use sha2::Digest;
 
-use crate::core::emit_or_log;
-use crate::provider_cli::{ProviderHealthResult, ProviderLoginResult};
 use crate::keystore::get_or_init_keystore;
+use crate::provider_cli::{ProviderHealthResult, ProviderLoginResult};
+use crate::registry::{load_manifest, modules_dir};
+use secrecy::{ExposeSecret, SecretString};
 
 #[tauri::command]
 pub async fn provider_login(provider: String) -> Result<ProviderLoginResult, String> {
@@ -49,7 +49,6 @@ pub async fn provider_install(
 pub async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("verify_modules");
-    use crate::registry::{load_manifest, modules_dir};
     let dir = modules_dir(&app);
     let manifest = load_manifest(&app).map_err(|e| format!("load manifest: {e}"))?;
 
@@ -78,8 +77,15 @@ pub async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, 
                     // Check signature if pubkey is configured
                     if let Some(pubkey) = pubkey_opt {
                         match crate::registry::verify_entry_signature(entry, &pubkey) {
-                            Ok(true) => verified.push(entry.filename.clone()),
-                            Ok(false) => unsigned.push(entry.filename.clone()),
+                            Ok(crate::registry::SignatureStatus::Verified) => {
+                                verified.push(entry.filename.clone())
+                            }
+                            Ok(crate::registry::SignatureStatus::Invalid) => {
+                                unsigned.push(entry.filename.clone())
+                            }
+                            Ok(crate::registry::SignatureStatus::Missing) => {
+                                unsigned.push(format!("{} (no signature)", entry.filename))
+                            }
                             Err(e) => {
                                 // Treat verification errors as unsigned but log
                                 unsigned.push(format!("{} (sig err: {})", entry.filename, e));
@@ -109,57 +115,63 @@ pub async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, 
 }
 
 #[tauri::command]
-pub async fn save_provider_api_key(
-    provider: String,
-    api_key: String,
-) -> Result<(), String> {
-    let ks = crate::keystore::get_or_init_keystore()
-        .await
-        .map_err(|e| e.to_string())?;
-    ks.set_secret(&format!("{}_api_key", provider.to_ascii_lowercase()), &api_key)
-        .await
-        .map_err(|e| e.to_string())
+pub async fn save_provider_api_key(provider: String, api_key: String) -> Result<(), String> {
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    ks.secret_set(
+        "uicp",
+        &format!("{}_api_key", provider.to_ascii_lowercase()),
+        SecretString::new(api_key),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn load_api_key(provider: String) -> Result<Option<String>, String> {
-    let ks = crate::keystore::get_or_init_keystore()
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
+    match ks
+        .read_internal(
+            "uicp",
+            &format!("{}_api_key", provider.to_ascii_lowercase()),
+        )
         .await
-        .map_err(|e| e.to_string())?;
-    ks.get_secret(&format!("{}_api_key", provider.to_ascii_lowercase()))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn test_api_key(provider: String, api_key: String) -> Result<bool, String> {
-    let normalized = provider.trim().to_ascii_lowercase();
-    crate::provider_cli::test_api_key(&normalized, &api_key).await
+    {
+        Ok(secret_bytes) => {
+            let secret_str = String::from_utf8(secret_bytes.expose_secret().to_vec())
+                .map_err(|e| e.to_string())?;
+            Ok(Some(secret_str))
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 #[tauri::command]
 pub async fn auth_preflight(provider: Option<String>) -> Result<serde_json::Value, String> {
-    let ks = crate::keystore::get_or_init_keystore()
-        .await
-        .map_err(|e| e.to_string())?;
+    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
     let mut keys = std::collections::HashMap::new();
-    
+
     // Check specific provider if requested
     if let Some(p) = provider {
-        let key = format!("{}_api_key", p.to_ascii_lowercase());
-        let exists = ks.secret_exists(&key).await.map_err(|e| e.to_string())?;
+        let account = format!("{}_api_key", p.to_ascii_lowercase());
+        let exists = ks
+            .secret_exists("uicp", &account)
+            .await
+            .map_err(|e| e.to_string())?;
         keys.insert(p, exists);
     } else {
         // Check all known providers
         for provider in ["openai", "openrouter", "anthropic", "ollama"] {
-            let key = format!("{}_api_key", provider);
-            let exists = ks.secret_exists(&key).await.map_err(|e| e.to_string())?;
+            let account = format!("{}_api_key", provider);
+            let exists = ks
+                .secret_exists("uicp", &account)
+                .await
+                .map_err(|e| e.to_string())?;
             keys.insert(provider.to_string(), exists);
         }
     }
-    
+
     Ok(serde_json::json!({
         "keys": keys,
-        "keystoreLocked": ks.is_locked().await.map_err(|e| e.to_string())?,
+        "keystoreLocked": ks.status().locked,
     }))
 }

@@ -120,8 +120,11 @@ pub struct HostCtx {
 #[derive(Clone, Copy)]
 pub struct Limits {
     pub resp_max_bytes: usize,
+    #[allow(dead_code)]
     pub rps_default: f64,
+    #[allow(dead_code)]
     pub burst: f64,
+    #[allow(dead_code)]
     pub conc_max: usize,
 }
 

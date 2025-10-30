@@ -1,52 +1,20 @@
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
-use base64::Engine as _;
-use chrono::Utc;
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use tauri::{
-    async_runtime::spawn, Emitter, Manager, State, WebviewUrl,
-};
-use tokio::sync::RwLock;
+use tauri::{async_runtime::spawn, Emitter, Manager, State};
 
-use crate::core::{emit_or_log, APP_NAME, DATA_DIR, DB_PATH, ENV_PATH, FILES_DIR, LOGS_DIR};
-use crate::policy::enforce_compute_policy;
-use crate::compute_cache;
-use crate::compute_input::canonicalize_task_input;
 use crate::codegen;
 use crate::compute;
-use crate::registry;
-use crate::authz;
-use crate::policy::{
-    ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
-    ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
-};
+use crate::compute_cache;
+use crate::compute_input::canonicalize_task_input;
+use crate::core::{emit_or_log, DATA_DIR, FILES_DIR};
+use crate::policy::enforce_compute_policy;
+use crate::policy::{ComputeFinalErr, ComputeJobSpec};
+use crate::{AppState, DB_PATH, ENV_PATH};
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatCompletionRequest {
-    pub model: Option<String>,
-    pub messages: Vec<ChatMessageInput>,
-    pub stream: Option<bool>,
-    pub tools: Option<serde_json::Value>,
-    pub format: Option<serde_json::Value>,
-    #[serde(rename = "response_format")]
-    pub response_format: Option<serde_json::Value>,
-    #[serde(rename = "tool_choice")]
-    pub tool_choice: Option<serde_json::Value>,
-    pub reasoning: Option<serde_json::Value>,
-    pub options: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatMessageInput {
-    pub role: String,
-    // Accept structured developer payloads (objects) and legacy string messages.
-    pub content: serde_json::Value,
-}
+// Re-export types from main.rs for other modules
+pub use crate::{ChatCompletionRequest, ChatMessageInput};
 
 #[tauri::command]
 pub async fn compute_call(

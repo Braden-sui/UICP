@@ -5,13 +5,16 @@ pub const EVENT_COMPUTE_RESULT_FINAL: &str = "compute-result-final";
 pub const EVENT_COMPUTE_RESULT_PARTIAL: &str = "compute-result-partial";
 
 // WHY: UI debug stream uses a dedicated event channel that the frontend listens to.
+#[allow(dead_code)]
 pub const EVENT_UI_DEBUG: &str = "ui-debug-log";
 
 // WHY: Normalized LLM StreamEvent v1 channel (backend emits normalized content/tool_call/done/error events)
 pub const EVENT_STREAM_V1: &str = "uicp-stream-v1";
 
+use rusqlite::OptionalExtension;
+use secrecy::SecretString;
 use serde_json::Value;
-use tauri::{Emitter, Manager, WebviewUrl};
+use tauri::{Emitter, Manager};
 
 // Import known provider env vars into keystore when unlocked. Best-effort; errors are logged but not surfaced.
 pub async fn import_env_secrets_into_keystore(
@@ -28,8 +31,13 @@ pub async fn import_env_secrets_into_keystore(
         if let Ok(val) = std::env::var(env_key) {
             if !val.is_empty() {
                 let key = format!("{}:{}", service, account);
-                if let Err(e) = ks.set_secret(&key, &val).await {
-                    tracing::warn!(target = "uicp", "Failed to import env secret {}: {}", key, e);
+                if let Err(e) = ks.secret_set("uicp", account, SecretString::new(val)).await {
+                    tracing::warn!(
+                        target = "uicp",
+                        "Failed to import env secret {}: {}",
+                        key,
+                        e
+                    );
                 } else {
                     tracing::info!(target = "uicp", "Imported env secret: {}", key);
                 }
@@ -55,7 +63,7 @@ pub fn emit_problem_detail(
     if let Some(ms) = retry_after_ms {
         error["retryAfterMs"] = Value::Number(ms.into());
     }
-    let _ = app.emit(
+    let _ = app_handle.emit(
         "problem-detail",
         serde_json::json!({
             "requestId": request_id,
@@ -106,11 +114,9 @@ pub fn is_stream_v1_enabled() -> bool {
 }
 
 // Extract normalized events from provider-agnostic chunks
-pub fn extract_events_from_chunk(
-    chunk: &Value,
-    default_channel: Option<&str>,
-) -> Vec<Value> {
+pub fn extract_events_from_chunk(chunk: &Value, default_channel: Option<&str>) -> Vec<Value> {
     let mut events = Vec::new();
+    let empty_object = Value::Object(serde_json::Map::new());
 
     // Handle Anthropic-style content blocks
     if let Some(content_block) = chunk.get("content_block") {
@@ -127,11 +133,11 @@ pub fn extract_events_from_chunk(
                 }
                 "tool_use" => {
                     if let Some(name) = content_block.get("name").and_then(|v| v.as_str()) {
-                        let id = content_block.get("id")
+                        let id = content_block
+                            .get("id")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let input = content_block.get("input")
-                            .unwrap_or(&Value::Object(serde_json::Map::new()));
+                        let input = content_block.get("input").unwrap_or(&empty_object);
                         events.push(serde_json::json!({
                             "type": "tool_call",
                             "channel": default_channel.unwrap_or("tool"),
@@ -158,21 +164,18 @@ pub fn extract_events_from_chunk(
                         "text": content,
                     }));
                 }
-                
+
                 // Tool call delta
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                     for tool_call in tool_calls {
                         if let Some(function) = tool_call.get("function") {
-                            let name = function.get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let args = function.get("arguments")
+                            let name = function.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            let args = function
+                                .get("arguments")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("{}");
-                            let id = tool_call.get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            
+                            let id = tool_call.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
                             if !name.is_empty() {
                                 events.push(serde_json::json!({
                                     "type": "tool_call",
@@ -193,16 +196,13 @@ pub fn extract_events_from_chunk(
     if let Some(tool_calls) = chunk.get("tool_calls").and_then(|v| v.as_array()) {
         for tool_call in tool_calls {
             if let Some(function) = tool_call.get("function") {
-                let name = function.get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let args = function.get("arguments")
+                let name = function.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let args = function
+                    .get("arguments")
                     .and_then(|v| v.as_str())
                     .unwrap_or("{}");
-                let id = tool_call.get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                
+                let id = tool_call.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
                 if !name.is_empty() {
                     events.push(serde_json::json!({
                         "type": "tool_call",
