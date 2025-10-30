@@ -1,10 +1,28 @@
 #![deny(clippy::print_stderr)]
 
 pub mod action_log;
+
 pub mod anthropic;
 pub mod apppack;
 pub mod authz;
+pub mod chaos;
+pub mod circuit;
+pub mod code_provider;
+pub mod codegen;
+pub mod compute;
+pub mod compute_cache;
+pub mod compute_input;
+pub mod config;
+pub mod core;
+pub mod events;
+pub mod hostctx;
+pub mod keystore;
 pub mod policy;
+pub mod provider_adapters;
+pub mod provider_circuit;
+pub mod providers;
+pub mod registry;
+pub mod resilience;
 
 pub use action_log::{
     ensure_action_log_schema, parse_pubkey, parse_seed, verify_chain, ActionLogHandle,
@@ -16,25 +34,9 @@ pub use policy::{
 };
 
 // WHY: Keep compute event channel names consistent across host layers (commands, runtime, bridge).
-pub mod events;
 pub use events::EVENT_COMPUTE_RESULT_FINAL;
 #[cfg(any(test, feature = "wasm_compute", feature = "compute_harness"))]
 pub use events::EVENT_COMPUTE_RESULT_PARTIAL;
-pub mod chaos;
-pub mod circuit;
-pub mod code_provider;
-pub mod codegen;
-pub mod compute;
-pub mod compute_cache;
-pub mod compute_input;
-pub mod core;
-pub mod hostctx;
-pub mod keystore;
-pub mod provider_adapters;
-pub mod provider_circuit;
-pub mod providers;
-pub mod registry;
-pub mod resilience;
 
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod provider_cli;
@@ -50,6 +52,7 @@ pub mod component_bindings;
     test,
     feature = "compute_harness"
 ))]
+use serde::{Deserialize, Serialize};
 use serde_json::Value; // WHY: compute_cache_key is exercised in harness/tests; import serde_json value there.
 
 pub use core::{
@@ -58,11 +61,49 @@ pub use core::{
     LOGS_DIR,
 };
 
+// Re-export path constants from main.rs
+pub use main_rs_shim::{DB_PATH, ENV_PATH};
+
+// Shim module to re-export main.rs constants
+mod main_rs_shim {
+    use once_cell::sync::Lazy;
+    use std::path::PathBuf;
+
+    pub static DB_PATH: Lazy<PathBuf> = Lazy::new(|| super::core::DATA_DIR.join("data.db"));
+    pub static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| super::core::DATA_DIR.join(".env"));
+}
+
+// Chat completion request type (mirrored from main.rs)
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatCompletionRequest {
+    pub model: Option<String>,
+    pub messages: Vec<ChatMessageInput>,
+    pub stream: Option<bool>,
+    pub tools: Option<serde_json::Value>,
+    pub format: Option<serde_json::Value>,
+    #[serde(rename = "response_format")]
+    pub response_format: Option<serde_json::Value>,
+    #[serde(rename = "tool_choice")]
+    pub tool_choice: Option<serde_json::Value>,
+    pub reasoning: Option<serde_json::Value>,
+    pub options: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageInput {
+    pub role: String,
+    pub content: String,
+}
+
 // WHY: Restrict harness-only commands to tests or the explicit compute_harness feature to avoid dead code warnings in wasm-only builds.
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod commands;
 #[cfg(any(test, feature = "compute_harness"))]
-pub use commands::{
+pub mod commands_harness;
+#[cfg(any(test, feature = "compute_harness"))]
+pub use commands_harness::{
     clear_compute_cache, compute_call, compute_cancel, copy_into_files, get_modules_info,
     load_workspace, save_workspace,
 };

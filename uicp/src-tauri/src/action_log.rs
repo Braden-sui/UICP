@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use ::rusqlite::{params, Connection, OptionalExtension};
 use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
@@ -16,7 +17,6 @@ use chrono::Utc;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{

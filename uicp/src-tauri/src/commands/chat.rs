@@ -5,7 +5,6 @@ use std::{
 
 use chrono::Utc;
 use reqwest::Url;
-use serde_json::Value;
 use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State,
@@ -572,10 +571,12 @@ pub async fn chat_completion(
                             attempt_local,
                         ) {
                             // Respect Retry-After header for rate limits
-                            let final_delay = if status_code == 429 && retry_after_ms.is_some() {
-                                Duration::from_millis(
-                                    retry_after_ms.unwrap().max(delay.as_millis() as u64),
-                                )
+                            let final_delay = if status_code == 429 {
+                                if let Some(ms) = retry_after_ms {
+                                    Duration::from_millis(ms.max(delay.as_millis() as u64))
+                                } else {
+                                    delay
+                                }
                             } else {
                                 delay
                             };
@@ -930,51 +931,39 @@ pub async fn chat_completion(
                                 Ok(bytes) => {
                                     // Append chunk and process complete lines only; keep remainder in carry.
                                     carry.push_str(&String::from_utf8_lossy(&bytes));
-                                    loop {
-                                        if let Some(idx) = carry.find('\n') {
-                                            let mut line = carry[..idx].to_string();
-                                            // drain including newline
-                                            carry.drain(..=idx);
-                                            // handle CRLF
-                                            if line.ends_with('\r') {
-                                                line.pop();
-                                            }
-                                            let trimmed = line.trim();
-                                            if trimmed.is_empty() {
-                                                // blank line terminates one SSE event
-                                                if !event_buf.is_empty() {
-                                                    let payload = std::mem::take(&mut event_buf);
-                                                    process_payload(
-                                                        &payload,
-                                                        &app_handle,
-                                                        &rid_for_task,
-                                                    );
-                                                }
-                                                continue;
-                                            }
-                                            if let Some(stripped) = trimmed.strip_prefix("data:") {
-                                                let content = stripped.trim();
-                                                if content == "[DONE]" {
-                                                    process_payload(
-                                                        "[DONE]",
-                                                        &app_handle,
-                                                        &rid_for_task,
-                                                    );
-                                                    // reset event buffer
-                                                    event_buf.clear();
-                                                    continue;
-                                                }
-                                                if !event_buf.is_empty() {
-                                                    event_buf.push('\n');
-                                                }
-                                                event_buf.push_str(content);
-                                                continue;
-                                            }
-                                            // Fallback: treat line as payload content (non-SSE providers)
-                                            event_buf.push_str(trimmed);
-                                        } else {
-                                            break;
+                                    while let Some(idx) = carry.find('\n') {
+                                        let mut line = carry[..idx].to_string();
+                                        // drain including newline
+                                        carry.drain(..=idx);
+                                        // handle CRLF
+                                        if line.ends_with('\r') {
+                                            line.pop();
                                         }
+                                        let trimmed = line.trim();
+                                        if trimmed.is_empty() {
+                                            // blank line terminates one SSE event
+                                            if !event_buf.is_empty() {
+                                                let payload = std::mem::take(&mut event_buf);
+                                                process_payload(&payload, &app_handle, &rid_for_task);
+                                            }
+                                            continue;
+                                        }
+                                        if let Some(stripped) = trimmed.strip_prefix("data:") {
+                                            let content = stripped.trim();
+                                            if content == "[DONE]" {
+                                                process_payload("[DONE]", &app_handle, &rid_for_task);
+                                                // reset event buffer
+                                                event_buf.clear();
+                                                continue;
+                                            }
+                                            if !event_buf.is_empty() {
+                                                event_buf.push('\n');
+                                            }
+                                            event_buf.push_str(content);
+                                            continue;
+                                        }
+                                        // Fallback: treat line as payload content (non-SSE providers)
+                                        event_buf.push_str(trimmed);
                                     }
                                 }
                             },

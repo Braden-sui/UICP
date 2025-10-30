@@ -5,8 +5,16 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use rand::Rng;
 use serde::{Deserialize, Serialize};
+
+// Re-export from config
+pub use crate::config::resilience::{
+    auth_policy_no_retry, network_policy, rate_limit_policy, timeout_policy, transport_policy,
+    RetryPolicy, ANTHROPIC_DEFAULT_CIRCUIT_OPEN_MS, ANTHROPIC_DEFAULT_MAX_FAILURES,
+    OLLAMA_DEFAULT_CIRCUIT_OPEN_MS, OLLAMA_DEFAULT_MAX_FAILURES, OPENAI_DEFAULT_CIRCUIT_OPEN_MS,
+    OPENAI_DEFAULT_MAX_FAILURES, OPENROUTER_DEFAULT_CIRCUIT_OPEN_MS,
+    OPENROUTER_DEFAULT_MAX_FAILURES,
+};
 
 /// Error categories for different retry strategies
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -27,52 +35,6 @@ pub enum ErrorCategory {
     Unknown,
 }
 
-/// Retry policy configuration
-#[derive(Debug, Clone)]
-pub struct RetryPolicy {
-    /// Maximum number of retry attempts
-    pub max_attempts: u8,
-    /// Base delay in milliseconds
-    pub base_delay_ms: u64,
-    /// Maximum delay in milliseconds
-    pub max_delay_ms: u64,
-    /// Multiplier for exponential backoff
-    pub multiplier: f64,
-    /// Whether to add jitter to prevent thundering herd
-    pub jitter: bool,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            base_delay_ms: 200,
-            max_delay_ms: 5000,
-            multiplier: 2.0,
-            jitter: true,
-        }
-    }
-}
-
-impl RetryPolicy {
-    /// Calculate delay for a given attempt number
-    pub fn calculate_delay(&self, attempt: u8) -> Duration {
-        let delay_ms = (self.base_delay_ms as f64 * self.multiplier.powi(attempt as i32)) as u64;
-        let delay_ms = delay_ms.min(self.max_delay_ms);
-
-        let final_delay = if self.jitter {
-            let jitter_range = delay_ms / 4;
-            let mut rng = rand::thread_rng();
-            let offset = rng.gen_range(0..=2 * jitter_range);
-            delay_ms.saturating_add(offset).saturating_sub(jitter_range)
-        } else {
-            delay_ms
-        };
-
-        Duration::from_millis(final_delay)
-    }
-}
-
 /// Provider-specific resilience configuration
 #[derive(Debug, Clone)]
 pub struct ProviderResilienceConfig {
@@ -87,75 +49,21 @@ impl Default for ProviderResilienceConfig {
         let mut retry_policies = HashMap::new();
 
         // Rate limit: longer delays, respect Retry-After
-        retry_policies.insert(
-            ErrorCategory::RateLimit,
-            RetryPolicy {
-                max_attempts: 5,
-                base_delay_ms: 1000,
-                max_delay_ms: 60000,
-                multiplier: 2.0,
-                jitter: true,
-            },
-        );
+        retry_policies.insert(ErrorCategory::RateLimit, rate_limit_policy());
 
         // Timeout: moderate delays
-        retry_policies.insert(
-            ErrorCategory::Timeout,
-            RetryPolicy {
-                max_attempts: 3,
-                base_delay_ms: 500,
-                max_delay_ms: 10000,
-                multiplier: 1.5,
-                jitter: true,
-            },
-        );
+        retry_policies.insert(ErrorCategory::Timeout, timeout_policy());
 
         // Transport: shorter delays for fast recovery
-        retry_policies.insert(
-            ErrorCategory::Transport,
-            RetryPolicy {
-                max_attempts: 4,
-                base_delay_ms: 100,
-                max_delay_ms: 2000,
-                multiplier: 2.0,
-                jitter: true,
-            },
-        );
+        retry_policies.insert(ErrorCategory::Transport, transport_policy());
 
         // Network: connection issues
-        retry_policies.insert(
-            ErrorCategory::Network,
-            RetryPolicy {
-                max_attempts: 3,
-                base_delay_ms: 200,
-                max_delay_ms: 5000,
-                multiplier: 2.0,
-                jitter: true,
-            },
-        );
+        retry_policies.insert(ErrorCategory::Network, network_policy());
 
         // Auth and Policy errors: no retry
-        retry_policies.insert(
-            ErrorCategory::Auth,
-            RetryPolicy {
-                max_attempts: 0,
-                base_delay_ms: 0,
-                max_delay_ms: 0,
-                multiplier: 1.0,
-                jitter: false,
-            },
-        );
+        retry_policies.insert(ErrorCategory::Auth, auth_policy_no_retry());
 
-        retry_policies.insert(
-            ErrorCategory::Policy,
-            RetryPolicy {
-                max_attempts: 0,
-                base_delay_ms: 0,
-                max_delay_ms: 0,
-                multiplier: 1.0,
-                jitter: false,
-            },
-        );
+        retry_policies.insert(ErrorCategory::Policy, auth_policy_no_retry());
 
         Self {
             retry_policies,
@@ -193,12 +101,16 @@ impl RetryEngine {
             if let Ok(v) = max_failures.parse::<u8>() {
                 config.circuit_config.max_failures = v;
             }
+        } else {
+            config.circuit_config.max_failures = OPENAI_DEFAULT_MAX_FAILURES;
         }
 
         if let Ok(open_ms) = std::env::var("UICP_OPENAI_CIRCUIT_OPEN_MS") {
             if let Ok(v) = open_ms.parse::<u64>() {
                 config.circuit_config.open_duration_ms = v;
             }
+        } else {
+            config.circuit_config.open_duration_ms = OPENAI_DEFAULT_CIRCUIT_OPEN_MS;
         }
 
         // OpenAI-specific retry policies
@@ -221,12 +133,16 @@ impl RetryEngine {
             if let Ok(v) = max_failures.parse::<u8>() {
                 config.circuit_config.max_failures = v;
             }
+        } else {
+            config.circuit_config.max_failures = OPENROUTER_DEFAULT_MAX_FAILURES;
         }
 
         if let Ok(open_ms) = std::env::var("UICP_OPENROUTER_CIRCUIT_OPEN_MS") {
             if let Ok(v) = open_ms.parse::<u64>() {
                 config.circuit_config.open_duration_ms = v;
             }
+        } else {
+            config.circuit_config.open_duration_ms = OPENROUTER_DEFAULT_CIRCUIT_OPEN_MS;
         }
 
         // OpenRouter is generally more lenient
@@ -248,12 +164,16 @@ impl RetryEngine {
             if let Ok(v) = max_failures.parse::<u8>() {
                 config.circuit_config.max_failures = v;
             }
+        } else {
+            config.circuit_config.max_failures = ANTHROPIC_DEFAULT_MAX_FAILURES;
         }
 
         if let Ok(open_ms) = std::env::var("UICP_ANTHROPIC_CIRCUIT_OPEN_MS") {
             if let Ok(v) = open_ms.parse::<u64>() {
                 config.circuit_config.open_duration_ms = v;
             }
+        } else {
+            config.circuit_config.open_duration_ms = ANTHROPIC_DEFAULT_CIRCUIT_OPEN_MS;
         }
 
         // Anthropic has moderate rate limits
@@ -270,24 +190,20 @@ impl RetryEngine {
     fn load_ollama_config() -> ProviderResilienceConfig {
         let mut config = ProviderResilienceConfig::default();
 
-        // Override from environment if present
-        if let Ok(max_failures) = std::env::var("UICP_OLLAMA_MAX_FAILURES") {
-            if let Ok(v) = max_failures.parse::<u8>() {
-                config.circuit_config.max_failures = v;
-            }
+        config.circuit_config.max_failures = OLLAMA_DEFAULT_MAX_FAILURES;
+        config.circuit_config.open_duration_ms = OLLAMA_DEFAULT_CIRCUIT_OPEN_MS;
+
+        // Ollama is local, more lenient retry policies
+        if let Some(policy) = config.retry_policies.get_mut(&ErrorCategory::RateLimit) {
+            policy.max_attempts = 2;
+            policy.base_delay_ms = 100;
+            policy.max_delay_ms = 1000;
         }
 
-        if let Ok(open_ms) = std::env::var("UICP_OLLAMA_CIRCUIT_OPEN_MS") {
-            if let Ok(v) = open_ms.parse::<u64>() {
-                config.circuit_config.open_duration_ms = v;
-            }
-        }
-
-        // Ollama is local, more aggressive retry
         if let Some(policy) = config.retry_policies.get_mut(&ErrorCategory::Transport) {
             policy.max_attempts = 5;
             policy.base_delay_ms = 50;
-            policy.max_delay_ms = 1000;
+            policy.max_delay_ms = 500;
         }
 
         config

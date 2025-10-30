@@ -4,9 +4,10 @@
 use tauri::{Emitter, Manager, Runtime, State};
 // use anyhow::Context;
 
+use crate::policy::{enforce_compute_policy, ComputeFinalErr, ComputeJobSpec};
 use crate::{
     codegen, compute, compute_cache, compute_input::canonicalize_task_input, emit_or_log,
-    enforce_compute_policy, provider_cli, registry, AppState, ComputeFinalErr, ComputeJobSpec,
+    provider_cli, registry, AppState,
 };
 use std::time::Instant;
 
@@ -155,7 +156,7 @@ pub async fn compute_call<R: Runtime>(
             );
             return Ok(());
         } else if cache_mode == "readonly" {
-            let payload = crate::ComputeFinalErr {
+            let payload = ComputeFinalErr {
                 ok: false,
                 job_id: spec.job_id.clone(),
                 task: spec.task.clone(),

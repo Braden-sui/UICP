@@ -23,16 +23,16 @@ pub async fn init_app_services(app: &tauri::AppHandle) -> Result<(), Box<dyn std
     let state: State<'_, AppState> = app.state();
 
     // Initialize background tasks
-    init_background_tasks(app).await;
+    init_background_tasks(app);
 
     // Initialize provider circuits
-    init_provider_circuits(&state).await;
+    init_provider_circuits(&state);
 
     Ok(())
 }
 
 #[allow(dead_code)]
-async fn init_background_tasks(app: &tauri::AppHandle) {
+fn init_background_tasks(app: &tauri::AppHandle) {
     let _app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         // Start background cleanup tasks when available
@@ -41,7 +41,7 @@ async fn init_background_tasks(app: &tauri::AppHandle) {
 }
 
 #[allow(dead_code)]
-async fn init_provider_circuits(_state: &AppState) {
+fn init_provider_circuits(_state: &AppState) {
     // Initialize provider circuit manager
     // TODO: Implement initialize method on ProviderCircuitManager
 }

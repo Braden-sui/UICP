@@ -8,14 +8,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ::rusqlite::{params, OptionalExtension};
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use chrono::Utc;
 use dotenvy::dotenv;
 use hmac::{Hmac, Mac};
-use once_cell::sync::Lazy;
 use reqwest::{Client, Url};
-use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tauri::{async_runtime::spawn, Emitter, Manager, State, WebviewUrl};
@@ -61,17 +60,16 @@ mod resilience_tests;
 #[cfg(feature = "wasm_compute")]
 mod wasi_logging;
 
+// Add config module
+mod config;
+
 // New module structure
 mod commands;
+mod services;
 mod initialization;
 
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod commands_harness;
-
-pub use policy::{
-    enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
-    ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
-};
 
 use crate::apppack::{apppack_entry_html, apppack_install, apppack_validate};
 use crate::egress::egress_fetch;
@@ -89,16 +87,17 @@ pub use core::{
 // Minimal inline splash script to render the futuristic loader instantly without contacting dev server.
 // This runs inside a separate splash window. Keep it compact and self-contained.
 
-static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("data.db"));
-static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join(".env"));
+static DB_PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| DATA_DIR.join("data.db"));
+static ENV_PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| DATA_DIR.join(".env"));
 
 // files_dir_path is re-exported from core
 
-/// Remove a chat request handle from the ongoing map (helper for consistent cleanup).
-pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
-    let state: State<'_, AppState> = app_handle.state();
-    state.ongoing.write().await.remove(request_id);
-}
+// Remove a chat request handle from the ongoing map (helper for consistent cleanup).
+// #[allow(dead_code)]
+// pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
+//     let state: State<'_, AppState> = app_handle.state();
+//     state.ongoing.write().await.remove(request_id);
+// }
 
 /// Reload host permission policies from AppData/uicp/permissions.json.
 #[tauri::command]
@@ -261,7 +260,7 @@ async fn export_from_files(ws_path: String, dest_path: String) -> Result<String,
 
     let src_buf: PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
         Ok(p) => p,
-        Err(e) => return Err(format!("{}", e.message)),
+        Err(e) => return Err(e.message.to_string()),
     };
     if !src_buf.exists() {
         return Err(format!("Source not found: {}", ws_path));
@@ -341,51 +340,7 @@ async fn mint_job_token(
 
 // Circuit breaker functions moved to circuit.rs module
 
-fn emit_problem_detail(
-    app_handle: &tauri::AppHandle,
-    request_id: &str,
-    status: u16,
-    code: &str,
-    detail: &str,
-    retry_after_ms: Option<u64>,
-) {
-    let mut error = serde_json::json!({
-        "status": status,
-        "code": code,
-        "detail": detail,
-        "requestId": request_id,
-    });
-    if let Some(ms) = retry_after_ms {
-        if let Some(obj) = error.as_object_mut() {
-            obj.insert("retryAfterMs".into(), serde_json::json!(ms));
-        }
-    }
-    emit_or_log(
-        app_handle,
-        "ollama-completion",
-        serde_json::json!({ "done": true, "error": error }),
-    );
-    // Also emit normalized error event when StreamEvent v1 is enabled
-    if is_stream_v1_enabled() {
-        let evt = serde_json::json!({
-            "type": "error",
-            "code": code,
-            "detail": detail,
-        });
-        emit_or_log(
-            app_handle,
-            crate::events::EVENT_STREAM_V1,
-            serde_json::json!({ "requestId": request_id, "event": evt }),
-        );
-        // Terminal done after error for v1 channel
-        let done_evt = serde_json::json!({ "type": "done" });
-        emit_or_log(
-            app_handle,
-            crate::events::EVENT_STREAM_V1,
-            serde_json::json!({ "requestId": request_id, "event": done_evt }),
-        );
-    }
-}
+// Removed unused emit_problem_detail helper (superseded by commands/chat.rs path)
 
 // AppState is re-exported from core
 
@@ -395,11 +350,7 @@ struct SaveIndicatorPayload {
     timestamp: i64,
 }
 
-#[derive(Clone, Serialize)]
-struct ApiKeyStatus {
-    valid: bool,
-    message: Option<String>,
-}
+// Removed unused ApiKeyStatus struct
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CommandRequest {
@@ -921,7 +872,7 @@ async fn save_workspace(
         Ok(_) => {
             *state.last_save_ok.write().await = true;
             emit_or_log(
-                &window.app_handle(),
+                window.app_handle(),
                 "save-indicator",
                 SaveIndicatorPayload {
                     ok: true,
@@ -933,7 +884,7 @@ async fn save_workspace(
         Err(err) => {
             *state.last_save_ok.write().await = false;
             emit_or_log(
-                &window.app_handle(),
+                window.app_handle(),
                 "save-indicator",
                 SaveIndicatorPayload {
                     ok: false,
@@ -945,6 +896,7 @@ async fn save_workspace(
     }
 }
 
+#[cfg(test)]
 fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     let trimmed = raw.trim();
     let (base_part, had_cloud_suffix) = if let Some(stripped) = trimmed.strip_suffix("-cloud") {
@@ -978,18 +930,11 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
 }
 
 // Feature flag: enable backend emission of normalized StreamEvent v1 alongside legacy events
-fn is_stream_v1_enabled() -> bool {
-    match std::env::var("UICP_STREAM_V1") {
-        Ok(v) => {
-            let s = v.trim().to_ascii_lowercase();
-            matches!(s.as_str(), "1" | "true" | "on" | "yes")
-        }
-        Err(_) => false,
-    }
-}
+// Removed unused stream v1 backend flag helper (handled in chat command path)
 
 // Minimal extractor that converts OpenAI-like delta JSON into StreamEvent v1 events.
 // Assumes Anthropic has been pre-normalized to OpenAI-like deltas via anthropic::normalize_message.
+#[cfg(test)]
 fn extract_events_from_chunk(
     chunk: &serde_json::Value,
     default_channel: Option<&str>,
@@ -1038,12 +983,16 @@ fn extract_events_from_chunk(
     };
 
     // Helper: handle content values that may be string, array of parts, or object
+    // Reduce type complexity for closure parameters used below
+    type PushContentFn = dyn Fn(&mut Vec<serde_json::Value>, Option<&str>, &str);
+    type PushToolCallFn = dyn Fn(&mut Vec<serde_json::Value>, i64, Option<&str>, Option<&str>, serde_json::Value);
+
     fn handle_content_value(
         events: &mut Vec<Value>,
         channel: Option<&str>,
         value: &Value,
-        push_content: &dyn Fn(&mut Vec<Value>, Option<&str>, &str),
-        push_tool_call: &dyn Fn(&mut Vec<Value>, i64, Option<&str>, Option<&str>, Value),
+        push_content: &PushContentFn,
+        push_tool_call: &PushToolCallFn,
     ) {
         match value {
             Value::String(s) => {
@@ -1076,7 +1025,7 @@ fn extract_events_from_chunk(
                                     .or_else(|| {
                                         function_obj.and_then(|f| f.get("arguments").cloned())
                                     })
-                                    .unwrap_or_else(|| Value::Null);
+                                    .unwrap_or(Value::Null);
                                 let id = map
                                     .get("id")
                                     .and_then(|v| v.as_str())
@@ -1144,7 +1093,7 @@ fn extract_events_from_chunk(
                             .or_else(|| {
                                 tc.get("function").and_then(|f| f.get("arguments").cloned())
                             })
-                            .unwrap_or_else(|| Value::Null);
+                            .unwrap_or(Value::Null);
                         push_tool_call(&mut events, index, id, name, arguments);
                     }
                 }
@@ -1166,7 +1115,7 @@ fn extract_events_from_chunk(
                                 .get("function")
                                 .and_then(|f| f.get("arguments").cloned())
                         })
-                        .unwrap_or_else(|| Value::Null);
+                        .unwrap_or(Value::Null);
                     push_tool_call(&mut events, 0, id, name, arguments);
                 }
             }
@@ -1189,7 +1138,7 @@ fn extract_events_from_chunk(
                     .get("arguments")
                     .cloned()
                     .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
-                    .unwrap_or_else(|| Value::Null);
+                    .unwrap_or(Value::Null);
                 push_tool_call(&mut events, idx as i64, id, name, arguments);
             }
         }
@@ -1210,7 +1159,7 @@ fn extract_events_from_chunk(
                 .get("arguments")
                 .cloned()
                 .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
-                .unwrap_or_else(|| Value::Null);
+                .unwrap_or(Value::Null);
             push_tool_call(&mut events, idx as i64, id, name, arguments);
         }
     }
@@ -1249,7 +1198,7 @@ fn extract_events_from_chunk(
                     .get("arguments")
                     .cloned()
                     .or_else(|| tc.get("function").and_then(|f| f.get("arguments").cloned()))
-                    .unwrap_or_else(|| Value::Null);
+                    .unwrap_or(Value::Null);
                 push_tool_call(&mut events, idx as i64, id, name, arguments);
             }
         }
@@ -1263,24 +1212,7 @@ fn extract_events_from_chunk(
 // Deprecated: legacy keyring/env migration is removed. Embedded keystore is the only source of provider keys.
 
 // Helper to get the appropriate Ollama base URL with validation
-async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
-    let use_cloud = *state.use_direct_cloud.read().await;
-
-    let base = if use_cloud {
-        std::env::var("OLLAMA_CLOUD_HOST").unwrap_or_else(|_| OLLAMA_CLOUD_HOST_DEFAULT.to_string())
-    } else {
-        std::env::var("OLLAMA_LOCAL_BASE").unwrap_or_else(|_| OLLAMA_LOCAL_BASE_DEFAULT.to_string())
-    };
-
-    // Runtime assertion: reject Cloud host containing /v1
-    if use_cloud && base.contains("/v1") {
-        return Err(
-            "Invalid configuration: Do not use /v1 for Cloud. Use https://ollama.com".to_string(),
-        );
-    }
-
-    Ok(base)
-}
+// Removed redundant get_ollama_base_url (canonical helper now lives in commands/chat.rs)
 
 async fn maybe_enable_local_ollama(state: &AppState) {
     let allow_local = *state.allow_local_opt_in.read().await;
@@ -1784,7 +1716,7 @@ fn main() {
     let wasm_conc = std::env::var("UICP_WASM_CONCURRENCY")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&n| n >= 1 && n <= 64)
+        .filter(|&n| (1..=64).contains(&n))
         .unwrap_or(2);
 
     let state = AppState {
@@ -1858,21 +1790,23 @@ fn main() {
                 log_error(format!("create files dir failed: {e:?}"));
             }
             // Ensure bundled compute modules are installed into the user modules dir
-            if let Err(err) = crate::registry::install_bundled_modules_if_missing(&app.handle()) {
+            let handle = app.handle();
+            if let Err(err) = crate::registry::install_bundled_modules_if_missing(handle) {
                 log_error(format!("module install failed: {err:?}"));
             }
-            spawn_autosave(app.handle().clone());
+            spawn_autosave(handle.clone());
             // Periodic DB maintenance to keep WAL and stats tidy
-            spawn_db_maintenance(app.handle().clone());
+            spawn_db_maintenance(handle.clone());
 
             #[cfg(feature = "wasm_compute")]
             {
-                let handle = app.handle().clone();
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    if let Err(err) = crate::compute::prewarm_quickjs(&handle) {
+                let prewarm_handle = handle.clone();
+                let join_handle = tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(err) = crate::compute::prewarm_quickjs(&prewarm_handle) {
                         log_warn(format!("quickjs prewarm failed: {err:?}"));
                     }
                 });
+                std::mem::drop(join_handle);
             }
 
             // Create a native splash window using a bundled asset served by the frontend (works in dev and prod).
@@ -2079,12 +2013,7 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone, Serialize)]
-struct AuthPreflightResult {
-    ok: bool,
-    code: String,
-    detail: Option<String>,
-}
+// Removed unused AuthPreflightResult struct
 
 #[tauri::command]
 async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> {
@@ -2411,7 +2340,7 @@ async fn open_path(path: String) -> Result<(), String> {
             .arg(p)
             .spawn()
             .map_err(|e| format!("Failed to open explorer: {e}"))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(target_os = "macos")]
     {
@@ -2419,7 +2348,7 @@ async fn open_path(path: String) -> Result<(), String> {
             .arg(p)
             .spawn()
             .map_err(|e| format!("Failed to open path: {e}"))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -2427,7 +2356,7 @@ async fn open_path(path: String) -> Result<(), String> {
             .arg(p)
             .spawn()
             .map_err(|e| format!("Failed to open path: {e}"))?;
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -2631,31 +2560,28 @@ async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), Stri
 
     match kind.as_str() {
         "reindex" => {
-            match reindex_and_integrity(&app)
+            if reindex_and_integrity(&app)
                 .await
                 .map_err(|e| format!("reindex: {e:?}"))?
             {
-                true => {
-                    emit(&app, "reindex", "ok", serde_json::json!({}));
-                    emit_replay_telemetry(&app, "manual_reindex", None, 0).await;
-                    Ok(())
-                }
-                false => {
-                    emit(
-                        &app,
-                        "reindex",
-                        "failed",
-                        serde_json::json!({ "reason": "integrity_check_failed" }),
-                    );
-                    emit_replay_telemetry(
-                        &app,
-                        "manual_reindex_failed",
-                        Some("integrity_check_failed"),
-                        0,
-                    )
-                    .await;
-                    Err("Integrity check failed after reindex".into())
-                }
+                emit(&app, "reindex", "ok", serde_json::json!({}));
+                emit_replay_telemetry(&app, "manual_reindex", None, 0).await;
+                Ok(())
+            } else {
+                emit(
+                    &app,
+                    "reindex",
+                    "failed",
+                    serde_json::json!({ "reason": "integrity_check_failed" }),
+                );
+                emit_replay_telemetry(
+                    &app,
+                    "manual_reindex_failed",
+                    Some("integrity_check_failed"),
+                    0,
+                )
+                .await;
+                Err("Integrity check failed after reindex".into())
             }
         }
         "compact_log" => {
@@ -2886,7 +2812,7 @@ async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Re
                 "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
                 params![since],
             )
-            .map(|n| n as i64)
+            .map(|n| i64::try_from(n).unwrap_or(i64::MAX))
             .map_err(tokio_rusqlite::Error::from)
         })
         .await?;
@@ -2907,7 +2833,7 @@ async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i
                 "DELETE FROM tool_call WHERE created_at > ?1",
                 params![since],
             )
-            .map(|n| n as i64)
+            .map(|n| i64::try_from(n).unwrap_or(i64::MAX))
             .map_err(tokio_rusqlite::Error::from)
         })
         .await?;

@@ -162,6 +162,7 @@ pub fn allow_compute(task_key: &str) -> bool {
 
 /// api:NET:<host>
 /// Returns (is_allowed, policy_label) for receipts/logging.
+#[cfg(test)]
 pub fn net_decision(host: &str, https_only: bool, is_private: bool, is_ip: bool) -> (bool, String) {
     let key = format!("api:NET:{}", host.to_ascii_lowercase());
     let guard = POLICIES.read();
@@ -180,12 +181,6 @@ pub fn net_decision(host: &str, https_only: bool, is_private: bool, is_ip: bool)
     }
 }
 
-/// api:NET:<host>
-/// Defaults: allow public HTTPS, deny LAN/IP-literal unless explicitly allowed.
-pub fn allow_net(host: &str, https_only: bool, is_private: bool, is_ip: bool) -> bool {
-    net_decision(host, https_only, is_private, is_ip).0
-}
-
 /// secret:<provider>:api_key
 /// Defaults: allow (wire so it can be flipped later).
 pub fn allow_secret(provider: &str) -> bool {
@@ -194,10 +189,11 @@ pub fn allow_secret(provider: &str) -> bool {
 }
 
 /// fs_dialog:<open|save> (OS dialogs). Defaults: allow.
-pub fn allow_fs_dialog(kind: &str) -> bool {
-    let key = format!("fs_dialog:{}", kind);
-    allow_key(&key, true)
-}
+// #[allow(dead_code)]
+// pub fn allow_fs_dialog(kind: &str) -> bool {
+//     let key = format!("fs_dialog:{}", kind);
+//     allow_key(&key, true)
+// }
 
 #[cfg(test)]
 pub(crate) fn set_policy_for_test(key: &str, decision: &str) {

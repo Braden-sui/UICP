@@ -13,9 +13,6 @@ use crate::policy::enforce_compute_policy;
 use crate::policy::{ComputeFinalErr, ComputeJobSpec};
 use crate::{AppState, DB_PATH, ENV_PATH};
 
-// Re-export types from main.rs for other modules
-pub use crate::{ChatCompletionRequest, ChatMessageInput};
-
 #[tauri::command]
 pub async fn compute_call(
     window: tauri::Window,
@@ -88,7 +85,7 @@ pub async fn compute_call(
                 metrics: None,
             };
             emit_or_log(
-                &window.app_handle(),
+                window.app_handle(),
                 crate::events::EVENT_COMPUTE_RESULT_FINAL,
                 &payload,
             );
@@ -118,7 +115,7 @@ pub async fn compute_call(
             metrics: None,
         };
         emit_or_log(
-            &window.app_handle(),
+            window.app_handle(),
             crate::events::EVENT_COMPUTE_RESULT_FINAL,
             &payload,
         );

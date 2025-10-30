@@ -11,15 +11,9 @@ use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::compute::error_codes;
-use crate::ComputeJobSpec;
+use crate::policy::ComputeJobSpec;
 
-const DETAIL_CSV_INPUT: &str = "E-UICP-0401";
-const DETAIL_TABLE_INPUT: &str = "E-UICP-0402";
-const DETAIL_SCRIPT_INPUT: &str = "E-UICP-0406";
-const DETAIL_CODEGEN_INPUT: &str = "E-UICP-0407";
-const DETAIL_WS_PATH: &str = "E-UICP-0403";
-const DETAIL_FS_CAP: &str = "E-UICP-0404";
-const DETAIL_IO: &str = "E-UICP-0405";
+use crate::config::errors as config_errors;
 
 #[derive(Debug, Clone)]
 pub struct TaskInputError {
@@ -38,7 +32,11 @@ impl TaskInputError {
     }
 
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self::new(error_codes::INPUT_INVALID, DETAIL_CSV_INPUT, message)
+        Self::new(
+            error_codes::INPUT_INVALID,
+            config_errors::DETAIL_CSV_INPUT,
+            message,
+        )
     }
 }
 
@@ -72,20 +70,22 @@ pub fn extract_csv_input(input: &serde_json::Value) -> Result<(String, bool), Ta
 
 /// WHY: table.query inputs arrive from orchestrators; enforce schema + keep canonical casing.
 /// INVARIANT: Returned rows retain ordering; select values are u32; where clause mirrors optional input.
+type TableInputParsed = (Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>);
+
 pub fn extract_table_query_input(
     input: &serde_json::Value,
-) -> Result<(Vec<Vec<String>>, Vec<u32>, Option<(u32, String)>), TaskInputError> {
+) -> Result<TableInputParsed, TaskInputError> {
     let obj = input.as_object().ok_or_else(|| {
         TaskInputError::new(
             error_codes::INPUT_INVALID,
-            DETAIL_TABLE_INPUT,
+            config_errors::DETAIL_TABLE_INPUT,
             "table.query input must be an object",
         )
     })?;
     let rows_val = obj.get("rows").ok_or_else(|| {
         TaskInputError::new(
             error_codes::INPUT_INVALID,
-            DETAIL_TABLE_INPUT,
+            config_errors::DETAIL_TABLE_INPUT,
             "table.query input.rows required",
         )
     })?;
@@ -94,7 +94,7 @@ pub fn extract_table_query_input(
         .ok_or_else(|| {
             TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_TABLE_INPUT,
+                config_errors::DETAIL_TABLE_INPUT,
                 "table.query input.rows must be an array",
             )
         })?
@@ -103,7 +103,7 @@ pub fn extract_table_query_input(
             let arr = row.as_array().ok_or_else(|| {
                 TaskInputError::new(
                     error_codes::INPUT_INVALID,
-                    DETAIL_TABLE_INPUT,
+                    config_errors::DETAIL_TABLE_INPUT,
                     "table.query row must be an array",
                 )
             })?;
@@ -117,7 +117,7 @@ pub fn extract_table_query_input(
     let select_val = obj.get("select").ok_or_else(|| {
         TaskInputError::new(
             error_codes::INPUT_INVALID,
-            DETAIL_TABLE_INPUT,
+            config_errors::DETAIL_TABLE_INPUT,
             "table.query input.select required",
         )
     })?;
@@ -126,7 +126,7 @@ pub fn extract_table_query_input(
         .ok_or_else(|| {
             TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_TABLE_INPUT,
+                config_errors::DETAIL_TABLE_INPUT,
                 "table.query input.select must be an array",
             )
         })?
@@ -136,7 +136,7 @@ pub fn extract_table_query_input(
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_TABLE_INPUT,
+                        config_errors::DETAIL_TABLE_INPUT,
                         "table.query select entries must be non-negative integers",
                     )
                 })
@@ -151,14 +151,14 @@ pub fn extract_table_query_input(
             let wobj = w.as_object().ok_or_else(|| {
                 TaskInputError::new(
                     error_codes::INPUT_INVALID,
-                    DETAIL_TABLE_INPUT,
+                    config_errors::DETAIL_TABLE_INPUT,
                     "table.query where_contains must be an object",
                 )
             })?;
             let col = wobj.get("col").and_then(|v| v.as_u64()).ok_or_else(|| {
                 TaskInputError::new(
                     error_codes::INPUT_INVALID,
-                    DETAIL_TABLE_INPUT,
+                    config_errors::DETAIL_TABLE_INPUT,
                     "table.query where_contains.col must be u32",
                 )
             })? as u32;
@@ -168,7 +168,7 @@ pub fn extract_table_query_input(
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_TABLE_INPUT,
+                        config_errors::DETAIL_TABLE_INPUT,
                         "table.query where_contains.needle must be string",
                     )
                 })?
@@ -207,7 +207,7 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
     let obj = input.as_object().ok_or_else(|| {
         TaskInputError::new(
             error_codes::INPUT_INVALID,
-            DETAIL_SCRIPT_INPUT,
+            config_errors::DETAIL_SCRIPT_INPUT,
             "script input must be an object",
         )
     })?;
@@ -217,7 +217,7 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
         .ok_or_else(|| {
             TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_SCRIPT_INPUT,
+                config_errors::DETAIL_SCRIPT_INPUT,
                 "script input.mode must be one of 'render' | 'on-event' | 'init'",
             )
         })?
@@ -230,7 +230,7 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_SCRIPT_INPUT,
+                        config_errors::DETAIL_SCRIPT_INPUT,
                         "script render requires state (string)",
                     )
                 })?
@@ -253,7 +253,7 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_SCRIPT_INPUT,
+                        config_errors::DETAIL_SCRIPT_INPUT,
                         "script on-event requires action (string)",
                     )
                 })?
@@ -264,7 +264,7 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_SCRIPT_INPUT,
+                        config_errors::DETAIL_SCRIPT_INPUT,
                         "script on-event requires payload (string)",
                     )
                 })?
@@ -275,7 +275,7 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_SCRIPT_INPUT,
+                        config_errors::DETAIL_SCRIPT_INPUT,
                         "script on-event requires state (string)",
                     )
                 })?
@@ -303,7 +303,7 @@ pub fn extract_script_input(input: &serde_json::Value) -> Result<ScriptInput, Ta
         }),
         _ => Err(TaskInputError::new(
             error_codes::INPUT_INVALID,
-            DETAIL_SCRIPT_INPUT,
+            config_errors::DETAIL_SCRIPT_INPUT,
             format!("unsupported script mode: {mode_raw}"),
         )),
     }
@@ -316,7 +316,7 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
     if !ws_path.starts_with(prefix) {
         return Err(TaskInputError::new(
             error_codes::IO_DENIED,
-            DETAIL_WS_PATH,
+            config_errors::DETAIL_WS_PATH,
             "path must start with ws:/files/",
         ));
     }
@@ -324,7 +324,7 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
     if rel.is_empty() {
         return Err(TaskInputError::new(
             error_codes::IO_DENIED,
-            DETAIL_WS_PATH,
+            config_errors::DETAIL_WS_PATH,
             "path missing trailing file segment",
         ));
     }
@@ -332,7 +332,7 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
     let base_canonical = base.canonicalize().map_err(|err| {
         TaskInputError::new(
             error_codes::IO_DENIED,
-            DETAIL_WS_PATH,
+            config_errors::DETAIL_WS_PATH,
             format!("files directory unavailable: {err}"),
         )
     })?;
@@ -344,14 +344,14 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
         if seg == ".." {
             return Err(TaskInputError::new(
                 error_codes::IO_DENIED,
-                DETAIL_WS_PATH,
+                config_errors::DETAIL_WS_PATH,
                 "parent traversal not allowed",
             ));
         }
         if seg.contains('\\') {
             return Err(TaskInputError::new(
                 error_codes::IO_DENIED,
-                DETAIL_WS_PATH,
+                config_errors::DETAIL_WS_PATH,
                 "invalid separator in path",
             ));
         }
@@ -363,7 +363,7 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
             if !canonical.starts_with(&base_canonical) {
                 return Err(TaskInputError::new(
                     error_codes::IO_DENIED,
-                    DETAIL_WS_PATH,
+                    config_errors::DETAIL_WS_PATH,
                     "path escapes workspace files directory",
                 ));
             }
@@ -375,7 +375,7 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
                     if !parent_canon.starts_with(&base_canonical) {
                         return Err(TaskInputError::new(
                             error_codes::IO_DENIED,
-                            DETAIL_WS_PATH,
+                            config_errors::DETAIL_WS_PATH,
                             "path escapes workspace files directory",
                         ));
                     }
@@ -385,7 +385,7 @@ pub fn sanitize_ws_files_path(ws_path: &str) -> Result<PathBuf, TaskInputError> 
         }
         Err(err) => Err(TaskInputError::new(
             error_codes::IO_DENIED,
-            DETAIL_WS_PATH,
+            config_errors::DETAIL_WS_PATH,
             format!("canonicalize failed: {err}"),
         )),
     }
@@ -419,7 +419,7 @@ pub fn resolve_csv_source(spec: &ComputeJobSpec, source: &str) -> Result<String,
     if !fs_read_allowed(spec, source) {
         return Err(TaskInputError::new(
             error_codes::CAPABILITY_DENIED,
-            DETAIL_FS_CAP,
+            config_errors::DETAIL_FS_CAP,
             "fs_read does not allow this path",
         ));
     }
@@ -431,7 +431,7 @@ pub fn resolve_csv_source(spec: &ComputeJobSpec, source: &str) -> Result<String,
         )),
         Err(err) => Err(TaskInputError::new(
             error_codes::IO_DENIED,
-            DETAIL_IO,
+            config_errors::DETAIL_IO,
             format!("read failed: {err}"),
         )),
     }
@@ -454,7 +454,7 @@ fn canonicalize_codegen_input(
     let obj = input.as_object().ok_or_else(|| {
         TaskInputError::new(
             error_codes::INPUT_INVALID,
-            DETAIL_CODEGEN_INPUT,
+            config_errors::DETAIL_CODEGEN_INPUT,
             "needs.code input must be an object",
         )
     })?;
@@ -467,7 +467,7 @@ fn canonicalize_codegen_input(
         .ok_or_else(|| {
             TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 "needs.code spec must be a non-empty string",
             )
         })?
@@ -486,7 +486,7 @@ fn canonicalize_codegen_input(
         other => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 format!("needs.code language '{other}' unsupported"),
             ))
         }
@@ -498,7 +498,7 @@ fn canonicalize_codegen_input(
         Some(_) => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 "needs.code constraints must be an object",
             ))
         }
@@ -510,7 +510,7 @@ fn canonicalize_codegen_input(
         Some(_) => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 "needs.code caps must be an object",
             ))
         }
@@ -528,7 +528,7 @@ fn canonicalize_codegen_input(
         other => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 format!("needs.code provider '{other}' unsupported"),
             ))
         }
@@ -563,7 +563,7 @@ fn canonicalize_codegen_input(
         other => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 format!("needs.code strategy '{other}' unsupported"),
             ))
         }
@@ -588,7 +588,7 @@ fn canonicalize_codegen_input(
         Some(other) => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 format!("needs.code cachePolicy '{other}' unsupported"),
             ))
         }
@@ -605,7 +605,7 @@ fn canonicalize_codegen_input(
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_CODEGEN_INPUT,
+                        config_errors::DETAIL_CODEGEN_INPUT,
                         "needs.code install.panelId required when install is provided",
                     )
                 })?;
@@ -617,7 +617,7 @@ fn canonicalize_codegen_input(
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_CODEGEN_INPUT,
+                        config_errors::DETAIL_CODEGEN_INPUT,
                         "needs.code install.windowId required when install is provided",
                     )
                 })?;
@@ -629,7 +629,7 @@ fn canonicalize_codegen_input(
                 .ok_or_else(|| {
                     TaskInputError::new(
                         error_codes::INPUT_INVALID,
-                        DETAIL_CODEGEN_INPUT,
+                        config_errors::DETAIL_CODEGEN_INPUT,
                         "needs.code install.target required when install is provided",
                     )
                 })?;
@@ -660,7 +660,7 @@ fn canonicalize_codegen_input(
         Some(_) => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
-                DETAIL_CODEGEN_INPUT,
+                config_errors::DETAIL_CODEGEN_INPUT,
                 "needs.code install must be an object when present",
             ))
         }
@@ -685,7 +685,7 @@ fn canonicalize_codegen_input(
             serde_json::Value::Array(
                 providers_list
                     .into_iter()
-                    .map(|p| serde_json::Value::String(p))
+                    .map(serde_json::Value::String)
                     .collect(),
             ),
         );
@@ -757,7 +757,7 @@ pub fn canonicalize_task_input(spec: &ComputeJobSpec) -> Result<serde_json::Valu
             if missing_source {
                 return Err(TaskInputError::new(
                     error_codes::INPUT_INVALID,
-                    DETAIL_SCRIPT_INPUT,
+                    config_errors::DETAIL_SCRIPT_INPUT,
                     "E-UICP-0604: applet.quickjs requires bundled JS source",
                 ));
             }
@@ -1041,7 +1041,7 @@ mod tests {
         let err = canonicalize_task_input(&spec).unwrap_err();
         assert_eq!(err.code, crate::compute::error_codes::INPUT_INVALID);
         assert!(
-            err.message.contains(DETAIL_CODEGEN_INPUT),
+            err.message.contains(config_errors::DETAIL_CODEGEN_INPUT),
             "expected codegen detail tag"
         );
     }

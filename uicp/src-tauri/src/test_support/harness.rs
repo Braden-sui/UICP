@@ -225,7 +225,8 @@ impl ComputeTestHarness {
 
         let state: tauri::State<'_, AppState> = self.app.state();
         if let Err(err) =
-            crate::commands::compute_call(self.app.handle().clone(), state, spec.clone()).await
+            crate::commands_harness::compute_call(self.app.handle().clone(), state, spec.clone())
+                .await
         {
             self.app.unlisten(listener_id);
             return Err(anyhow::anyhow!(err));
@@ -249,14 +250,18 @@ impl ComputeTestHarness {
     /// Issue a cancellation for a running job.
     pub async fn cancel_job(&self, job_id: &str) -> Result<()> {
         let state: tauri::State<'_, AppState> = self.app.state();
-        crate::commands::compute_cancel(self.app.handle().clone(), state, job_id.to_string())
-            .await
-            .map_err(|err| anyhow::anyhow!(err))
+        crate::commands_harness::compute_cancel(
+            self.app.handle().clone(),
+            state,
+            job_id.to_string(),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err))
     }
 
     /// WHY: Surface admin-style commands through the harness so the shim implementations stay exercised and ready for future tests.
     pub async fn modules_info(&self) -> Result<Value> {
-        crate::commands::get_modules_info(self.app.handle().clone())
+        crate::commands_harness::get_modules_info(self.app.handle().clone())
             .await
             .map_err(|err| {
                 anyhow::anyhow!("E-UICP-0410: get_modules_info via harness failed: {err}")
@@ -272,7 +277,7 @@ impl ComputeTestHarness {
             .as_ref()
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("E-UICP-0411: source path not valid UTF-8"))?;
-        crate::commands::copy_into_files(self.app.handle().clone(), src_str.into())
+        crate::commands_harness::copy_into_files(self.app.handle().clone(), src_str.into())
             .await
             .map_err(|err| {
                 anyhow::anyhow!("E-UICP-0412: copy_into_files via harness failed: {err}")
@@ -282,7 +287,7 @@ impl ComputeTestHarness {
     /// WHY: Load workspace state through the command shim to ensure parity with the production entry point.
     pub async fn load_workspace(&self) -> Result<Vec<Value>> {
         let state: tauri::State<'_, AppState> = self.app.state();
-        crate::commands::load_workspace(state)
+        crate::commands_harness::load_workspace(state)
             .await
             .map_err(|err| anyhow::anyhow!("E-UICP-0413: load_workspace via harness failed: {err}"))
     }
@@ -290,14 +295,14 @@ impl ComputeTestHarness {
     /// WHY: Persist workspace state through the same code path the app uses, keeping invariants aligned.
     pub async fn save_workspace(&self, windows: Vec<Value>) -> Result<()> {
         let state: tauri::State<'_, AppState> = self.app.state();
-        crate::commands::save_workspace((), state, windows)
+        crate::commands_harness::save_workspace((), state, windows)
             .await
             .map_err(|err| anyhow::anyhow!("E-UICP-0414: save_workspace via harness failed: {err}"))
     }
 
     /// WHY: Provide direct access to cache eviction so compute-focused tests can start from a known state.
     pub async fn clear_compute_cache(&self, workspace_id: Option<String>) -> Result<()> {
-        crate::commands::clear_compute_cache(self.app.handle().clone(), workspace_id)
+        crate::commands_harness::clear_compute_cache(self.app.handle().clone(), workspace_id)
             .await
             .map_err(|err| {
                 anyhow::anyhow!("E-UICP-0415: clear_compute_cache via harness failed: {err}")

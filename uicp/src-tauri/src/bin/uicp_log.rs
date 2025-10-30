@@ -78,7 +78,7 @@ fn verify_cmd(args: &[String]) -> Result<()> {
 fn emit_report(report: ActionLogVerifyReport, sig_checked: bool) {
     let last_hash_hex = report
         .last_hash
-        .map(|h| hex::encode(h))
+        .map(hex::encode)
         .unwrap_or_else(|| "none".into());
     println!("action-log: entries={}", report.entries);
     println!("last-id: {:?}", report.last_id);

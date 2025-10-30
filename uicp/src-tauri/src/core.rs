@@ -2,20 +2,18 @@ use std::{
     collections::HashMap,
     io::{self, Write},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Once,
-    },
+    sync::atomic::{AtomicBool, Ordering},
+    sync::{Arc, Once},
     time::{Duration, Instant},
 };
 
 use crate::action_log;
+use ::rusqlite::{params, Connection, OptionalExtension};
 use anyhow::Context;
 use chrono::Utc;
 use dirs::data_dir;
 use once_cell::sync::Lazy;
 use reqwest::Client;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::{RwLock, Semaphore};
@@ -78,18 +76,6 @@ impl LogEvent {
 
     pub fn field(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.fields.insert(key.into(), value.into());
-        self
-    }
-
-    pub fn fields<I, K, V>(mut self, iter: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<Value>,
-    {
-        for (key, value) in iter {
-            self.fields.insert(key.into(), value.into());
-        }
         self
     }
 
@@ -197,6 +183,7 @@ pub struct AppState {
 }
 
 /// Compute a stable cache key for compute tasks so callers outside compute_cache can derive the same key.
+#[allow(dead_code)]
 pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
     crate::compute_cache::compute_key(task, input, env_hash)
 }
@@ -509,6 +496,7 @@ pub async fn remove_compute_job<R: Runtime>(app_handle: &tauri::AppHandle<R>, jo
 // ----------------------------------------------------------------------------
 
 /// Initialize tracing subscribers (when enabled) or fall back to stderr logging.
+#[allow(dead_code)]
 pub fn init_tracing() {
     #[cfg(feature = "otel_spans")]
     {

@@ -30,8 +30,9 @@ use crate::{
         ClaudeProvider, CodeProvider, CodeProviderError, CodeProviderJob, CodexProvider,
         ProviderArtifacts, ProviderDiff,
     },
-    compute_cache, emit_or_log, remove_compute_job, AppState, ComputeFinalErr, ComputeFinalOk,
-    ComputeJobSpec,
+    compute_cache, emit_or_log,
+    policy::{ComputeFinalErr, ComputeFinalOk, ComputeJobSpec},
+    remove_compute_job, AppState,
 };
 use secrecy::ExposeSecret;
 
@@ -41,7 +42,8 @@ const LEGACY_VALIDATOR_V0: &str = "codegen-validator-v0";
 const ERR_INPUT_INVALID: &str = "E-UICP-1300";
 const ERR_CODE_UNSAFE: &str = "E-UICP-1301";
 const ERR_PROVIDER: &str = "E-UICP-1302";
-const ERR_API_KEY: &str = "E-UICP-1303";
+// #[allow(dead_code)]
+// const ERR_API_KEY: &str = "E-UICP-1303";
 const ERR_NO_CLI: &str = "E-UICP-1305";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,7 +269,8 @@ impl NormalizedArtifact {
 enum CodegenFailure {
     Invalid { message: String },
     Provider { message: String },
-    MissingApiKey,
+    // #[allow(dead_code)]
+    // MissingApiKey,
     Unsafe { message: String },
 }
 
@@ -284,9 +287,10 @@ impl CodegenFailure {
         CodegenFailure::Provider { message }
     }
 
-    fn missing_key() -> Self {
-        CodegenFailure::MissingApiKey
-    }
+    // #[allow(dead_code)]
+    // fn missing_key() -> Self {
+    //     CodegenFailure::MissingApiKey
+    // }
 
     fn compute_code(&self) -> &'static str {
         match self {
@@ -294,7 +298,7 @@ impl CodegenFailure {
                 "Compute.Input.Invalid"
             }
             CodegenFailure::Provider { .. } => "Runtime.Fault",
-            CodegenFailure::MissingApiKey => "Compute.CapabilityDenied",
+            // CodegenFailure::MissingApiKey => "Compute.CapabilityDenied",
         }
     }
 
@@ -303,9 +307,9 @@ impl CodegenFailure {
             CodegenFailure::Invalid { message }
             | CodegenFailure::Provider { message }
             | CodegenFailure::Unsafe { message } => message.clone(),
-            CodegenFailure::MissingApiKey => format!(
-                "{ERR_API_KEY}: missing API key. Set OPENAI_API_KEY in the environment or provide a mockResponse constraint."
-            ),
+            // CodegenFailure::MissingApiKey => format!(
+            //     "{ERR_API_KEY}: missing API key. Set OPENAI_API_KEY in the environment or provide a mockResponse constraint."
+            // ),
         }
     }
 }
@@ -348,7 +352,7 @@ pub fn spawn_job<R: Runtime>(
                     "E-UICP-1304: codegen job cancelled",
                     started.elapsed().as_millis() as u64,
                     queue_wait_ms,
-                ).await;
+                );
                 {
                     let state: State<'_, AppState> = app.state();
                     state.compute_cancel.write().await.remove(&spec.job_id);
@@ -373,8 +377,7 @@ pub fn spawn_job<R: Runtime>(
                     &message,
                     duration_ms,
                     queue_wait_ms,
-                )
-                .await;
+                );
             }
         }
 
@@ -387,7 +390,7 @@ pub fn spawn_job<R: Runtime>(
 
     #[cfg(feature = "otel_spans")]
     {
-        return tauri_spawn(fut.instrument(span));
+        tauri_spawn(fut.instrument(span))
     }
 
     #[cfg(not(feature = "otel_spans"))]
@@ -414,7 +417,7 @@ pub fn spawn_job<R: Runtime>(
                         "E-UICP-1304: codegen job cancelled",
                         started.elapsed().as_millis() as u64,
                         queue_wait_ms,
-                    ).await;
+                    );
                     {
                         let state: State<'_, AppState> = app.state();
                         state.compute_cancel.write().await.remove(&spec.job_id);
@@ -439,8 +442,7 @@ pub fn spawn_job<R: Runtime>(
                         &message,
                         duration_ms,
                         queue_wait_ms,
-                    )
-                    .await;
+                    );
                 }
             }
 
@@ -627,7 +629,7 @@ async fn emit_final_ok<R: Runtime>(app: &AppHandle<R>, spec: &ComputeJobSpec, ok
     }
 }
 
-async fn emit_error<R: Runtime>(
+fn emit_error<R: Runtime>(
     app: &AppHandle<R>,
     spec: &ComputeJobSpec,
     code: &str,

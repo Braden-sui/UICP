@@ -24,9 +24,9 @@ use crate::compute_input::{
     derive_job_seed, extract_csv_input, extract_script_input, extract_table_query_input,
     resolve_csv_source, ScriptMode,
 };
+use crate::policy::{ComputeFinalErr, ComputeFinalOk, ComputeJobSpec, ComputePartialEvent};
 #[cfg(feature = "wasm_compute")]
 use crate::registry;
-use crate::ComputeJobSpec;
 #[cfg(not(feature = "otel_spans"))]
 use crate::{log_error, log_warn};
 
@@ -72,7 +72,6 @@ mod with_runtime {
     use once_cell::sync::Lazy;
     use parking_lot::Mutex;
     use pollster::block_on;
-    use serde_json;
     use sha2::{Digest, Sha256};
     use std::collections::BTreeSet;
     use std::convert::TryFrom;
@@ -99,14 +98,12 @@ mod with_runtime {
     };
     use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-    const DEFAULT_MEMORY_LIMIT_MB: u64 = 256;
+    // Import configuration constants
+    use crate::config::limits::{
+        DEFAULT_MEMORY_LIMIT_MB, DEFAULT_RUNTIME_FUEL, MAX_LOG_BYTES, MAX_PARTIAL_FRAME_BYTES,
+    };
+
     const EPOCH_TICK_INTERVAL_MS: u64 = 10;
-    // Default fuel budget when `consume_fuel` is enabled but spec.fuel is not provided.
-    // WHY: Wasmtime with `consume_fuel(true)` requires nonzero fuel to execute; tests/jobs that
-    // don't configure fuel would otherwise immediately trap as out-of-fuel.
-    const DEFAULT_RUNTIME_FUEL: u64 = 10_000_000;
-    // Max total bytes we will emit across all stdio log frames per job (deterministic cap)
-    const MAX_LOG_BYTES: usize = 256 * 1024;
     // Max preview bytes per log frame to include in partial events
     const LOG_PREVIEW_MAX: usize = 256;
     const SCRIPT_SOURCE_ENV: &str = "UICP_SCRIPT_SOURCE_B64";
@@ -145,27 +142,25 @@ mod with_runtime {
 
     trait TelemetryEmitter: Send + Sync {
         fn emit_debug(&self, payload: serde_json::Value);
-        fn emit_partial(&self, event: crate::ComputePartialEvent);
+        fn emit_partial(&self, event: ComputePartialEvent);
         fn emit_partial_json(&self, payload: serde_json::Value);
     }
 
     struct NullTelemetry;
     impl TelemetryEmitter for NullTelemetry {
         fn emit_debug(&self, _payload: serde_json::Value) {}
-        fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+        fn emit_partial(&self, _event: ComputePartialEvent) {}
         fn emit_partial_json(&self, _payload: serde_json::Value) {}
     }
 
     #[derive(Clone)]
     enum UiEvent {
         Debug(serde_json::Value),
-        PartialEvent(crate::ComputePartialEvent),
+        PartialEvent(ComputePartialEvent),
         PartialJson(serde_json::Value),
     }
 
     #[allow(dead_code)]
-    const MAX_STDIO_CHARS: usize = 4_096;
-
     #[derive(Debug)]
     struct LimitsWithPeak {
         inner: StoreLimits,
@@ -203,7 +198,7 @@ mod with_runtime {
 
         fn mem_peak_mb(&self) -> u64 {
             // Round up to the nearest MiB
-            ((self.mem_peak_bytes as u64) + 1_048_575) / 1_048_576
+            (self.mem_peak_bytes as u64).div_ceil(1_048_576)
         }
     }
 
@@ -363,8 +358,6 @@ mod with_runtime {
         }
     }
 
-    const MAX_PARTIAL_FRAME_BYTES: usize = 64 * 1024;
-
     struct QueueingEmitter {
         tx: mpsc::Sender<UiEvent>,
     }
@@ -396,7 +389,7 @@ mod with_runtime {
         fn emit_debug(&self, payload: serde_json::Value) {
             self.push_with_backoff(UiEvent::Debug(payload));
         }
-        fn emit_partial(&self, event: crate::ComputePartialEvent) {
+        fn emit_partial(&self, event: ComputePartialEvent) {
             self.push_with_backoff(UiEvent::PartialEvent(event));
         }
         fn emit_partial_json(&self, payload: serde_json::Value) {
@@ -425,10 +418,7 @@ mod with_runtime {
             Self { shared }
         }
 
-        fn process_frame(
-            &self,
-            bytes: &[u8],
-        ) -> Result<crate::ComputePartialEvent, PartialFrameError> {
+        fn process_frame(&self, bytes: &[u8]) -> Result<ComputePartialEvent, PartialFrameError> {
             if bytes.len() > MAX_PARTIAL_FRAME_BYTES {
                 return Err(PartialFrameError::TooLarge(bytes.len()));
             }
@@ -447,7 +437,7 @@ mod with_runtime {
             self.shared
                 .partial_seq
                 .store(envelope.seq, Ordering::Relaxed);
-            Ok(crate::ComputePartialEvent {
+            Ok(ComputePartialEvent {
                 job_id: self.shared.job_id.clone(),
                 task: self.shared.task.clone(),
                 seq: envelope.seq,
@@ -590,83 +580,76 @@ mod with_runtime {
             let mut buf = self.shared.buf.lock();
             buf.extend_from_slice(bytes);
             // Emit one event per completed line
-            loop {
-                if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                    let line_with_nl: Vec<u8> = buf.drain(..=pos).collect();
-                    let line = if line_with_nl.ends_with(&[b'\n']) {
-                        &line_with_nl[..line_with_nl.len() - 1]
-                    } else {
-                        &line_with_nl[..]
-                    };
-                    if line.is_empty() {
-                        continue;
-                    }
-                    // Enforce per-job cap deterministically
-                    let cur = self.shared.emitted_bytes.load(Ordering::Relaxed) as usize;
-                    if cur >= self.shared.max_bytes {
-                        break;
-                    }
-                    let to_emit = line;
-                    let preview_b64 = self.shared.clamp_preview(to_emit);
-                    let seq_no = self.shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
-                    let tick_no = self.shared.tick.fetch_add(1, Ordering::Relaxed) + 1;
-                    let new_total =
-                        self.shared
-                            .emitted_bytes
-                            .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
-                            .saturating_add(to_emit.len() as u64) as usize;
-                    let truncated = new_total > self.shared.max_bytes;
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let mut line = buf.drain(..=pos).collect::<Vec<u8>>();
+                if matches!(line.last(), Some(b'\n')) {
+                    line.pop();
+                }
+                if line.is_empty() {
+                    continue;
+                }
+                // Enforce per-job cap deterministically
+                let cur = self.shared.emitted_bytes.load(Ordering::Relaxed) as usize;
+                if cur >= self.shared.max_bytes {
+                    break;
+                }
+                let to_emit = &line;
+                let preview_b64 = self.shared.clamp_preview(to_emit);
+                let seq_no = self.shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
+                let tick_no = self.shared.tick.fetch_add(1, Ordering::Relaxed) + 1;
+                let new_total =
+                    self.shared
+                        .emitted_bytes
+                        .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
+                        .saturating_add(to_emit.len() as u64) as usize;
+                let truncated = new_total > self.shared.max_bytes;
 
-                    self.shared.log_count.fetch_add(1, Ordering::Relaxed);
+                self.shared.log_count.fetch_add(1, Ordering::Relaxed);
 
-                    // WHY: Append to the durable action_log before UI emission to preserve append-first semantics.
-                    let full_b64 = BASE64_ENGINE.encode(to_emit);
-                    if let Err(err) = self.shared.action_log.append_json_blocking(
-                        "compute.log",
-                        &serde_json::json!({
-                            "jobId": self.shared.job_id,
-                            "task": self.shared.task,
-                            "stream": self.channel,
-                            "seq": seq_no,
-                            "tick": tick_no,
-                            "bytesLen": to_emit.len(),
-                            "previewB64": preview_b64,
-                            "lineB64": full_b64,
-                            "truncated": truncated,
-                        }),
-                    ) {
-                        // ERROR: E-UICP-0601 action log append failed; terminate job for loud failure.
-                        panic!("E-UICP-0601: action log append failed: {err}");
-                    }
-
-                    // Emit structured partial log event
-                    self.shared.emitter.emit_partial_json(serde_json::json!({
-                          "jobId": self.shared.job_id,
-                          "task": self.shared.task,
-                          "seq": seq_no,
-                        "kind": "log",
+                // WHY: Append to the durable action_log before UI emission to preserve append-first semantics.
+                let full_b64 = BASE64_ENGINE.encode(to_emit);
+                if let Err(err) = self.shared.action_log.append_json_blocking(
+                    "compute.log",
+                    &serde_json::json!({
+                        "jobId": self.shared.job_id,
+                        "task": self.shared.task,
                         "stream": self.channel,
+                        "seq": seq_no,
                         "tick": tick_no,
                         "bytesLen": to_emit.len(),
                         "previewB64": preview_b64,
+                        "lineB64": full_b64,
                         "truncated": truncated,
-                    }));
-
-                    // Mirror as debug-log for developer visibility
-                    let output =
-                        truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
-                    self.shared.emitter.emit_debug(serde_json::json!({
-                        "event": "compute_guest_stdio",
-                        "jobId": self.shared.job_id,
-                        "task": self.shared.task,
-                        "channel": self.channel,
-                        "len": to_emit.len(),
-                        "message": output,
-                        "ts": Utc::now().timestamp_millis(),
-                    }));
-                } else {
-                    break;
+                    }),
+                ) {
+                    // ERROR: E-UICP-0601 action log append failed; terminate job for loud failure.
+                    panic!("E-UICP-0601: action log append failed: {err}");
                 }
+
+                // Emit structured partial log event
+                self.shared.emitter.emit_partial_json(serde_json::json!({
+                      "jobId": self.shared.job_id,
+                      "task": self.shared.task,
+                      "seq": seq_no,
+                    "kind": "log",
+                    "stream": self.channel,
+                    "tick": tick_no,
+                    "bytesLen": to_emit.len(),
+                    "previewB64": preview_b64,
+                    "truncated": truncated,
+                }));
+
+                // Mirror as debug-log for developer visibility
+                let output = truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
+                self.shared.emitter.emit_debug(serde_json::json!({
+                    "event": "compute_guest_stdio",
+                    "jobId": self.shared.job_id,
+                    "task": self.shared.task,
+                    "channel": self.channel,
+                    "len": to_emit.len(),
+                    "message": output,
+                    "ts": Utc::now().timestamp_millis(),
+                }));
             }
         }
     }
@@ -983,7 +966,7 @@ mod with_runtime {
         if let Some(found) = COMPONENT_CACHE.get(&key) {
             return Ok(found.clone());
         }
-        let comp = Component::from_file(&*ENGINE, path)?;
+        let comp = Component::from_file(&ENGINE, path)?;
         let arc = Arc::new(comp);
         COMPONENT_CACHE.insert(key, arc.clone());
         Ok(arc)
@@ -1046,7 +1029,7 @@ mod with_runtime {
             }
 
             // Reuse global engine
-            let engine: &Engine = &*ENGINE;
+            let engine: &Engine = &ENGINE;
 
             // Resolve module by task@version
             let module = match registry::find_module(&app, &spec.task) {
@@ -1072,7 +1055,7 @@ mod with_runtime {
                 Err(err) => {
                     // WHY: Surface precise context so UI can see root-cause for module resolution faults.
                     // ERROR: E-UICP-0221 registry lookup failed for task; message carries inner error string.
-                    let any = anyhow::Error::from(err).context(format!(
+                    let any = err.context(format!(
                         "E-UICP-0221: registry lookup failed for task '{}': module resolve error",
                         spec.task
                     ));
@@ -1099,7 +1082,7 @@ mod with_runtime {
                 Err(err) => {
                     // WHY: Carry the on-disk path and root cause to aid diagnosing cache/compile errors.
                     // ERROR: E-UICP-0222 component load failed; likely invalid encoding or wrong target (not a component).
-                    let any = anyhow::Error::from(err).context(format!(
+                    let any = err.context(format!(
                         "E-UICP-0222: load component failed for path {}",
                         module.path.display()
                     ));
@@ -1184,7 +1167,7 @@ mod with_runtime {
                     }
                 }
             });
-            let _ = drain;
+            std::mem::drop(drain);
             let telemetry: Arc<dyn TelemetryEmitter> =
                 Arc::new(QueueingEmitter { tx: tx_ui.clone() });
             let partial_seq = Arc::new(AtomicU64::new(0));
@@ -1246,10 +1229,10 @@ mod with_runtime {
                             let cur = rl.rate_per_sec();
                             if ewma_log >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
-                                rl.set_rate_per_sec(next.max(RL_BYTES_MIN).min(RL_BYTES_MAX));
+                                rl.set_rate_per_sec(next.clamp(RL_BYTES_MIN, RL_BYTES_MAX));
                             } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
                                 let next = ((cur as f64) * AIMD_INC).round() as usize;
-                                rl.set_rate_per_sec(next.max(RL_BYTES_MIN).min(RL_BYTES_MAX));
+                                rl.set_rate_per_sec(next.clamp(RL_BYTES_MIN, RL_BYTES_MAX));
                             }
                         }
                         // logger
@@ -1259,12 +1242,12 @@ mod with_runtime {
                             if ewma_logger >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
                                 rl.set_rate_per_sec(
-                                    next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX),
+                                    next.clamp(LOGGER_BYTES_MIN, LOGGER_BYTES_MAX),
                                 );
                             } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
                                 let next = ((cur as f64) * AIMD_INC).round() as usize;
                                 rl.set_rate_per_sec(
-                                    next.max(LOGGER_BYTES_MIN).min(LOGGER_BYTES_MAX),
+                                    next.clamp(LOGGER_BYTES_MIN, LOGGER_BYTES_MAX),
                                 );
                             }
                         }
@@ -1274,10 +1257,10 @@ mod with_runtime {
                             let cur = rl.rate_per_sec();
                             if ewma_partial >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as u32;
-                                rl.set_rate_per_sec(next.max(EVENTS_MIN).min(EVENTS_MAX));
+                                rl.set_rate_per_sec(next.clamp(EVENTS_MIN, EVENTS_MAX));
                             } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
                                 let next = ((cur as f64) * AIMD_INC).round() as u32;
-                                rl.set_rate_per_sec(next.max(EVENTS_MIN).min(EVENTS_MAX));
+                                rl.set_rate_per_sec(next.clamp(EVENTS_MIN, EVENTS_MAX));
                             }
                         }
                     }
@@ -1407,14 +1390,14 @@ mod with_runtime {
             }
 
             // Instantiate with shared linker (WASI + host already registered)
-            let linker: &Linker<Ctx> = &*LINKER;
+            let linker: &Linker<Ctx> = &LINKER;
 
             // Instantiate the world and call exports using typed API (no bindgen for now)
             {
                 // WHY: Add instantiation context so missing-import/linkage issues are visible in final error.
                 // ERROR: E-UICP-0223 instantiation failure; often indicates a missing or version-mismatched import.
                 let inst_res: Result<wasmtime::component::Instance, _> =
-                    linker.instantiate_async(&mut store, &*component).await;
+                    linker.instantiate_async(&mut store, &component).await;
                 match inst_res {
                     Ok(instance) => {
                         let task_name = task_prefix.as_str();
@@ -1428,55 +1411,34 @@ mod with_runtime {
                         let call_future = async {
                             match task_name {
                                 "csv.parse" => match extract_csv_input(&spec.input) {
-                                    Ok((src, has_header)) => {
-                                        match resolve_csv_source(&spec, &src) {
-                                            Ok(resolved) => {
-                                                // WHY: Invoke typed bindings generated from WIT so the host matches the component's canonical signature.
-                                                let bindings = CsvTask::new(&mut store, &instance)
-                                                    .map_err(|e| {
-                                                        anyhow::Error::from(e).context(
-                                                        "E-UICP-0224: csv task binding init failed",
-                                                    )
-                                                    })?;
-                                                let csv_iface = bindings.uicp_task_csv_parse_csv();
-                                                match csv_iface
-                                                    .call_run(
-                                                        &mut store,
-                                                        &spec.job_id,
-                                                        resolved.as_str(),
-                                                        has_header,
-                                                    )
-                                                    .await
-                                                {
-                                                    Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
-                                                    Ok(Err(msg)) => {
-                                                        // WHY: Propagate guest error string verbatim; caller maps to final envelope.
-                                                        Err(anyhow::Error::msg(msg))
-                                                    }
-                                                    Err(e) => Err(anyhow::Error::from(e).context(
-                                                        "E-UICP-0225: call csv#run failed",
-                                                    )),
-                                                }
+                                    Ok((source, has_header)) => match resolve_csv_source(&spec, &source) {
+                                        Ok(resolved) => {
+                                            let bindings = CsvTask::new(&mut store, &instance)
+                                                .context("E-UICP-0224: csv task binding init failed")?;
+                                            let csv_iface = bindings.uicp_task_csv_parse_csv();
+                                            match csv_iface
+                                                .call_run(&mut store, &spec.job_id, resolved.as_str(), has_header)
+                                                .await
+                                            {
+                                                Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
+                                                Ok(Err(msg)) => Err(anyhow::Error::msg(msg)),
+                                                Err(e) => Err(anyhow::anyhow!(
+                                            "E-UICP-0225: call csv#run failed: {}",
+                                            e
+                                        )),
                                             }
-                                            Err(e) => Err(anyhow::anyhow!(format!(
-                                                "{}: {}",
-                                                e.code, e.message
-                                            ))),
                                         }
-                                    }
-                                    Err(e) => {
-                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
-                                    }
+                                        Err(err) => Err(anyhow::anyhow!(format!(
+                                            "{}: {}",
+                                            err.code, err.message
+                                        ))),
+                                    },
+                                    Err(err) => Err(anyhow::anyhow!(format!("{}: {}", err.code, err.message))),
                                 },
                                 "table.query" => match extract_table_query_input(&spec.input) {
                                     Ok((rows, select, where_opt)) => {
-                                        // WHY: Use typed binding derived from vendored WIT to eliminate signature ladders and enforce identical host/guest types.
                                         let bindings = TableTask::new(&mut store, &instance)
-                                            .map_err(|e| {
-                                                anyhow::Error::from(e).context(
-                                                    "E-UICP-0226: table task binding init failed",
-                                                )
-                                            })?;
+                                            .context("E-UICP-0226: table task binding init failed")?;
                                         let input = TableInput {
                                             rows,
                                             select,
@@ -1494,13 +1456,13 @@ mod with_runtime {
                                                     Err(anyhow::Error::msg("cancelled"))
                                                 }
                                             },
-                                            Err(e) => Err(anyhow::Error::from(e)
-                                                .context("E-UICP-0227: call table#run failed")),
+                                            Err(e) => Err(anyhow::anyhow!(
+                                                "E-UICP-0227: call table#run failed: {}",
+                                                e
+                                            )),
                                         }
                                     }
-                                    Err(e) => {
-                                        Err(anyhow::anyhow!(format!("{}: {}", e.code, e.message)))
-                                    }
+                                    Err(err) => Err(anyhow::anyhow!(format!("{}: {}", err.code, err.message))),
                                 },
                                 "applet.quickjs" | "script.hello" => {
                                     let script_input = match &script_input_result {
@@ -1531,11 +1493,8 @@ mod with_runtime {
                                     }
 
                                     let bindings =
-                                        ScriptTask::new(&mut store, &instance).map_err(|e| {
-                                            anyhow::Error::from(e).context(
-                                                "E-UICP-0232: script task binding init failed",
-                                            )
-                                        })?;
+                                        ScriptTask::new(&mut store, &instance)
+                                            .context("E-UICP-0232: script task binding init failed")?;
                                     let script_iface = bindings.uicp_applet_script_script();
 
                                     let js_call = match script_input.mode {
@@ -1607,7 +1566,7 @@ mod with_runtime {
                                                     "E-UICP-0235: call script#onEvent failed"
                                                 }
                                             };
-                                            Err(anyhow::Error::from(e).context(ctx_msg))
+                                            Err(anyhow::anyhow!("{}: {}", ctx_msg, e))
                                         }
                                     }
                                 }
@@ -1617,7 +1576,7 @@ mod with_runtime {
                         tokio::select! {
                             _ = cancel_watch.changed() => {
                                 // Force the epoch deadline so Wasmtime traps promptly.
-                                let _ = store.set_epoch_deadline(1);
+                                store.set_epoch_deadline(1);
                                 engine.increment_epoch();
                                 let metrics = collect_metrics(&store);
                                 finalize_error(
@@ -1633,7 +1592,6 @@ mod with_runtime {
                                 epoch_pump.abort();
                                 let state: tauri::State<'_, crate::AppState> = app.state();
                                 state.compute_cancel.write().await.remove(&spec.job_id);
-                                #[cfg(feature = "wasm_compute")]
                                 crate::remove_compute_job(&app, &spec.job_id).await;
                                 return;
                             }
@@ -1677,6 +1635,7 @@ mod with_runtime {
                                             Some(m),
                                         )
                                         .await;
+                                        epoch_pump.abort();
                                     }
                                 }
                             }
@@ -1686,23 +1645,15 @@ mod with_runtime {
                     Err(err) => {
                         // WHY: Make instantiation failures actionable by including context.
                         // ERROR: E-UICP-0223 instantiation failure; often indicates a missing or version-mismatched import.
-                        let any = anyhow::Error::from(err).context(format!(
+                        let any = err.context(format!(
                             "E-UICP-0223: instantiate component for task '{}' failed",
                             spec.task
                         ));
                         let (code, msg) = map_trap_error(&any);
                         let message = if msg.is_empty() { any.to_string() } else { msg };
                         let m = collect_metrics(&store);
-                        finalize_error(
-                            &app,
-                            &spec,
-                            code,
-                            &message,
-                            started,
-                            queue_wait_ms,
-                            Some(m),
-                        )
-                        .await;
+                        finalize_error(&app, &spec, code, &message, started, queue_wait_ms, Some(m))
+                            .await;
                         epoch_pump.abort();
                     }
                 }
@@ -1718,7 +1669,7 @@ mod with_runtime {
 
         #[cfg(feature = "otel_spans")]
         {
-            return tauri_spawn(fut.instrument(span));
+            tauri_spawn(fut.instrument(span))
         }
 
         #[cfg(not(feature = "otel_spans"))]
@@ -1769,7 +1720,7 @@ mod with_runtime {
                 "wasi:io/streams@0.2",
             ]
             .into_iter()
-            .map(|s| normalize_import_name(s))
+            .map(normalize_import_name)
             .collect()),
             "table.query" => Ok([
                 // Host control (accept versioned and unversioned names)
@@ -1793,7 +1744,7 @@ mod with_runtime {
                 "wasi:logging/logging",
             ]
             .into_iter()
-            .map(|s| normalize_import_name(s))
+            .map(normalize_import_name)
             .collect()),
             // Script demo component is permitted to have zero WASI imports.
             "script.hello" => Ok(BTreeSet::new()),
@@ -1812,7 +1763,7 @@ mod with_runtime {
                 "wasi:random/random@0.2",
             ]
             .into_iter()
-            .map(|s| normalize_import_name(s))
+            .map(normalize_import_name)
             .collect()),
             other => anyhow::bail!(
                 "E-UICP-0229: no component import policy registered for task '{other}'"
@@ -1874,7 +1825,7 @@ mod with_runtime {
         );
         store.limiter(|ctx| &mut ctx.limits);
 
-        let linker: &Linker<Ctx> = &*LINKER;
+        let linker: &Linker<Ctx> = &LINKER;
         let instance_pre = linker
             .instantiate_pre(&component)
             .context("E-UICP-0231: linker instantiate_pre for contract failed")?;
@@ -1917,7 +1868,7 @@ mod with_runtime {
         let emitter: Arc<dyn TelemetryEmitter> = Arc::new(NullTelemetry);
 
         let mut store: Store<Ctx> = Store::new(
-            &*ENGINE,
+            &ENGINE,
             make_ctx(
                 "applet.quickjs@0.1.0",
                 "quickjs-prewarm",
@@ -1930,9 +1881,10 @@ mod with_runtime {
         let _ = store.set_fuel(DEFAULT_RUNTIME_FUEL);
         store.set_epoch_deadline(u64::MAX);
 
-        let linker: &Linker<Ctx> = &*LINKER;
-        let instance = block_on(async { linker.instantiate_async(&mut store, &*component).await })
-            .context("E-UICP-0703: instantiate applet.quickjs component for prewarm failed")?;
+        let linker: &Linker<Ctx> = &LINKER;
+        let instance =
+            block_on(async { linker.instantiate_async(&mut store, &component).await })
+                .context("E-UICP-0703: instantiate applet.quickjs component for prewarm failed")?;
 
         let bindings = ScriptTask::new(&mut store, &instance)
             .context("E-UICP-0704: script bindings init during prewarm failed")?;
@@ -2196,7 +2148,7 @@ mod with_runtime {
         } else {
             Some(serde_json::json!({ "durationMs": ms, "queueMs": queue_wait_ms }))
         };
-        let payload = crate::ComputeFinalErr {
+        let payload = ComputeFinalErr {
             ok: false,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
@@ -2226,7 +2178,7 @@ mod with_runtime {
             );
         }
         crate::emit_or_log(
-            &app,
+            app,
             crate::events::EVENT_COMPUTE_RESULT_FINAL,
             payload.clone(),
         );
@@ -2235,9 +2187,7 @@ mod with_runtime {
                 .ok()
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                 .unwrap_or(false);
-            let module_meta = crate::registry::find_module(&app, &spec.task)
-                .ok()
-                .flatten();
+            let module_meta = crate::registry::find_module(app, &spec.task).ok().flatten();
             let invariants = {
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(m) = &module_meta {
@@ -2258,7 +2208,7 @@ mod with_runtime {
                 parts.join("|")
             };
             let key = if use_v2 {
-                crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
+                crate::compute_cache::compute_key_v2_plus(spec, &spec.input, &invariants)
             } else {
                 crate::compute_cache::compute_key(
                     &spec.task,
@@ -2390,7 +2340,7 @@ mod with_runtime {
             }
             metrics = m;
         }
-        let payload = crate::ComputeFinalOk {
+        let payload = ComputeFinalOk {
             ok: true,
             job_id: spec.job_id.clone(),
             task: spec.task.clone(),
@@ -2399,13 +2349,13 @@ mod with_runtime {
         };
         #[cfg(feature = "otel_spans")]
         tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "compute job completed with metrics");
-        crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
+        crate::emit_or_log(app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
         if spec.replayable && spec.cache == "readwrite" {
             let use_v2 = std::env::var("UICP_CACHE_V2")
                 .ok()
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                 .unwrap_or(false);
-            let module_meta = crate::registry::find_module(&app, &spec.task)
+            let module_meta = crate::registry::find_module(app, &spec.task)
                 .ok()
                 .flatten();
             let invariants = {
@@ -2428,7 +2378,7 @@ mod with_runtime {
                 parts.join("|")
             };
             let key = if use_v2 {
-                crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
+                crate::compute_cache::compute_key_v2_plus(spec, &spec.input, &invariants)
             } else {
                 crate::compute_cache::compute_key(
                     &spec.task,
@@ -2454,7 +2404,7 @@ mod with_runtime {
 
     fn collect_metrics(store: &wasmtime::Store<Ctx>) -> serde_json::Value {
         let duration_ms = store.data().started.elapsed().as_millis() as i64;
-        let remaining = (store.data().deadline_ms as i64 - duration_ms).max(0) as i64;
+        let remaining = (store.data().deadline_ms as i64 - duration_ms).max(0);
         let mut metrics = serde_json::json!({
             "durationMs": duration_ms,
             "deadlineMs": store.data().deadline_ms,
@@ -2534,7 +2484,7 @@ mod with_runtime {
     mod tests {
         use super::*;
         use crate::compute_input::{fs_read_allowed, sanitize_ws_files_path};
-        use crate::core::files_dir_path;
+        use crate::policy::{ComputeCapabilitiesSpec, ComputeProvenanceSpec};
 
         #[test]
         fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {
@@ -2589,13 +2539,13 @@ mod with_runtime {
                 mem_limit_mb: None,
                 bind: vec![],
                 cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec {
+                capabilities: ComputeCapabilitiesSpec {
                     fs_read: vec!["ws:/files/**".into()],
                     ..Default::default()
                 },
                 workspace_id: "default".into(),
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
+                provenance: ComputeProvenanceSpec {
                     env_hash: "dev".into(),
                     agent_trace_id: None,
                 },
@@ -2643,10 +2593,10 @@ mod with_runtime {
                 mem_limit_mb: None,
                 bind: vec![],
                 cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec::default(),
+                capabilities: ComputeCapabilitiesSpec::default(),
                 workspace_id: "default".into(),
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
+                provenance: ComputeProvenanceSpec {
                     env_hash: "dev".into(),
                     agent_trace_id: None,
                 },
@@ -2680,13 +2630,13 @@ mod with_runtime {
                 mem_limit_mb: None,
                 bind: vec![],
                 cache: "readwrite".into(),
-                capabilities: crate::ComputeCapabilitiesSpec {
+                capabilities: ComputeCapabilitiesSpec {
                     fs_read: vec!["ws:/files/**".into()],
                     ..Default::default()
                 },
                 workspace_id: "default".into(),
                 replayable: true,
-                provenance: crate::ComputeProvenanceSpec {
+                provenance: ComputeProvenanceSpec {
                     env_hash: "dev".into(),
                     agent_trace_id: None,
                 },
@@ -2704,7 +2654,7 @@ mod with_runtime {
             assert!(text.contains("alpha,1"));
 
             let spec_denied = ComputeJobSpec {
-                capabilities: crate::ComputeCapabilitiesSpec::default(),
+                capabilities: ComputeCapabilitiesSpec::default(),
                 ..spec_ok.clone()
             };
             let err = resolve_csv_source(&spec_denied, ws_path).expect_err("cap denied");
@@ -2865,7 +2815,7 @@ mod with_runtime {
                 fn emit_debug(&self, payload: serde_json::Value) {
                     self.debugs.lock().push(payload);
                 }
-                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().push(payload);
                 }
@@ -2930,7 +2880,6 @@ mod with_runtime {
         #[test]
         fn wasi_logging_guest_component_emits_partial_event() {
             use std::path::PathBuf;
-            use std::process::Command as PCommand;
             use std::sync::Arc;
 
             // Build the tiny log test component
@@ -2966,7 +2915,7 @@ mod with_runtime {
             }
             impl TelemetryEmitter for TestEmitter {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
-                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().push(payload);
                 }
@@ -3086,7 +3035,7 @@ mod with_runtime {
             struct NullEmitter;
             impl TelemetryEmitter for NullEmitter {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
-                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
             }
 
@@ -3135,7 +3084,7 @@ mod with_runtime {
             struct NullEmitter;
             impl TelemetryEmitter for NullEmitter {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
-                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
             }
             let engine = build_engine().expect("engine");
@@ -3194,7 +3143,7 @@ mod with_runtime {
             struct NullEmitter;
             impl TelemetryEmitter for NullEmitter {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
-                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
             }
             let engine = build_engine().expect("engine");
@@ -3248,7 +3197,7 @@ mod with_runtime {
                 fn emit_debug(&self, payload: serde_json::Value) {
                     self.debugs.lock().push(payload);
                 }
-                fn emit_partial(&self, _event: crate::ComputePartialEvent) {}
+                fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
             }
 
@@ -3320,7 +3269,7 @@ pub use with_runtime::{
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {
     use super::*;
-    use crate::ComputeFinalErr;
+    use ComputeFinalErr;
     pub(super) fn spawn_job<R: Runtime>(
         app: tauri::AppHandle<R>,
         spec: ComputeJobSpec,

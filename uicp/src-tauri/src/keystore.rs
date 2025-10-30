@@ -12,6 +12,7 @@ use std::cell::RefCell;
 #[cfg(test)]
 use std::path::PathBuf;
 
+use ::rusqlite::{params, OptionalExtension};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use chacha20poly1305::{
@@ -23,7 +24,6 @@ use hkdf::Hkdf;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use rand::{rngs::OsRng, RngCore};
-use rusqlite::{params, OptionalExtension};
 use secrecy::{ExposeSecret, SecretString, SecretVec};
 use serde::Serialize;
 use sha2::Sha256;
@@ -33,15 +33,13 @@ use zeroize::Zeroize;
 
 use crate::core::{log_warn, DATA_DIR};
 
-const KEYSTORE_DIR: &str = "keystore";
-const KEYSTORE_DB: &str = "keystore.db";
-const META_TABLE: &str = "meta";
-const SALT_KEY: &str = "app_salt";
-const SCHEMA_KEY: &str = "schema_version";
-const SCHEMA_VERSION: &str = "1";
-const HKDF_PREFIX: &str = "uicp:secret:";
-const AAD_SUFFIX: &str = ":v1";
-const RNG_FAILURE_CODE: &str = "E-UICP-SEC-RNG";
+use crate::config::errors as config_errors;
+#[cfg(test)]
+use crate::config::errors::RNG_FAILURE_CODE;
+use crate::config::paths::{
+    AAD_SUFFIX, HKDF_PREFIX, KEYSTORE_DB, KEYSTORE_DIR, META_TABLE, SALT_KEY, SCHEMA_KEY,
+    SCHEMA_VERSION,
+};
 
 /// Legacy environment variable mappings used during migration from plaintext .env files.
 /// Tuple layout: (service namespace, account identifier, environment variable name)
@@ -60,8 +58,9 @@ const SENTINEL_PLAINTEXT: &[u8] = b"uicp-sentinel-v1";
 
 // Test-injectable RNG hook. In production, this remains None and OsRng is used.
 // In tests, set via set_test_rng_hook(Some(fn)) to simulate RNG failures or custom fills.
+type RngFillHook = fn(&mut [u8]) -> Result<()>;
 thread_local! {
-    static RNG_FILL_HOOK: RefCell<Option<fn(&mut [u8]) -> Result<()>>> = RefCell::new(None);
+    static RNG_FILL_HOOK: RefCell<Option<RngFillHook>> = RefCell::new(None);
 }
 
 fn fill_nonce(dest: &mut [u8; 24]) -> Result<()> {
@@ -71,7 +70,7 @@ fn fill_nonce(dest: &mut [u8; 24]) -> Result<()> {
         }
         OsRng
             .try_fill_bytes(dest)
-            .map_err(|err| KeystoreError::Other(format!("{RNG_FAILURE_CODE}: {err}")))
+            .map_err(|err| KeystoreError::Other(format!("{}: {}", "RNG failure", err)))
     })
 }
 
@@ -83,12 +82,14 @@ pub(crate) fn set_test_rng_hook(hook: Option<fn(&mut [u8]) -> Result<()>>) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum KeystoreMode {
     Passphrase,
+    #[allow(dead_code)]
     Mock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum UnlockMethod {
     Passphrase,
+    #[allow(dead_code)]
     Mock,
 }
 
@@ -145,16 +146,14 @@ struct UnlockedState {
     method: UnlockMethod,
 }
 
+#[derive(Default)]
 enum KeystoreState {
+    #[default]
     Locked,
     Unlocked(UnlockedState),
 }
 
-impl Default for KeystoreState {
-    fn default() -> Self {
-        KeystoreState::Locked
-    }
-}
+ 
 
 pub struct KeystoreConfig {
     pub ttl: Duration,
@@ -268,10 +267,6 @@ impl Keystore {
     pub fn lock(&self) {
         let mut guard = self.state.write();
         *guard = KeystoreState::Locked;
-    }
-
-    pub fn ttl(&self) -> Duration {
-        self.ttl
     }
 
     pub async fn secret_exists(&self, service: &str, account: &str) -> Result<bool> {
@@ -547,7 +542,7 @@ impl Keystore {
     }
 
     fn derive_dek(&self, kek: &SecretVec<u8>, secret_id: &str) -> Result<[u8; 32]> {
-        let info = format!("{HKDF_PREFIX}{secret_id}");
+        let info = format!("{}{}", HKDF_PREFIX, secret_id);
         let hk = Hkdf::<Sha256>::new(Some(self.app_salt.as_slice()), kek.expose_secret());
         let mut dek = [0u8; 32];
         hk.expand(info.as_bytes(), &mut dek)
@@ -621,7 +616,7 @@ async fn initialize_database(conn: &AsyncConn, db_path: &Path) -> Result<Vec<u8>
     let app_salt = conn
         .call(|conn| {
             conn.query_row(
-                &format!("SELECT value FROM {META_TABLE} WHERE key = ?1"),
+                &format!("SELECT value FROM {} WHERE key = ?1", META_TABLE),
                 params![SALT_KEY],
                 |row| row.get::<_, String>(0),
             )
@@ -637,13 +632,16 @@ async fn initialize_database(conn: &AsyncConn, db_path: &Path) -> Result<Vec<u8>
             .map_err(|err| KeystoreError::Database(format!("invalid salt encoding: {err}")))?,
         None => {
             let mut salt = vec![0u8; 32];
-            OsRng
-                .try_fill_bytes(&mut salt)
-                .map_err(|err| KeystoreError::Other(format!("{RNG_FAILURE_CODE}: {err}")))?;
+            OsRng.try_fill_bytes(&mut salt).map_err(|err| {
+                KeystoreError::Other(format!("{}: {}", config_errors::RNG_FAILURE_CODE, err))
+            })?;
             let encoded = base64::engine::general_purpose::STANDARD.encode(&salt);
             conn.call(move |conn| {
                 conn.execute(
-                    &format!("INSERT OR REPLACE INTO {META_TABLE} (key, value) VALUES (?1, ?2)"),
+                    &format!(
+                        "INSERT OR REPLACE INTO {} (key, value) VALUES (?1, ?2)",
+                        META_TABLE
+                    ),
                     params![SALT_KEY, encoded],
                 )
                 .map_err(tokio_rusqlite::Error::from)
@@ -657,7 +655,10 @@ async fn initialize_database(conn: &AsyncConn, db_path: &Path) -> Result<Vec<u8>
 
     conn.call(|conn| {
         conn.execute(
-            &format!("INSERT OR REPLACE INTO {META_TABLE} (key, value) VALUES (?1, ?2)"),
+            &format!(
+                "INSERT OR REPLACE INTO {} (key, value) VALUES (?1, ?2)",
+                META_TABLE
+            ),
             params![SCHEMA_KEY, SCHEMA_VERSION],
         )
         .map_err(tokio_rusqlite::Error::from)
@@ -723,7 +724,7 @@ fn secret_id(service: &str, account: &str) -> String {
 }
 
 fn aad_value(service: &str, account: &str) -> String {
-    format!("{service}:{account}{AAD_SUFFIX}")
+    format!("{}:{}{}", service, account, AAD_SUFFIX)
 }
 
 fn ensure_owner_only_dir(path: &Path) -> Result<()> {

@@ -2,8 +2,8 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use ::rusqlite::{params, OptionalExtension};
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 use tokio_rusqlite::Connection as AsyncConn;
 use uicp::log_error;

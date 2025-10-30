@@ -14,6 +14,8 @@ use tokio::sync::RwLock;
 
 use crate::resilience::ErrorCategory;
 
+type TelemetryEmitterFn = dyn Fn(&str, serde_json::Value) + Send + Sync;
+
 /// Configuration for synthetic failure injection
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailureConfig {
@@ -51,7 +53,7 @@ pub struct ChaosEngine {
     /// Request counters for failure rate calculation
     request_counters: Arc<RwLock<HashMap<String, u64>>>,
     /// Telemetry event emitter
-    telemetry_emitter: Option<Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>>,
+    telemetry_emitter: Option<Arc<TelemetryEmitterFn>>,
 }
 
 /// Result of failure injection check

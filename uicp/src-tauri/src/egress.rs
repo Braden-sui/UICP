@@ -3,7 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
@@ -158,10 +157,10 @@ mod tests {
     }
 }
 
-static RL: Lazy<Mutex<HashMap<(String, String), Bucket>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-static CONC: Lazy<Mutex<HashMap<(String, String), usize>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static RL: std::sync::LazyLock<Mutex<HashMap<(String, String), Bucket>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static CONC: std::sync::LazyLock<Mutex<HashMap<(String, String), usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn cfg_rl_enabled() -> bool {
     std::env::var("UICP_EGRESS_RL_ENABLED")

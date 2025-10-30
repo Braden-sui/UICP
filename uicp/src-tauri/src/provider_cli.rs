@@ -9,13 +9,7 @@ use serde_json::Value;
 #[cfg(not(feature = "otel_spans"))]
 use crate::core::{log_info, LogEvent};
 
-const ERR_PROVIDER_INVALID: &str = "E-UICP-1500";
-const ERR_PROGRAM_NOT_FOUND: &str = "E-UICP-1501"; // ProgramNotFound
-const ERR_NOT_AUTHENTICATED: &str = "E-UICP-1502"; // NotAuthenticated
-const ERR_KEYCHAIN_LOCKED: &str = "E-UICP-1503"; // KeychainLocked (macOS)
-const ERR_NETWORK_DENIED: &str = "E-UICP-1504"; // NetworkDenied (jail)
-const ERR_TIMEOUT: &str = "E-UICP-1506"; // Timeout
-const ERR_SPAWN: &str = "E-UICP-1507"; // Spawn/exec failure
+use crate::config::errors as config_errors;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderLoginResult {
@@ -55,7 +49,9 @@ pub async fn login(provider: &str) -> Result<ProviderLoginResult, String> {
         // For login, do NOT force headless so the CLI can open a browser/device flow.
         "claude" => run_login_with_resolve("claude", provider, &["login"], &[]).await,
         other => Err(format!(
-            "{ERR_PROVIDER_INVALID}: unsupported provider '{other}'"
+            "{}: unsupported provider '{}'",
+            config_errors::ERR_PROVIDER_INVALID,
+            other
         )),
     }
 }
@@ -65,7 +61,9 @@ pub async fn health(provider: &str) -> Result<ProviderHealthResult, String> {
         "codex" => codex_health().await,
         "claude" => claude_health().await,
         other => Err(format!(
-            "{ERR_PROVIDER_INVALID}: unsupported provider '{other}'"
+            "{}: unsupported provider '{}'",
+            config_errors::ERR_PROVIDER_INVALID,
+            other
         )),
     }
 }
@@ -83,7 +81,9 @@ pub async fn install(
         "codex" => install_via_npm("@openai/codex", "codex", version).await,
         "claude" => install_via_npm("@anthropic/claude-code", "claude", version).await,
         other => Err(format!(
-            "{ERR_PROVIDER_INVALID}: unsupported provider '{other}'"
+            "{}: unsupported provider '{}'",
+            config_errors::ERR_PROVIDER_INVALID,
+            other
         )),
     }
 }
@@ -97,8 +97,7 @@ async fn install_via_npm(
     // Determine managed prefix (one directory above /bin)
     let prefix =
         managed_prefix_dir().ok_or_else(|| "Failed to resolve managed prefix".to_string())?;
-    let _ =
-        std::fs::create_dir_all(&prefix).map_err(|e| format!("create prefix dir failed: {e}"))?;
+    std::fs::create_dir_all(&prefix).map_err(|e| format!("create prefix dir failed: {e}"))?;
 
     let spec = if let Some(v) = version {
         format!("{pkg}@{v}")
@@ -110,7 +109,7 @@ async fn install_via_npm(
     let args = ["i", "-g", "--prefix", prefix_string.as_str(), spec_ref];
     let output = run_command(&npm, &args, &[])
         .await
-        .map_err(|e| format!("{ERR_SPAWN}: npm install failed: {e}"))?;
+        .map_err(|e| format!("{}: npm install failed: {}", config_errors::ERR_SPAWN, e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("npm install failed: {}", stderr.trim()));
@@ -180,13 +179,13 @@ async fn run_login_with_resolve(
             let hint = "Tip: On macOS, unlock the login keychain or run the CLI login in a local (non-SSH) session: security unlock-keychain ~/Library/Keychains/login.keychain-db, then run 'claude login'.";
             let mut append_hint = false;
             if lower.contains("keychain") || lower.contains("errsec") {
-                code = Some(ERR_KEYCHAIN_LOCKED.to_string());
+                code = Some(config_errors::ERR_KEYCHAIN_LOCKED.to_string());
                 append_hint = true;
             } else if lower.contains("missing api key")
                 || lower.contains("run /login")
                 || lower.contains("not authenticated")
             {
-                code = Some(ERR_NOT_AUTHENTICATED.to_string());
+                code = Some(config_errors::ERR_NOT_AUTHENTICATED.to_string());
                 append_hint = true;
             }
             if append_hint && !detail_text.contains(hint) {
@@ -196,14 +195,13 @@ async fn run_login_with_resolve(
                 detail_text.push_str(hint);
             }
         }
-        if lower.contains("httpjail")
+        if (lower.contains("httpjail")
             || lower.contains("denied by policy")
             || lower.contains("not allowed")
-            || lower.contains("blocked")
+            || lower.contains("blocked"))
+            && code.is_none()
         {
-            if code.is_none() {
-                code = Some(ERR_NETWORK_DENIED.to_string());
-            }
+            code = Some(config_errors::ERR_NETWORK_DENIED.to_string());
         }
         detail = Some(detail_text);
     }
@@ -385,7 +383,7 @@ async fn codex_health() -> Result<ProviderHealthResult, String> {
             ok: false,
             version: None,
             detail: Some("httpjail binary not found on PATH".into()),
-            code: Some(ERR_NETWORK_DENIED.into()),
+            code: Some(config_errors::ERR_NETWORK_DENIED.into()),
             search_paths: None,
         });
     }
@@ -419,8 +417,7 @@ async fn codex_health() -> Result<ProviderHealthResult, String> {
     };
     let detail = if ok {
         merge_streams(
-            if version.as_ref().map(|v| v.as_str()) == stdout.lines().next().map(|line| line.trim())
-            {
+            if version.as_deref() == stdout.lines().next().map(|line| line.trim()) {
                 ""
             } else {
                 &stdout
@@ -442,7 +439,7 @@ async fn codex_health() -> Result<ProviderHealthResult, String> {
 async fn claude_health() -> Result<ProviderHealthResult, String> {
     let exe = resolve_provider_exe("claude", provider_program("claude"));
     // Build base args for headless ping
-    let base_args = vec!["-p", "ping", "--output-format", "json"];
+    let base_args = ["-p", "ping", "--output-format", "json"];
     // In strict mode, require httpjail and wrap the ping with provider policy
     let (program, arg_list): (String, Vec<String>) = if health_strict_requested() {
         match find_httpjail_binary() {
@@ -454,11 +451,7 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
                         base_args.iter().map(|s| s.to_string()).collect(),
                     )
                 } else {
-                    let mut owned: Vec<String> = Vec::new();
-                    owned.push("--js".into());
-                    owned.push(pred);
-                    owned.push("--".into());
-                    owned.push(exe.clone());
+                    let mut owned: Vec<String> = vec!["--js".into(), pred, "--".into(), exe.clone()];
                     owned.extend(base_args.iter().map(|s| s.to_string()));
                     (httpjail, owned)
                 }
@@ -468,7 +461,7 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
                     ok: false,
                     version: None,
                     detail: Some("httpjail binary not found on PATH".into()),
-                    code: Some(ERR_NETWORK_DENIED.into()),
+                    code: Some(config_errors::ERR_NETWORK_DENIED.into()),
                     search_paths: None,
                 })
             }
@@ -526,10 +519,10 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
                 || lower.contains("run /login")
                 || lower.contains("not authenticated")
             {
-                code = Some(ERR_NOT_AUTHENTICATED.to_string());
+                code = Some(config_errors::ERR_NOT_AUTHENTICATED.to_string());
             }
             if lower.contains("keychain") || lower.contains("errsec") {
-                code = Some(ERR_KEYCHAIN_LOCKED.to_string());
+                code = Some(config_errors::ERR_KEYCHAIN_LOCKED.to_string());
             }
             if code.is_some() {
                 let hint = "Tip: On macOS, unlock the login keychain or run the CLI login in a local (non-SSH) session: security unlock-keychain ~/Library/Keychains/login.keychain-db, then run 'claude login'.";
@@ -620,7 +613,11 @@ async fn run_command_timeout(
             Ok(res) => res,
             Err(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!("{ERR_TIMEOUT}: spawn timed out after {}ms", ms),
+                format!(
+                    "{}: spawn timed out after {}ms",
+                    config_errors::ERR_TIMEOUT,
+                    ms
+                ),
             )),
         }
     } else {
@@ -646,8 +643,13 @@ fn format_spawn_error(
     use std::io::ErrorKind;
     if err.kind() == ErrorKind::TimedOut {
         return (
-            format!("{ERR_TIMEOUT}: {provider} {program} timed out"),
-            ERR_TIMEOUT.to_string(),
+            format!(
+                "{}: {} {} timed out",
+                config_errors::ERR_TIMEOUT,
+                provider,
+                program
+            ),
+            config_errors::ERR_TIMEOUT.to_string(),
             Vec::new(),
         );
     }
@@ -660,16 +662,33 @@ fn format_spawn_error(
         for p in common_install_candidates(program) {
             paths.push(p.to_string_lossy().into_owned());
         }
+        let search_paths_str = if paths.is_empty() {
+            "<none>".into()
+        } else {
+            paths.join(", ")
+        };
+        let env_var = if provider == "claude" {
+            "UICP_CLAUDE_PATH"
+        } else {
+            "UICP_CODEX_PATH"
+        };
         let msg = format!(
-            "{ERR_PROGRAM_NOT_FOUND}: {program} not found. Searched: {}. Set {} or install the CLI.",
-            if paths.is_empty() { "<none>".into() } else { paths.join(", ") },
-            if provider == "claude" { "UICP_CLAUDE_PATH" } else { "UICP_CODEX_PATH" }
+            "{}: {} not found. Searched: {}. Set {} or install the CLI.",
+            config_errors::ERR_PROGRAM_NOT_FOUND,
+            program,
+            search_paths_str,
+            env_var
         );
-        return (msg, ERR_PROGRAM_NOT_FOUND.to_string(), paths);
+        return (msg, config_errors::ERR_PROGRAM_NOT_FOUND.to_string(), paths);
     }
     (
-        format!("{ERR_SPAWN}: failed to spawn {program}: {err}"),
-        ERR_SPAWN.to_string(),
+        format!(
+            "{}: failed to spawn {}: {}",
+            config_errors::ERR_SPAWN,
+            program,
+            err
+        ),
+        config_errors::ERR_SPAWN.to_string(),
         Vec::new(),
     )
 }
@@ -838,10 +857,7 @@ fn search_in_path(program: &str) -> Option<PathBuf> {
     } else {
         Vec::new()
     };
-    let path_var = match std::env::var_os("PATH") {
-        Some(v) => v,
-        None => return None,
-    };
+    let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         if dir.as_os_str().is_empty() {
             continue;
@@ -1117,8 +1133,8 @@ mod tests {
     fn format_spawn_error_non_not_found_uses_err_spawn() {
         let err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
         let (msg, code, paths) = format_spawn_error("claude", "claude", err);
-        assert!(msg.contains(ERR_SPAWN));
-        assert_eq!(code, ERR_SPAWN);
+        assert!(msg.contains(config_errors::ERR_SPAWN));
+        assert_eq!(code, config_errors::ERR_SPAWN);
         assert!(paths.is_empty());
     }
 
@@ -1148,7 +1164,10 @@ mod tests {
         }
 
         assert_eq!(res.ok, false);
-        assert_eq!(res.code.as_deref(), Some(ERR_PROGRAM_NOT_FOUND));
+        assert_eq!(
+            res.code.as_deref(),
+            Some(config_errors::ERR_PROGRAM_NOT_FOUND)
+        );
         assert!(
             res.search_paths
                 .as_ref()
@@ -1241,7 +1260,10 @@ fi
         // Denied
         let res1 = login("claude").await.expect("result");
         assert_eq!(res1.ok, false);
-        assert_eq!(res1.code.as_deref(), Some(ERR_NETWORK_DENIED));
+        assert_eq!(
+            res1.code.as_deref(),
+            Some(config_errors::ERR_NETWORK_DENIED)
+        );
 
         // Allowed
         std::env::set_var("ALLOW_HTTPJAIL", "1");
@@ -1341,7 +1363,10 @@ exit 0
 
         assert!(res.detail.is_some(), "should capture output");
         // We don't guarantee ok=true because our stub emits stream-json; just ensure no ProgramNotFound
-        assert_ne!(res.code.as_deref(), Some(ERR_PROGRAM_NOT_FOUND));
+        assert_ne!(
+            res.code.as_deref(),
+            Some(config_errors::ERR_PROGRAM_NOT_FOUND)
+        );
     }
 
     #[tokio::test]

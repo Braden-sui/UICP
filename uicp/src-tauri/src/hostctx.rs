@@ -1,9 +1,9 @@
-use std::{path::PathBuf, sync::Arc};
-
+#[cfg(test)]
 use parking_lot::RwLock;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+
 use reqwest::Client;
 use serde_json::Value;
-use std::collections::HashMap;
 
 use crate::action_log::ActionLogHandle;
 
@@ -151,6 +151,7 @@ impl HostCtx {
         }
     }
 
+    #[cfg(test)]
     // Test helper
     pub fn test(
         http: Client,
@@ -167,9 +168,11 @@ impl HostCtx {
     }
 }
 
+#[cfg(test)]
 // In-memory receipt sink for tests
 pub struct InMemorySink(pub Arc<RwLock<Vec<(String, Value)>>>);
 
+#[cfg(test)]
 impl ReceiptSink for InMemorySink {
     fn append(&self, kind: &str, value: &Value) {
         self.0.write().push((kind.to_string(), value.clone()));

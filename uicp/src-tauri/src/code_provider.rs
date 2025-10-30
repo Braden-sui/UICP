@@ -82,6 +82,12 @@ impl CodeProviderJob {
     }
 }
 
+impl Default for ClaudeProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderContext {
     pub working_dir: PathBuf,
@@ -549,10 +555,7 @@ fn search_in_path(program: &str) -> Option<std::path::PathBuf> {
     } else {
         Vec::new()
     };
-    let path_var = match std::env::var_os("PATH") {
-        Some(v) => v,
-        None => return None,
-    };
+    let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         if dir.as_os_str().is_empty() {
             continue;
@@ -780,12 +783,13 @@ impl CodeProvider for ClaudeProvider {
     ) -> Result<ProviderRun, CodeProviderError> {
         // WHY: Ensure Claude CLI respects tool permissions and surfaces step-by-step events.
         // INVARIANT: stream-json output is parsed line-by-line; invalid JSON lines are preserved as plain text.
-        let mut args = Vec::new();
-        args.push("--output-format".to_string());
-        args.push("stream-json".to_string());
-        args.push("--print".to_string());
-        args.push("--permission-mode".to_string());
-        args.push("acceptEdits".to_string());
+        let mut args = vec![
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--print".to_string(),
+            "--permission-mode".to_string(),
+            "acceptEdits".to_string(),
+        ];
 
         for tool in &job.allowed_tools {
             args.push("--allowedTools".to_string());
@@ -834,15 +838,14 @@ impl CodeProvider for ClaudeProvider {
             match serde_json::from_str::<Value>(line) {
                 Ok(value) => {
                     if let Some(event_type) = value.get("type").and_then(|v| v.as_str()) {
-                        if event_type == "content_block_delta" {
-                            if value.pointer("/delta/type").and_then(|v| v.as_str())
+                        if event_type == "content_block_delta"
+                            && value.pointer("/delta/type").and_then(|v| v.as_str())
                                 == Some("text_delta")
+                        {
+                            if let Some(text) =
+                                value.pointer("/delta/text").and_then(|v| v.as_str())
                             {
-                                if let Some(text) =
-                                    value.pointer("/delta/text").and_then(|v| v.as_str())
-                                {
-                                    aggregated.push_str(text);
-                                }
+                                aggregated.push_str(text);
                             }
                         }
                     }
@@ -940,6 +943,12 @@ impl CodexProvider {
     fn sessions_root(&self) -> Result<PathBuf, CodeProviderError> {
         let root = Self::codex_home()?.join("sessions");
         Ok(root)
+    }
+}
+
+impl Default for CodexProvider {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

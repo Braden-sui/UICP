@@ -11,41 +11,8 @@ pub const EVENT_UI_DEBUG: &str = "ui-debug-log";
 // WHY: Normalized LLM StreamEvent v1 channel (backend emits normalized content/tool_call/done/error events)
 pub const EVENT_STREAM_V1: &str = "uicp-stream-v1";
 
-use rusqlite::OptionalExtension;
-use secrecy::SecretString;
 use serde_json::Value;
-use tauri::{Emitter, Manager};
-
-// Import known provider env vars into keystore when unlocked. Best-effort; errors are logged but not surfaced.
-pub async fn import_env_secrets_into_keystore(
-    ks: std::sync::Arc<crate::keystore::Keystore>,
-) -> Result<(), String> {
-    // (service, account, env_var)
-    let mappings = [
-        ("uicp", "openai:api_key", "OPENAI_API_KEY"),
-        ("uicp", "anthropic:api_key", "ANTHROPIC_API_KEY"),
-        ("uicp", "openrouter:api_key", "OPENROUTER_API_KEY"),
-        ("uicp", "ollama:api_key", "OLLAMA_API_KEY"),
-    ];
-    for (service, account, env_key) in mappings.iter() {
-        if let Ok(val) = std::env::var(env_key) {
-            if !val.is_empty() {
-                let key = format!("{}:{}", service, account);
-                if let Err(e) = ks.secret_set("uicp", account, SecretString::new(val)).await {
-                    tracing::warn!(
-                        target = "uicp",
-                        "Failed to import env secret {}: {}",
-                        key,
-                        e
-                    );
-                } else {
-                    tracing::info!(target = "uicp", "Imported env secret: {}", key);
-                }
-            }
-        }
-    }
-    Ok(())
-}
+use tauri::Emitter;
 
 pub fn emit_problem_detail(
     app_handle: &tauri::AppHandle,
@@ -70,39 +37,6 @@ pub fn emit_problem_detail(
             "error": error,
         }),
     );
-}
-
-pub async fn emit_replay_telemetry(
-    app: &tauri::AppHandle,
-    replay_status: &str,
-    failed_reason: Option<&str>,
-    rerun_count: i64,
-) {
-    let checkpoint_id = last_checkpoint_ts(app).await.ok().flatten();
-    let _ = app.emit(
-        "replay-telemetry",
-        serde_json::json!({
-            "replay_status": replay_status,
-            "failed_reason": failed_reason,
-            "checkpoint_id": checkpoint_id,
-            "rerun_count": rerun_count,
-        }),
-    );
-}
-
-async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64>> {
-    let state: tauri::State<'_, crate::AppState> = app.state();
-    let row = state
-        .db_ro
-        .call(move |conn| -> tokio_rusqlite::Result<Option<i64>> {
-            let mut stmt = conn.prepare_cached(
-                "SELECT MAX(created_at) FROM tool_call WHERE result_json IS NOT NULL",
-            )?;
-            let result: Option<i64> = stmt.query_row([], |row| row.get(0)).optional()?;
-            Ok(result)
-        })
-        .await?;
-    Ok(row)
 }
 
 // Feature flag: enable backend emission of normalized StreamEvent v1 alongside legacy events
@@ -223,6 +157,19 @@ pub fn extract_events_from_chunk(chunk: &Value, default_channel: Option<&str>) -
             "channel": default_channel.unwrap_or("text"),
             "text": content,
         }));
+    }
+
+    // Handle top-level normalized content objects: { "type": "content", "text": "..." }
+    if let Some(t) = chunk.get("type").and_then(|v| v.as_str()) {
+        if t == "content" {
+            if let Some(text) = chunk.get("text").and_then(|v| v.as_str()) {
+                events.push(serde_json::json!({
+                    "type": "content",
+                    "channel": default_channel.unwrap_or("text"),
+                    "text": text,
+                }));
+            }
+        }
     }
 
     // Handle text_delta (Anthropic streaming)
