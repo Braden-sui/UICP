@@ -64,7 +64,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[tauri::command]
 pub async fn apppack_validate(dir: String) -> Result<AppPackManifest, String> {
     let root = PathBuf::from(&dir);
     let manifest_path = root.join("apppack.json");
@@ -101,7 +100,6 @@ pub fn install_app_pack(dir: &Path) -> Result<AppPackInstall, String> {
     })
 }
 
-#[tauri::command]
 pub async fn apppack_install(
     _state: State<'_, AppState>,
     dir: String,
@@ -109,7 +107,6 @@ pub async fn apppack_install(
     install_app_pack(Path::new(&dir))
 }
 
-#[tauri::command]
 pub async fn apppack_entry_html(installed_id: String) -> Result<String, String> {
     let p = FILES_DIR
         .join("apps")

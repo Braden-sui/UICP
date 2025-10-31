@@ -361,11 +361,7 @@ pub async fn egress_fetch_core(
     })
 }
 
-// -----------------------------------------------------------------------------
-// Tauri command: egress_fetch (thin wrapper)
-// -----------------------------------------------------------------------------
-
-#[tauri::command]
+// Internal wrapper used by commands::network::egress_fetch
 pub async fn egress_fetch(
     app: AppHandle,
     state: State<'_, AppState>,

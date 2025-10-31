@@ -1,17 +1,18 @@
 use std::time::{Duration, Instant};
 
+use ::rusqlite::params;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use tauri::{async_runtime::spawn, Emitter, Manager, State};
+use tauri::{async_runtime::spawn, AppHandle, Emitter, Manager, State};
 
 use crate::codegen;
 use crate::compute;
 use crate::compute_cache;
 use crate::compute_input::canonicalize_task_input;
-use crate::core::{emit_or_log, DATA_DIR, FILES_DIR};
+use crate::core::emit_or_log;
 use crate::policy::enforce_compute_policy;
 use crate::policy::{ComputeFinalErr, ComputeJobSpec};
-use crate::{AppState, DB_PATH, ENV_PATH};
+use crate::AppState;
 
 #[tauri::command]
 pub async fn compute_call(
@@ -365,12 +366,27 @@ pub async fn compute_cancel(
 }
 
 #[tauri::command]
-pub async fn get_paths() -> Result<serde_json::Value, String> {
-    // Return canonical string paths so downstream logic receives stable values.
-    Ok(serde_json::json!({
-        "dataDir": DATA_DIR.display().to_string(),
-        "dbPath": DB_PATH.display().to_string(),
-        "envPath": ENV_PATH.display().to_string(),
-        "filesDir": FILES_DIR.display().to_string(),
-    }))
+pub async fn clear_compute_cache(
+    app: AppHandle,
+    workspace_id: Option<String>,
+) -> Result<(), String> {
+    #[cfg(feature = "otel_spans")]
+    let _span = tracing::info_span!(
+        "clear_compute_cache",
+        workspace = %workspace_id.as_deref().unwrap_or("default")
+    );
+    let ws = workspace_id.unwrap_or_else(|| "default".into());
+    let state: State<'_, AppState> = app.state();
+    state
+        .db_rw
+        .call(move |conn| -> tokio_rusqlite::Result<()> {
+            conn.execute(
+                "DELETE FROM compute_cache WHERE workspace_id = ?1",
+                params![ws],
+            )
+            .map(|_| ())
+            .map_err(tokio_rusqlite::Error::from)
+        })
+        .await
+        .map_err(|e| format!("{e:?}"))
 }

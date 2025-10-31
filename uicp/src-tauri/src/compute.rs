@@ -96,7 +96,8 @@ mod with_runtime {
         add_to_linker_async, DynOutputStream, OutputStream as WasiOutputStreamTrait, Pollable,
         StreamResult,
     };
-    use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+    use wasmtime_wasi::{cli::{StdoutStream, IsTerminal}, DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+    use tokio::io::AsyncWrite;
 
     // Import configuration constants
     use crate::config::limits::{
@@ -144,6 +145,7 @@ mod with_runtime {
         fn emit_debug(&self, payload: serde_json::Value);
         fn emit_partial(&self, event: ComputePartialEvent);
         fn emit_partial_json(&self, payload: serde_json::Value);
+        fn emit_shutdown(&self);
     }
 
     struct NullTelemetry;
@@ -151,6 +153,7 @@ mod with_runtime {
         fn emit_debug(&self, _payload: serde_json::Value) {}
         fn emit_partial(&self, _event: ComputePartialEvent) {}
         fn emit_partial_json(&self, _payload: serde_json::Value) {}
+        fn emit_shutdown(&self) {}
     }
 
     #[derive(Clone)]
@@ -158,6 +161,7 @@ mod with_runtime {
         Debug(serde_json::Value),
         PartialEvent(ComputePartialEvent),
         PartialJson(serde_json::Value),
+        Shutdown,
     }
 
     #[allow(dead_code)]
@@ -395,6 +399,9 @@ mod with_runtime {
         fn emit_partial_json(&self, payload: serde_json::Value) {
             self.push_with_backoff(UiEvent::PartialJson(payload));
         }
+        fn emit_shutdown(&self) {
+            self.push_with_backoff(UiEvent::Shutdown);
+        }
     }
 
     struct PartialStreamShared {
@@ -544,9 +551,36 @@ mod with_runtime {
     }
 
     #[allow(dead_code)]
+    #[derive(Clone)]
     struct GuestLogStream {
         shared: Arc<GuestLogShared>,
         channel: &'static str,
+    }
+
+    #[allow(dead_code)]
+    #[async_trait]
+    impl IsTerminal for GuestLogStream {
+        fn is_terminal(&self) -> bool {
+            false
+        }
+    }
+
+    #[async_trait]
+    impl StdoutStream for GuestLogStream {
+        fn async_stream(&self) -> Box<dyn AsyncWrite + Send + Sync> {
+            Box::new(tokio::io::sink())
+        }
+
+        fn p2_stream(&self) -> Box<dyn WasiOutputStreamTrait> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[async_trait]
+    impl Pollable for GuestLogStream {
+        async fn ready(&mut self) {
+            std::future::ready(()).await
+        }
     }
 
     #[allow(dead_code)]
@@ -597,27 +631,37 @@ mod with_runtime {
                 let preview_b64 = self.shared.clamp_preview(to_emit);
                 let seq_no = self.shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
                 let tick_no = self.shared.tick.fetch_add(1, Ordering::Relaxed) + 1;
-                let new_total = self
-                    .shared
-                    .emitted_bytes
-                    .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
-                    .saturating_add(to_emit.len() as u64) as usize;
-                let truncated = new_total > self.shared.max_bytes;
 
                 self.shared.log_count.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .emitted_bytes
+                    .fetch_add(to_emit.len() as u64, Ordering::Relaxed);
+
+                let _payload = serde_json::json!({
+                    "jobId": self.shared.job_id,
+                    "task": self.shared.task,
+                    "channel": self.channel,
+                    "seq": seq_no,
+                    "tick": tick_no,
+                    "previewBase64": preview_b64,
+                    "sizeBytes": to_emit.len(),
+                });
 
                 // WHY: Append to the durable action_log before UI emission to preserve append-first semantics.
                 let full_b64 = BASE64_ENGINE.encode(to_emit);
+                let output = truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
+                let truncated = output.len() < to_emit.len();
                 if let Err(err) = self.shared.action_log.append_json_blocking(
                     "compute.log",
                     &serde_json::json!({
                         "jobId": self.shared.job_id,
                         "task": self.shared.task,
-                        "stream": self.channel,
+                        "channel": self.channel,
                         "seq": seq_no,
                         "tick": tick_no,
-                        "bytesLen": to_emit.len(),
-                        "previewB64": preview_b64,
+                        "previewBase64": preview_b64,
+                        "sizeBytes": to_emit.len(),
+                        "payloadBase64": full_b64,
                         "lineB64": full_b64,
                         "truncated": truncated,
                     }),
@@ -629,13 +673,15 @@ mod with_runtime {
                 // Emit structured partial log event
                 self.shared.emitter.emit_partial_json(serde_json::json!({
                       "jobId": self.shared.job_id,
-                      "task": self.shared.task,
-                      "seq": seq_no,
+                    "task": self.shared.task,
+                    "seq": seq_no,
                     "kind": "log",
                     "stream": self.channel,
                     "tick": tick_no,
                     "bytesLen": to_emit.len(),
                     "previewB64": preview_b64,
+                    "payloadBase64": full_b64,
+                    "lineB64": full_b64,
                     "truncated": truncated,
                 }));
 
@@ -652,6 +698,22 @@ mod with_runtime {
                     "ts": Utc::now().timestamp_millis(),
                 }));
             }
+        }
+    }
+
+    #[async_trait]
+    impl WasiOutputStreamTrait for GuestLogStream {
+        fn write(&mut self, bytes: Bytes) -> StreamResult<()> {
+            self.emit_message(&bytes);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> StreamResult<()> {
+            Ok(())
+        }
+
+        fn check_write(&mut self) -> StreamResult<usize> {
+            Ok(usize::MAX)
         }
     }
 
@@ -1113,7 +1175,7 @@ mod with_runtime {
                         "event": "component_loaded",
                         "jobId": spec.job_id,
                         "task": spec.task,
-                        "path": module.path,
+                        "path": module.path.display().to_string(),
                         "size": size,
                     }),
                 );
@@ -1135,11 +1197,18 @@ mod with_runtime {
             let app_for_ui = app.clone();
             let drain: JoinHandle<()> = tauri_spawn(async move {
                 while let Some(first) = rx_ui.recv().await {
+                    if matches!(first, UiEvent::Shutdown) {
+                        break;
+                    }
                     // Micro-batch drain to reduce await overhead when backlog accumulates
                     let mut batch: Vec<UiEvent> = Vec::with_capacity(32);
                     batch.push(first);
                     for _ in 0..31 {
                         match rx_ui.try_recv() {
+                            Ok(UiEvent::Shutdown) => {
+                                batch.clear();
+                                return;
+                            }
                             Ok(ev) => batch.push(ev),
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => break,
@@ -1164,11 +1233,13 @@ mod with_runtime {
                                     v,
                                 );
                             }
+                            UiEvent::Shutdown => {
+                                return;
+                            }
                         }
                     }
                 }
             });
-            std::mem::drop(drain);
             let telemetry: Arc<dyn TelemetryEmitter> =
                 Arc::new(QueueingEmitter { tx: tx_ui.clone() });
             let partial_seq = Arc::new(AtomicU64::new(0));
@@ -1295,6 +1366,39 @@ mod with_runtime {
                     FilePerms::READ,
                 );
             }
+
+            let action_log = {
+                let state: tauri::State<'_, crate::AppState> = app.state();
+                state.action_log.clone()
+            };
+
+            let guest_log_shared = Arc::new(GuestLogShared {
+                emitter: telemetry.clone(),
+                job_id: spec.job_id.clone(),
+                task: spec.task.clone(),
+                seq: partial_seq.clone(),
+                tick: logical_tick.clone(),
+                log_count: log_count.clone(),
+                emitted_bytes: emitted_bytes.clone(),
+                max_bytes: MAX_LOG_BYTES,
+                max_len: LOG_PREVIEW_MAX,
+                buf: Mutex::new(Vec::new()),
+                log_rate: log_rate.clone(),
+                log_throttle_waits: log_throttle_waits.clone(),
+                action_log,
+            });
+
+            let stdout_stream = GuestLogStream {
+                shared: guest_log_shared.clone(),
+                channel: "stdout",
+            };
+            let stderr_stream = GuestLogStream {
+                shared: guest_log_shared,
+                channel: "stderr",
+            };
+
+            wasi_builder.stdout(stdout_stream);
+            wasi_builder.stderr(stderr_stream);
             let wasi = wasi_builder.build();
 
             // Derive deterministic seed from job + env for replay stability
@@ -1683,6 +1787,10 @@ mod with_runtime {
             epoch_pump.abort();
 
             // Cleanup cancel map and job registry
+            telemetry.emit_shutdown();
+            drop(tx_ui);
+            let _ = drain.await;
+
             let state: tauri::State<'_, crate::AppState> = app.state();
             state.compute_cancel.write().await.remove(&spec.job_id);
             crate::remove_compute_job(&app, &spec.job_id).await;
@@ -2141,7 +2249,9 @@ mod with_runtime {
         if (acc.contains("export") && (acc.contains("not found") || acc.contains("unknown")))
             || (acc.contains("instantiate") && acc.contains("missing"))
         {
-            return (error_codes::TASK_NOT_FOUND, String::new());
+            let detail = err.to_string();
+            let message = format!("Missing import or export during instantiation: {detail}");
+            return (error_codes::RUNTIME_FAULT, message);
         }
         // Capability denial (FS/HTTP off by default in V1)
         if acc.contains("permission") || acc.contains("denied") {
@@ -2838,6 +2948,7 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().push(payload);
                 }
+                fn emit_shutdown(&self) {}
             }
 
             let captured_partials: Arc<Mutex<Vec<serde_json::Value>>> =
@@ -2938,6 +3049,7 @@ mod with_runtime {
                 fn emit_partial_json(&self, payload: serde_json::Value) {
                     self.partials.lock().push(payload);
                 }
+                fn emit_shutdown(&self) {}
             }
 
             let engine = build_engine().expect("engine");
@@ -3056,6 +3168,7 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                fn emit_shutdown(&self) {}
             }
 
             let dir = tempdir().expect("tempdir");
@@ -3105,6 +3218,7 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                fn emit_shutdown(&self) {}
             }
             let engine = build_engine().expect("engine");
             let mut store: Store<Ctx> = Store::new(
@@ -3164,6 +3278,7 @@ mod with_runtime {
                 fn emit_debug(&self, _payload: serde_json::Value) {}
                 fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                fn emit_shutdown(&self) {}
             }
             let engine = build_engine().expect("engine");
             let mut store: Store<Ctx> = Store::new(
@@ -3218,6 +3333,7 @@ mod with_runtime {
                 }
                 fn emit_partial(&self, _event: ComputePartialEvent) {}
                 fn emit_partial_json(&self, _payload: serde_json::Value) {}
+                fn emit_shutdown(&self) {}
             }
 
             let engine = build_engine().expect("engine");
@@ -3288,7 +3404,7 @@ pub use with_runtime::{
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {
     use super::*;
-    use ComputeFinalErr;
+    use crate::policy::ComputeFinalErr;
     pub(super) fn spawn_job<R: Runtime>(
         app: tauri::AppHandle<R>,
         spec: ComputeJobSpec,

@@ -3,8 +3,6 @@
 // WHY: the runtime feature is disabled without surfacing dead_code warnings during desktop builds.
 
 use std::path::PathBuf;
-#[cfg(test)]
-use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;

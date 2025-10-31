@@ -2,26 +2,21 @@
 
 use std::{
     collections::HashMap,
-    io::ErrorKind,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use ::rusqlite::{params, OptionalExtension};
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use chrono::Utc;
 use dotenvy::dotenv;
-use hmac::{Hmac, Mac};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use tauri::{async_runtime::spawn, Emitter, Manager, State, WebviewUrl};
 
 use rand::RngCore;
 use tokio::{
-    fs,
     sync::{RwLock, Semaphore},
     time::interval,
 };
@@ -71,16 +66,12 @@ mod services;
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod commands_harness;
 
-use crate::apppack::{apppack_entry_html, apppack_install, apppack_validate};
-use crate::egress::egress_fetch;
-use crate::keystore::{get_or_init_keystore, UnlockStatus};
-use core::{log_error, log_info, log_warn, CircuitBreakerConfig};
-use secrecy::SecretString;
+use core::{log_error, log_info, CircuitBreakerConfig};
 
 // Re-export shared core items so crate::... references in submodules remain valid
-pub use core::{
+pub use crate::core::{
     configure_sqlite, emit_or_log, ensure_default_workspace, files_dir_path, init_database,
-    remove_compute_job, AppState, APP_NAME, DATA_DIR, FILES_DIR, LOGS_DIR,
+    log_warn, remove_compute_job, AppState, APP_NAME, DATA_DIR, FILES_DIR, LOGS_DIR,
     OLLAMA_CLOUD_HOST_DEFAULT, OLLAMA_LOCAL_BASE_DEFAULT,
 };
 
@@ -93,246 +84,7 @@ static ENV_PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| DATA
 
 // files_dir_path is re-exported from core
 
-// Remove a chat request handle from the ongoing map (helper for consistent cleanup).
-// #[allow(dead_code)]
-// pub(crate) async fn remove_chat_request(app_handle: &tauri::AppHandle, request_id: &str) {
-//     let state: State<'_, AppState> = app_handle.state();
-//     state.ongoing.write().await.remove(request_id);
-// }
-
-/// Reload host permission policies from AppData/uicp/permissions.json.
-#[tauri::command]
-async fn reload_policies(app: tauri::AppHandle) -> Result<(), String> {
-    crate::authz::reload_policies(&app)
-}
-
-// ---------------------------------------------------------------------------
-// Keystore Tauri commands (no plaintext read exposure)
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-async fn keystore_unlock(
-    app: tauri::AppHandle,
-    method: String,
-    passphrase: Option<String>,
-) -> Result<UnlockStatus, String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    match method.to_ascii_lowercase().as_str() {
-        "passphrase" => {
-            let Some(p) = passphrase else {
-                return Err("passphrase required".into());
-            };
-            let status = ks
-                .unlock_passphrase(SecretString::new(p))
-                .await
-                .map_err(|e| e.to_string())?;
-            if !status.locked {
-                // Fire-and-forget: import known env vars into keystore once unlocked
-                let ks_clone = ks.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = import_env_secrets_into_keystore(ks_clone).await;
-                });
-                // Emit telemetry for unlock
-                emit_or_log(
-                    &app,
-                    "keystore_unlock",
-                    serde_json::json!({
-                        "method": status.method.map(|m| match m { crate::keystore::UnlockMethod::Passphrase => "passphrase", crate::keystore::UnlockMethod::Mock => "mock" }),
-                        "ttlSec": status.ttl_remaining_sec,
-                    }),
-                );
-            }
-            Ok(status)
-        }
-        "mock" => Err("mock unlock not permitted in release".into()),
-        _ => Err("unsupported unlock method".into()),
-    }
-}
-
-#[tauri::command]
-async fn keystore_lock(app: tauri::AppHandle) -> Result<(), String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.lock();
-    // Emit telemetry for manual lock
-    emit_or_log(
-        &app,
-        "keystore_autolock",
-        serde_json::json!({ "reason": "manual" }),
-    );
-    Ok(())
-}
-
-#[tauri::command]
-async fn keystore_status() -> Result<UnlockStatus, String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    Ok(ks.status())
-}
-
-#[tauri::command]
-async fn keystore_sentinel_exists() -> Result<bool, String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.sentinel_exists().await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn keystore_list_ids() -> Result<Vec<String>, String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.list_ids().await.map_err(|e| e.to_string())
-}
-
-/// Emit an explicit `keystore_autolock` telemetry event with a reason.
-#[allow(clippy::needless_pass_by_value)]
-#[tauri::command]
-fn keystore_autolock_reason(app: tauri::AppHandle, reason: String) {
-    emit_or_log(
-        &app,
-        "keystore_autolock",
-        serde_json::json!({ "reason": reason }),
-    );
-}
-
-#[tauri::command]
-async fn secret_set(service: String, account: String, value: String) -> Result<(), String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.secret_set(&service, &account, SecretString::new(value))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn secret_exists(service: String, account: String) -> Result<serde_json::Value, String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    let exists = ks
-        .secret_exists(&service, &account)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "exists": exists }))
-}
-
-#[tauri::command]
-async fn secret_delete(service: String, account: String) -> Result<(), String> {
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.secret_delete(&service, &account)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-// Import known provider env vars into keystore when unlocked. Best-effort; errors are logged but not surfaced.
-async fn import_env_secrets_into_keystore(
-    ks: std::sync::Arc<crate::keystore::Keystore>,
-) -> Result<(), String> {
-    // (service, account, env_var)
-    let mappings = [
-        ("uicp", "openai:api_key", "OPENAI_API_KEY"),
-        ("uicp", "anthropic:api_key", "ANTHROPIC_API_KEY"),
-        ("uicp", "openrouter:api_key", "OPENROUTER_API_KEY"),
-        ("uicp", "ollama:api_key", "OLLAMA_API_KEY"),
-    ];
-    for (service, account, env_key) in &mappings {
-        if let Ok(true) = ks.secret_exists(service, account).await {
-            continue;
-        }
-        if let Ok(value) = std::env::var(env_key) {
-            let trimmed = value.trim().to_string();
-            if !trimmed.is_empty() {
-                if let Err(err) = ks
-                    .secret_set(service, account, SecretString::new(trimmed))
-                    .await
-                {
-                    log_warn(
-                        crate::core::LogEvent::new("env import to keystore failed")
-                            .field("account", *account)
-                            .field("error", err.to_string()),
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Copy a workspace file (<ws:/files/...>) to a host destination path and return the final host path.
-#[tauri::command]
-async fn export_from_files(ws_path: String, dest_path: String) -> Result<String, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("export_from_files");
-    let src_buf: std::path::PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
-        Ok(p) => p,
-        Err(e) => return Err(e.message.to_string()),
-    };
-    if !src_buf.exists() {
-        return Err(format!("Source not found: {ws_path}"));
-    }
-    let meta = std::fs::symlink_metadata(&src_buf).map_err(|e| format!("stat failed: {e}"))?;
-    if !meta.file_type().is_file() {
-        return Err("Source must be a regular file".into());
-    }
-
-    let dest_input = std::path::Path::new(&dest_path);
-    let mut dest_final: std::path::PathBuf = if dest_input.is_dir() {
-        let fname = src_buf
-            .file_name()
-            .ok_or_else(|| "Invalid source file name".to_string())?
-            .to_string_lossy()
-            .to_string();
-        dest_input.join(fname)
-    } else {
-        dest_input.to_path_buf()
-    };
-
-    if let Some(parent) = dest_final.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return Err(format!("Failed to create destination dir: {e}"));
-        }
-    }
-
-    if dest_final.exists() {
-        let stem = dest_final
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
-        let ext = dest_final
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        let ts = chrono::Utc::now().timestamp();
-        let new_name = if ext.is_empty() {
-            format!("{stem}-{ts}")
-        } else {
-            format!("{stem}-{ts}.{ext}")
-        };
-        let parent = dest_final.parent().map_or_else(
-            || std::path::PathBuf::from("."),
-            std::path::Path::to_path_buf,
-        );
-        dest_final = parent.join(new_name);
-    }
-
-    std::fs::copy(&src_buf, &dest_final).map_err(|e| format!("Copy failed: {e}"))?;
-    Ok(dest_final.display().to_string())
-}
-
-#[tauri::command]
-async fn mint_job_token(
-    state: State<'_, AppState>,
-    job_id: String,
-    task: String,
-    workspace_id: String,
-    env_hash: String,
-) -> Result<String, String> {
-    let key = &state.job_token_key;
-    let mut mac: Hmac<Sha256> = Hmac::new_from_slice(key).map_err(|e| e.to_string())?;
-    mac.update(b"UICP-TOKENv1\x00");
-    mac.update(job_id.as_bytes());
-    mac.update(b"|");
-    mac.update(task.as_bytes());
-    mac.update(b"|");
-    mac.update(workspace_id.as_bytes());
-    mac.update(b"|");
-    mac.update(env_hash.as_bytes());
-    let tag = mac.finalize().into_bytes();
-    Ok(hex::encode(tag))
-}
+ 
 
 // CircuitState and CircuitBreakerConfig now defined in core module; configure_sqlite re-exported
 
@@ -350,171 +102,9 @@ struct SaveIndicatorPayload {
 
 // Removed unused ApiKeyStatus struct
 
-#[derive(Debug, Serialize, Deserialize)]
-struct CommandRequest {
-    id: String,
-    tool: String,
-    args: serde_json::Value,
-}
+// Persistence commands are now in commands::persistence module
 
-#[derive(Debug, Serialize)]
-struct AgentsConfigLoadResult {
-    exists: bool,
-    contents: Option<String>,
-    path: String,
-}
-
-const AGENTS_CONFIG_MAX_SIZE_BYTES: usize = 512 * 1024; // 512 KiB safety cap
-const AGENTS_CONFIG_TEMPLATE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../config/agents.yaml.template"
-));
-
-fn agents_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let resolver = app.path();
-    let base = resolver
-        .app_data_dir()
-        .map_err(|err| format!("E-UICP-AGENTS-PATH: {err}"))?;
-    Ok(base.join("uicp").join("agents.yaml"))
-}
-
-#[tauri::command]
-async fn load_agents_config_file(app: tauri::AppHandle) -> Result<AgentsConfigLoadResult, String> {
-    let path = agents_config_path(&app)?;
-    let path_display = path.display().to_string();
-    match fs::read_to_string(&path).await {
-        Ok(contents) => Ok(AgentsConfigLoadResult {
-            exists: true,
-            contents: Some(contents),
-            path: path_display,
-        }),
-        Err(err) if err.kind() == ErrorKind::NotFound => {
-            if AGENTS_CONFIG_TEMPLATE.len() > AGENTS_CONFIG_MAX_SIZE_BYTES {
-                return Err(format!(
-                    "E-UICP-AGENTS-TEMPLATE-SIZE: template {} bytes exceeds limit {}",
-                    AGENTS_CONFIG_TEMPLATE.len(),
-                    AGENTS_CONFIG_MAX_SIZE_BYTES
-                ));
-            }
-            if let Some(parent) = path.parent() {
-                if let Err(mkdir_err) = fs::create_dir_all(parent).await {
-                    log_error(format!(
-                        "agents config mkdir failed at {}: {mkdir_err}",
-                        parent.display()
-                    ));
-                    return Err(format!("E-UICP-AGENTS-MKDIR: {mkdir_err}"));
-                }
-            }
-            let tmp_path = path.with_extension("yaml.tmp");
-            if let Err(write_err) = fs::write(&tmp_path, AGENTS_CONFIG_TEMPLATE.as_bytes()).await {
-                log_error(format!(
-                    "agents config temp write failed at {}: {write_err}",
-                    tmp_path.display()
-                ));
-                return Err(format!("E-UICP-AGENTS-WRITE-TMP: {write_err}"));
-            }
-            if fs::metadata(&path).await.is_ok() {
-                if let Err(remove_err) = fs::remove_file(&path).await {
-                    log_error(format!(
-                        "agents config remove existing failed at {path_display}: {remove_err}"
-                    ));
-                    let _ = fs::remove_file(&tmp_path).await;
-                    return Err(format!("E-UICP-AGENTS-REMOVE: {remove_err}"));
-                }
-            }
-            if let Err(rename_err) = fs::rename(&tmp_path, &path).await {
-                log_error(format!(
-                    "agents config commit rename failed at {path_display}: {rename_err}"
-                ));
-                let _ = fs::remove_file(&tmp_path).await;
-                return Err(format!("E-UICP-AGENTS-RENAME: {rename_err}"));
-            }
-            log_info(format!(
-                "Bootstrapped agents.yaml from template at {path_display}"
-            ));
-            Ok(AgentsConfigLoadResult {
-                exists: true,
-                contents: Some(AGENTS_CONFIG_TEMPLATE.to_string()),
-                path: path_display,
-            })
-        }
-        Err(err) => {
-            log_error(format!(
-                "agents config read failed at {path_display}: {err}"
-            ));
-            Err(format!("E-UICP-AGENTS-READ: {err}"))
-        }
-    }
-}
-
-#[tauri::command]
-async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Result<(), String> {
-    if contents.len() > AGENTS_CONFIG_MAX_SIZE_BYTES {
-        return Err(format!(
-            "E-UICP-AGENTS-SIZE: payload {} bytes exceeds limit {}",
-            contents.len(),
-            AGENTS_CONFIG_MAX_SIZE_BYTES
-        ));
-    }
-
-    let path = agents_config_path(&app)?;
-    let path_display = path.display().to_string();
-    if let Some(parent) = path.parent() {
-        if let Err(err) = fs::create_dir_all(parent).await {
-            log_error(format!(
-                "agents config mkdir failed at {}: {err}",
-                parent.display()
-            ));
-            return Err(format!("E-UICP-AGENTS-MKDIR: {err}"));
-        }
-    }
-
-    // Write contents using a temporary file for best-effort atomicity on supported platforms.
-    let tmp_path = path.with_extension("yaml.tmp");
-    if let Err(err) = fs::write(&tmp_path, contents.as_bytes()).await {
-        log_error(format!(
-            "agents config temp write failed at {}: {err}",
-            tmp_path.display()
-        ));
-        return Err(format!("E-UICP-AGENTS-WRITE-TMP: {err}"));
-    }
-
-    // Replace existing file. On Windows rename fails if target exists; remove old file first.
-    if fs::metadata(&path).await.is_ok() {
-        if let Err(err) = fs::remove_file(&path).await {
-            log_error(format!(
-                "agents config remove existing failed at {path_display}: {err}"
-            ));
-            let _ = fs::remove_file(&tmp_path).await;
-            return Err(format!("E-UICP-AGENTS-REMOVE: {err}"));
-        }
-    }
-
-    if let Err(err) = fs::rename(&tmp_path, &path).await {
-        log_error(format!(
-            "agents config commit rename failed at {path_display}: {err}"
-        ));
-        let _ = fs::remove_file(&tmp_path).await;
-        return Err(format!("E-UICP-AGENTS-RENAME: {err}"));
-    }
-
-    Ok(())
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct WindowStatePayload {
-    id: String,
-    title: String,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    z_index: i64,
-    content: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessageInput {
     role: String,
@@ -522,7 +112,7 @@ pub struct ChatMessageInput {
     content: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatCompletionRequest {
     model: Option<String>,
@@ -538,349 +128,10 @@ pub struct ChatCompletionRequest {
     options: Option<serde_json::Value>,
 }
 
-#[tauri::command]
-async fn set_debug(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
-    *state.debug_enabled.write().await = enabled;
-    Ok(())
-}
-
-#[tauri::command]
-async fn save_api_key(_state: State<'_, AppState>, key: String) -> Result<(), String> {
-    let key_trimmed = key.trim().to_string();
-    // Store in embedded keystore under uicp:ollama:api_key
-    let ks = get_or_init_keystore().await.map_err(|e| e.to_string())?;
-    ks.secret_set("uicp", "ollama:api_key", SecretString::new(key_trimmed))
-        .await
-        .map_err(|e| e.to_string())
-}
+// Legacy API key commands moved to commands::api_keys
 
 // EASTER EGG ^.^ - IF YOU SEE THIS, THANK YOU FROM THE BOTTOM OF MY HEART FOR EVEN READING MY FILES. THIS IS THE FIRST
 // TIME I'VE EVER DONE THIS AND I REALLY BELIEVE IF THIS GETS TO WHAT I THINK IT CAN BE, IT COULD CHANGE HOW WE INTERACT WITH AI ON THE DAY to DAY.
-#[tauri::command]
-async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("persist_command", id = %cmd.id, tool = %cmd.tool);
-    // Freeze writes in Safe Mode
-    if *state.safe_mode.read().await {
-        return Ok(());
-    }
-    let id = cmd.id.clone();
-    let tool = cmd.tool.clone();
-    let args_json = serde_json::to_string(&cmd.args).map_err(|e| format!("{e}"))?;
-    #[cfg(feature = "otel_spans")]
-    let started = Instant::now();
-    let res = state
-        .db_rw
-        .call(move |conn| -> tokio_rusqlite::Result<()> {
-            let now = Utc::now().timestamp();
-            conn.execute(
-                "INSERT INTO tool_call (id, workspace_id, tool, args_json, result_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
-                params![id, "default", tool, args_json, now],
-            )
-            .map(|_| ())
-            .map_err(tokio_rusqlite::Error::from)
-        })
-        .await;
-    #[cfg(feature = "otel_spans")]
-    {
-        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        match &res {
-            Ok(()) => tracing::info!(target = "uicp", duration_ms = ms, "command persisted"),
-            Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "command persist failed");
-            }
-        }
-    }
-    res.map_err(|e| format!("DB error: {e:?}"))?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<CommandRequest>, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("load_commands");
-    #[cfg(feature = "otel_spans")]
-    let started = Instant::now();
-    let res = state
-        .db_ro
-        .call(|conn| -> tokio_rusqlite::Result<Vec<CommandRequest>> {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, tool, args_json FROM tool_call
-                 WHERE workspace_id = ?1
-                 ORDER BY created_at ASC",
-                )
-                .map_err(tokio_rusqlite::Error::from)?;
-            let rows = stmt
-                .query_map(params!["default"], |row| {
-                    let id: String = row.get(0)?;
-                    let tool: String = row.get(1)?;
-                    let args_json: String = row.get(2)?;
-                    let args = serde_json::from_str(&args_json)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    Ok(CommandRequest { id, tool, args })
-                })
-                .map_err(tokio_rusqlite::Error::from)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(tokio_rusqlite::Error::from)?;
-            Ok(rows)
-        })
-        .await;
-    #[cfg(feature = "otel_spans")]
-    {
-        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        match &res {
-            Ok(v) => tracing::info!(
-                target = "uicp",
-                duration_ms = ms,
-                count = v.len(),
-                "commands loaded"
-            ),
-            Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands load failed");
-            }
-        }
-    }
-    let commands = res.map_err(|e| format!("DB error: {e:?}"))?;
-    Ok(commands)
-}
-
-#[tauri::command]
-async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("clear_commands");
-    #[cfg(feature = "otel_spans")]
-    let started = Instant::now(); // instrumentation timing
-    let res = state
-        .db_rw
-        .call(|conn| -> tokio_rusqlite::Result<()> {
-            conn.execute(
-                "DELETE FROM tool_call WHERE workspace_id = ?1",
-                params!["default"],
-            )
-            .map(|_| ())
-            .map_err(tokio_rusqlite::Error::from)
-        })
-        .await;
-    #[cfg(feature = "otel_spans")]
-    {
-        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        match &res {
-            Ok(()) => tracing::info!(target = "uicp", duration_ms = ms, "commands cleared"),
-            Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands clear failed");
-            }
-        }
-    }
-    res.map_err(|e| format!("DB error: {e:?}"))?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn delete_window_commands(
-    state: State<'_, AppState>,
-    window_id: String,
-) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("delete_window_commands", window_id = %window_id);
-    state
-        .db_rw
-        .call(move |conn| {
-            // Try JSON1-powered delete; fallback to manual filter if JSON1 is unavailable.
-            let sql = "DELETE FROM tool_call
-                 WHERE workspace_id = ?1
-                 AND (
-                     (tool = 'window.create' AND json_extract(args_json, '$.id') = ?2)
-                     OR json_extract(args_json, '$.windowId') = ?2
-                 )";
-            match conn.execute(sql, params!["default", window_id.clone()]) {
-                Ok(_) => Ok(()),
-                Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                    if msg.contains("no such function: json_extract") =>
-                {
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT id, tool, args_json FROM tool_call WHERE workspace_id = ?1",
-                        )
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    let rows = stmt
-                        .query_map(params!["default"], |row| {
-                            let id: String = row.get(0)?;
-                            let tool: String = row.get(1)?;
-                            let args_json: String = row.get(2)?;
-                            Ok((id, tool, args_json))
-                        })
-                        .map_err(tokio_rusqlite::Error::from)?
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(tokio_rusqlite::Error::from)?;
-                    drop(stmt);
-                    let mut to_delete: Vec<String> = Vec::new();
-                    for (id, tool, args_json) in rows {
-                        let parsed: serde_json::Value = serde_json::from_str(&args_json)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                        let id_match = if tool == "window.create" {
-                            parsed
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .is_some_and(|s| s == window_id)
-                        } else {
-                            parsed
-                                .get("windowId")
-                                .and_then(|v| v.as_str())
-                                .is_some_and(|s| s == window_id)
-                        };
-                        if id_match {
-                            to_delete.push(id);
-                        }
-                    }
-                    if !to_delete.is_empty() {
-                        let tx = conn.transaction().map_err(tokio_rusqlite::Error::from)?;
-                        for id in to_delete {
-                            tx.execute("DELETE FROM tool_call WHERE id = ?1", params![id])
-                                .map_err(tokio_rusqlite::Error::from)?;
-                        }
-                        tx.commit().map_err(tokio_rusqlite::Error::from)?;
-                    }
-                    Ok(())
-                }
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await
-        .map_err(|e| format!("DB error: {e:?}"))?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn load_workspace(state: State<'_, AppState>) -> Result<Vec<WindowStatePayload>, String> {
-    let windows = state
-        .db_ro
-        .call(|conn| -> tokio_rusqlite::Result<Vec<WindowStatePayload>> {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, title, COALESCE(x, 40), COALESCE(y, 40), COALESCE(width, 640), \
-                 COALESCE(height, 480), COALESCE(z_index, 0)
-                 FROM window WHERE workspace_id = ?1 ORDER BY z_index ASC, created_at ASC",
-                )
-                .map_err(tokio_rusqlite::Error::from)?;
-            let rows = stmt
-                .query_map(params!["default"], |row| {
-                    Ok(WindowStatePayload {
-                        id: row.get(0)?,
-                        title: row.get(1)?,
-                        x: row.get::<_, f64>(2)?,
-                        y: row.get::<_, f64>(3)?,
-                        width: row.get::<_, f64>(4)?,
-                        height: row.get::<_, f64>(5)?,
-                        z_index: row.get::<_, i64>(6)?,
-                        content: None,
-                    })
-                })
-                .map_err(tokio_rusqlite::Error::from)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(tokio_rusqlite::Error::from)?;
-            Ok(if rows.is_empty() {
-                vec![WindowStatePayload {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    title: "Welcome".into(),
-                    x: 60.0,
-                    y: 60.0,
-                    width: 720.0,
-                    height: 420.0,
-                    z_index: 0,
-                    content: Some(
-                        "<h2>Welcome to UICP</h2><p>Start asking Gui (Guy) to build an app.</p>"
-                            .into(),
-                    ),
-                }]
-            } else {
-                rows
-            })
-        })
-        .await
-        .map_err(|e| format!("DB error: {e:?}"))?;
-
-    Ok(windows)
-}
-
-#[tauri::command]
-async fn save_workspace(
-    window: tauri::Window,
-    state: State<'_, AppState>,
-    windows: Vec<WindowStatePayload>,
-) -> Result<(), String> {
-    let save_res = state
-        .db_rw
-        .call(move |conn| -> tokio_rusqlite::Result<()> {
-            let tx = conn.transaction().map_err(tokio_rusqlite::Error::from)?;
-            tx.execute(
-                "DELETE FROM window WHERE workspace_id = ?1",
-                params!["default"],
-            )
-            .map_err(tokio_rusqlite::Error::from)?;
-            let now = Utc::now().timestamp();
-            for (index, win) in windows.iter().enumerate() {
-                let z_index = if win.z_index < 0 {
-                    i64::try_from(index).unwrap_or(i64::MAX)
-                } else {
-                    win.z_index.max(i64::try_from(index).unwrap_or(i64::MAX))
-                };
-                tx.execute(
-                    "INSERT INTO window (id, workspace_id, title, size, x, y, width, height, z_index, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-                    params![
-                        win.id,
-                        "default",
-                        &win.title,
-                        derive_size_token(win.width, win.height),
-                        win.x,
-                        win.y,
-                        win.width,
-                        win.height,
-                        z_index,
-                        now,
-                    ],
-                )
-                .map_err(tokio_rusqlite::Error::from)?;
-            }
-            tx.execute(
-                "UPDATE workspace SET updated_at = ?1 WHERE id = ?2",
-                params![now, "default"],
-            )
-            .map_err(tokio_rusqlite::Error::from)?;
-            tx.commit().map_err(tokio_rusqlite::Error::from)?;
-            Ok(())
-        })
-        .await;
-
-    match save_res {
-        Ok(()) => {
-            *state.last_save_ok.write().await = true;
-            emit_or_log(
-                window.app_handle(),
-                "save-indicator",
-                SaveIndicatorPayload {
-                    ok: true,
-                    timestamp: Utc::now().timestamp(),
-                },
-            );
-            Ok(())
-        }
-        Err(err) => {
-            *state.last_save_ok.write().await = false;
-            emit_or_log(
-                window.app_handle(),
-                "save-indicator",
-                SaveIndicatorPayload {
-                    ok: false,
-                    timestamp: Utc::now().timestamp(),
-                },
-            );
-            Err(format!("DB error: {err:?}"))
-        }
-    }
-}
 
 #[cfg(test)]
 fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
@@ -1002,6 +253,7 @@ fn extract_events_from_chunk(
                                 let function_obj = map
                                     .get("function")
                                     .or_else(|| map.get("delta").and_then(|d| d.get("function")));
+                                let id = map.get("id").and_then(|v| v.as_str());
                                 let name = map.get("name").and_then(|v| v.as_str()).or_else(|| {
                                     function_obj
                                         .and_then(|f| f.get("name").and_then(|v| v.as_str()))
@@ -1013,10 +265,6 @@ fn extract_events_from_chunk(
                                         function_obj.and_then(|f| f.get("arguments").cloned())
                                     })
                                     .unwrap_or(Value::Null);
-                                let id = map
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .or_else(|| map.get("tool_call_id").and_then(|v| v.as_str()));
                                 push_tool_call(events, index, id, name, arguments);
                                 continue;
                             }
@@ -1201,51 +449,6 @@ fn extract_events_from_chunk(
 // Helper to get the appropriate Ollama base URL with validation
 // Removed redundant get_ollama_base_url (canonical helper now lives in commands/chat.rs)
 
-async fn maybe_enable_local_ollama(state: &AppState) {
-    let allow_local = *state.allow_local_opt_in.read().await;
-    if !allow_local {
-        *state.use_direct_cloud.write().await = true;
-        return;
-    }
-
-    let client = state.http.clone();
-    let url = format!("{}/models", crate::core::OLLAMA_LOCAL_BASE_DEFAULT);
-    let ok = match tokio::time::timeout(Duration::from_millis(600), client.get(url).send()).await {
-        Ok(Ok(resp)) => resp.status().is_success(),
-        _ => false,
-    };
-
-    let mut use_cloud = state.use_direct_cloud.write().await;
-    *use_cloud = !ok;
-}
-
-#[tauri::command]
-async fn set_allow_local_opt_in(state: State<'_, AppState>, allow: bool) -> Result<(), String> {
-    {
-        let mut allow_guard = state.allow_local_opt_in.write().await;
-        *allow_guard = allow;
-    }
-
-    if allow {
-        {
-            let mut use_cloud = state.use_direct_cloud.write().await;
-            *use_cloud = false;
-        }
-        maybe_enable_local_ollama(&state).await;
-    } else {
-        *state.use_direct_cloud.write().await = true;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_ollama_mode(state: State<'_, AppState>) -> Result<(bool, bool), String> {
-    Ok((
-        *state.use_direct_cloud.read().await,
-        *state.allow_local_opt_in.read().await,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::extract_events_from_chunk;
@@ -1411,21 +614,6 @@ mod tests {
         assert_eq!(e.get("index").and_then(|v| v.as_i64()), Some(0));
         assert_eq!(e.get("id").and_then(|v| v.as_str()), Some("call_0"));
         assert_eq!(e.get("name").and_then(|v| v.as_str()), Some("emit_batch"));
-    }
-}
-
-fn derive_size_token(width: f64, height: f64) -> String {
-    let max_dim = width.max(height);
-    if max_dim <= 360.0 {
-        "xs".into()
-    } else if max_dim <= 520.0 {
-        "sm".into()
-    } else if max_dim <= 720.0 {
-        "md".into()
-    } else if max_dim <= 980.0 {
-        "lg".into()
-    } else {
-        "xl".into()
     }
 }
 
@@ -1889,7 +1077,7 @@ fn main() {
             // Run DB health check at startup; enter Safe Mode on failure
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = health_quick_check_internal(&handle).await {
+                if let Err(err) = commands::recovery::health_quick_check_internal(&handle).await {
                     log_error(format!("health_quick_check failed: {err:?}"));
                 }
             });
@@ -1905,935 +1093,96 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 let state: State<'_, AppState> = handle3.state();
                 if *state.allow_local_opt_in.read().await {
-                    maybe_enable_local_ollama(&state).await;
+                    crate::services::chat_service::maybe_enable_local_ollama(&state).await;
                 }
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // Chat commands
-            commands::chat::chat_completion,
-            commands::chat::cancel_chat,
-            // Compute commands
-            commands::compute::compute_call,
-            commands::compute::compute_cancel,
-            commands::compute::get_paths,
-            // Provider commands
+            // Files
+            commands::files::get_paths,
+            commands::files::copy_into_files,
+            commands::files::export_from_files,
+            commands::files::open_path,
+
+            // Debug
+            commands::debug::set_debug,
+            commands::debug::debug_circuits,
+            commands::debug::mint_job_token,
+            commands::debug::set_env_var,
+            commands::debug::get_action_log_stats,
+            commands::debug::set_allow_local_opt_in,
+            commands::debug::get_ollama_mode,
+            commands::debug::frontend_ready,
+
+            // Agents
+            commands::agents::load_agents_config_file,
+            commands::agents::save_agents_config_file,
+
+            // Apppack
+            commands::apppack::apppack_validate,
+            commands::apppack::apppack_install,
+            commands::apppack::apppack_entry_html,
+
+            // Modules
+            commands::modules::verify_modules,
+            commands::modules::get_modules_info,
+            commands::modules::get_modules_registry,
+
+            // Network
+            commands::network::egress_fetch,
+            commands::network::reload_policies,
+
+            // API Keys (legacy)
+            commands::api_keys::load_api_key,
+            commands::api_keys::save_api_key,
+            commands::api_keys::test_api_key,
+
+            // Keystore
+            commands::keystore::keystore_unlock,
+            commands::keystore::keystore_lock,
+            commands::keystore::keystore_status,
+            commands::keystore::keystore_sentinel_exists,
+            commands::keystore::keystore_list_ids,
+            commands::keystore::keystore_autolock_reason,
+            commands::keystore::secret_set,
+            commands::keystore::secret_exists,
+            commands::keystore::secret_delete,
+
+            // Persistence
+            commands::persistence::persist_command,
+            commands::persistence::get_workspace_commands,
+            commands::persistence::clear_workspace_commands,
+            commands::persistence::delete_window_commands,
+            commands::persistence::load_workspace,
+            commands::persistence::save_workspace,
+
+            // Providers
+            commands::providers::auth_preflight,
+            commands::providers::save_provider_api_key,
             commands::providers::provider_login,
             commands::providers::provider_health,
             commands::providers::provider_resolve,
             commands::providers::provider_install,
-            commands::providers::verify_modules,
-            commands::providers::save_provider_api_key,
-            commands::providers::load_api_key,
-            commands::providers::auth_preflight,
-            // Other commands
-            copy_into_files,
-            export_from_files,
-            get_modules_info,
-            get_modules_registry,
-            get_action_log_stats,
-            open_path,
-            save_api_key,
-            set_debug,
-            persist_command,
-            save_checkpoint,
-            health_quick_check,
-            determinism_probe,
-            recovery_action,
-            recovery_auto,
-            recovery_export,
-            clear_compute_cache,
-            set_safe_mode,
-            get_workspace_commands,
-            clear_workspace_commands,
-            delete_window_commands,
-            load_workspace,
-            save_workspace,
-            mint_job_token,
-            debug_circuits,
-            debug_provider_circuits,
-            circuit_control,
-            chaos_configure_failure,
-            chaos_stop_failure,
-            chaos_get_configs,
-            get_circuit_debug_info,
-            reset_circuit,
-            force_open_circuit,
-            force_close_circuit,
-            get_resilience_metrics,
-            set_env_var,
-            egress_fetch,
-            load_agents_config_file,
-            save_agents_config_file,
-            keystore_unlock,
-            keystore_lock,
-            keystore_status,
-            keystore_sentinel_exists,
-            keystore_list_ids,
-            keystore_autolock_reason,
-            secret_set,
-            secret_exists,
-            secret_delete,
-            reload_policies,
-            apppack_validate,
-            apppack_install,
-            apppack_entry_html,
-            set_allow_local_opt_in,
-            get_ollama_mode,
-            frontend_ready
+
+            // Recovery
+            commands::recovery::health_quick_check,
+            commands::recovery::determinism_probe,
+            commands::recovery::recovery_action,
+            commands::recovery::recovery_auto,
+            commands::recovery::recovery_export,
+            commands::recovery::save_checkpoint,
+            commands::recovery::set_safe_mode,
+
+            // Compute
+            commands::compute::compute_call,
+            commands::compute::compute_cancel,
+            commands::compute::clear_compute_cache,
+
+            // Chat
+            commands::chat::chat_completion,
+            commands::chat::cancel_chat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// Command invoked by the frontend when the UI is fully ready.
-#[allow(clippy::needless_pass_by_value)]
-#[tauri::command]
-fn frontend_ready(app: tauri::AppHandle) {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.set_focus();
     }
-    if let Some(splash) = app.get_webview_window("splash") {
-        let _ = splash.close();
-    }
-}
-
-// Removed unused AuthPreflightResult struct
-
-#[tauri::command]
-async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> {
-    let key = name.trim();
-    if key.is_empty() || key.contains('\0') || key.contains('=') {
-        return Err("E-UICP-9201: invalid env var name".into());
-    }
-    let upper = key.to_ascii_uppercase();
-    let allowed_prefixes = ["OLLAMA_", "UICP_"];
-    let allowed = allowed_prefixes
-        .iter()
-        .any(|prefix| upper.starts_with(prefix));
-    if !allowed {
-        return Err(format!(
-            "E-UICP-9203: env var '{key}' not permitted (allowed prefixes: {allowed_prefixes:?})"
-        ));
-    }
-    match value {
-        Some(v) => std::env::set_var(key, v),
-        None => std::env::remove_var(key),
-    }
-    Ok(())
-}
-
-/// Save a provider API key to the embedded keystore.
-/// Get debug information for all circuit breakers.
-/// Returns per-host state including failures, open status, and telemetry counters.
-///
-/// WHY: Provides runtime visibility into circuit breaker state for debugging and monitoring.
-/// INVARIANT: Read-only operation; does not modify circuit state.
-#[tauri::command]
-async fn debug_circuits(
-    state: State<'_, AppState>,
-) -> Result<Vec<circuit::CircuitDebugInfo>, String> {
-    let info = circuit::get_circuit_debug_info(&state.circuit_breakers).await;
-    Ok(info)
-}
-
-/// Returns provider-aware circuit breaker state with provider isolation.
-#[tauri::command]
-async fn debug_provider_circuits(
-    state: State<'_, AppState>,
-) -> Result<Vec<provider_circuit::ProviderCircuitDebugInfo>, String> {
-    let info = state.provider_circuit_manager.get_debug_info().await;
-    Ok(info)
-}
-
-/// Execute manual circuit control commands for operators.
-#[tauri::command]
-async fn circuit_control(
-    app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
-    command: provider_circuit::CircuitControlCommand,
-) -> Result<(), String> {
-    let emit_circuit_telemetry = move |event_name: &str, payload: serde_json::Value| {
-        let handle = app_handle.clone();
-        let name = event_name.to_string();
-        tauri::async_runtime::spawn(async move {
-            let _ = handle.emit(&name, payload);
-        });
-    };
-
-    state
-        .provider_circuit_manager
-        .execute_control_command(command, emit_circuit_telemetry)
-        .await
-}
-
-/// Configure synthetic failure injection for chaos testing.
-#[tauri::command]
-async fn chaos_configure_failure(
-    state: State<'_, AppState>,
-    provider: String,
-    config: chaos::FailureConfig,
-) -> Result<(), String> {
-    state.chaos_engine.configure_failure(provider, config).await
-}
-
-/// Stop synthetic failure injection for a provider.
-#[tauri::command]
-async fn chaos_stop_failure(state: State<'_, AppState>, provider: String) -> Result<(), String> {
-    state.chaos_engine.stop_failure(&provider).await;
-    Ok(())
-}
-
-/// Get current chaos configuration for all providers.
-#[tauri::command]
-async fn chaos_get_configs(
-    state: State<'_, AppState>,
-) -> Result<HashMap<String, chaos::FailureConfig>, String> {
-    Ok(state.chaos_engine.get_all_configs().await)
-}
-
-/// Get circuit breaker debug information for all providers.
-#[tauri::command]
-async fn get_circuit_debug_info(
-    state: State<'_, AppState>,
-) -> Result<Vec<provider_circuit::ProviderCircuitDebugInfo>, String> {
-    Ok(state.provider_circuit_manager.get_debug_info().await)
-}
-
-/// Reset a circuit breaker to closed state.
-#[tauri::command]
-async fn reset_circuit(
-    state: State<'_, AppState>,
-    provider: String,
-    host: String,
-) -> Result<(), String> {
-    let cmd = provider_circuit::CircuitControlCommand::Reset { provider, host };
-    state
-        .provider_circuit_manager
-        .execute_control_command(cmd, |_, _| {})
-        .await
-}
-
-/// Force open a circuit breaker for testing.
-#[tauri::command]
-async fn force_open_circuit(
-    state: State<'_, AppState>,
-    provider: String,
-    host: String,
-    duration_ms: u64,
-) -> Result<(), String> {
-    let cmd = provider_circuit::CircuitControlCommand::ForceOpen {
-        provider,
-        host,
-        duration_ms,
-    };
-    state
-        .provider_circuit_manager
-        .execute_control_command(cmd, |_, _| {})
-        .await
-}
-
-/// Force close a circuit breaker.
-#[tauri::command]
-async fn force_close_circuit(
-    state: State<'_, AppState>,
-    provider: String,
-    host: String,
-) -> Result<(), String> {
-    let cmd = provider_circuit::CircuitControlCommand::ForceClose { provider, host };
-    state
-        .provider_circuit_manager
-        .execute_control_command(cmd, |_, _| {})
-        .await
-}
-
-/// Get resilience metrics for all providers.
-#[tauri::command]
-async fn get_resilience_metrics(
-    state: State<'_, AppState>,
-) -> Result<Vec<chaos::ResilienceMetricsSummary>, String> {
-    let providers = ["openai", "openrouter", "anthropic", "ollama"];
-    let mut metrics = Vec::new();
-
-    for provider in &providers {
-        if let Some(summary) = state.resilience_metrics.get_metrics(provider).await {
-            metrics.push(summary);
-        }
-    }
-
-    Ok(metrics)
-}
-
-// Removed unused proxy env commands (get_proxy_env, set_proxy_env) to avoid dead code.
-
-/// Copy a host file into the workspace files directory and return its ws:/ path.
-#[tauri::command]
-async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<String, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("copy_into_files");
-    let p = std::path::Path::new(&src_path);
-    if !p.exists() {
-        return Err(format!("Source path does not exist: {src_path}"));
-    }
-
-    // Only allow regular files; reject symlinks and directories.
-    let meta = std::fs::symlink_metadata(p).map_err(|e| format!("stat failed: {e}"))?;
-    if !meta.file_type().is_file() {
-        return Err("Source must be a regular file".into());
-    }
-
-    // Sanitize filename (no directory traversal, keep base name)
-    let fname = p
-        .file_name()
-        .ok_or_else(|| "Invalid source file name".to_string())?
-        .to_string_lossy()
-        .to_string();
-    if fname.trim().is_empty() {
-        return Err("Empty file name".into());
-    }
-
-    // Map to workspace files dir
-    let dest_dir = crate::files_dir_path();
-    if let Err(e) = std::fs::create_dir_all(dest_dir) {
-        return Err(format!("Failed to create files dir: {e}"));
-    }
-    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-    let ts = chrono::Utc::now().timestamp();
-    let dest_with_ts = if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-        format!("{stem}-{ts}.{ext}")
-    } else {
-        format!("{stem}-{ts}")
-    };
-    let mut dest: std::path::PathBuf = dest_dir.join(&fname);
-    if dest.exists() {
-        dest = dest.with_file_name(dest_with_ts);
-    }
-
-    std::fs::copy(p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
-    Ok(format!(
-        "ws:/files/{}",
-        dest.file_name().and_then(|s| s.to_str()).unwrap_or("")
-    ))
-}
-
-/// Returns detailed module registry information with provenance for supply chain transparency.
-/// Used by the devtools panel to display "museum labels" for each module.
-#[tauri::command]
-async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_modules_registry");
-    let dir = crate::registry::modules_dir(&app);
-    let manifest = crate::registry::load_manifest(&app).map_err(|e| e.to_string())?;
-
-    let mut modules = Vec::new();
-    for entry in manifest.entries {
-        // Load provenance for each module (best-effort)
-        let provenance = crate::registry::load_provenance(&dir, &entry.task, &entry.version)
-            .ok()
-            .flatten();
-
-        modules.push(serde_json::json!({
-            "task": entry.task,
-            "version": entry.version,
-            "filename": entry.filename,
-            "digest": entry.digest_sha256,
-            "signature": entry.signature,
-            "keyid": entry.keyid,
-            "signedAt": entry.signed_at,
-            "provenance": provenance,
-        }));
-    }
-
-    // Security posture: strict mode + trust store source for UI surfacing
-    let strict = std::env::var("STRICT_MODULES_VERIFY")
-        .ok()
-        .is_some_and(|s| {
-            matches!(
-                s.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        });
-    let trust_store = if std::env::var("UICP_TRUST_STORE_JSON").is_ok() {
-        "inline"
-    } else if std::env::var("UICP_TRUST_STORE").is_ok() {
-        "file"
-    } else if std::env::var("UICP_MODULES_PUBKEY").is_ok() {
-        "single_key"
-    } else {
-        "none"
-    };
-
-    Ok(serde_json::json!({
-        "dir": dir.display().to_string(),
-        "modules": modules,
-        "strict": strict,
-        "trustStore": trust_store,
-    }))
-}
-
-#[tauri::command]
-async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_modules_info");
-    let dir = crate::registry::modules_dir(&app);
-    let manifest = dir.join("manifest.json");
-    let exists = manifest.exists();
-    let mut entries = 0usize;
-    if exists {
-        if let Ok(text) = std::fs::read_to_string(&manifest) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                entries = json["entries"].as_array().map_or(0, Vec::len);
-            }
-        }
-    }
-    Ok(serde_json::json!({
-        "dir": dir.display().to_string(),
-        "manifest": manifest.display().to_string(),
-        "hasManifest": exists,
-        "entries": entries,
-    }))
-}
-
-#[tauri::command]
-async fn get_action_log_stats(
-    state: State<'_, AppState>,
-) -> Result<crate::action_log::ActionLogStatsSnapshot, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("get_action_log_stats");
-    Ok(state.action_log.stats_snapshot())
-}
-
-#[tauri::command]
-async fn open_path(path: String) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("open_path");
-    let p = std::path::Path::new(&path);
-    if !p.exists() {
-        return Err(format!("Path does not exist: {path}"));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(p)
-            .spawn()
-            .map_err(|e| format!("Failed to open explorer: {e}"))?;
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(p)
-            .spawn()
-            .map_err(|e| format!("Failed to open path: {e}"))?;
-        Ok(())
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(p)
-            .spawn()
-            .map_err(|e| format!("Failed to open path: {e}"))?;
-        Ok(())
-    }
-}
-
-async fn enter_safe_mode(app: &tauri::AppHandle, reason: &str) {
-    let state: State<'_, AppState> = app.state();
-    *state.safe_mode.write().await = true;
-    *state.safe_reason.write().await = Some(reason.to_string());
-    let _ = app.emit(
-        "replay-issue",
-        serde_json::json!({ "reason": reason, "action": "enter_safe_mode" }),
-    );
-}
-
-#[tauri::command]
-async fn health_quick_check(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    health_quick_check_internal(&app)
-        .await
-        .map_err(|e| format!("{e:?}"))
-}
-
-async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<serde_json::Value> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("health_quick_check");
-    let state: State<'_, AppState> = app.state();
-    let status = state
-        .db_ro
-        .call(|conn| -> tokio_rusqlite::Result<String> {
-            let mut stmt = conn
-                .prepare("PRAGMA quick_check")
-                .map_err(tokio_rusqlite::Error::from)?;
-            let mut rows = stmt.query([]).map_err(tokio_rusqlite::Error::from)?;
-            let mut results = Vec::new();
-            while let Some(row) = rows.next().map_err(tokio_rusqlite::Error::from)? {
-                let s: String = row.get(0).map_err(tokio_rusqlite::Error::from)?;
-                results.push(s);
-            }
-            Ok(results.join(", "))
-        })
-        .await?;
-
-    let ok = status.to_lowercase().contains("ok");
-    if ok {
-        emit_replay_telemetry(app, "ok", None, 0).await;
-    } else {
-        enter_safe_mode(app, "CORRUPT_DB").await;
-    }
-    Ok(serde_json::json!({ "ok": ok, "status": status }))
-}
-
-#[tauri::command]
-async fn clear_compute_cache(
-    app: tauri::AppHandle,
-    workspace_id: Option<String>,
-) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("clear_compute_cache", workspace = %workspace_id.as_deref().unwrap_or("default"));
-    let ws = workspace_id.unwrap_or_else(|| "default".into());
-    let state: State<'_, AppState> = app.state();
-    state
-        .db_rw
-        .call(move |conn| -> tokio_rusqlite::Result<()> {
-            conn.execute(
-                "DELETE FROM compute_cache WHERE workspace_id = ?1",
-                params![ws],
-            )
-            .map(|_| ())
-            .map_err(tokio_rusqlite::Error::from)
-        })
-        .await
-        .map_err(|e| format!("{e:?}"))
-}
-
-#[tauri::command]
-async fn set_safe_mode(
-    app: tauri::AppHandle,
-    enabled: bool,
-    reason: Option<String>,
-) -> Result<(), String> {
-    let state: State<'_, AppState> = app.state();
-    *state.safe_mode.write().await = enabled;
-    *state.safe_reason.write().await = if enabled { reason.clone() } else { None };
-    if enabled {
-        let why = reason.unwrap_or_else(|| "USER_KILL_SWITCH".into());
-        let _ = app.emit(
-            "replay-issue",
-            serde_json::json!({ "reason": why, "action": "enter_safe_mode" }),
-        );
-    } else {
-        let _ = app.emit(
-            "safe-mode",
-            serde_json::json!({ "enabled": false, "reason": "cleared_by_user" }),
-        );
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("save_checkpoint", hash_len = hash.len());
-    let state: State<'_, AppState> = app.state();
-    if *state.safe_mode.read().await {
-        return Ok(());
-    }
-    #[cfg(feature = "otel_spans")]
-    let started = Instant::now(); // instrumentation timing
-    let res = state
-        .db_rw
-        .call(move |conn| -> tokio_rusqlite::Result<()> {
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
-                [],
-            )
-            .map_err(tokio_rusqlite::Error::from)?;
-            let now = Utc::now().timestamp();
-            conn.execute(
-                "INSERT INTO replay_checkpoint (hash, created_at) VALUES (?1, ?2)",
-                params![hash, now],
-            )
-            .map(|_| ())
-            .map_err(tokio_rusqlite::Error::from)
-        })
-        .await;
-    #[cfg(feature = "otel_spans")]
-    {
-        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        match &res {
-            Ok(()) => tracing::info!(target = "uicp", duration_ms = ms, "checkpoint saved"),
-            Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "checkpoint save failed");
-            }
-        }
-    }
-    res.map_err(|e| format!("{e:?}"))
-}
-
-#[tauri::command]
-async fn determinism_probe(
-    app: tauri::AppHandle,
-    n: u32,
-    recomputed_hash: Option<String>,
-) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!(
-        "determinism_probe",
-        n = n,
-        has_hash = recomputed_hash.is_some()
-    );
-    let state: State<'_, AppState> = app.state();
-    let limit = i64::from(n);
-    let samples = state
-        .db_ro
-        .call(move |conn| -> tokio_rusqlite::Result<Vec<String>> {
-            let mut stmt =
-                conn.prepare("SELECT hash FROM replay_checkpoint ORDER BY RANDOM() LIMIT ?1")?;
-            let rows = stmt
-                .query_map(params![limit], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-
-    let mut drift = false;
-    if let Some(current) = recomputed_hash {
-        for h in &samples {
-            if h != &current {
-                drift = true;
-                break;
-            }
-        }
-    }
-    if drift {
-        enter_safe_mode(&app, "DRIFT").await;
-    }
-    #[cfg(feature = "otel_spans")]
-    tracing::info!(
-        target = "uicp",
-        drift = drift,
-        sampled = samples.len(),
-        "determinism probe result"
-    );
-    Ok(serde_json::json!({ "drift": drift, "sampled": samples.len() }))
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_lines)]
-async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_action", kind = %kind);
-    let emit = |app: &tauri::AppHandle, action: &str, outcome: &str, payload: serde_json::Value| {
-        let _ = app.emit(
-            "replay-issue",
-            serde_json::json!({
-                "event": "recovery_action",
-                "action": action,
-                "outcome": outcome,
-                "details": payload,
-            }),
-        );
-    };
-
-    match kind.as_str() {
-        "reindex" => {
-            if reindex_and_integrity(&app)
-                .await
-                .map_err(|e| format!("reindex: {e:?}"))?
-            {
-                emit(&app, "reindex", "ok", serde_json::json!({}));
-                emit_replay_telemetry(&app, "manual_reindex", None, 0).await;
-                Ok(())
-            } else {
-                emit(
-                    &app,
-                    "reindex",
-                    "failed",
-                    serde_json::json!({ "reason": "integrity_check_failed" }),
-                );
-                emit_replay_telemetry(
-                    &app,
-                    "manual_reindex_failed",
-                    Some("integrity_check_failed"),
-                    0,
-                )
-                .await;
-                Err("Integrity check failed after reindex".into())
-            }
-        }
-        "compact_log" => {
-            let deleted = compact_log_after_last_checkpoint(&app)
-                .await
-                .map_err(|e| format!("compact_log: {e:?}"))?;
-            let ok = reindex_and_integrity(&app)
-                .await
-                .map_err(|e| format!("reindex: {e:?}"))?;
-            if ok {
-                emit(
-                    &app,
-                    "compact_log",
-                    "ok",
-                    serde_json::json!({ "deleted": deleted }),
-                );
-                emit_replay_telemetry(&app, "manual_compact", None, 0).await;
-                Ok(())
-            } else {
-                emit(
-                    &app,
-                    "compact_log",
-                    "failed",
-                    serde_json::json!({ "deleted": deleted, "reason": "integrity_check_failed" }),
-                );
-                emit_replay_telemetry(
-                    &app,
-                    "manual_compact_failed",
-                    Some("integrity_check_failed"),
-                    0,
-                )
-                .await;
-                Err("Integrity check failed after compacting log".into())
-            }
-        }
-        "rollback_checkpoint" => {
-            let truncated = rollback_to_last_checkpoint(&app)
-                .await
-                .map_err(|e| format!("rollback_checkpoint: {e:?}"))?;
-            emit(
-                &app,
-                "rollback_checkpoint",
-                "ok",
-                serde_json::json!({ "truncated": truncated }),
-            );
-            emit_replay_telemetry(&app, "manual_rollback", None, 0).await;
-            Ok(())
-        }
-        "auto" => {
-            let summary = recovery_auto(app.clone()).await?;
-            emit(&app, "auto", "ok", summary);
-            Ok(())
-        }
-        "export" => {
-            let bundle = recovery_export(app.clone()).await?;
-            emit(&app, "export", "ok", bundle);
-            Ok(())
-        }
-        "clear_cache" => {
-            clear_compute_cache(app.clone(), Some("default".into())).await?;
-            emit(&app, "clear_cache", "ok", serde_json::json!({}));
-            Ok(())
-        }
-        other => Err(format!("Unknown recovery action: {other}")),
-    }
-}
-
-#[tauri::command]
-async fn recovery_auto(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_auto");
-    let mut attempts: Vec<serde_json::Value> = Vec::new();
-    let mut status: &str = "failed";
-    let mut failed_reason: Option<String> = None;
-
-    // a) Reindex + integrity_check
-    let res_a = reindex_and_integrity(&app).await;
-    match res_a {
-        Ok(ok) => {
-            attempts.push(serde_json::json!({"step":"reindex","ok": ok }));
-            if ok {
-                status = "reindexed";
-                emit_replay_telemetry(&app, status, None, 0).await;
-                return Ok(serde_json::json!({"attempts": attempts, "resolved": true}));
-            }
-        }
-        Err(e) => {
-            attempts
-                .push(serde_json::json!({"step":"reindex","ok": false, "error": format!("{e:?}")}));
-            failed_reason = Some(format!("reindex: {e}"));
-        }
-    }
-
-    // b) Compact log: drop trailing incomplete segment after last checkpoint
-    let res_b = compact_log_after_last_checkpoint(&app).await;
-    match res_b {
-        Ok(deleted) => attempts.push(
-            serde_json::json!({"step":"compact_log","ok": deleted >= 0, "deleted": deleted }),
-        ),
-        Err(e) => attempts
-            .push(serde_json::json!({"step":"compact_log","ok": false, "error": format!("{e:?}")})),
-    }
-
-    // Re-run integrity_check
-    if let Ok(ok) = reindex_and_integrity(&app).await {
-        if ok {
-            status = "compacted";
-            emit_replay_telemetry(&app, status, None, 0).await;
-            return Ok(serde_json::json!({"attempts": attempts, "resolved": true}));
-        }
-    }
-
-    // c) Roll back to last checkpoint (truncate log beyond checkpoint)
-    let res_c = rollback_to_last_checkpoint(&app).await;
-    match res_c {
-        Ok(truncated) => attempts.push(serde_json::json!({"step":"rollback_checkpoint","ok": truncated >= 0, "truncated": truncated })),
-        Err(e) => attempts.push(serde_json::json!({"step":"rollback_checkpoint","ok": false, "error": format!("{e:?}")})),
-    }
-
-    // d) Re-enqueue replayable jobs missing terminal results (not tracked yet)
-    attempts
-        .push(serde_json::json!({"step":"reenqueue_missing","ok": true, "note": "no-op in v1" }));
-
-    // Still not OK
-    failed_reason = failed_reason.or(Some("recovery_failed".into()));
-    emit_replay_telemetry(&app, status, failed_reason.as_deref(), 0).await;
-    Ok(serde_json::json!({"attempts": attempts, "resolved": false}))
-}
-
-#[tauri::command]
-async fn recovery_export(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("recovery_export");
-    let state: State<'_, AppState> = app.state();
-    let logs_dir = LOGS_DIR.clone();
-    let integrity = reindex_and_integrity(&app).await.unwrap_or(false);
-    let counts = state
-        .db_ro
-        .call(|conn| -> tokio_rusqlite::Result<serde_json::Value> {
-            let tool_calls: i64 = conn
-                .query_row("SELECT COUNT(*) FROM tool_call", [], |r| r.get(0))
-                .map_err(tokio_rusqlite::Error::from)?;
-            let cache_rows: i64 = conn
-                .query_row("SELECT COUNT(*) FROM compute_cache", [], |r| r.get(0))
-                .map_err(tokio_rusqlite::Error::from)?;
-            Ok(serde_json::json!({"tool_call": tool_calls, "compute_cache": cache_rows}))
-        })
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-
-    let bundle = serde_json::json!({
-        "integrity_ok": integrity,
-        "counts": counts,
-        "ts": chrono::Utc::now().timestamp(),
-    });
-    let path = logs_dir.join(format!(
-        "diagnostics-{}.json",
-        chrono::Utc::now().timestamp()
-    ));
-    tokio::fs::create_dir_all(&logs_dir)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    let json_bytes =
-        serde_json::to_vec_pretty(&bundle).map_err(|e| format!("serialize diagnostics: {e}"))?;
-    tokio::fs::write(&path, json_bytes)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    Ok(serde_json::json!({"path": path.display().to_string()}))
-}
-
-async fn reindex_and_integrity(app: &tauri::AppHandle) -> anyhow::Result<bool> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("reindex_and_integrity");
-    let state: State<'_, AppState> = app.state();
-    let status = state
-        .db_rw
-        .call(|conn| -> tokio_rusqlite::Result<String> {
-            conn.execute("REINDEX", [])
-                .map_err(tokio_rusqlite::Error::from)?;
-            let mut stmt = conn
-                .prepare("PRAGMA integrity_check")
-                .map_err(tokio_rusqlite::Error::from)?;
-            let mut rows = stmt.query([]).map_err(tokio_rusqlite::Error::from)?;
-            let mut results = Vec::new();
-            while let Some(row) = rows.next().map_err(tokio_rusqlite::Error::from)? {
-                let s: String = row.get(0).map_err(tokio_rusqlite::Error::from)?;
-                results.push(s);
-            }
-            Ok(results.join(", "))
-        })
-        .await?;
-    Ok(status.to_lowercase().contains("ok"))
-}
-
-async fn last_checkpoint_ts(app: &tauri::AppHandle) -> anyhow::Result<Option<i64>> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("last_checkpoint_ts");
-    let state: State<'_, AppState> = app.state();
-    let ts = state
-        .db_rw
-        .call(|conn| -> tokio_rusqlite::Result<Option<i64>> {
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS replay_checkpoint (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
-                [],
-            )
-            .map_err(tokio_rusqlite::Error::from)?;
-            let ts: Option<i64> = conn
-                .query_row("SELECT MAX(created_at) FROM replay_checkpoint", [], |r| r.get(0))
-                .optional()
-                .map_err(tokio_rusqlite::Error::from)?;
-            Ok(ts)
-        })
-        .await?;
-    Ok(ts)
-}
-
-async fn compact_log_after_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("compact_log_after_last_checkpoint");
-    let Some(since) = last_checkpoint_ts(app).await? else {
-        return Ok(0);
-    };
-    let state: State<'_, AppState> = app.state();
-    let deleted = state
-        .db_rw
-        .call(move |conn| -> tokio_rusqlite::Result<i64> {
-            conn.execute(
-                "DELETE FROM tool_call WHERE created_at > ?1 AND (result_json IS NULL OR TRIM(result_json) = '')",
-                params![since],
-            )
-            .map(|n| i64::try_from(n).unwrap_or(i64::MAX))
-            .map_err(tokio_rusqlite::Error::from)
-        })
-        .await?;
-    Ok(deleted)
-}
-
-async fn rollback_to_last_checkpoint(app: &tauri::AppHandle) -> anyhow::Result<i64> {
-    #[cfg(feature = "otel_spans")]
-    let _span = tracing::info_span!("rollback_to_last_checkpoint");
-    let Some(since) = last_checkpoint_ts(app).await? else {
-        return Ok(0);
-    };
-    let state: State<'_, AppState> = app.state();
-    let truncated = state
-        .db_rw
-        .call(move |conn| -> tokio_rusqlite::Result<i64> {
-            conn.execute(
-                "DELETE FROM tool_call WHERE created_at > ?1",
-                params![since],
-            )
-            .map(|n| i64::try_from(n).unwrap_or(i64::MAX))
-            .map_err(tokio_rusqlite::Error::from)
-        })
-        .await?;
-    Ok(truncated)
-}
-
-async fn emit_replay_telemetry(
-    app: &tauri::AppHandle,
-    replay_status: &str,
-    failed_reason: Option<&str>,
-    rerun_count: i64,
-) {
-    let checkpoint_id = last_checkpoint_ts(app).await.ok().flatten();
-    let _ = app.emit(
-        "replay-telemetry",
-        serde_json::json!({
-            "replay_status": replay_status,
-            "failed_reason": failed_reason,
-            "checkpoint_id": checkpoint_id,
-            "rerun_count": rerun_count,
-        }),
-    );
-}

@@ -15,14 +15,17 @@ pub mod compute_input;
 pub mod config;
 pub mod core;
 pub mod events;
+pub mod egress;
 pub mod hostctx;
 pub mod keystore;
+pub mod net;
 pub mod policy;
 pub mod provider_adapters;
 pub mod provider_circuit;
 pub mod providers;
 pub mod registry;
 pub mod resilience;
+pub mod services;
 
 pub use action_log::{
     ensure_action_log_schema, parse_pubkey, parse_seed, verify_chain, ActionLogHandle,
