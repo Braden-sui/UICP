@@ -4,11 +4,14 @@
 use tauri::{Emitter, Manager, Runtime, State};
 // use anyhow::Context;
 
-use crate::policy::{enforce_compute_policy, ComputeFinalErr, ComputeJobSpec};
-use crate::{
-    codegen, compute, compute_cache, compute_input::canonicalize_task_input, emit_or_log,
-    provider_cli, registry, AppState,
-};
+use crate::compute::compute_cache;
+use crate::compute::compute_input::canonicalize_task_input;
+use crate::compute::registry;
+use crate::infrastructure::core::emit_or_log;
+use crate::infrastructure::events;
+use crate::llm::provider_cli;
+use crate::security::policy::{enforce_compute_policy, ComputeFinalErr, ComputeJobSpec};
+use crate::AppState;
 use std::time::Instant;
 
 pub async fn compute_call<R: Runtime>(
@@ -32,11 +35,7 @@ pub async fn compute_call<R: Runtime>(
 
     // --- Policy enforcement ---
     if let Some(deny) = enforce_compute_policy(&spec) {
-        emit_or_log(
-            &app_handle,
-            crate::events::EVENT_COMPUTE_RESULT_FINAL,
-            &deny,
-        );
+        emit_or_log(&app_handle, events::EVENT_COMPUTE_RESULT_FINAL, &deny);
         return Ok(());
     }
 
@@ -51,21 +50,17 @@ pub async fn compute_call<R: Runtime>(
                 message: err.message,
                 metrics: None,
             };
-            emit_or_log(
-                &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
-                &payload,
-            );
+            emit_or_log(&app_handle, events::EVENT_COMPUTE_RESULT_FINAL, &payload);
             return Ok(());
         }
     };
 
     // Provider decision telemetry (host-owned for harness)
-    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+    let is_module_task = crate::compute::registry::find_module(&app_handle, &spec.task)
         .ok()
         .flatten()
         .is_some();
-    let provider_kind = if crate::codegen::is_codegen_task(&spec.task) {
+    let provider_kind = if crate::security::policy::is_codegen_task(&spec.task) {
         "codegen"
     } else if is_module_task {
         "wasm"
@@ -106,7 +101,7 @@ pub async fn compute_call<R: Runtime>(
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
             .unwrap_or(false);
-        let module_meta = crate::registry::find_module(&app_handle, &spec.task)
+        let module_meta = crate::compute::registry::find_module(&app_handle, &spec.task)
             .ok()
             .flatten();
         let invariants = {
@@ -149,11 +144,7 @@ pub async fn compute_call<R: Runtime>(
                     *metrics = serde_json::json!({ "cacheHit": true });
                 }
             }
-            emit_or_log(
-                &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
-                cached,
-            );
+            emit_or_log(&app_handle, events::EVENT_COMPUTE_RESULT_FINAL, cached);
             return Ok(());
         } else if cache_mode == "readonly" {
             let payload = ComputeFinalErr {
@@ -164,18 +155,14 @@ pub async fn compute_call<R: Runtime>(
                 message: "Cache miss under ReadOnly cache policy".into(),
                 metrics: None,
             };
-            emit_or_log(
-                &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
-                &payload,
-            );
+            emit_or_log(&app_handle, events::EVENT_COMPUTE_RESULT_FINAL, &payload);
             return Ok(());
         }
     }
 
     // Spawn the job respecting concurrency cap (route wasm tasks through wasm_sem)
     let queued_at = Instant::now();
-    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+    let is_module_task = crate::compute::registry::find_module(&app_handle, &spec.task)
         .ok()
         .flatten()
         .is_some();
@@ -202,10 +189,10 @@ pub async fn compute_call<R: Runtime>(
     let mut spec_norm = spec.clone();
     spec_norm.cache = cache_mode;
     spec_norm.input = normalized_input;
-    let join = if codegen::is_codegen_task(&spec_norm.task) {
-        codegen::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+    let join = if crate::security::policy::is_codegen_task(&spec_norm.task) {
+        crate::codegen::codegen::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
     } else {
-        compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+        crate::compute::compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
     };
     state
         .compute_ongoing

@@ -7,7 +7,7 @@ use serde::Serialize;
 use tauri::Manager as _;
 use tokio::fs;
 
-use crate::core::{log_error, log_info};
+use crate::infrastructure::core::{log_error, log_info};
 
 #[derive(Debug, Serialize)]
 pub struct AgentsConfigLoadResult {

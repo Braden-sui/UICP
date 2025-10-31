@@ -4,8 +4,8 @@
 //! under various failure scenarios and that metrics are properly collected.
 
 use std::time::Duration;
-use uicp::chaos::ResilienceMetrics;
-use uicp::resilience::{ErrorCategory, RetryEngine, RetryPolicy};
+use uicp::infrastructure::chaos::ResilienceMetrics;
+use uicp::infrastructure::resilience::{ErrorCategory, RetryEngine, RetryPolicy};
 
 #[tokio::test]
 async fn test_retry_policy_categories() {
@@ -14,9 +14,12 @@ async fn test_retry_policy_categories() {
     // Test rate limit retry for OpenAI (should have longer delays)
     let delay = engine.should_retry("openai", Some(429), false, false, 0);
     assert!(delay.is_some(), "OpenAI should retry rate limits");
+    let delay = delay.unwrap();
+    let delay_ms = delay.as_millis() as u64;
     assert!(
-        delay.unwrap() >= Duration::from_millis(2000),
-        "OpenAI rate limit delay should be at least 2s"
+        delay_ms >= 1_500 && delay_ms <= 2_500,
+        "OpenAI rate limit delay should fall inside jitter-adjusted range (got {} ms)",
+        delay_ms
     );
 
     // Test auth error (no retry for any provider)

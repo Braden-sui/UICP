@@ -5,13 +5,11 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use tauri::{async_runtime::spawn, AppHandle, Emitter, Manager, State};
 
-use crate::codegen;
-use crate::compute;
-use crate::compute_cache;
-use crate::compute_input::canonicalize_task_input;
-use crate::core::emit_or_log;
-use crate::policy::enforce_compute_policy;
-use crate::policy::{ComputeFinalErr, ComputeJobSpec};
+use crate::compute::compute_cache;
+use crate::compute::compute_input::canonicalize_task_input;
+use crate::infrastructure::core::emit_or_log;
+use crate::security::policy::enforce_compute_policy;
+use crate::security::policy::{ComputeFinalErr, ComputeJobSpec};
 use crate::AppState;
 
 #[tauri::command]
@@ -87,7 +85,7 @@ pub async fn compute_call(
             };
             emit_or_log(
                 window.app_handle(),
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
                 &payload,
             );
             return Ok(());
@@ -106,7 +104,7 @@ pub async fn compute_call(
             t.to_string()
         }
     };
-    if !crate::authz::allow_compute(&task_key) {
+    if !crate::security::authz::allow_compute(&task_key) {
         let payload = ComputeFinalErr {
             ok: false,
             job_id: spec.job_id.clone(),
@@ -117,7 +115,7 @@ pub async fn compute_call(
         };
         emit_or_log(
             window.app_handle(),
-            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
             &payload,
         );
         return Ok(());
@@ -127,7 +125,7 @@ pub async fn compute_call(
     if let Some(deny) = enforce_compute_policy(&spec) {
         emit_or_log(
             &app_handle,
-            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
             &deny,
         );
         return Ok(());
@@ -146,7 +144,7 @@ pub async fn compute_call(
             };
             emit_or_log(
                 &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
                 &payload,
             );
             return Ok(());
@@ -154,11 +152,11 @@ pub async fn compute_call(
     };
 
     // Provider decision telemetry (host-owned)
-    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+    let is_module_task = crate::compute::registry::find_module(&app_handle, &spec.task)
         .ok()
         .flatten()
         .is_some();
-    let provider_kind = if crate::codegen::is_codegen_task(&spec.task) {
+    let provider_kind = if crate::security::policy::is_codegen_task(&spec.task) {
         "codegen"
     } else if is_module_task {
         "wasm"
@@ -199,7 +197,7 @@ pub async fn compute_call(
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
             .unwrap_or(false);
-        let module_meta = crate::registry::find_module(&app_handle, &spec.task)
+        let module_meta = crate::compute::registry::find_module(&app_handle, &spec.task)
             .ok()
             .flatten();
         let invariants = {
@@ -246,7 +244,7 @@ pub async fn compute_call(
             }
             emit_or_log(
                 &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
                 cached,
             );
             return Ok(());
@@ -261,7 +259,7 @@ pub async fn compute_call(
             };
             emit_or_log(
                 &app_handle,
-                crate::events::EVENT_COMPUTE_RESULT_FINAL,
+                crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
                 &payload,
             );
             return Ok(());
@@ -270,7 +268,7 @@ pub async fn compute_call(
 
     // Spawn the job via compute host (feature-gated implementation), respecting concurrency caps per provider.
     let queued_at = Instant::now();
-    let is_module_task = crate::registry::find_module(&app_handle, &spec.task)
+    let is_module_task = crate::compute::registry::find_module(&app_handle, &spec.task)
         .ok()
         .flatten()
         .is_some();
@@ -300,10 +298,10 @@ pub async fn compute_call(
     spec_norm.input = normalized_input;
     #[cfg(feature = "otel_spans")]
     tracing::info!(target = "uicp", job_id = %spec.job_id, wait_ms = queue_wait_ms, "compute queued permit acquired");
-    let join = if codegen::is_codegen_task(&spec_norm.task) {
-        codegen::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+    let join = if crate::security::policy::is_codegen_task(&spec_norm.task) {
+        crate::codegen::codegen::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
     } else {
-        compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
+        crate::compute::compute::spawn_job(app_handle, spec_norm, Some(permit), queue_wait_ms)
     };
     // Bookkeeping: track the running job so we can cancel/cleanup later.
     state

@@ -22,41 +22,12 @@ use tokio::{
 };
 use tokio_rusqlite::Connection as AsyncConn;
 
-mod action_log;
-mod anthropic;
-mod apppack;
-mod authz;
-mod chaos;
-mod circuit;
-#[cfg(test)]
-mod circuit_tests;
-mod code_provider;
 mod codegen;
-#[cfg(feature = "wasm_compute")]
-mod component_bindings;
 mod compute;
-mod compute_cache;
-mod compute_input;
-mod core;
-mod egress;
-mod events;
-mod hostctx;
-mod keystore;
-mod net;
-mod policy;
-mod provider_adapters;
-mod provider_circuit;
-mod provider_cli;
-mod providers;
-mod registry;
-mod resilience;
-#[cfg(test)]
-mod resilience_tests;
-#[cfg(feature = "wasm_compute")]
-mod wasi_logging;
-
-// Add config module
 mod config;
+mod infrastructure;
+mod llm;
+mod security;
 
 // New module structure
 mod commands;
@@ -66,10 +37,10 @@ mod services;
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod commands_harness;
 
-use core::{log_error, log_info, CircuitBreakerConfig};
+use crate::infrastructure::core::{log_error, log_info, CircuitBreakerConfig};
 
 // Re-export shared core items so crate::... references in submodules remain valid
-pub use crate::core::{
+pub use crate::infrastructure::core::{
     configure_sqlite, emit_or_log, ensure_default_workspace, files_dir_path, init_database,
     log_warn, remove_compute_job, AppState, APP_NAME, DATA_DIR, FILES_DIR, LOGS_DIR,
     OLLAMA_CLOUD_HOST_DEFAULT, OLLAMA_LOCAL_BASE_DEFAULT,
@@ -83,8 +54,6 @@ static DB_PATH: std::sync::LazyLock<PathBuf> =
 static ENV_PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| DATA_DIR.join(".env"));
 
 // files_dir_path is re-exported from core
-
- 
 
 // CircuitState and CircuitBreakerConfig now defined in core module; configure_sqlite re-exported
 
@@ -453,7 +422,7 @@ fn extract_events_from_chunk(
 mod tests {
     use super::extract_events_from_chunk;
     use super::normalize_model_name;
-    use crate::anthropic;
+    use crate::llm::provider_adapters::anthropic;
     use serde_json::json;
 
     #[test]
@@ -553,7 +522,7 @@ mod tests {
             "index": 0,
             "delta": { "type": "text_delta", "text": "Hi" }
         });
-        let normalized = anthropic::normalize_message(raw).expect("normalize");
+        let normalized = crate::llm::anthropic::normalize_message(raw).expect("normalize");
         let events = extract_events_from_chunk(&normalized, Some("json"));
         assert_eq!(events.len(), 1);
         let e = &events[0];
@@ -574,7 +543,7 @@ mod tests {
                 "input": { "cmd": "echo hi" }
             }
         });
-        let normalized = anthropic::normalize_message(raw).expect("normalize");
+        let normalized = crate::llm::anthropic::normalize_message(raw).expect("normalize");
         let events = extract_events_from_chunk(&normalized, Some("json"));
         assert_eq!(events.len(), 1);
         let e = &events[0];
@@ -845,7 +814,7 @@ fn main() {
             .await;
     });
 
-    let action_log = match action_log::ActionLogService::start(&db_path) {
+    let action_log = match crate::infrastructure::action_log::ActionLogService::start(&db_path) {
         Ok(handle) => handle,
         Err(err) => {
             log_error(format!("Failed to start action log service: {err:?}"));
@@ -927,9 +896,9 @@ fn main() {
         safe_reason: RwLock::new(None),
         circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
         circuit_config: CircuitBreakerConfig::from_env(),
-        provider_circuit_manager: crate::provider_circuit::ProviderCircuitManager::new(),
-        chaos_engine: crate::chaos::ChaosEngine::new(),
-        resilience_metrics: crate::chaos::ResilienceMetrics::new(),
+        provider_circuit_manager: crate::llm::provider_circuit::ProviderCircuitManager::new(),
+        chaos_engine: crate::infrastructure::chaos::ChaosEngine::new(),
+        resilience_metrics: crate::infrastructure::chaos::ResilienceMetrics::new(),
         action_log,
         job_token_key,
     };
@@ -967,7 +936,7 @@ fn main() {
             }
             // Ensure bundled compute modules are installed into the user modules dir
             let handle = app.handle();
-            if let Err(err) = crate::registry::install_bundled_modules_if_missing(handle) {
+            if let Err(err) = crate::compute::registry::install_bundled_modules_if_missing(handle) {
                 log_error(format!("module install failed: {err:?}"));
             }
             spawn_autosave(handle.clone());
@@ -978,7 +947,7 @@ fn main() {
             {
                 let prewarm_handle = handle.clone();
                 let join_handle = tauri::async_runtime::spawn_blocking(move || {
-                    if let Err(err) = crate::compute::prewarm_quickjs(&prewarm_handle) {
+                    if let Err(err) = crate::compute::compute::prewarm_quickjs(&prewarm_handle) {
                         log_warn(format!("quickjs prewarm failed: {err:?}"));
                     }
                 });
@@ -1084,7 +1053,7 @@ fn main() {
             // Load host policies (best-effort)
             let handle2 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = crate::authz::reload_policies(&handle2) {
+                if let Err(err) = crate::security::authz::reload_policies(&handle2) {
                     log_warn(format!("reload_policies failed: {err}"));
                 }
             });
@@ -1185,4 +1154,4 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-    }
+}

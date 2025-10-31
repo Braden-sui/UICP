@@ -7,7 +7,7 @@ use tokio::process::Command;
 use serde_json::Value;
 
 #[cfg(not(feature = "otel_spans"))]
-use crate::core::{log_info, LogEvent};
+use crate::infrastructure::core::{log_info, LogEvent};
 
 use crate::config::errors as config_errors;
 

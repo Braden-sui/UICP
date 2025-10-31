@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use sha2::Digest;
 
-use crate::registry::{load_manifest, modules_dir};
+use crate::compute::registry::{load_manifest, modules_dir};
 
 /// Verify that all module entries listed in the manifest exist and match their digests.
 #[tauri::command]
@@ -38,14 +38,14 @@ pub async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, 
                 if hex_digest == entry.digest_sha256 {
                     // Check signature if pubkey is configured
                     if let Some(pubkey) = pubkey_opt {
-                        match crate::registry::verify_entry_signature(entry, &pubkey) {
-                            Ok(crate::registry::SignatureStatus::Verified) => {
+                        match crate::compute::registry::verify_entry_signature(entry, &pubkey) {
+                            Ok(crate::compute::registry::SignatureStatus::Verified) => {
                                 verified.push(entry.filename.clone())
                             }
-                            Ok(crate::registry::SignatureStatus::Invalid) => {
+                            Ok(crate::compute::registry::SignatureStatus::Invalid) => {
                                 unsigned.push(entry.filename.clone())
                             }
-                            Ok(crate::registry::SignatureStatus::Missing) => {
+                            Ok(crate::compute::registry::SignatureStatus::Missing) => {
                                 unsigned.push(format!("{} (no signature)", entry.filename))
                             }
                             Err(e) => {
@@ -82,15 +82,16 @@ pub async fn verify_modules(app: tauri::AppHandle) -> Result<serde_json::Value, 
 pub async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("get_modules_registry");
-    let dir = crate::registry::modules_dir(&app);
-    let manifest = crate::registry::load_manifest(&app).map_err(|e| e.to_string())?;
+    let dir = crate::compute::registry::modules_dir(&app);
+    let manifest = crate::compute::registry::load_manifest(&app).map_err(|e| e.to_string())?;
 
     let mut modules = Vec::new();
     for entry in manifest.entries {
         // Load provenance for each module (best-effort)
-        let provenance = crate::registry::load_provenance(&dir, &entry.task, &entry.version)
-            .ok()
-            .flatten();
+        let provenance =
+            crate::compute::registry::load_provenance(&dir, &entry.task, &entry.version)
+                .ok()
+                .flatten();
 
         modules.push(serde_json::json!({
             "task": entry.task,
@@ -135,7 +136,7 @@ pub async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::V
 pub async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("get_modules_info");
-    let dir = crate::registry::modules_dir(&app);
+    let dir = crate::compute::registry::modules_dir(&app);
     let manifest = dir.join("manifest.json");
     let exists = manifest.exists();
     let mut entries = 0usize;

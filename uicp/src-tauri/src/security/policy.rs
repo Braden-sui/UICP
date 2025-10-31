@@ -138,7 +138,7 @@ fn allowed_codegen_hosts() -> Vec<String> {
     hosts
 }
 
-fn is_codegen_task(task: &str) -> bool {
+pub fn is_codegen_task(task: &str) -> bool {
     task.starts_with(CODEGEN_TASK_PREFIX)
 }
 

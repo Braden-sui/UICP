@@ -8,8 +8,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::compute::error_codes;
-use crate::policy::ComputeJobSpec;
+use crate::compute::compute::error_codes;
+use crate::security::policy::ComputeJobSpec;
 
 use crate::config::errors as config_errors;
 
@@ -767,6 +767,8 @@ pub fn canonicalize_task_input(spec: &ComputeJobSpec) -> Result<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compute::compute_input::error_codes;
+    use crate::security::policy::{ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec};
     use serde_json::json;
 
     fn base_spec() -> ComputeJobSpec {
@@ -779,7 +781,7 @@ mod tests {
             mem_limit_mb: None,
             bind: vec![],
             cache: "readwrite".into(),
-            capabilities: crate::policy::ComputeCapabilitiesSpec {
+            capabilities: ComputeCapabilitiesSpec {
                 fs_read: vec![],
                 fs_write: vec![],
                 net: vec![],
@@ -790,7 +792,7 @@ mod tests {
             },
             replayable: true,
             workspace_id: "default".into(),
-            provenance: crate::policy::ComputeProvenanceSpec {
+            provenance: ComputeProvenanceSpec {
                 env_hash: "env-hash".into(),
                 agent_trace_id: None,
             },
@@ -852,7 +854,7 @@ mod tests {
             "mode": "init"
         });
         let err = canonicalize_task_input(&spec).expect_err("should reject missing source");
-        assert_eq!(err.code, crate::compute::error_codes::INPUT_INVALID);
+        assert_eq!(err.code, error_codes::INPUT_INVALID);
         assert!(
             err.message.contains("E-UICP-0604"),
             "expected host error code tag in message"
@@ -952,7 +954,7 @@ mod tests {
         spec.input = json!({"source":"ws:/files/blocked.csv","hasHeader":true});
         spec.capabilities.fs_read = vec![];
         let err = canonicalize_task_input(&spec).unwrap_err();
-        assert_eq!(err.code, crate::compute::error_codes::CAPABILITY_DENIED);
+        assert_eq!(err.code, error_codes::CAPABILITY_DENIED);
         assert!(
             err.message.contains("E-UICP-0404"),
             "expected capability error code detail"
@@ -1035,7 +1037,7 @@ mod tests {
             "provider": "watson",
         });
         let err = canonicalize_task_input(&spec).unwrap_err();
-        assert_eq!(err.code, crate::compute::error_codes::INPUT_INVALID);
+        assert_eq!(err.code, error_codes::INPUT_INVALID);
         assert!(
             err.message.contains(config_errors::DETAIL_CODEGEN_INPUT),
             "expected codegen detail tag"

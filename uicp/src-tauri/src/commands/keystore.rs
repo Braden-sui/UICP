@@ -1,7 +1,7 @@
 //! Keystore command handlers.
 
-use crate::core::{emit_or_log, log_warn};
-use crate::keystore::{get_or_init_keystore, UnlockStatus};
+use crate::infrastructure::core::{emit_or_log, log_warn};
+use crate::security::keystore::{get_or_init_keystore, UnlockStatus};
 use secrecy::SecretString;
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ pub async fn keystore_unlock(
                     &app,
                     "keystore_unlock",
                     serde_json::json!({
-                        "method": status.method.map(|m| match m { crate::keystore::UnlockMethod::Passphrase => "passphrase", crate::keystore::UnlockMethod::Mock => "mock" }),
+                        "method": status.method.map(|m| match m { crate::security::keystore::UnlockMethod::Passphrase => "passphrase", crate::security::keystore::UnlockMethod::Mock => "mock" }),
                         "ttlSec": status.ttl_remaining_sec,
                     }),
                 );
@@ -117,7 +117,7 @@ pub async fn secret_delete(service: String, account: String) -> Result<(), Strin
 
 // Import known provider env vars into keystore when unlocked. Best-effort; errors are logged but not surfaced.
 async fn import_env_secrets_into_keystore(
-    ks: std::sync::Arc<crate::keystore::Keystore>,
+    ks: std::sync::Arc<crate::security::keystore::Keystore>,
 ) -> Result<(), String> {
     // (service, account, env_var)
     let mappings = [
@@ -138,7 +138,7 @@ async fn import_env_secrets_into_keystore(
                     .await
                 {
                     log_warn(
-                        crate::core::LogEvent::new("env import to keystore failed")
+                        crate::infrastructure::core::LogEvent::new("env import to keystore failed")
                             .field("account", *account)
                             .field("error", err.to_string()),
                     );

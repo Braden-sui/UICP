@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::provider_adapters::create_adapter;
+    use crate::llm::provider_adapters::create_adapter;
     use serde_json::json;
 
     #[tokio::test]

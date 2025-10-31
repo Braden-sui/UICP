@@ -1,6 +1,6 @@
 use tauri::{Manager, State};
 
-use crate::core::AppState;
+use crate::infrastructure::core::AppState;
 
 // Initialize tracing subsystem based on feature flags
 #[allow(dead_code)]

@@ -12,7 +12,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::resilience::ErrorCategory;
+use crate::infrastructure::resilience::ErrorCategory;
 
 type TelemetryEmitterFn = dyn Fn(&str, serde_json::Value) + Send + Sync;
 

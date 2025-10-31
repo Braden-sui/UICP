@@ -15,11 +15,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
-use crate::core::{emit_or_log, APP_NAME, LOGS_DIR, OLLAMA_LOCAL_BASE_DEFAULT};
-use crate::events::{emit_problem_detail, extract_events_from_chunk, is_stream_v1_enabled};
-use crate::provider_adapters::create_adapter;
-use crate::providers::build_provider_headers;
-use crate::{circuit, AppState, ChatCompletionRequest};
+use crate::infrastructure::core::{emit_or_log, APP_NAME, LOGS_DIR, OLLAMA_LOCAL_BASE_DEFAULT};
+use crate::infrastructure::events::{
+    emit_problem_detail, extract_events_from_chunk, is_stream_v1_enabled,
+};
+use crate::llm::provider_adapters::create_adapter;
+use crate::llm::providers::build_provider_headers;
+use crate::{codegen::circuit, AppState, ChatCompletionRequest};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn stream_chat_completion(
@@ -376,7 +378,7 @@ pub async fn stream_chat_completion(
                         }
                         Err(e) => {
                             match e {
-                                crate::keystore::KeystoreError::Permission(msg) => {
+                                crate::security::keystore::KeystoreError::Permission(msg) => {
                                     // Stable, structured denial for host policy
                                     emit_problem_detail(
                                         &app_handle,
@@ -755,7 +757,7 @@ pub async fn stream_chat_completion(
                                 let done_evt = serde_json::json!({ "type": "done" });
                                 emit_or_log(
                                     app_handle,
-                                    crate::events::EVENT_STREAM_V1,
+                                    crate::infrastructure::events::EVENT_STREAM_V1,
                                     serde_json::json!({ "requestId": rid, "event": done_evt }),
                                 );
                             }
@@ -790,7 +792,7 @@ pub async fn stream_chat_completion(
                                         let done_evt = serde_json::json!({ "type": "done" });
                                         emit_or_log(
                                             app_handle,
-                                            crate::events::EVENT_STREAM_V1,
+                                            crate::infrastructure::events::EVENT_STREAM_V1,
                                             serde_json::json!({ "requestId": rid, "event": done_evt }),
                                         );
                                     }
@@ -829,7 +831,7 @@ pub async fn stream_chat_completion(
                                         }
                                         emit_or_log(
                                             app_handle,
-                                            crate::events::EVENT_STREAM_V1,
+                                            crate::infrastructure::events::EVENT_STREAM_V1,
                                             serde_json::json!({ "requestId": rid, "event": evt }),
                                         );
                                     }
@@ -873,7 +875,7 @@ pub async fn stream_chat_completion(
                                         }
                                         emit_or_log(
                                             app_handle,
-                                            crate::events::EVENT_STREAM_V1,
+                                            crate::infrastructure::events::EVENT_STREAM_V1,
                                             serde_json::json!({ "requestId": rid, "event": evt }),
                                         );
                                     }
@@ -932,7 +934,7 @@ pub async fn stream_chat_completion(
                                     let done_evt = serde_json::json!({ "type": "done" });
                                     emit_or_log(
                                         &app_handle,
-                                        crate::events::EVENT_STREAM_V1,
+                                        crate::infrastructure::events::EVENT_STREAM_V1,
                                         serde_json::json!({ "requestId": &rid_for_task, "event": done_evt }),
                                     );
                                 }

@@ -4,7 +4,7 @@
 //! - Cloud: /api/chat (requires plain model IDs without :cloud suffix)
 //! - Local: /api/chat (when local_path_fallback=true) or /chat/completions
 
-use crate::provider_adapters::ProviderAdapter;
+use super::ProviderAdapter;
 use async_trait::async_trait;
 use serde_json::Value;
 

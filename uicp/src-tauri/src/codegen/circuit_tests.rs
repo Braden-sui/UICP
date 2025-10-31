@@ -8,12 +8,10 @@ use std::{
 
 use tokio::sync::RwLock;
 
-use crate::{
-    circuit::{
-        circuit_is_open, circuit_record_failure, circuit_record_success, get_circuit_debug_info,
-    },
-    core::{CircuitBreakerConfig, CircuitState},
+use crate::codegen::circuit::{
+    circuit_is_open, circuit_record_failure, circuit_record_success, get_circuit_debug_info,
 };
+use crate::infrastructure::core::{CircuitBreakerConfig, CircuitState};
 
 /// Test fixture: create empty circuit breaker map
 fn new_circuits() -> Arc<RwLock<HashMap<String, CircuitState>>> {

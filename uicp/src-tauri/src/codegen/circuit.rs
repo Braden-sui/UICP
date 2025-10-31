@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::core::{CircuitBreakerConfig, CircuitState};
+use crate::infrastructure::core::{CircuitBreakerConfig, CircuitState};
 
 // ----------------------------------------------------------------------------
 // Circuit breaker state transitions with telemetry

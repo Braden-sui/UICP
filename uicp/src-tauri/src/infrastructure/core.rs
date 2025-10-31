@@ -7,7 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::action_log;
 use ::rusqlite::{params, Connection, OptionalExtension};
 use anyhow::Context;
 use chrono::Utc;
@@ -176,17 +175,17 @@ pub struct AppState {
     pub safe_reason: RwLock<Option<String>>,
     pub circuit_breakers: Arc<RwLock<HashMap<String, CircuitState>>>,
     pub circuit_config: CircuitBreakerConfig,
-    pub provider_circuit_manager: crate::provider_circuit::ProviderCircuitManager,
-    pub chaos_engine: crate::chaos::ChaosEngine,
-    pub resilience_metrics: crate::chaos::ResilienceMetrics,
-    pub action_log: action_log::ActionLogHandle,
+    pub provider_circuit_manager: crate::llm::provider_circuit::ProviderCircuitManager,
+    pub chaos_engine: crate::infrastructure::chaos::ChaosEngine,
+    pub resilience_metrics: crate::infrastructure::chaos::ResilienceMetrics,
+    pub action_log: crate::infrastructure::action_log::ActionLogHandle,
     pub job_token_key: [u8; 32],
 }
 
 /// Compute a stable cache key for compute tasks so callers outside compute_cache can derive the same key.
 #[allow(dead_code)]
 pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
-    crate::compute_cache::compute_key(task, input, env_hash)
+    crate::compute::compute_cache::compute_key(task, input, env_hash)
 }
 
 // ----------------------------------------------------------------------------
@@ -276,8 +275,8 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
         ",
     )
     .context("apply migrations")?;
-    action_log::ensure_action_log_schema(&conn)
-        .context("ensure action_log schema (init_database)")?;
+    crate::infrastructure::action_log::ensure_action_log_schema(&conn)
+        .context("ensure crate::infrastructure::action_log schema (init_database)")?;
 
     match conn.execute("ALTER TABLE window ADD COLUMN width REAL DEFAULT 640", []) {
         Ok(_) => {}

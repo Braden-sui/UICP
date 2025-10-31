@@ -5,7 +5,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::action_log::ActionLogHandle;
+use crate::infrastructure::action_log::ActionLogHandle;
 
 pub type PolicyMap = HashMap<String, PolicyEntry>;
 

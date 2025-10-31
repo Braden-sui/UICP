@@ -475,7 +475,7 @@ pub fn find_module<R: Runtime>(
             enforce_strict_signature(entry)?;
             #[cfg(feature = "wasm_compute")]
             {
-                crate::compute::preflight_component_imports(
+                crate::compute::compute::preflight_component_imports(
                     &path,
                     &format!("{}@{}", entry.task, entry.version),
                 )
@@ -487,7 +487,7 @@ pub fn find_module<R: Runtime>(
                 })?;
             }
             #[cfg(feature = "wasm_compute")]
-            crate::compute::verify_component_contract(
+            crate::compute::compute::verify_component_contract(
                 &path,
                 &format!("{}@{}", entry.task, entry.version),
             )
@@ -811,7 +811,7 @@ mod tests {
 
         const PUBKEY_B64: &str = "ih4HBWNN6fqiMx8ee5NICPwDUzu/4ORtUjo7OTVu4wg=";
 
-        let manifest_text = include_str!("../modules/manifest.json");
+        let manifest_text = include_str!("../../modules/manifest.json");
         let manifest: ModuleManifest =
             serde_json::from_str(manifest_text).expect("bundled manifest parses");
         let pubkey_bytes = BASE64_STANDARD

@@ -7,8 +7,8 @@
 //! - max_tokens: required field
 //! - tool_call_id -> tool_use_id for tool result messages
 
-use crate::anthropic::normalize_message;
-use crate::provider_adapters::ProviderAdapter;
+use super::ProviderAdapter;
+use crate::llm::anthropic::normalize_message;
 use async_trait::async_trait;
 use serde_json::Value;
 

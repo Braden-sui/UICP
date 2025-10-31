@@ -5,9 +5,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime, State};
 
-use crate::compute_input::sanitize_ws_files_path;
-use crate::core::log_warn;
-use crate::policy::ComputeJobSpec;
+use crate::compute::compute_input::sanitize_ws_files_path;
+use crate::infrastructure::core::log_warn;
+use crate::security::policy::ComputeJobSpec;
 use crate::AppState;
 use blake3::Hasher as Blake3;
 
@@ -194,6 +194,7 @@ pub struct GoldenRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::policy::{ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec};
     use serde_json::Number;
 
     #[test]
@@ -359,8 +360,6 @@ mod tests {
 
     #[test]
     fn compute_key_v2_plus_includes_invariants() {
-        use crate::policy::ComputeJobSpec;
-
         let spec = ComputeJobSpec {
             job_id: "job1".to_string(),
             task: "test.task".to_string(),
@@ -368,12 +367,12 @@ mod tests {
             cache: "readwrite".to_string(),
             workspace_id: "ws1".to_string(),
             replayable: true,
-            provenance: crate::policy::ComputeProvenanceSpec {
+            provenance: ComputeProvenanceSpec {
                 env_hash: "env123".to_string(),
                 agent_trace_id: None,
             },
             token: None,
-            capabilities: crate::policy::ComputeCapabilitiesSpec {
+            capabilities: ComputeCapabilitiesSpec {
                 ..Default::default()
             },
             mem_limit_mb: None,

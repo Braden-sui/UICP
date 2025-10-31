@@ -1,54 +1,35 @@
 #![deny(clippy::print_stderr)]
 
-pub mod action_log;
-
-pub mod anthropic;
-pub mod apppack;
-pub mod authz;
-pub mod chaos;
-pub mod circuit;
-pub mod code_provider;
 pub mod codegen;
 pub mod compute;
-pub mod compute_cache;
-pub mod compute_input;
 pub mod config;
-pub mod core;
-pub mod events;
-pub mod egress;
-pub mod hostctx;
-pub mod keystore;
-pub mod net;
-pub mod policy;
-pub mod provider_adapters;
-pub mod provider_circuit;
-pub mod providers;
-pub mod registry;
-pub mod resilience;
+pub mod infrastructure;
+pub mod llm;
+pub mod security;
 pub mod services;
 
-pub use action_log::{
+pub use infrastructure::action_log::{
     ensure_action_log_schema, parse_pubkey, parse_seed, verify_chain, ActionLogHandle,
     ActionLogService, ActionLogVerifyReport,
 };
-pub use policy::{
+pub use security::policy::{
     enforce_compute_policy, ComputeBindSpec, ComputeCapabilitiesSpec, ComputeFinalErr,
     ComputeFinalOk, ComputeJobSpec, ComputePartialEvent, ComputeProvenanceSpec,
 };
 
 // WHY: Keep compute event channel names consistent across host layers (commands, runtime, bridge).
-pub use events::EVENT_COMPUTE_RESULT_FINAL;
+pub use infrastructure::events::EVENT_COMPUTE_RESULT_FINAL;
 #[cfg(any(test, feature = "wasm_compute", feature = "compute_harness"))]
-pub use events::EVENT_COMPUTE_RESULT_PARTIAL;
+pub use infrastructure::events::EVENT_COMPUTE_RESULT_PARTIAL;
 
 #[cfg(any(test, feature = "compute_harness"))]
-pub mod provider_cli;
+pub use llm::provider_cli;
 
 #[cfg(feature = "wasm_compute")]
-pub mod wasi_logging;
+pub use compute::wasi_logging;
 
 #[cfg(feature = "wasm_compute")]
-pub mod component_bindings;
+pub use compute::component_bindings;
 
 #[cfg(any(
     all(feature = "wasm_compute", feature = "uicp_wasi_enable"),
@@ -58,7 +39,7 @@ pub mod component_bindings;
 use serde::{Deserialize, Serialize};
 use serde_json::Value; // WHY: compute_cache_key is exercised in harness/tests; import serde_json value there.
 
-pub use core::{
+pub use infrastructure::core::{
     configure_sqlite, emit_or_log, ensure_default_workspace, files_dir_path, init_database,
     init_tracing, log_error, log_info, log_warn, remove_compute_job, AppState, DATA_DIR, FILES_DIR,
     LOGS_DIR,
@@ -72,8 +53,10 @@ mod main_rs_shim {
     use once_cell::sync::Lazy;
     use std::path::PathBuf;
 
-    pub static DB_PATH: Lazy<PathBuf> = Lazy::new(|| super::core::DATA_DIR.join("data.db"));
-    pub static ENV_PATH: Lazy<PathBuf> = Lazy::new(|| super::core::DATA_DIR.join(".env"));
+    pub static DB_PATH: Lazy<PathBuf> =
+        Lazy::new(|| super::infrastructure::core::DATA_DIR.join("data.db"));
+    pub static ENV_PATH: Lazy<PathBuf> =
+        Lazy::new(|| super::infrastructure::core::DATA_DIR.join(".env"));
 }
 
 // Chat completion request type (mirrored from main.rs)
@@ -117,7 +100,7 @@ pub use commands_harness::{
     feature = "compute_harness"
 ))]
 pub fn compute_cache_key(task: &str, input: &Value, env_hash: &str) -> String {
-    crate::compute_cache::compute_key(task, input, env_hash)
+    crate::compute::compute_cache::compute_key(task, input, env_hash)
 }
 
 // Test support infrastructure (test_support/) is only compiled when running tests

@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    circuit::{
+    codegen::circuit::{
         circuit_is_open, circuit_record_failure, circuit_record_success, get_circuit_debug_info,
     },
-    core::{CircuitBreakerConfig, CircuitState},
-    resilience::RetryEngine,
+    infrastructure::core::{CircuitBreakerConfig, CircuitState},
+    infrastructure::resilience::RetryEngine,
 };
 
 /// Provider circuit manager with per-provider isolation
@@ -57,7 +57,7 @@ pub struct ProviderCircuitDebugInfo {
     /// Circuit key (provider:host)
     pub circuit_key: String,
     /// Circuit state details
-    pub circuit: crate::circuit::CircuitDebugInfo,
+    pub circuit: crate::codegen::circuit::CircuitDebugInfo,
 }
 
 impl ProviderCircuitManager {

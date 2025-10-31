@@ -1,6 +1,6 @@
 #![cfg(any(test, feature = "compute_harness"))]
 
-use crate::action_log::ActionLogService;
+use crate::infrastructure::action_log::ActionLogService;
 use crate::{ensure_default_workspace, init_database, AppState, DATA_DIR, FILES_DIR, LOGS_DIR};
 use anyhow::{Context, Result};
 use reqwest::Client;
@@ -152,10 +152,10 @@ impl ComputeTestHarness {
             safe_mode: RwLock::new(false),
             safe_reason: RwLock::new(None),
             circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            circuit_config: crate::core::CircuitBreakerConfig::from_env(),
-            provider_circuit_manager: crate::provider_circuit::ProviderCircuitManager::new(),
-            chaos_engine: crate::chaos::ChaosEngine::new(),
-            resilience_metrics: crate::chaos::ResilienceMetrics::new(),
+            circuit_config: crate::infrastructure::core::CircuitBreakerConfig::from_env(),
+            provider_circuit_manager: crate::llm::provider_circuit::ProviderCircuitManager::new(),
+            chaos_engine: crate::infrastructure::chaos::ChaosEngine::new(),
+            resilience_metrics: crate::infrastructure::chaos::ResilienceMetrics::new(),
             action_log,
             job_token_key: [0u8; 32],
         };
@@ -177,7 +177,9 @@ impl ComputeTestHarness {
                     tracing::error!("create files dir failed: {err:?}");
                 }
                 let handle = app.handle();
-                if let Err(err) = crate::registry::install_bundled_modules_if_missing(&handle) {
+                if let Err(err) =
+                    crate::compute::registry::install_bundled_modules_if_missing(&handle)
+                {
                     tracing::error!("install modules failed: {err:?}");
                 }
                 Ok(())
@@ -203,25 +205,26 @@ impl ComputeTestHarness {
         let handler_job_id = job_id.clone();
         let handler_tx = Arc::clone(&tx_arc);
 
-        let listener_id =
-            self.app
-                .listen(crate::events::EVENT_COMPUTE_RESULT_FINAL, move |event| {
-                    if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
-                        let job_matches = value
-                            .get("jobId")
-                            .or_else(|| value.get("job_id"))
-                            .and_then(|v| v.as_str())
-                            .map(|id| id == handler_job_id)
-                            .unwrap_or(false);
-                        if job_matches {
-                            if let Some(sender) =
-                                handler_tx.lock().ok().and_then(|mut guard| guard.take())
-                            {
-                                let _ = sender.send(value);
-                            }
+        let listener_id = self.app.listen(
+            crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
+            move |event| {
+                if let Ok(value) = serde_json::from_str::<Value>(event.payload()) {
+                    let job_matches = value
+                        .get("jobId")
+                        .or_else(|| value.get("job_id"))
+                        .and_then(|v| v.as_str())
+                        .map(|id| id == handler_job_id)
+                        .unwrap_or(false);
+                    if job_matches {
+                        if let Some(sender) =
+                            handler_tx.lock().ok().and_then(|mut guard| guard.take())
+                        {
+                            let _ = sender.send(value);
                         }
                     }
-                });
+                }
+            },
+        );
 
         let state: tauri::State<'_, AppState> = self.app.state();
         if let Err(err) =

@@ -2,7 +2,7 @@
 use secrecy::SecretString;
 use tauri::State;
 
-use crate::keystore::get_or_init_keystore;
+use crate::security::keystore::get_or_init_keystore;
 use crate::AppState;
 
 #[tauri::command]

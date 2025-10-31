@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
-use crate::authz::net_decision_with;
-use crate::hostctx::HostCtx;
+use crate::compute::hostctx::HostCtx;
+use crate::security::authz::net_decision_with;
 use crate::{
-    net::{is_ip_literal as net_is_ip_literal, is_private_ip as net_is_private_ip, parse_host},
+    infrastructure::net::{
+        is_ip_literal as net_is_ip_literal, is_private_ip as net_is_private_ip, parse_host,
+    },
     AppState,
 };
 
@@ -25,8 +27,10 @@ struct Bucket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authz::{clear_policies_for_test, net_decision, set_policy_for_test};
-    use crate::hostctx::{HostCtx, InMemorySink, Limits, PolicyEntry, PolicyMap, PolicyStore};
+    use crate::compute::hostctx::{
+        HostCtx, InMemorySink, Limits, PolicyEntry, PolicyMap, PolicyStore,
+    };
+    use crate::security::authz::{clear_policies_for_test, net_decision, set_policy_for_test};
     use httpmock::MockServer;
     use parking_lot::RwLock;
     use std::sync::Arc;

@@ -25,7 +25,7 @@ use tokio::sync::{
 };
 use tokio::time::timeout;
 
-use crate::core::log_error;
+use super::core::log_error;
 
 const HASH_DOMAIN: &[u8] = b"UICP-ACTION-LOG-V0";
 #[cfg(not(test))]

@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::resilience::*;
+    use crate::infrastructure::resilience::*;
     use std::time::Duration;
 
     #[test]

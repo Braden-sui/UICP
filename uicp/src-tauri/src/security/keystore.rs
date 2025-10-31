@@ -31,7 +31,7 @@ use thiserror::Error;
 use tokio_rusqlite::Connection as AsyncConn;
 use zeroize::Zeroize;
 
-use crate::core::{log_warn, DATA_DIR};
+use crate::infrastructure::core::{log_warn, DATA_DIR};
 
 use crate::config::errors as config_errors;
 #[cfg(test)]

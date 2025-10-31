@@ -65,10 +65,11 @@ pub async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result
 pub async fn export_from_files(ws_path: String, dest_path: String) -> Result<String, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("export_from_files");
-    let src_buf: std::path::PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
-        Ok(p) => p,
-        Err(e) => return Err(e.message.to_string()),
-    };
+    let src_buf: std::path::PathBuf =
+        match crate::compute::compute_input::sanitize_ws_files_path(&ws_path) {
+            Ok(p) => p,
+            Err(e) => return Err(e.message.to_string()),
+        };
     if !src_buf.exists() {
         return Err(format!("Source not found: {ws_path}"));
     }

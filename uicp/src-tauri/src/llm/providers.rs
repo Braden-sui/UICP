@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use secrecy::ExposeSecret;
 
-use crate::keystore::{get_or_init_keystore, KeystoreError};
+use crate::security::keystore::{get_or_init_keystore, KeystoreError};
 
 /// Map provider -> (service, account) used to fetch the secret from keystore.
 fn provider_secret_id(provider: &str) -> Option<(&'static str, &'static str)> {
@@ -22,7 +22,7 @@ pub async fn build_provider_headers(
     provider: &str,
 ) -> Result<HashMap<String, String>, KeystoreError> {
     // Host policy check: secret:<provider>:api_key
-    if !crate::authz::allow_secret(provider) {
+    if !crate::security::authz::allow_secret(provider) {
         return Err(KeystoreError::Permission(format!(
             "Denied by permissions.json (scope: secret:{}:api_key)",
             provider.to_ascii_lowercase()

@@ -1,24 +1,24 @@
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::keystore::get_or_init_keystore;
-use crate::provider_cli::{ProviderHealthResult, ProviderLoginResult};
+use crate::llm::provider_cli::{ProviderHealthResult, ProviderLoginResult};
+use crate::security::keystore::get_or_init_keystore;
 
 #[tauri::command]
 pub async fn provider_login(provider: String) -> Result<ProviderLoginResult, String> {
     let normalized = provider.trim().to_ascii_lowercase();
-    crate::provider_cli::login(&normalized).await
+    crate::llm::provider_cli::login(&normalized).await
 }
 
 #[tauri::command]
 pub async fn provider_health(provider: String) -> Result<ProviderHealthResult, String> {
     let normalized = provider.trim().to_ascii_lowercase();
-    crate::provider_cli::health(&normalized).await
+    crate::llm::provider_cli::health(&normalized).await
 }
 
 #[tauri::command]
 pub async fn provider_resolve(provider: String) -> Result<serde_json::Value, String> {
     let normalized = provider.trim().to_ascii_lowercase();
-    let res = crate::provider_cli::resolve(&normalized)?;
+    let res = crate::llm::provider_cli::resolve(&normalized)?;
     Ok(serde_json::json!({ "exe": res.exe, "via": res.via }))
 }
 
@@ -28,7 +28,7 @@ pub async fn provider_install(
     version: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let normalized = provider.trim().to_ascii_lowercase();
-    match crate::provider_cli::install(&normalized, version.as_deref()).await {
+    match crate::llm::provider_cli::install(&normalized, version.as_deref()).await {
         Ok(r) => Ok(serde_json::json!({
             "ok": r.ok,
             "provider": r.provider,

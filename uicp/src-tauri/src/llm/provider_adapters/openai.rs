@@ -3,7 +3,7 @@
 //! OpenAI uses the standard chat completions format that serves as the baseline
 //! for other providers. Minimal transformation needed.
 
-use crate::provider_adapters::ProviderAdapter;
+use super::ProviderAdapter;
 use async_trait::async_trait;
 use serde_json::Value;
 

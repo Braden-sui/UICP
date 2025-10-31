@@ -20,15 +20,17 @@ use tokio::sync::OwnedSemaphorePermit;
 use tracing::Instrument;
 
 #[cfg(feature = "wasm_compute")]
-use crate::compute_input::{
+use crate::compute::compute_input::{
     derive_job_seed, extract_csv_input, extract_script_input, extract_table_query_input,
     resolve_csv_source, ScriptMode,
 };
-use crate::policy::{ComputeFinalErr, ComputeFinalOk, ComputeJobSpec, ComputePartialEvent};
 #[cfg(feature = "wasm_compute")]
-use crate::registry;
+use crate::compute::registry;
 #[cfg(not(feature = "otel_spans"))]
-use crate::{log_error, log_warn};
+use crate::infrastructure::{log_error, log_warn};
+use crate::security::policy::{
+    ComputeFinalErr, ComputeFinalOk, ComputeJobSpec, ComputePartialEvent,
+};
 
 /// Centralized error code constants to keep parity with TS `compute/types.ts` and UI `compute/errors.ts`.
 #[cfg_attr(not(feature = "wasm_compute"), allow(dead_code))]
@@ -53,9 +55,9 @@ pub mod error_codes {
 #[cfg(feature = "wasm_compute")]
 mod with_runtime {
     use super::*;
-    use crate::component_bindings::csv_parse::Task as CsvTask;
-    use crate::component_bindings::script::Task as ScriptTask;
-    use crate::component_bindings::table_query::{
+    use crate::compute::component_bindings::csv_parse::Task as CsvTask;
+    use crate::compute::component_bindings::script::Task as ScriptTask;
+    use crate::compute::component_bindings::table_query::{
         exports::uicp::task_table_query::table::Error as TableRunError,
         uicp::task_table_query::types::{Filter as TableFilter, Input as TableInput},
         Task as TableTask,
@@ -82,6 +84,7 @@ mod with_runtime {
         Arc,
     };
     use tauri::{AppHandle, Runtime};
+    use tokio::io::AsyncWrite;
     use tokio::sync::mpsc::{
         self,
         error::{TryRecvError, TrySendError},
@@ -96,8 +99,10 @@ mod with_runtime {
         add_to_linker_async, DynOutputStream, OutputStream as WasiOutputStreamTrait, Pollable,
         StreamResult,
     };
-    use wasmtime_wasi::{cli::{StdoutStream, IsTerminal}, DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
-    use tokio::io::AsyncWrite;
+    use wasmtime_wasi::{
+        cli::{IsTerminal, StdoutStream},
+        DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView,
+    };
 
     // Import configuration constants
     use crate::config::limits::{
@@ -539,7 +544,7 @@ mod with_runtime {
         buf: Mutex<Vec<u8>>,
         log_rate: Arc<Mutex<RateLimiterBytes>>,
         log_throttle_waits: Arc<AtomicU64>,
-        action_log: crate::action_log::ActionLogHandle,
+        action_log: crate::infrastructure::action_log::ActionLogHandle,
     }
 
     #[allow(dead_code)]
@@ -649,7 +654,8 @@ mod with_runtime {
 
                 // WHY: Append to the durable action_log before UI emission to preserve append-first semantics.
                 let full_b64 = BASE64_ENGINE.encode(to_emit);
-                let output = truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
+                let output =
+                    truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
                 let truncated = output.len() < to_emit.len();
                 if let Err(err) = self.shared.action_log.append_json_blocking(
                     "compute.log",
@@ -1222,14 +1228,14 @@ mod with_runtime {
                             UiEvent::PartialEvent(e) => {
                                 crate::emit_or_log(
                                     &app_for_ui,
-                                    crate::events::EVENT_COMPUTE_RESULT_PARTIAL,
+                                    crate::infrastructure::events::EVENT_COMPUTE_RESULT_PARTIAL,
                                     e,
                                 );
                             }
                             UiEvent::PartialJson(v) => {
                                 crate::emit_or_log(
                                     &app_for_ui,
-                                    crate::events::EVENT_COMPUTE_RESULT_PARTIAL,
+                                    crate::infrastructure::events::EVENT_COMPUTE_RESULT_PARTIAL,
                                     v,
                                 );
                             }
@@ -2251,7 +2257,7 @@ mod with_runtime {
         {
             let detail = err.to_string();
             let message = format!("Missing import or export during instantiation: {detail}");
-            return (error_codes::RUNTIME_FAULT, message);
+            return (error_codes::TASK_NOT_FOUND, message);
         }
         // Capability denial (FS/HTTP off by default in V1)
         if acc.contains("permission") || acc.contains("denied") {
@@ -2310,7 +2316,7 @@ mod with_runtime {
         }
         crate::emit_or_log(
             app,
-            crate::events::EVENT_COMPUTE_RESULT_FINAL,
+            crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
             payload.clone(),
         );
         if spec.replayable && spec.cache == "readwrite" {
@@ -2318,7 +2324,9 @@ mod with_runtime {
                 .ok()
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                 .unwrap_or(false);
-            let module_meta = crate::registry::find_module(app, &spec.task).ok().flatten();
+            let module_meta = crate::compute::registry::find_module(app, &spec.task)
+                .ok()
+                .flatten();
             let invariants = {
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(m) = &module_meta {
@@ -2339,16 +2347,16 @@ mod with_runtime {
                 parts.join("|")
             };
             let key = if use_v2 {
-                crate::compute_cache::compute_key_v2_plus(spec, &spec.input, &invariants)
+                crate::compute::compute_cache::compute_key_v2_plus(spec, &spec.input, &invariants)
             } else {
-                crate::compute_cache::compute_key(
+                crate::compute::compute_cache::compute_key(
                     &spec.task,
                     &spec.input,
                     &spec.provenance.env_hash,
                 )
             };
             let obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
-            let _ = crate::compute_cache::store(
+            let _ = crate::compute::compute_cache::store(
                 app,
                 &spec.workspace_id,
                 &key,
@@ -2368,7 +2376,7 @@ mod with_runtime {
         queue_wait_ms: u64,
     ) {
         // Compute a deterministic hash of the final output for determinism goldens.
-        let canonical = crate::compute_cache::canonicalize_input(&output);
+        let canonical = crate::compute::compute_cache::canonicalize_input(&output);
         let mut hasher = sha2::Sha256::new();
         use sha2::Digest;
         hasher.update(canonical.as_bytes());
@@ -2378,7 +2386,9 @@ mod with_runtime {
         let mut golden_hash_opt = None;
         let mut golden_matched = None;
         if let (Some(golden_key), true) = (&spec.golden_key, spec.expect_golden) {
-            match crate::compute_cache::lookup_golden(app, &spec.workspace_id, golden_key).await {
+            match crate::compute::compute_cache::lookup_golden(app, &spec.workspace_id, golden_key)
+                .await
+            {
                 Ok(Some(record)) => {
                     let matches = record.output_hash == out_hash;
                     golden_hash_opt = Some(record.output_hash.clone());
@@ -2411,7 +2421,7 @@ mod with_runtime {
                     }
                 }
                 Ok(None) => {
-                    if let Err(err) = crate::compute_cache::store_golden(
+                    if let Err(err) = crate::compute::compute_cache::store_golden(
                         app,
                         &spec.workspace_id,
                         golden_key,
@@ -2480,13 +2490,19 @@ mod with_runtime {
         };
         #[cfg(feature = "otel_spans")]
         tracing::info!(target = "uicp", job_id = %spec.job_id, task = %spec.task, "compute job completed with metrics");
-        crate::emit_or_log(app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
+        crate::emit_or_log(
+            app,
+            crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
+            payload,
+        );
         if spec.replayable && spec.cache == "readwrite" {
             let use_v2 = std::env::var("UICP_CACHE_V2")
                 .ok()
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                 .unwrap_or(false);
-            let module_meta = crate::registry::find_module(app, &spec.task).ok().flatten();
+            let module_meta = crate::compute::registry::find_module(app, &spec.task)
+                .ok()
+                .flatten();
             let invariants = {
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(m) = &module_meta {
@@ -2507,9 +2523,9 @@ mod with_runtime {
                 parts.join("|")
             };
             let key = if use_v2 {
-                crate::compute_cache::compute_key_v2_plus(spec, &spec.input, &invariants)
+                crate::compute::compute_cache::compute_key_v2_plus(spec, &spec.input, &invariants)
             } else {
-                crate::compute_cache::compute_key(
+                crate::compute::compute_cache::compute_key(
                     &spec.task,
                     &spec.input,
                     &spec.provenance.env_hash,
@@ -2519,7 +2535,7 @@ mod with_runtime {
             if let Some(map) = obj.as_object_mut() {
                 map.insert("metrics".into(), metrics);
             }
-            let _ = crate::compute_cache::store(
+            let _ = crate::compute::compute_cache::store(
                 app,
                 &spec.workspace_id,
                 &key,
@@ -2612,8 +2628,8 @@ mod with_runtime {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::compute_input::{fs_read_allowed, sanitize_ws_files_path};
-        use crate::policy::{ComputeCapabilitiesSpec, ComputeProvenanceSpec};
+        use crate::compute::compute_input::{fs_read_allowed, sanitize_ws_files_path};
+        use crate::security::policy::{ComputeCapabilitiesSpec, ComputeProvenanceSpec};
 
         #[test]
         fn sanitize_ws_files_path_blocks_traversal_and_maps_under_files_dir() {
@@ -3173,8 +3189,10 @@ mod with_runtime {
 
             let dir = tempdir().expect("tempdir");
             let db_path = dir.path().join("action.db");
-            let action_log = crate::action_log::ActionLogService::start_with_seed(&db_path, None)
-                .expect("action log");
+            let action_log = crate::infrastructure::action_log::ActionLogService::start_with_seed(
+                &db_path, None,
+            )
+            .expect("action log");
 
             let shared = Arc::new(GuestLogShared {
                 emitter: Arc::new(NullEmitter::default()),
@@ -3404,7 +3422,7 @@ pub use with_runtime::{
 #[cfg(not(feature = "wasm_compute"))]
 mod no_runtime {
     use super::*;
-    use crate::policy::ComputeFinalErr;
+    use crate::security::policy::ComputeFinalErr;
     pub(super) fn spawn_job<R: Runtime>(
         app: tauri::AppHandle<R>,
         spec: ComputeJobSpec,
@@ -3427,7 +3445,7 @@ mod no_runtime {
             tokio::select! {
                 _ = rx_cancel.changed() => {
                     let payload = ComputeFinalErr { ok: false, job_id: spec.job_id.clone(), task: spec.task.clone(), code: error_codes::CANCELLED.into(), message: "Job cancelled by user".into(), metrics: Some(serde_json::json!({"queueMs": queue_wait_ms})) };
-                    crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
+                    crate::emit_or_log(&app, crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL, payload);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
                     #[cfg(feature = "otel_spans")]
@@ -3445,13 +3463,13 @@ mod no_runtime {
                         "jobId": spec.job_id,
                         "task": spec.task,
                     }));
-                    crate::emit_or_log(&app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload.clone());
+                    crate::emit_or_log(&app, crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL, payload.clone());
                     if spec.replayable && spec.cache == "readwrite" {
                         let use_v2 = std::env::var("UICP_CACHE_V2")
                             .ok()
                             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                             .unwrap_or(false);
-                        let module_meta = crate::registry::find_module(&app, &spec.task).ok().flatten();
+                        let module_meta = crate::compute::registry::find_module(&app, &spec.task).ok().flatten();
                         let invariants = {
                             let mut parts: Vec<String> = Vec::new();
                             if let Some(m) = &module_meta {
@@ -3466,9 +3484,9 @@ mod no_runtime {
                             parts.join("|")
                         };
                         let key = if use_v2 {
-                            crate::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
+                            crate::compute::compute_cache::compute_key_v2_plus(&spec, &spec.input, &invariants)
                         } else {
-                            crate::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
+                            crate::compute::compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash)
                         };
                         let mut obj = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
                         if let Some(map) = obj.as_object_mut() {
@@ -3477,7 +3495,7 @@ mod no_runtime {
                                 serde_json::json!({ "queueMs": queue_wait_ms }),
                             );
                         }
-                        let _ = crate::compute_cache::store(&app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
+                        let _ = crate::compute::compute_cache::store(&app, &spec.workspace_id, &key, &spec.task, &spec.provenance.env_hash, &obj).await;
                     }
                 }
             }

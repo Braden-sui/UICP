@@ -1,4 +1,4 @@
-use crate::hostctx::{PolicyMap as StorePolicyMap, PolicyStore};
+use crate::compute::hostctx::{PolicyMap as StorePolicyMap, PolicyStore};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -211,7 +211,7 @@ pub(crate) fn clear_policies_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hostctx::{PolicyEntry, PolicyMap, PolicyStore};
+    use crate::compute::hostctx::{PolicyEntry, PolicyMap, PolicyStore};
 
     struct MapStore(pub PolicyMap);
 

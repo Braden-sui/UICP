@@ -1682,10 +1682,13 @@ mod tests {
             "predicate should include Anthropics hosts"
         );
         assert_eq!(observed[3], "--");
+        let exe_name = observed[4]
+            .rsplit(|c| c == '/' || c == '\\')
+            .next()
+            .unwrap_or(&observed[4])
+            .to_ascii_lowercase();
         assert!(
-            observed[4].ends_with("claude")
-                || observed[4].ends_with("claude.cmd")
-                || observed[4].ends_with("claude.exe"),
+            exe_name == "claude" || exe_name == "claude.cmd" || exe_name == "claude.exe",
             "fifth argument should be the resolved claude executable, got: {}",
             observed[4]
         );
@@ -1729,9 +1732,15 @@ mod tests {
             !observed.is_empty(),
             "expected codex arguments to be captured"
         );
-        assert_eq!(
-            observed[0], "codex",
-            "command should execute without httpjail wrapper when binary missing"
+        let invoked = observed[0]
+            .rsplit(|c| c == '/' || c == '\\')
+            .next()
+            .unwrap_or(&observed[0])
+            .to_ascii_lowercase();
+        assert!(
+            invoked == "codex" || invoked == "codex.cmd" || invoked == "codex.exe",
+            "command should execute without httpjail wrapper when binary missing (saw: {})",
+            observed[0]
         );
         assert_eq!(observed[1], "exec");
     }

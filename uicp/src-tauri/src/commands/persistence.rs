@@ -1,6 +1,6 @@
 //! Persistence commands for workspace and command replay functionality.
 
-use crate::core::{emit_or_log, AppState};
+use crate::infrastructure::core::{emit_or_log, AppState};
 use chrono::Utc;
 use serde::Serialize;
 use tauri::{Manager, State, Window};

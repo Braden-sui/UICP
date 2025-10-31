@@ -3,7 +3,7 @@
 //! OpenRouter is compatible with OpenAI's API format but includes additional
 //! metadata headers and requires special handling for model identifiers.
 
-use crate::provider_adapters::ProviderAdapter;
+use super::ProviderAdapter;
 use async_trait::async_trait;
 use serde_json::Value;
 

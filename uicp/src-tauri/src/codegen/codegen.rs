@@ -22,17 +22,18 @@ use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
 use uuid::Uuid;
 
-use crate::apppack::{apppack_validate, install_app_pack};
-use crate::keystore::get_or_init_keystore;
-use crate::providers::build_provider_headers;
+use crate::codegen::apppack::{apppack_validate, install_app_pack};
+use crate::llm::code_provider::{
+    ClaudeProvider, CodeProvider, CodeProviderError, CodeProviderJob, CodexProvider,
+    ProviderArtifacts, ProviderDiff,
+};
+use crate::security::keystore::get_or_init_keystore;
 use crate::{
-    code_provider::{
-        ClaudeProvider, CodeProvider, CodeProviderError, CodeProviderJob, CodexProvider,
-        ProviderArtifacts, ProviderDiff,
-    },
-    compute_cache, emit_or_log,
-    policy::{ComputeFinalErr, ComputeFinalOk, ComputeJobSpec},
-    remove_compute_job, AppState,
+    compute::compute_cache,
+    infrastructure::core::emit_or_log,
+    remove_compute_job,
+    security::policy::{ComputeFinalErr, ComputeFinalOk, ComputeJobSpec},
+    AppState,
 };
 use secrecy::ExposeSecret;
 
@@ -348,7 +349,7 @@ pub fn spawn_job<R: Runtime>(
                 emit_error(
                     &app,
                     &spec,
-                    crate::compute::error_codes::CANCELLED,
+                    crate::compute::compute::error_codes::CANCELLED,
                     "E-UICP-1304: codegen job cancelled",
                     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                     queue_wait_ms,
@@ -605,7 +606,11 @@ async fn emit_final_ok<R: Runtime>(app: &AppHandle<R>, spec: &ComputeJobSpec, ok
         output: ok.output.clone(),
         metrics: Some(metrics.clone()),
     };
-    emit_or_log(app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
+    emit_or_log(
+        app,
+        crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
+        payload,
+    );
 
     if spec.replayable && spec.cache == "readwrite" {
         let key = compute_cache::compute_key(&spec.task, &spec.input, &spec.provenance.env_hash);
@@ -650,7 +655,11 @@ fn emit_error<R: Runtime>(
             "queueWaitMs": queue_wait_ms,
         })),
     };
-    emit_or_log(app, crate::events::EVENT_COMPUTE_RESULT_FINAL, payload);
+    emit_or_log(
+        app,
+        crate::infrastructure::events::EVENT_COMPUTE_RESULT_FINAL,
+        payload,
+    );
 }
 
 fn build_plan(spec: &ComputeJobSpec) -> Result<CodegenPlan, CodegenFailure> {
@@ -1261,7 +1270,11 @@ async fn maybe_auto_install_pack<R: Runtime>(app: &AppHandle<R>, workspace_dir: 
                 }
             }
         });
-        crate::core::emit_or_log(app, crate::events::EVENT_UI_DEBUG, op);
+        crate::infrastructure::core::emit_or_log(
+            app,
+            crate::infrastructure::events::EVENT_UI_DEBUG,
+            op,
+        );
     }
 }
 
@@ -1767,7 +1780,7 @@ Language must be {lang}. Include meta.modelId and meta.provider. Do not wrap out
         .post(endpoint)
         .header("Content-Type", "application/json");
     // Inject headers from keystore-backed providers mapping
-    let headers = build_provider_headers("openai").await?;
+    let headers = crate::llm::providers::build_provider_headers("openai").await?;
     for (k, v) in headers.into_iter() {
         req = req.header(k, v);
     }
@@ -2430,7 +2443,7 @@ pub fn is_codegen_task(task: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec};
+    use crate::security::policy::{ComputeCapabilitiesSpec, ComputeJobSpec, ComputeProvenanceSpec};
     use serde_json::{json, Map, Value};
 
     #[test]

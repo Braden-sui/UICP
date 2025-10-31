@@ -41,7 +41,7 @@ pub struct ProviderResilienceConfig {
     /// Retry policies by error category
     pub retry_policies: HashMap<ErrorCategory, RetryPolicy>,
     /// Circuit breaker configuration
-    pub circuit_config: crate::core::CircuitBreakerConfig,
+    pub circuit_config: super::core::CircuitBreakerConfig,
 }
 
 impl Default for ProviderResilienceConfig {
@@ -67,7 +67,7 @@ impl Default for ProviderResilienceConfig {
 
         Self {
             retry_policies,
-            circuit_config: crate::core::CircuitBreakerConfig::default(),
+            circuit_config: super::core::CircuitBreakerConfig::default(),
         }
     }
 }
@@ -241,7 +241,7 @@ impl RetryEngine {
     }
 
     /// Get circuit breaker configuration for a provider
-    pub fn get_circuit_config(&self, provider: &str) -> Option<&crate::core::CircuitBreakerConfig> {
+    pub fn get_circuit_config(&self, provider: &str) -> Option<&super::core::CircuitBreakerConfig> {
         self.configs
             .get(provider)
             .map(|config| &config.circuit_config)

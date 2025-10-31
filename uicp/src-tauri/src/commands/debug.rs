@@ -8,11 +8,8 @@ use sha2::Sha256;
 use tauri::{async_runtime, AppHandle, Emitter, Manager, State};
 
 use crate::{
-    chaos,
-    circuit,
-    provider_circuit,
-    services::chat_service::maybe_enable_local_ollama,
-    AppState,
+    codegen::circuit, infrastructure::chaos, llm::provider_circuit,
+    services::chat_service::maybe_enable_local_ollama, AppState,
 };
 
 #[tauri::command]
@@ -77,7 +74,7 @@ pub async fn set_env_var(name: String, value: Option<String>) -> Result<(), Stri
 #[tauri::command]
 pub async fn get_action_log_stats(
     state: State<'_, AppState>,
-) -> Result<crate::action_log::ActionLogStatsSnapshot, String> {
+) -> Result<crate::infrastructure::action_log::ActionLogStatsSnapshot, String> {
     Ok(state.action_log.stats_snapshot())
 }
 
@@ -160,7 +157,10 @@ pub async fn chaos_configure_failure(
 }
 
 #[tauri::command]
-pub async fn chaos_stop_failure(state: State<'_, AppState>, provider: String) -> Result<(), String> {
+pub async fn chaos_stop_failure(
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<(), String> {
     state.chaos_engine.stop_failure(&provider).await;
     Ok(())
 }
