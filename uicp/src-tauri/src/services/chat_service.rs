@@ -1070,7 +1070,8 @@ pub async fn stream_chat_completion(
 async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
     let use_cloud = *state.use_direct_cloud.read().await;
     let base = if use_cloud {
-        std::env::var("OLLAMA_CLOUD_URL").unwrap_or_else(|_| "https://ollama.ai".into())
+        std::env::var("OLLAMA_CLOUD_URL")
+            .unwrap_or_else(|_| crate::infrastructure::core::OLLAMA_CLOUD_HOST_DEFAULT.into())
     } else {
         std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into())
     };
