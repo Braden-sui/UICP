@@ -90,7 +90,7 @@ impl ProviderAdapter for AnthropicAdapter {
             .get("max_tokens")
             .or_else(|| body.get("options").and_then(|o| o.get("max_tokens")))
             .and_then(|m| m.as_i64())
-            .unwrap_or(200000);
+            .unwrap_or(200_000);
         anthropic_body["max_tokens"] = serde_json::json!(max_tokens);
 
         // Copy tools if present (Anthropic supports tool_use)

@@ -256,10 +256,7 @@ async fn maybe_wrap_with_httpjail(
     env: &HashMap<String, String>,
 ) -> (String, Vec<String>) {
     // Resolve provider executable to an absolute path when possible.
-    #[cfg(not(test))]
     let resolved_program = resolve_provider_exe(base_program, provider_key, env);
-    #[cfg(test)]
-    let resolved_program = base_program.to_string();
     if !httpjail_requested(env) {
         return (resolved_program, base_args);
     }
@@ -1202,7 +1199,7 @@ fn extract_codex_diff(event: &Value) -> Option<ProviderDiff> {
         .or_else(|| item.pointer("/file/path").and_then(|v| v.as_str()))
         .unwrap_or("unknown.diff");
 
-    let patch = item
+    let diff_patch = item
         .get("diff")
         .and_then(|v| v.get("patch"))
         .and_then(|v| v.as_str())
@@ -1211,7 +1208,7 @@ fn extract_codex_diff(event: &Value) -> Option<ProviderDiff> {
 
     Some(ProviderDiff {
         path: PathBuf::from(path),
-        patch: patch.to_string(),
+        patch: diff_patch.to_string(),
     })
 }
 
@@ -1685,7 +1682,13 @@ mod tests {
             "predicate should include Anthropics hosts"
         );
         assert_eq!(observed[3], "--");
-        assert_eq!(observed[4], "claude");
+        assert!(
+            observed[4].ends_with("claude")
+                || observed[4].ends_with("claude.cmd")
+                || observed[4].ends_with("claude.exe"),
+            "fifth argument should be the resolved claude executable, got: {}",
+            observed[4]
+        );
     }
 
     #[test]

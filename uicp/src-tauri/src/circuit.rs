@@ -176,15 +176,18 @@ pub async fn get_circuit_debug_info(
         .map(|(host, state)| {
             let opened_until_ms = state.opened_until.and_then(|until| {
                 if until > now {
-                    Some(until.saturating_duration_since(now).as_millis() as u64)
+                    Some(
+                        u64::try_from(until.saturating_duration_since(now).as_millis())
+                            .unwrap_or(u64::MAX),
+                    )
                 } else {
                     None
                 }
             });
 
-            let last_failure_ms_ago = state
-                .last_failure_at
-                .map(|at| now.saturating_duration_since(at).as_millis() as u64);
+            let last_failure_ms_ago = state.last_failure_at.map(|at| {
+                u64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(u64::MAX)
+            });
 
             let state_str = if state.opened_until.is_some() && opened_until_ms.is_some() {
                 "open"

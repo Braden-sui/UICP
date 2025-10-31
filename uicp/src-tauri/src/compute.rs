@@ -597,11 +597,11 @@ mod with_runtime {
                 let preview_b64 = self.shared.clamp_preview(to_emit);
                 let seq_no = self.shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
                 let tick_no = self.shared.tick.fetch_add(1, Ordering::Relaxed) + 1;
-                let new_total =
-                    self.shared
-                        .emitted_bytes
-                        .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
-                        .saturating_add(to_emit.len() as u64) as usize;
+                let new_total = self
+                    .shared
+                    .emitted_bytes
+                    .fetch_add(to_emit.len() as u64, Ordering::Relaxed)
+                    .saturating_add(to_emit.len() as u64) as usize;
                 let truncated = new_total > self.shared.max_bytes;
 
                 self.shared.log_count.fetch_add(1, Ordering::Relaxed);
@@ -640,7 +640,8 @@ mod with_runtime {
                 }));
 
                 // Mirror as debug-log for developer visibility
-                let output = truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
+                let output =
+                    truncate_message(&String::from_utf8_lossy(to_emit), self.shared.max_len);
                 self.shared.emitter.emit_debug(serde_json::json!({
                     "event": "compute_guest_stdio",
                     "jobId": self.shared.job_id,
@@ -962,7 +963,7 @@ mod with_runtime {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let key = format!("{}|{}", path.display(), mtime);
+        let key = format!("{}|{mtime}", path.display());
         if let Some(found) = COMPONENT_CACHE.get(&key) {
             return Ok(found.clone());
         }
@@ -1241,14 +1242,10 @@ mod with_runtime {
                             let cur = rl.rate_per_sec();
                             if ewma_logger >= WAITS_HI as f64 {
                                 let next = ((cur as f64) * AIMD_DEC).round() as usize;
-                                rl.set_rate_per_sec(
-                                    next.clamp(LOGGER_BYTES_MIN, LOGGER_BYTES_MAX),
-                                );
+                                rl.set_rate_per_sec(next.clamp(LOGGER_BYTES_MIN, LOGGER_BYTES_MAX));
                             } else if (ewma_log + ewma_logger + ewma_partial) < 0.5 {
                                 let next = ((cur as f64) * AIMD_INC).round() as usize;
-                                rl.set_rate_per_sec(
-                                    next.clamp(LOGGER_BYTES_MIN, LOGGER_BYTES_MAX),
-                                );
+                                rl.set_rate_per_sec(next.clamp(LOGGER_BYTES_MIN, LOGGER_BYTES_MAX));
                             }
                         }
                         // partial events
@@ -1411,34 +1408,48 @@ mod with_runtime {
                         let call_future = async {
                             match task_name {
                                 "csv.parse" => match extract_csv_input(&spec.input) {
-                                    Ok((source, has_header)) => match resolve_csv_source(&spec, &source) {
-                                        Ok(resolved) => {
-                                            let bindings = CsvTask::new(&mut store, &instance)
-                                                .context("E-UICP-0224: csv task binding init failed")?;
-                                            let csv_iface = bindings.uicp_task_csv_parse_csv();
-                                            match csv_iface
-                                                .call_run(&mut store, &spec.job_id, resolved.as_str(), has_header)
-                                                .await
-                                            {
-                                                Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
-                                                Ok(Err(msg)) => Err(anyhow::Error::msg(msg)),
-                                                Err(e) => Err(anyhow::anyhow!(
-                                            "E-UICP-0225: call csv#run failed: {}",
-                                            e
-                                        )),
+                                    Ok((source, has_header)) => {
+                                        match resolve_csv_source(&spec, &source) {
+                                            Ok(resolved) => {
+                                                let bindings = CsvTask::new(&mut store, &instance)
+                                                    .context(
+                                                        "E-UICP-0224: csv task binding init failed",
+                                                    )?;
+                                                let csv_iface = bindings.uicp_task_csv_parse_csv();
+                                                match csv_iface
+                                                    .call_run(
+                                                        &mut store,
+                                                        &spec.job_id,
+                                                        resolved.as_str(),
+                                                        has_header,
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(Ok(rows)) => Ok(serde_json::json!(rows)),
+                                                    Ok(Err(msg)) => Err(anyhow::Error::msg(msg)),
+                                                    Err(e) => Err(anyhow::anyhow!(
+                                                        "E-UICP-0225: call csv#run failed: {}",
+                                                        e
+                                                    )),
+                                                }
                                             }
+                                            Err(err) => Err(anyhow::anyhow!(format!(
+                                                "{}: {}",
+                                                err.code, err.message
+                                            ))),
                                         }
-                                        Err(err) => Err(anyhow::anyhow!(format!(
-                                            "{}: {}",
-                                            err.code, err.message
-                                        ))),
-                                    },
-                                    Err(err) => Err(anyhow::anyhow!(format!("{}: {}", err.code, err.message))),
+                                    }
+                                    Err(err) => Err(anyhow::anyhow!(format!(
+                                        "{}: {}",
+                                        err.code, err.message
+                                    ))),
                                 },
                                 "table.query" => match extract_table_query_input(&spec.input) {
                                     Ok((rows, select, where_opt)) => {
                                         let bindings = TableTask::new(&mut store, &instance)
-                                            .context("E-UICP-0226: table task binding init failed")?;
+                                            .context(
+                                                "E-UICP-0226: table task binding init failed",
+                                            )?;
                                         let input = TableInput {
                                             rows,
                                             select,
@@ -1462,7 +1473,10 @@ mod with_runtime {
                                             )),
                                         }
                                     }
-                                    Err(err) => Err(anyhow::anyhow!(format!("{}: {}", err.code, err.message))),
+                                    Err(err) => Err(anyhow::anyhow!(format!(
+                                        "{}: {}",
+                                        err.code, err.message
+                                    ))),
                                 },
                                 "applet.quickjs" | "script.hello" => {
                                     let script_input = match &script_input_result {
@@ -1492,9 +1506,8 @@ mod with_runtime {
                                         ));
                                     }
 
-                                    let bindings =
-                                        ScriptTask::new(&mut store, &instance)
-                                            .context("E-UICP-0232: script task binding init failed")?;
+                                    let bindings = ScriptTask::new(&mut store, &instance)
+                                        .context("E-UICP-0232: script task binding init failed")?;
                                     let script_iface = bindings.uicp_applet_script_script();
 
                                     let js_call = match script_input.mode {
@@ -1652,8 +1665,16 @@ mod with_runtime {
                         let (code, msg) = map_trap_error(&any);
                         let message = if msg.is_empty() { any.to_string() } else { msg };
                         let m = collect_metrics(&store);
-                        finalize_error(&app, &spec, code, &message, started, queue_wait_ms, Some(m))
-                            .await;
+                        finalize_error(
+                            &app,
+                            &spec,
+                            code,
+                            &message,
+                            started,
+                            queue_wait_ms,
+                            Some(m),
+                        )
+                        .await;
                         epoch_pump.abort();
                     }
                 }
@@ -1697,7 +1718,7 @@ mod with_runtime {
         // returned as-is.
         if let Some((name, ver)) = raw.rsplit_once('@') {
             if let Ok(v) = semver::Version::parse(ver) {
-                return format!("{}@{}.{}", name, v.major, v.minor);
+                return format!("{name}@{}.{}", v.major, v.minor);
             }
         }
         raw.to_string()
@@ -1996,7 +2017,7 @@ mod with_runtime {
         if job != ctx.job_id {
             log_job_mismatch(ctx, "remaining-ms", &job);
         }
-        let elapsed = ctx.started.elapsed().as_millis() as u64;
+        let elapsed = u64::try_from(ctx.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let deadline = ctx.deadline_ms as u64;
         let remaining = deadline.saturating_sub(elapsed);
         Ok((remaining.min(u32::MAX as u64) as u32,))
@@ -2355,9 +2376,7 @@ mod with_runtime {
                 .ok()
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "yes"))
                 .unwrap_or(false);
-            let module_meta = crate::registry::find_module(app, &spec.task)
-                .ok()
-                .flatten();
+            let module_meta = crate::registry::find_module(app, &spec.task).ok().flatten();
             let invariants = {
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(m) = &module_meta {

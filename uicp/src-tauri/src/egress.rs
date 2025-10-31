@@ -113,7 +113,7 @@ mod tests {
         let host = server.host();
         let mut policies = PolicyMap::new();
         policies.insert(
-            format!("api:NET:{}", host),
+            format!("api:NET:{host}"),
             PolicyEntry {
                 decision: "allow".into(),
                 duration: String::new(),
@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let (_, payload) = &entries[0];
         let policy = payload.get("policy").and_then(|v| v.as_str()).unwrap();
-        assert_eq!(policy, format!("user-allow:api:NET:{}", host));
+        assert_eq!(policy, format!("user-allow:api:NET:{host}"));
         let sha = payload.get("sha256").and_then(|v| v.as_str()).unwrap();
         assert_eq!(sha.len(), 64);
         assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
@@ -338,7 +338,7 @@ pub async fn egress_fetch_core(
     let body_vec = body.to_vec();
 
     // Receipt via injected sink (best-effort)
-    let rec = serde_json::json!({
+    let receipt = serde_json::json!({
         "ts": chrono::Utc::now().timestamp_millis(),
         "type": "egress",
         "app": installed_id,
@@ -351,7 +351,7 @@ pub async fn egress_fetch_core(
         "bytes_in": body.len(),
         "sha256": sha256,
     });
-    ctx.receipts.append("egress", &rec);
+    ctx.receipts.append("egress", &receipt);
 
     conc_leave(installed_id, &host);
     Ok(EgressResponse {

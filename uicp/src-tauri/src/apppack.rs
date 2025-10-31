@@ -43,7 +43,7 @@ fn compute_id_from_dir(dir: &str) -> String {
 }
 
 fn read_to_string(path: &Path) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))
+    fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
@@ -70,7 +70,7 @@ pub async fn apppack_validate(dir: String) -> Result<AppPackManifest, String> {
     let manifest_path = root.join("apppack.json");
     let manifest_text = read_to_string(&manifest_path)?;
     let m: AppPackManifest =
-        serde_json::from_str(&manifest_text).map_err(|e| format!("parse:{}", e))?;
+        serde_json::from_str(&manifest_text).map_err(|e| format!("parse:{e}"))?;
     if m.schema != "uicp.app/0.1" {
         return Err("E:unsupported-schema".into());
     }

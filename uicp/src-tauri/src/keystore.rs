@@ -153,8 +153,6 @@ enum KeystoreState {
     Unlocked(UnlockedState),
 }
 
- 
-
 pub struct KeystoreConfig {
     pub ttl: Duration,
     pub mode: KeystoreMode,
@@ -542,7 +540,7 @@ impl Keystore {
     }
 
     fn derive_dek(&self, kek: &SecretVec<u8>, secret_id: &str) -> Result<[u8; 32]> {
-        let info = format!("{}{}", HKDF_PREFIX, secret_id);
+        let info = format!("{HKDF_PREFIX}{secret_id}");
         let hk = Hkdf::<Sha256>::new(Some(self.app_salt.as_slice()), kek.expose_secret());
         let mut dek = [0u8; 32];
         hk.expand(info.as_bytes(), &mut dek)
@@ -724,7 +722,7 @@ fn secret_id(service: &str, account: &str) -> String {
 }
 
 fn aad_value(service: &str, account: &str) -> String {
-    format!("{}:{}{}", service, account, AAD_SUFFIX)
+    format!("{service}:{account}{AAD_SUFFIX}")
 }
 
 fn ensure_owner_only_dir(path: &Path) -> Result<()> {

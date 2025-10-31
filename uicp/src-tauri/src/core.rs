@@ -12,7 +12,6 @@ use ::rusqlite::{params, Connection, OptionalExtension};
 use anyhow::Context;
 use chrono::Utc;
 use dirs::data_dir;
-use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde_json::{Map, Value};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager, Runtime, State};
@@ -29,7 +28,7 @@ pub static APP_NAME: &str = "UICP";
 pub static OLLAMA_CLOUD_HOST_DEFAULT: &str = "https://ollama.com";
 pub static OLLAMA_LOCAL_BASE_DEFAULT: &str = "http://127.0.0.1:11434/v1";
 
-pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
+pub static DATA_DIR: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
     if let Ok(dir) = std::env::var("UICP_DATA_DIR") {
         return PathBuf::from(dir);
     }
@@ -37,8 +36,10 @@ pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
     base.join(APP_NAME)
 });
 
-pub static LOGS_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("logs"));
-pub static FILES_DIR: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("files"));
+pub static LOGS_DIR: std::sync::LazyLock<PathBuf> =
+    std::sync::LazyLock::new(|| DATA_DIR.join("logs"));
+pub static FILES_DIR: std::sync::LazyLock<PathBuf> =
+    std::sync::LazyLock::new(|| DATA_DIR.join("files"));
 
 static TRACING_INIT_ONCE: Once = Once::new();
 static TRACING_READY: AtomicBool = AtomicBool::new(false);
@@ -216,7 +217,7 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
     ensure_schema_version_table(&conn).context("ensure schema_version table")?;
 
     conn.execute_batch(
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS workspace (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -272,7 +273,7 @@ pub fn init_database(db_path: &PathBuf) -> anyhow::Result<()> {
             created_at INTEGER NOT NULL,
             PRIMARY KEY (workspace_id, key)
         );
-        "#,
+        ",
     )
     .context("apply migrations")?;
     action_log::ensure_action_log_schema(&conn)
@@ -349,13 +350,13 @@ pub fn ensure_default_workspace(db_path: &PathBuf) -> anyhow::Result<()> {
 /// Ensure schema_version table exists for tracking migrations.
 fn ensure_schema_version_table(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS schema_version (
             component TEXT PRIMARY KEY,
             version INTEGER NOT NULL,
             applied_at INTEGER NOT NULL
         );
-        "#,
+        ",
     )
     .context("create schema_version table")?;
     Ok(())
@@ -420,7 +421,7 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
 
     // Execute migration in transaction with enhanced error context
     conn.execute_batch(
-        r#"
+        r"
         BEGIN IMMEDIATE;
         CREATE TABLE compute_cache_new (
             workspace_id TEXT NOT NULL,
@@ -451,7 +452,7 @@ fn migrate_compute_cache(conn: &Connection) -> anyhow::Result<()> {
         DROP TABLE compute_cache;
         ALTER TABLE compute_cache_new RENAME TO compute_cache;
         COMMIT;
-        "#,
+        ",
     )
     .context(
         "Failed to rebuild compute_cache table with composite primary key. \
@@ -502,7 +503,7 @@ pub fn init_tracing() {
     {
         TRACING_INIT_ONCE.call_once(|| {
             let default_filter = std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| format!("uicp={}", DEFAULT_TRACING_LEVEL));
+                .unwrap_or_else(|_| format!("uicp={DEFAULT_TRACING_LEVEL}"));
             let env_filter = EnvFilter::try_new(default_filter)
                 .unwrap_or_else(|_| EnvFilter::new(DEFAULT_TRACING_LEVEL));
             let subscriber = fmt().with_env_filter(env_filter).with_target(true).finish();

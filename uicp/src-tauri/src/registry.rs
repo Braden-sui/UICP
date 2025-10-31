@@ -481,7 +481,7 @@ pub fn find_module<R: Runtime>(
                 )
                 .with_context(|| {
                     format!(
-                        "E-UICP-0229: component preflight failed for {}@{}",
+                        "preflight imports failed for {}@{}",
                         entry.task, entry.version
                     )
                 })?;

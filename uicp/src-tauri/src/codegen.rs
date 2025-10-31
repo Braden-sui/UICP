@@ -350,7 +350,7 @@ pub fn spawn_job<R: Runtime>(
                     &spec,
                     crate::compute::error_codes::CANCELLED,
                     "E-UICP-1304: codegen job cancelled",
-                    started.elapsed().as_millis() as u64,
+                    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                     queue_wait_ms,
                 );
                 {
@@ -368,7 +368,7 @@ pub fn spawn_job<R: Runtime>(
                 emit_final_ok(&app, &spec, ok).await;
             }
             Err(err) => {
-                let duration_ms = started.elapsed().as_millis() as u64;
+                let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let message = err.message();
                 emit_error(
                     &app,
@@ -415,7 +415,7 @@ pub fn spawn_job<R: Runtime>(
                         &spec,
                         crate::compute::error_codes::CANCELLED,
                         "E-UICP-1304: codegen job cancelled",
-                        started.elapsed().as_millis() as u64,
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                         queue_wait_ms,
                     );
                     {
@@ -433,7 +433,8 @@ pub fn spawn_job<R: Runtime>(
                     emit_final_ok(&app, &spec, ok).await;
                 }
                 Err(err) => {
-                    let duration_ms = started.elapsed().as_millis() as u64;
+                    let duration_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let message = err.message();
                     emit_error(
                         &app,
@@ -531,7 +532,7 @@ async fn run_codegen<R: Runtime>(
                     "{ERR_PROVIDER}: codegen concurrency guard failed: {err}"
                 ))
             })?;
-        let wait_ms = timer.elapsed().as_millis() as u64;
+        let wait_ms = u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX);
         total_queue_ms = total_queue_ms.saturating_add(wait_ms);
         run_timer = Some(timer);
         _codegen_permit = Some(permit);
@@ -568,7 +569,7 @@ async fn run_codegen<R: Runtime>(
     })?;
 
     let duration_ms = run_timer
-        .map(|timer| timer.elapsed().as_millis() as u64)
+        .map(|timer| u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
 
     Ok(CodegenRunOk {
@@ -1000,7 +1001,7 @@ async fn execute_with_strategy<R: Runtime>(
             for provider_plan in queue {
                 let started = Instant::now();
                 let result = run_provider(app, spec, plan, provider_plan, client).await;
-                let duration_ms = started.elapsed().as_millis() as u64;
+                let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 match result {
                     Ok(mut artifact) => {
                         attempts.push(ProviderAttemptLog {

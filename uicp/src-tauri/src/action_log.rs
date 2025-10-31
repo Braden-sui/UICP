@@ -356,7 +356,7 @@ fn append_entry(
 
 pub fn ensure_action_log_schema(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS action_log (
             id INTEGER PRIMARY KEY,
             ts INTEGER NOT NULL,
@@ -368,7 +368,7 @@ pub fn ensure_action_log_schema(conn: &Connection) -> anyhow::Result<()> {
             sig BLOB
         );
         CREATE INDEX IF NOT EXISTS action_log_hash ON action_log(hash);
-        "#,
+        ",
     )
     .context("ensure action_log schema")?;
     Ok(())

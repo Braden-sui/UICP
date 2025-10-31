@@ -275,7 +275,8 @@ impl ResilienceMetrics {
 
         // Check if we're recovering from a failure
         if let Some(Some(failure_time)) = metrics.last_failure_time.get(provider) {
-            let recovery_time = failure_time.elapsed().as_millis() as u64;
+            let recovery_time =
+                u64::try_from(failure_time.elapsed().as_millis()).unwrap_or(u64::MAX);
             metrics
                 .recovery_times_ms
                 .entry(provider.to_string())

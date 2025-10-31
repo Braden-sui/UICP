@@ -19,7 +19,7 @@ pub fn init_tracing_subsystem() {
 
 // Initialize application state and background services
 #[allow(dead_code)]
-pub async fn init_app_services(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+pub fn init_app_services(app: &tauri::AppHandle) {
     let state: State<'_, AppState> = app.state();
 
     // Initialize background tasks
@@ -27,8 +27,6 @@ pub async fn init_app_services(app: &tauri::AppHandle) -> Result<(), Box<dyn std
 
     // Initialize provider circuits
     init_provider_circuits(&state);
-
-    Ok(())
 }
 
 #[allow(dead_code)]

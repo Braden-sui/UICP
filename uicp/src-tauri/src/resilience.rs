@@ -117,8 +117,8 @@ impl RetryEngine {
         if let Some(policy) = config.retry_policies.get_mut(&ErrorCategory::RateLimit) {
             // OpenAI has strict rate limits
             policy.max_attempts = 5;
-            policy.base_delay_ms = 2000;
-            policy.max_delay_ms = 120000; // 2 minutes
+            policy.base_delay_ms = 2_000;
+            policy.max_delay_ms = 120_000; // 2 minutes
         }
 
         config
@@ -148,8 +148,8 @@ impl RetryEngine {
         // OpenRouter is generally more lenient
         if let Some(policy) = config.retry_policies.get_mut(&ErrorCategory::RateLimit) {
             policy.max_attempts = 4;
-            policy.base_delay_ms = 1500;
-            policy.max_delay_ms = 60000;
+            policy.base_delay_ms = 1_500;
+            policy.max_delay_ms = 60_000;
         }
 
         config
@@ -179,8 +179,8 @@ impl RetryEngine {
         // Anthropic has moderate rate limits
         if let Some(policy) = config.retry_policies.get_mut(&ErrorCategory::RateLimit) {
             policy.max_attempts = 3;
-            policy.base_delay_ms = 1000;
-            policy.max_delay_ms = 30000;
+            policy.base_delay_ms = 1_000;
+            policy.max_delay_ms = 30_000;
         }
 
         config
@@ -197,7 +197,7 @@ impl RetryEngine {
         if let Some(policy) = config.retry_policies.get_mut(&ErrorCategory::RateLimit) {
             policy.max_attempts = 2;
             policy.base_delay_ms = 100;
-            policy.max_delay_ms = 1000;
+            policy.max_delay_ms = 1_000;
         }
 
         if let Some(policy) = config.retry_policies.get_mut(&ErrorCategory::Transport) {

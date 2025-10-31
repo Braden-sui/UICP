@@ -582,9 +582,7 @@ fn canonicalize_codegen_input(
         .and_then(|v| v.as_str())
         .map(|s| s.trim());
     let cache_policy_normalized = match cache_policy {
-        Some("readwrite") | Some("readOnly") | Some("bypass") => {
-            cache_policy.map(|s| s.to_string())
-        }
+        Some("readwrite" | "readOnly" | "bypass") => cache_policy.map(|s| s.to_string()),
         Some(other) => {
             return Err(TaskInputError::new(
                 error_codes::INPUT_INVALID,
@@ -778,7 +776,7 @@ mod tests {
             job_id: "00000000-0000-4000-8000-000000000002".into(),
             task: "csv.parse@1.2.0".into(),
             input: json!({}),
-            timeout_ms: Some(Duration::from_secs(1).as_millis() as u64),
+            timeout_ms: Some(1_000),
             fuel: None,
             mem_limit_mb: None,
             bind: vec![],

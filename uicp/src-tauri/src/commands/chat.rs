@@ -51,10 +51,7 @@ pub async fn chat_completion(
     // Avoid reading .env here; the UI selects the model per Agent Settings.
     let requested_model = model.unwrap_or_else(|| "qwen3-coder:480b".into());
     // Only normalize for Ollama-compatible routing. OpenAI/OpenRouter expect raw model ids.
-    let resolved_model = if matches!(
-        provider_lower.as_deref(),
-        Some("openai") | Some("openrouter")
-    ) {
+    let resolved_model = if matches!(provider_lower.as_deref(), Some("openai" | "openrouter")) {
         requested_model.clone()
     } else {
         normalize_model_name(&requested_model, use_cloud)
@@ -96,8 +93,7 @@ pub async fn chat_completion(
 
     let base = get_ollama_base_url(&state).await?;
 
-    // Simple retry/backoff policy for rate limits and transient network failures
-    let _max_attempts = 3u8;
+    // Simple retry/backoff policy for rate limits and transient network failures (configurable via RetryEngine)
 
     let rid = request_id.unwrap_or_else(|| format!("req-{}", Utc::now().timestamp_millis()));
     let app_handle = window.app_handle().clone();
@@ -108,7 +104,7 @@ pub async fn chat_completion(
     let rid_for_task = rid.clone();
     let stream_flag_for_task = body_payload
         .get("stream")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
     let circuit_breakers = Arc::clone(&state.circuit_breakers);
     let provider_circuit_manager = state.provider_circuit_manager.clone();
@@ -242,8 +238,10 @@ pub async fn chat_completion(
                     .await
                 {
                     Some(until) => {
-                        let wait_ms =
-                            until.saturating_duration_since(Instant::now()).as_millis() as u64;
+                        let wait_ms = u64::try_from(
+                            until.saturating_duration_since(Instant::now()).as_millis(),
+                        )
+                        .unwrap_or(u64::MAX);
                         if debug_on {
                             let ev = serde_json::json!({
                                 "ts": Utc::now().timestamp_millis(),
@@ -392,7 +390,7 @@ pub async fn chat_completion(
                             "ts": Utc::now().timestamp_millis(),
                             "event": "request_timeout",
                             "requestId": rid_for_task,
-                            "elapsedMs": handshake_timeout.as_millis() as u64,
+                            "elapsedMs": u64::try_from(handshake_timeout.as_millis()).unwrap_or(u64::MAX),
                         });
                         tokio::spawn(append_trace(ev.clone()));
                         tokio::spawn(emit_debug(ev));
@@ -573,7 +571,9 @@ pub async fn chat_completion(
                             // Respect Retry-After header for rate limits
                             let final_delay = if status_code == 429 {
                                 if let Some(ms) = retry_after_ms {
-                                    Duration::from_millis(ms.max(delay.as_millis() as u64))
+                                    let delay_ms =
+                                        u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+                                    Duration::from_millis(ms.max(delay_ms))
                                 } else {
                                     delay
                                 }
@@ -736,7 +736,7 @@ pub async fn chat_completion(
                                 let payload_ref = normalized.as_ref().unwrap_or(&val);
                                 if payload_ref
                                     .get("done")
-                                    .and_then(|v| v.as_bool())
+                                    .and_then(serde_json::Value::as_bool)
                                     .unwrap_or(false)
                                 {
                                     if debug_on {
@@ -786,13 +786,13 @@ pub async fn chat_completion(
                                     for evt in extract_events_from_chunk(payload_ref, Some("json"))
                                     {
                                         if debug_on {
-                                            let evn = serde_json::json!({
+                                            let evt_dbg = serde_json::json!({
                                                 "ts": Utc::now().timestamp_millis(),
                                                 "event": "normalized_event",
                                                 "requestId": rid,
                                                 "payload": evt.clone(),
                                             });
-                                            tokio::spawn(append_trace(evn.clone()));
+                                            tokio::spawn(append_trace(evt_dbg.clone()));
                                         }
                                         emit_or_log(
                                             app_handle,
@@ -830,13 +830,13 @@ pub async fn chat_completion(
                                             "text": text,
                                         });
                                         if debug_on {
-                                            let evn = serde_json::json!({
+                                            let evt_dbg = serde_json::json!({
                                                 "ts": Utc::now().timestamp_millis(),
                                                 "event": "normalized_event",
                                                 "requestId": rid,
                                                 "payload": evt.clone(),
                                             });
-                                            tokio::spawn(append_trace(evn.clone()));
+                                            tokio::spawn(append_trace(evt_dbg.clone()));
                                         }
                                         emit_or_log(
                                             app_handle,
@@ -859,7 +859,7 @@ pub async fn chat_completion(
                                         "ts": Utc::now().timestamp_millis(),
                                         "event": "stream_idle_timeout",
                                         "requestId": rid_for_task,
-                                        "idleMs": idle_timeout.as_millis() as u64,
+                                        "idleMs": u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX),
                                     });
                                     tokio::spawn(append_trace(ev.clone()));
                                     tokio::spawn(emit_debug(ev));
@@ -944,14 +944,22 @@ pub async fn chat_completion(
                                             // blank line terminates one SSE event
                                             if !event_buf.is_empty() {
                                                 let payload = std::mem::take(&mut event_buf);
-                                                process_payload(&payload, &app_handle, &rid_for_task);
+                                                process_payload(
+                                                    &payload,
+                                                    &app_handle,
+                                                    &rid_for_task,
+                                                );
                                             }
                                             continue;
                                         }
                                         if let Some(stripped) = trimmed.strip_prefix("data:") {
                                             let content = stripped.trim();
                                             if content == "[DONE]" {
-                                                process_payload("[DONE]", &app_handle, &rid_for_task);
+                                                process_payload(
+                                                    "[DONE]",
+                                                    &app_handle,
+                                                    &rid_for_task,
+                                                );
                                                 // reset event buffer
                                                 event_buf.clear();
                                                 continue;
@@ -1066,7 +1074,7 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
         } else if let Some(idx) = input.rfind('-') {
             let (prefix, suffix) = input.split_at(idx);
             let suffix = suffix.trim_start_matches('-');
-            format!("{}:{}", prefix, suffix)
+            format!("{prefix}:{suffix}")
         } else {
             input.to_string()
         }
@@ -1077,7 +1085,7 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     } else {
         let base = normalize_base(base_part);
         if had_cloud_suffix {
-            format!("{}-cloud", base)
+            format!("{base}-cloud")
         } else {
             base
         }

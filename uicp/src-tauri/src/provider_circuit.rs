@@ -84,7 +84,7 @@ impl ProviderCircuitManager {
 
     /// Get circuit key for provider and host
     pub fn get_circuit_key(&self, provider: &str, host: &str) -> String {
-        format!("{}:{}", provider, host)
+        format!("{provider}:{host}")
     }
 
     /// Check if circuit is open for a specific provider and host

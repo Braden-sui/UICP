@@ -451,7 +451,8 @@ async fn claude_health() -> Result<ProviderHealthResult, String> {
                         base_args.iter().map(|s| s.to_string()).collect(),
                     )
                 } else {
-                    let mut owned: Vec<String> = vec!["--js".into(), pred, "--".into(), exe.clone()];
+                    let mut owned: Vec<String> =
+                        vec!["--js".into(), pred, "--".into(), exe.clone()];
                     owned.extend(base_args.iter().map(|s| s.to_string()));
                     (httpjail, owned)
                 }

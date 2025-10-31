@@ -29,7 +29,7 @@ fn normalize_key(raw: &str) -> String {
         return if host.is_empty() {
             raw.to_string()
         } else {
-            format!("api:NET:{}", host)
+            format!("api:NET:{host}")
         };
     }
 
@@ -44,7 +44,7 @@ fn normalize_key(raw: &str) -> String {
                 url.host_str()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| trimmed.to_string())
-            } else if let Ok(url) = Url::parse(&format!("https://{}", trimmed)) {
+            } else if let Ok(url) = Url::parse(&format!("https://{trimmed}")) {
                 url.host_str()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| trimmed.to_string())
@@ -56,7 +56,7 @@ fn normalize_key(raw: &str) -> String {
             if host.is_empty() {
                 return raw.to_string();
             }
-            return format!("api:NET:{}", host);
+            return format!("api:NET:{host}");
         }
     }
 
@@ -112,17 +112,17 @@ pub fn net_decision_with<S: PolicyStore + ?Sized>(
     if !https_only || is_private || is_ip {
         if let Some(e) = map.get(&key) {
             if e.decision == "allow" {
-                return (true, format!("user-allow:{}", key));
+                return (true, format!("user-allow:{key}"));
             }
         }
         return (false, "default-deny".into());
     }
     if let Some(e) = map.get(&key) {
         if e.decision == "deny" {
-            return (false, format!("user-deny:{}", key));
+            return (false, format!("user-deny:{key}"));
         }
         if e.decision == "allow" {
-            return (true, format!("user-allow:{}", key));
+            return (true, format!("user-allow:{key}"));
         }
     }
     (true, "default-allow".into())
@@ -156,7 +156,7 @@ fn allow_key(key: &str, default_allow: bool) -> bool {
 
 /// compute:<taskName>@<major>
 pub fn allow_compute(task_key: &str) -> bool {
-    let key = format!("compute:{}", task_key);
+    let key = format!("compute:{task_key}");
     allow_key(&key, true)
 }
 
@@ -164,18 +164,19 @@ pub fn allow_compute(task_key: &str) -> bool {
 /// Returns (is_allowed, policy_label) for receipts/logging.
 #[cfg(test)]
 pub fn net_decision(host: &str, https_only: bool, is_private: bool, is_ip: bool) -> (bool, String) {
-    let key = format!("api:NET:{}", host.to_ascii_lowercase());
+    let host_lc = host.to_ascii_lowercase();
+    let key = format!("api:NET:{host_lc}");
     let guard = POLICIES.read();
 
     if !https_only || is_private || is_ip {
         match guard.get(&key).map(|s| s.as_str()) {
-            Some("allow") => (true, format!("user-allow:{}", key)),
+            Some("allow") => (true, format!("user-allow:{key}")),
             _ => (false, "default-deny".into()),
         }
     } else {
         match guard.get(&key).map(|s| s.as_str()) {
-            Some("deny") => (false, format!("user-deny:{}", key)),
-            Some("allow") => (true, format!("user-allow:{}", key)),
+            Some("deny") => (false, format!("user-deny:{key}")),
+            Some("allow") => (true, format!("user-allow:{key}")),
             _ => (true, "default-allow".into()),
         }
     }
@@ -184,7 +185,8 @@ pub fn net_decision(host: &str, https_only: bool, is_private: bool, is_ip: bool)
 /// secret:<provider>:api_key
 /// Defaults: allow (wire so it can be flipped later).
 pub fn allow_secret(provider: &str) -> bool {
-    let key = format!("secret:{}:api_key", provider.to_ascii_lowercase());
+    let provider_lc = provider.to_ascii_lowercase();
+    let key = format!("secret:{provider_lc}:api_key");
     allow_key(&key, true)
 }
 

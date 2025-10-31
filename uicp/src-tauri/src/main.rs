@@ -65,8 +65,8 @@ mod config;
 
 // New module structure
 mod commands;
-mod services;
 mod initialization;
+mod services;
 
 #[cfg(any(test, feature = "compute_harness"))]
 pub mod commands_harness;
@@ -87,7 +87,8 @@ pub use core::{
 // Minimal inline splash script to render the futuristic loader instantly without contacting dev server.
 // This runs inside a separate splash window. Keep it compact and self-contained.
 
-static DB_PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| DATA_DIR.join("data.db"));
+static DB_PATH: std::sync::LazyLock<PathBuf> =
+    std::sync::LazyLock::new(|| DATA_DIR.join("data.db"));
 static ENV_PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| DATA_DIR.join(".env"));
 
 // files_dir_path is re-exported from core
@@ -179,15 +180,15 @@ async fn keystore_list_ids() -> Result<Vec<String>, String> {
     ks.list_ids().await.map_err(|e| e.to_string())
 }
 
-/// Emit an explicit keystore_autolock telemetry event with a reason.
+/// Emit an explicit `keystore_autolock` telemetry event with a reason.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-fn keystore_autolock_reason(app: tauri::AppHandle, reason: String) -> Result<(), String> {
+fn keystore_autolock_reason(app: tauri::AppHandle, reason: String) {
     emit_or_log(
         &app,
         "keystore_autolock",
         serde_json::json!({ "reason": reason }),
     );
-    Ok(())
 }
 
 #[tauri::command]
@@ -227,7 +228,7 @@ async fn import_env_secrets_into_keystore(
         ("uicp", "openrouter:api_key", "OPENROUTER_API_KEY"),
         ("uicp", "ollama:api_key", "OLLAMA_API_KEY"),
     ];
-    for (service, account, env_key) in mappings.iter() {
+    for (service, account, env_key) in &mappings {
         if let Ok(true) = ks.secret_exists(service, account).await {
             continue;
         }
@@ -250,28 +251,25 @@ async fn import_env_secrets_into_keystore(
     Ok(())
 }
 
-/// Copy a workspace file (ws:/files/...) to a host destination path and return the final host path.
+/// Copy a workspace file (<ws:/files/...>) to a host destination path and return the final host path.
 #[tauri::command]
 async fn export_from_files(ws_path: String, dest_path: String) -> Result<String, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("export_from_files");
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    let src_buf: PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
+    let src_buf: std::path::PathBuf = match crate::compute_input::sanitize_ws_files_path(&ws_path) {
         Ok(p) => p,
         Err(e) => return Err(e.message.to_string()),
     };
     if !src_buf.exists() {
-        return Err(format!("Source not found: {}", ws_path));
+        return Err(format!("Source not found: {ws_path}"));
     }
-    let meta = fs::symlink_metadata(&src_buf).map_err(|e| format!("stat failed: {e}"))?;
+    let meta = std::fs::symlink_metadata(&src_buf).map_err(|e| format!("stat failed: {e}"))?;
     if !meta.file_type().is_file() {
         return Err("Source must be a regular file".into());
     }
 
-    let dest_input = Path::new(&dest_path);
-    let mut dest_final: PathBuf = if dest_input.is_dir() {
+    let dest_input = std::path::Path::new(&dest_path);
+    let mut dest_final: std::path::PathBuf = if dest_input.is_dir() {
         let fname = src_buf
             .file_name()
             .ok_or_else(|| "Invalid source file name".to_string())?
@@ -283,7 +281,7 @@ async fn export_from_files(ws_path: String, dest_path: String) -> Result<String,
     };
 
     if let Some(parent) = dest_final.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
+        if let Err(e) = std::fs::create_dir_all(parent) {
             return Err(format!("Failed to create destination dir: {e}"));
         }
     }
@@ -299,18 +297,18 @@ async fn export_from_files(ws_path: String, dest_path: String) -> Result<String,
             .unwrap_or("");
         let ts = chrono::Utc::now().timestamp();
         let new_name = if ext.is_empty() {
-            format!("{}-{}", stem, ts)
+            format!("{stem}-{ts}")
         } else {
-            format!("{}-{}.{}", stem, ts, ext)
+            format!("{stem}-{ts}.{ext}")
         };
-        let parent = dest_final
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
+        let parent = dest_final.parent().map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        );
         dest_final = parent.join(new_name);
     }
 
-    fs::copy(&src_buf, &dest_final).map_err(|e| format!("Copy failed: {e}"))?;
+    std::fs::copy(&src_buf, &dest_final).map_err(|e| format!("Copy failed: {e}"))?;
     Ok(dest_final.display().to_string())
 }
 
@@ -376,7 +374,7 @@ fn agents_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let resolver = app.path();
     let base = resolver
         .app_data_dir()
-        .map_err(|err| format!("E-UICP-AGENTS-PATH: {}", err))?;
+        .map_err(|err| format!("E-UICP-AGENTS-PATH: {err}"))?;
     Ok(base.join("uicp").join("agents.yaml"))
 }
 
@@ -401,43 +399,38 @@ async fn load_agents_config_file(app: tauri::AppHandle) -> Result<AgentsConfigLo
             if let Some(parent) = path.parent() {
                 if let Err(mkdir_err) = fs::create_dir_all(parent).await {
                     log_error(format!(
-                        "agents config mkdir failed at {}: {}",
-                        parent.display(),
-                        mkdir_err
+                        "agents config mkdir failed at {}: {mkdir_err}",
+                        parent.display()
                     ));
-                    return Err(format!("E-UICP-AGENTS-MKDIR: {}", mkdir_err));
+                    return Err(format!("E-UICP-AGENTS-MKDIR: {mkdir_err}"));
                 }
             }
             let tmp_path = path.with_extension("yaml.tmp");
             if let Err(write_err) = fs::write(&tmp_path, AGENTS_CONFIG_TEMPLATE.as_bytes()).await {
                 log_error(format!(
-                    "agents config temp write failed at {}: {}",
-                    tmp_path.display(),
-                    write_err
+                    "agents config temp write failed at {}: {write_err}",
+                    tmp_path.display()
                 ));
-                return Err(format!("E-UICP-AGENTS-WRITE-TMP: {}", write_err));
+                return Err(format!("E-UICP-AGENTS-WRITE-TMP: {write_err}"));
             }
             if fs::metadata(&path).await.is_ok() {
                 if let Err(remove_err) = fs::remove_file(&path).await {
                     log_error(format!(
-                        "agents config remove existing failed at {}: {}",
-                        path_display, remove_err
+                        "agents config remove existing failed at {path_display}: {remove_err}"
                     ));
                     let _ = fs::remove_file(&tmp_path).await;
-                    return Err(format!("E-UICP-AGENTS-REMOVE: {}", remove_err));
+                    return Err(format!("E-UICP-AGENTS-REMOVE: {remove_err}"));
                 }
             }
             if let Err(rename_err) = fs::rename(&tmp_path, &path).await {
                 log_error(format!(
-                    "agents config commit rename failed at {}: {}",
-                    path_display, rename_err
+                    "agents config commit rename failed at {path_display}: {rename_err}"
                 ));
                 let _ = fs::remove_file(&tmp_path).await;
-                return Err(format!("E-UICP-AGENTS-RENAME: {}", rename_err));
+                return Err(format!("E-UICP-AGENTS-RENAME: {rename_err}"));
             }
             log_info(format!(
-                "Bootstrapped agents.yaml from template at {}",
-                path_display
+                "Bootstrapped agents.yaml from template at {path_display}"
             ));
             Ok(AgentsConfigLoadResult {
                 exists: true,
@@ -447,10 +440,9 @@ async fn load_agents_config_file(app: tauri::AppHandle) -> Result<AgentsConfigLo
         }
         Err(err) => {
             log_error(format!(
-                "agents config read failed at {}: {}",
-                path_display, err
+                "agents config read failed at {path_display}: {err}"
             ));
-            Err(format!("E-UICP-AGENTS-READ: {}", err))
+            Err(format!("E-UICP-AGENTS-READ: {err}"))
         }
     }
 }
@@ -470,11 +462,10 @@ async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Res
     if let Some(parent) = path.parent() {
         if let Err(err) = fs::create_dir_all(parent).await {
             log_error(format!(
-                "agents config mkdir failed at {}: {}",
-                parent.display(),
-                err
+                "agents config mkdir failed at {}: {err}",
+                parent.display()
             ));
-            return Err(format!("E-UICP-AGENTS-MKDIR: {}", err));
+            return Err(format!("E-UICP-AGENTS-MKDIR: {err}"));
         }
     }
 
@@ -482,32 +473,29 @@ async fn save_agents_config_file(app: tauri::AppHandle, contents: String) -> Res
     let tmp_path = path.with_extension("yaml.tmp");
     if let Err(err) = fs::write(&tmp_path, contents.as_bytes()).await {
         log_error(format!(
-            "agents config temp write failed at {}: {}",
-            tmp_path.display(),
-            err
+            "agents config temp write failed at {}: {err}",
+            tmp_path.display()
         ));
-        return Err(format!("E-UICP-AGENTS-WRITE-TMP: {}", err));
+        return Err(format!("E-UICP-AGENTS-WRITE-TMP: {err}"));
     }
 
     // Replace existing file. On Windows rename fails if target exists; remove old file first.
     if fs::metadata(&path).await.is_ok() {
         if let Err(err) = fs::remove_file(&path).await {
             log_error(format!(
-                "agents config remove existing failed at {}: {}",
-                path_display, err
+                "agents config remove existing failed at {path_display}: {err}"
             ));
             let _ = fs::remove_file(&tmp_path).await;
-            return Err(format!("E-UICP-AGENTS-REMOVE: {}", err));
+            return Err(format!("E-UICP-AGENTS-REMOVE: {err}"));
         }
     }
 
     if let Err(err) = fs::rename(&tmp_path, &path).await {
         log_error(format!(
-            "agents config commit rename failed at {}: {}",
-            path_display, err
+            "agents config commit rename failed at {path_display}: {err}"
         ));
         let _ = fs::remove_file(&tmp_path).await;
-        return Err(format!("E-UICP-AGENTS-RENAME: {}", err));
+        return Err(format!("E-UICP-AGENTS-RENAME: {err}"));
     }
 
     Ok(())
@@ -596,11 +584,11 @@ async fn persist_command(state: State<'_, AppState>, cmd: CommandRequest) -> Res
         .await;
     #[cfg(feature = "otel_spans")]
     {
-        let ms = started.elapsed().as_millis() as i64;
+        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         match &res {
-            Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "command persisted"),
+            Ok(()) => tracing::info!(target = "uicp", duration_ms = ms, "command persisted"),
             Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "command persist failed")
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "command persist failed");
             }
         }
     }
@@ -641,7 +629,7 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
         .await;
     #[cfg(feature = "otel_spans")]
     {
-        let ms = started.elapsed().as_millis() as i64;
+        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         match &res {
             Ok(v) => tracing::info!(
                 target = "uicp",
@@ -650,7 +638,7 @@ async fn get_workspace_commands(state: State<'_, AppState>) -> Result<Vec<Comman
                 "commands loaded"
             ),
             Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands load failed")
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands load failed");
             }
         }
     }
@@ -663,7 +651,7 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("clear_commands");
     #[cfg(feature = "otel_spans")]
-    let _started = Instant::now(); // WHY: Silence dead_code when spans disabled; still track duration where enabled.
+    let started = Instant::now(); // instrumentation timing
     let res = state
         .db_rw
         .call(|conn| -> tokio_rusqlite::Result<()> {
@@ -677,11 +665,11 @@ async fn clear_workspace_commands(state: State<'_, AppState>) -> Result<(), Stri
         .await;
     #[cfg(feature = "otel_spans")]
     {
-        let ms = _started.elapsed().as_millis() as i64;
+        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         match &res {
-            Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "commands cleared"),
+            Ok(()) => tracing::info!(target = "uicp", duration_ms = ms, "commands cleared"),
             Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands clear failed")
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "commands clear failed");
             }
         }
     }
@@ -728,21 +716,19 @@ async fn delete_window_commands(
                         .map_err(tokio_rusqlite::Error::from)?;
                     drop(stmt);
                     let mut to_delete: Vec<String> = Vec::new();
-                    for (id, tool, args_json) in rows.into_iter() {
+                    for (id, tool, args_json) in rows {
                         let parsed: serde_json::Value = serde_json::from_str(&args_json)
                             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                         let id_match = if tool == "window.create" {
                             parsed
                                 .get("id")
                                 .and_then(|v| v.as_str())
-                                .map(|s| s == window_id)
-                                .unwrap_or(false)
+                                .is_some_and(|s| s == window_id)
                         } else {
                             parsed
                                 .get("windowId")
                                 .and_then(|v| v.as_str())
-                                .map(|s| s == window_id)
-                                .unwrap_or(false)
+                                .is_some_and(|s| s == window_id)
                         };
                         if id_match {
                             to_delete.push(id);
@@ -836,9 +822,9 @@ async fn save_workspace(
             let now = Utc::now().timestamp();
             for (index, win) in windows.iter().enumerate() {
                 let z_index = if win.z_index < 0 {
-                    index as i64
+                    i64::try_from(index).unwrap_or(i64::MAX)
                 } else {
-                    win.z_index.max(index as i64)
+                    win.z_index.max(i64::try_from(index).unwrap_or(i64::MAX))
                 };
                 tx.execute(
                     "INSERT INTO window (id, workspace_id, title, size, x, y, width, height, z_index, created_at, updated_at)
@@ -869,7 +855,7 @@ async fn save_workspace(
         .await;
 
     match save_res {
-        Ok(_) => {
+        Ok(()) => {
             *state.last_save_ok.write().await = true;
             emit_or_log(
                 window.app_handle(),
@@ -911,7 +897,7 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
         } else if let Some(idx) = input.rfind('-') {
             let (prefix, suffix) = input.split_at(idx);
             let suffix = suffix.trim_start_matches('-');
-            format!("{}:{}", prefix, suffix)
+            format!("{prefix}:{suffix}")
         } else {
             input.to_string()
         }
@@ -922,7 +908,7 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
     } else {
         let base = normalize_base(base_part);
         if had_cloud_suffix {
-            format!("{}-cloud", base)
+            format!("{base}-cloud")
         } else {
             base
         }
@@ -985,7 +971,8 @@ fn extract_events_from_chunk(
     // Helper: handle content values that may be string, array of parts, or object
     // Reduce type complexity for closure parameters used below
     type PushContentFn = dyn Fn(&mut Vec<serde_json::Value>, Option<&str>, &str);
-    type PushToolCallFn = dyn Fn(&mut Vec<serde_json::Value>, i64, Option<&str>, Option<&str>, serde_json::Value);
+    type PushToolCallFn =
+        dyn Fn(&mut Vec<serde_json::Value>, i64, Option<&str>, Option<&str>, serde_json::Value);
 
     fn handle_content_value(
         events: &mut Vec<Value>,
@@ -1484,7 +1471,7 @@ fn spawn_autosave(app_handle: tauri::AppHandle) {
 
 /// Spawn periodic database maintenance task for WAL checkpointing and vacuuming.
 ///
-/// Runs every 24 hours by default (configurable via UICP_DB_MAINTENANCE_INTERVAL_HOURS).
+/// Runs every 24 hours by default (configurable via `UICP_DB_MAINTENANCE_INTERVAL_HOURS`).
 /// Performs:
 /// - WAL checkpoint (TRUNCATE) to prevent unbounded WAL growth
 /// - PRAGMA optimize for query planner statistics
@@ -1544,13 +1531,13 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                 .await;
 
             match &res {
-                Ok(_) => {
+                Ok(()) => {
                     if should_vacuum {
                         ticks_since_vacuum = 0;
                     }
                     #[cfg(feature = "otel_spans")]
                     {
-                        let ms = started.elapsed().as_millis() as i64;
+                        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
                         tracing::info!(
                             target = "uicp",
                             duration_ms = ms,
@@ -1563,7 +1550,7 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
                     log_error(format!("Database maintenance failed: {e:?}"));
                     #[cfg(feature = "otel_spans")]
                     {
-                        let ms = started.elapsed().as_millis() as i64;
+                        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
                         tracing::warn!(
                             target = "uicp",
                             duration_ms = ms,
@@ -1591,6 +1578,7 @@ fn spawn_db_maintenance(app_handle: tauri::AppHandle) {
     });
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     #[cfg(feature = "otel_spans")]
     {
@@ -2000,8 +1988,9 @@ fn main() {
 }
 
 /// Command invoked by the frontend when the UI is fully ready.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
+fn frontend_ready(app: tauri::AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();
         let _ = main.set_focus();
@@ -2009,8 +1998,6 @@ fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(splash) = app.get_webview_window("splash") {
         let _ = splash.close();
     }
-
-    Ok(())
 }
 
 // Removed unused AuthPreflightResult struct
@@ -2022,13 +2009,13 @@ async fn set_env_var(name: String, value: Option<String>) -> Result<(), String> 
         return Err("E-UICP-9201: invalid env var name".into());
     }
     let upper = key.to_ascii_uppercase();
-    const ALLOWED_PREFIXES: &[&str] = &["OLLAMA_", "UICP_"];
-    let allowed = ALLOWED_PREFIXES
+    let allowed_prefixes = ["OLLAMA_", "UICP_"];
+    let allowed = allowed_prefixes
         .iter()
         .any(|prefix| upper.starts_with(prefix));
     if !allowed {
         return Err(format!(
-            "E-UICP-9203: env var '{key}' not permitted (allowed prefixes: {ALLOWED_PREFIXES:?})"
+            "E-UICP-9203: env var '{key}' not permitted (allowed prefixes: {allowed_prefixes:?})"
         ));
     }
     match value {
@@ -2170,7 +2157,7 @@ async fn get_resilience_metrics(
     let providers = ["openai", "openrouter", "anthropic", "ollama"];
     let mut metrics = Vec::new();
 
-    for provider in providers.iter() {
+    for provider in &providers {
         if let Some(summary) = state.resilience_metrics.get_metrics(provider).await {
             metrics.push(summary);
         }
@@ -2186,16 +2173,13 @@ async fn get_resilience_metrics(
 async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<String, String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("copy_into_files");
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    let p = Path::new(&src_path);
+    let p = std::path::Path::new(&src_path);
     if !p.exists() {
-        return Err(format!("Source path does not exist: {}", src_path));
+        return Err(format!("Source path does not exist: {src_path}"));
     }
 
     // Only allow regular files; reject symlinks and directories.
-    let meta = fs::symlink_metadata(p).map_err(|e| format!("stat failed: {e}"))?;
+    let meta = std::fs::symlink_metadata(p).map_err(|e| format!("stat failed: {e}"))?;
     if !meta.file_type().is_file() {
         return Err("Source must be a regular file".into());
     }
@@ -2212,28 +2196,25 @@ async fn copy_into_files(_app: tauri::AppHandle, src_path: String) -> Result<Str
 
     // Map to workspace files dir
     let dest_dir = crate::files_dir_path();
-    if let Err(e) = fs::create_dir_all(dest_dir) {
+    if let Err(e) = std::fs::create_dir_all(dest_dir) {
         return Err(format!("Failed to create files dir: {e}"));
     }
-    let mut dest: PathBuf = dest_dir.join(&fname);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ts = chrono::Utc::now().timestamp();
+    let dest_with_ts = if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+        format!("{stem}-{ts}.{ext}")
+    } else {
+        format!("{stem}-{ts}")
+    };
+    let mut dest: std::path::PathBuf = dest_dir.join(&fname);
     if dest.exists() {
-        let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let ts = chrono::Utc::now().timestamp();
-        let new_name = if ext.is_empty() {
-            format!("{}-{}", stem, ts)
-        } else {
-            format!("{}-{}.{}", stem, ts, ext)
-        };
-        dest = dest_dir.join(new_name);
+        dest = dest.with_file_name(dest_with_ts);
     }
 
-    fs::copy(p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
-
-    // Return ws:/ path for use with compute tasks
+    std::fs::copy(p, &dest).map_err(|e| format!("Copy failed: {e}"))?;
     Ok(format!(
         "ws:/files/{}",
-        dest.file_name().and_then(|s| s.to_str()).unwrap_or(&fname)
+        dest.file_name().and_then(|s| s.to_str()).unwrap_or("")
     ))
 }
 
@@ -2268,13 +2249,12 @@ async fn get_modules_registry(app: tauri::AppHandle) -> Result<serde_json::Value
     // Security posture: strict mode + trust store source for UI surfacing
     let strict = std::env::var("STRICT_MODULES_VERIFY")
         .ok()
-        .map(|s| {
+        .is_some_and(|s| {
             matches!(
                 s.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
             )
-        })
-        .unwrap_or(false);
+        });
     let trust_store = if std::env::var("UICP_TRUST_STORE_JSON").is_ok() {
         "inline"
     } else if std::env::var("UICP_TRUST_STORE").is_ok() {
@@ -2304,7 +2284,7 @@ async fn get_modules_info(app: tauri::AppHandle) -> Result<serde_json::Value, St
     if exists {
         if let Ok(text) = std::fs::read_to_string(&manifest) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                entries = json["entries"].as_array().map(|a| a.len()).unwrap_or(0);
+                entries = json["entries"].as_array().map_or(0, Vec::len);
             }
         }
     }
@@ -2329,14 +2309,13 @@ async fn get_action_log_stats(
 async fn open_path(path: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("open_path");
-    use std::process::Command;
     let p = std::path::Path::new(&path);
     if !p.exists() {
-        return Err(format!("Path does not exist: {}", path));
+        return Err(format!("Path does not exist: {path}"));
     }
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
+        std::process::Command::new("explorer")
             .arg(p)
             .spawn()
             .map_err(|e| format!("Failed to open explorer: {e}"))?;
@@ -2344,7 +2323,7 @@ async fn open_path(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
+        std::process::Command::new("open")
             .arg(p)
             .spawn()
             .map_err(|e| format!("Failed to open path: {e}"))?;
@@ -2352,7 +2331,7 @@ async fn open_path(path: String) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        Command::new("xdg-open")
+        std::process::Command::new("xdg-open")
             .arg(p)
             .spawn()
             .map_err(|e| format!("Failed to open path: {e}"))?;
@@ -2398,10 +2377,10 @@ async fn health_quick_check_internal(app: &tauri::AppHandle) -> anyhow::Result<s
         .await?;
 
     let ok = status.to_lowercase().contains("ok");
-    if !ok {
-        enter_safe_mode(app, "CORRUPT_DB").await;
-    } else {
+    if ok {
         emit_replay_telemetry(app, "ok", None, 0).await;
+    } else {
+        enter_safe_mode(app, "CORRUPT_DB").await;
     }
     Ok(serde_json::json!({ "ok": ok, "status": status }))
 }
@@ -2462,7 +2441,7 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
         return Ok(());
     }
     #[cfg(feature = "otel_spans")]
-    let _started = Instant::now(); // WHY: Same instrumentation guard as elsewhere; avoid unused warnings sans spans.
+    let started = Instant::now(); // instrumentation timing
     let res = state
         .db_rw
         .call(move |conn| -> tokio_rusqlite::Result<()> {
@@ -2482,11 +2461,11 @@ async fn save_checkpoint(app: tauri::AppHandle, hash: String) -> Result<(), Stri
         .await;
     #[cfg(feature = "otel_spans")]
     {
-        let ms = _started.elapsed().as_millis() as i64;
+        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         match &res {
-            Ok(_) => tracing::info!(target = "uicp", duration_ms = ms, "checkpoint saved"),
+            Ok(()) => tracing::info!(target = "uicp", duration_ms = ms, "checkpoint saved"),
             Err(e) => {
-                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "checkpoint save failed")
+                tracing::warn!(target = "uicp", duration_ms = ms, error = %e, "checkpoint save failed");
             }
         }
     }
@@ -2506,7 +2485,7 @@ async fn determinism_probe(
         has_hash = recomputed_hash.is_some()
     );
     let state: State<'_, AppState> = app.state();
-    let limit = n as i64;
+    let limit = i64::from(n);
     let samples = state
         .db_ro
         .call(move |conn| -> tokio_rusqlite::Result<Vec<String>> {
@@ -2543,6 +2522,7 @@ async fn determinism_probe(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_lines)]
 async fn recovery_action(app: tauri::AppHandle, kind: String) -> Result<(), String> {
     #[cfg(feature = "otel_spans")]
     let _span = tracing::info_span!("recovery_action", kind = %kind);
