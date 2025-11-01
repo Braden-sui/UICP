@@ -164,6 +164,7 @@ pub struct AppState {
     pub use_direct_cloud: RwLock<bool>,
     pub allow_local_opt_in: RwLock<bool>,
     pub debug_enabled: RwLock<bool>,
+    pub openai_shape: crate::config::openai_shape::OpenAIShapeConfig,
     pub http: Client,
     pub ongoing: RwLock<HashMap<String, JoinHandle<()>>>,
     pub compute_ongoing: RwLock<HashMap<String, JoinHandle<()>>>,

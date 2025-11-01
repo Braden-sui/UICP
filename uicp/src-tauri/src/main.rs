@@ -864,6 +864,12 @@ fn main() {
         .filter(|&n| (1..=64).contains(&n))
         .unwrap_or(2);
 
+    let openai_shape_cfg = crate::config::openai_shape::OpenAIShapeConfig::from_env();
+    log_info(
+        crate::infrastructure::core::LogEvent::new("openai-shape flags loaded")
+            .field("summary", openai_shape_cfg.summary()),
+    );
+
     let state = AppState {
         db_path: db_path.clone(),
         db_ro,
@@ -879,6 +885,7 @@ fn main() {
             let raw = std::env::var("UICP_DEBUG").unwrap_or_default();
             matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
         }),
+        openai_shape: openai_shape_cfg,
         http: Client::builder()
             // Allow long-lived streaming responses; UI can cancel via cancel_chat.
             .connect_timeout(Duration::from_secs(10))

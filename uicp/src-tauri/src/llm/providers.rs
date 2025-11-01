@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 
 use secrecy::ExposeSecret;
 
@@ -34,11 +35,22 @@ pub async fn build_provider_headers(
         )));
     };
     let ks = get_or_init_keystore().await?;
-    let secret = ks.read_internal(service, account).await?; // SecretVec<u8>
-    let key = String::from_utf8(secret.expose_secret().clone())
-        .map_err(|_| KeystoreError::Crypto("provider key is not valid UTF-8".into()))?
-        .trim()
-        .to_string();
+    let key = match ks.read_internal(service, account).await {
+        Ok(secret) => String::from_utf8(secret.expose_secret().clone())
+            .map_err(|_| KeystoreError::Crypto("provider key is not valid UTF-8".into()))?
+            .trim()
+            .to_string(),
+        Err(_) => {
+            if provider.eq_ignore_ascii_case("ollama") {
+                env::var("OLLAMA_API_KEY").unwrap_or_default().trim().to_string()
+            } else {
+                String::new()
+            }
+        }
+    };
+    if key.is_empty() {
+        return Err(KeystoreError::Other(format!("missing api key for {provider}")));
+    }
 
     let mut headers = HashMap::new();
     match provider.to_ascii_lowercase().as_str() {

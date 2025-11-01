@@ -40,7 +40,6 @@ Purpose: a single landing page that lists the canonical docs. Anything not linke
 - Planner/Actor orchestrator: docs/orchestrator.md
 
 ## Legacy
-- Harmony formatting (legacy): docs/legacy/Model Formatting (Harmony).md
 ## UI\n- Agent Settings window: docs/ui/agent-settings.md\n- Keystore onboarding: docs/ui/keystore-onboarding.md
 
 

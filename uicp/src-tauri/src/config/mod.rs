@@ -5,6 +5,7 @@
 
 pub mod errors;
 pub mod limits;
+pub mod openai_shape;
 pub mod paths;
 pub mod resilience;
 pub mod timeouts;

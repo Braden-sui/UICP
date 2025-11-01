@@ -7,6 +7,8 @@ use std::{
 
 use chrono::Utc;
 use reqwest::Url;
+use eventsource_stream::{Event, Eventsource};
+use futures_util::StreamExt as FuturesStreamExt;
 use tauri::{
     async_runtime::{spawn, JoinHandle},
     Emitter, Manager, State,
@@ -43,6 +45,7 @@ pub async fn stream_chat_completion(
     }
 
     let use_cloud = *state.use_direct_cloud.read().await;
+    let openai_shape = state.openai_shape;
     let provider_lower = provider.as_ref().map(|s| s.to_ascii_lowercase());
 
     // Default actor model favors Qwen3-Coder for consistent cloud/local pairing when provider not specified.
@@ -104,11 +107,12 @@ pub async fn stream_chat_completion(
     let base_url = if allow_override {
         if let Some(provided) = base_url_override.as_deref() {
             let trimmed = provided.trim();
-            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                override_used = true;
-                trimmed.trim_end_matches('/').to_string()
-            } else {
-                get_ollama_base_url(&state).await?
+            match Url::parse(trimmed) {
+                Ok(parsed) if parsed.scheme() == "http" || parsed.scheme() == "https" => {
+                    override_used = true;
+                    parsed.to_string().trim_end_matches('/').to_string()
+                }
+                _ => get_ollama_base_url(&state).await?,
             }
         } else {
             get_ollama_base_url(&state).await?
@@ -200,14 +204,7 @@ pub async fn stream_chat_completion(
                 tokio::spawn(emit_debug(ev));
             }
             let adapter = create_adapter(provider_lower.as_deref().unwrap_or("ollama"));
-            let endpoint_path = adapter.endpoint_path();
-            let url = if adapter.provider_name() == "ollama" && use_cloud {
-                format!("{}{}", base_url, "/api/chat")
-            } else if adapter.provider_name() == "ollama" && !use_cloud {
-                format!("{}{}", base_url, "/chat/completions")
-            } else {
-                format!("{}{}", base_url, endpoint_path)
-            };
+            let url = adapter.resolve_endpoint(&base_url, use_cloud);
             let ev = serde_json::json!({
                 "ts": Utc::now().timestamp_millis(),
                 "event": "request_started",
@@ -247,18 +244,10 @@ pub async fn stream_chat_completion(
         let mut request_body = body_payload;
         let mut attempt_local: u8 = 0;
         let mut fallback_tried: bool = false;
-        let mut local_path_fallback: bool = false;
         'outer: loop {
             attempt_local += 1;
             let adapter = create_adapter(provider_lower.as_deref().unwrap_or("ollama"));
-            let endpoint_path = adapter.endpoint_path();
-            let url = if adapter.provider_name() == "ollama" && (use_cloud || local_path_fallback) {
-                format!("{}{}", base_url, "/api/chat")
-            } else if adapter.provider_name() == "ollama" && !use_cloud && !local_path_fallback {
-                format!("{}{}", base_url, "/chat/completions")
-            } else {
-                format!("{}{}", base_url, endpoint_path)
-            };
+            let url = adapter.resolve_endpoint(&base_url, use_cloud);
 
             let host_for_attempt = Url::parse(&url)
                 .ok()
@@ -579,20 +568,6 @@ pub async fn stream_chat_completion(
                             }
                         }
 
-                        if !use_cloud && status.as_u16() == 404 && !local_path_fallback {
-                            if debug_on {
-                                let ev = serde_json::json!({
-                                    "ts": Utc::now().timestamp_millis(),
-                                    "event": "retry_path_api_chat",
-                                    "requestId": rid_for_task,
-                                });
-                                tokio::spawn(append_trace(ev.clone()));
-                                tokio::spawn(emit_debug(ev));
-                            }
-                            local_path_fallback = true;
-                            continue 'outer;
-                        }
-
                         // Use retry engine for category-specific backoff
                         let provider_name = adapter.provider_name();
                         let status_code = status.as_u16();
@@ -707,11 +682,7 @@ pub async fn stream_chat_completion(
                         break;
                     }
 
-                    let mut stream = resp.bytes_stream();
                     let mut stream_failed = false;
-                    // SSE assembly state
-                    let mut carry = String::new();
-                    let mut event_buf = String::new();
 
                     const DEBUG_PREVIEW_CHARS: usize = 512;
                     let preview_payload = |input: &str| -> (String, bool) {
@@ -734,7 +705,7 @@ pub async fn stream_chat_completion(
                     // Feature flag: also emit normalized StreamEvent v1 alongside legacy events
                     let is_stream_v1_on = is_stream_v1_enabled();
 
-                    // Helper to process a complete SSE payload line (assembled in event_buf)
+                    // Helper to process a complete SSE payload line (assembled via SSE wrapper)
                     let process_payload = |payload_str: &str,
                                            app_handle: &tauri::AppHandle,
                                            rid: &str| {
@@ -879,143 +850,6 @@ pub async fn stream_chat_completion(
                                             serde_json::json!({ "requestId": rid, "event": evt }),
                                         );
                                     }
-                                }
-                            }
-                        }
-                    };
-
-                    loop {
-                        let next = tokio::time::timeout(idle_timeout, stream.next()).await;
-                        match next {
-                            Err(_) => {
-                                stream_failed = true;
-                                if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "stream_idle_timeout",
-                                        "requestId": rid_for_task,
-                                        "idleMs": u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX),
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                emit_problem_detail(
-                                    &app_handle,
-                                    &rid_for_task,
-                                    408,
-                                    "RequestTimeout",
-                                    "Streaming idle timeout",
-                                    None,
-                                );
-                                break;
-                            }
-                            Ok(None) => {
-                                // Stream ended gracefully
-                                if debug_on {
-                                    let ev = serde_json::json!({
-                                        "ts": Utc::now().timestamp_millis(),
-                                        "event": "stream_eof",
-                                        "requestId": rid_for_task,
-                                    });
-                                    tokio::spawn(append_trace(ev.clone()));
-                                    tokio::spawn(emit_debug(ev));
-                                }
-                                // Process any trailing payload still buffered
-                                if !event_buf.trim().is_empty() {
-                                    process_payload(&event_buf, &app_handle, &rid_for_task);
-                                    event_buf.clear();
-                                }
-                                emit_or_log(
-                                    &app_handle,
-                                    "ollama-completion",
-                                    serde_json::json!({ "done": true }),
-                                );
-                                if is_stream_v1_on {
-                                    let done_evt = serde_json::json!({ "type": "done" });
-                                    emit_or_log(
-                                        &app_handle,
-                                        crate::infrastructure::events::EVENT_STREAM_V1,
-                                        serde_json::json!({ "requestId": &rid_for_task, "event": done_evt }),
-                                    );
-                                }
-                                break;
-                            }
-                            Ok(Some(chunk)) => match chunk {
-                                Err(err) => {
-                                    stream_failed = true;
-                                    if debug_on {
-                                        let ev = serde_json::json!({
-                                            "ts": Utc::now().timestamp_millis(),
-                                            "event": "stream_error",
-                                            "requestId": rid_for_task,
-                                            "error": err.to_string(),
-                                        });
-                                        tokio::spawn(append_trace(ev.clone()));
-                                        tokio::spawn(emit_debug(ev));
-                                    }
-                                    emit_problem_detail(
-                                        &app_handle,
-                                        &rid_for_task,
-                                        502,
-                                        "StreamError",
-                                        "Streaming response terminated unexpectedly",
-                                        None,
-                                    );
-                                    break;
-                                }
-                                Ok(bytes) => {
-                                    // Append chunk and process complete lines only; keep remainder in carry.
-                                    carry.push_str(&String::from_utf8_lossy(&bytes));
-                                    while let Some(idx) = carry.find('\n') {
-                                        let mut line = carry[..idx].to_string();
-                                        // drain including newline
-                                        carry.drain(..=idx);
-                                        // handle CRLF
-                                        if line.ends_with('\r') {
-                                            line.pop();
-                                        }
-                                        let trimmed = line.trim();
-                                        if trimmed.is_empty() {
-                                            // blank line terminates one SSE event
-                                            if !event_buf.is_empty() {
-                                                let payload = std::mem::take(&mut event_buf);
-                                                process_payload(
-                                                    &payload,
-                                                    &app_handle,
-                                                    &rid_for_task,
-                                                );
-                                            }
-                                            continue;
-                                        }
-                                        if let Some(stripped) = trimmed.strip_prefix("data:") {
-                                            let content = stripped.trim();
-                                            if content == "[DONE]" {
-                                                process_payload(
-                                                    "[DONE]",
-                                                    &app_handle,
-                                                    &rid_for_task,
-                                                );
-                                                // reset event buffer
-                                                event_buf.clear();
-                                                continue;
-                                            }
-                                            if !event_buf.is_empty() {
-                                                event_buf.push('\n');
-                                            }
-                                            event_buf.push_str(content);
-                                            continue;
-                                        }
-                                        // Fallback: treat line as payload content (non-SSE providers)
-                                        event_buf.push_str(trimmed);
-                                    }
-                                }
-                            },
-                        }
-                    }
-
-                    if stream_failed {
-                        if let Some(host) = host_for_attempt.as_deref() {
-                            circuit::circuit_record_failure(
                                 &circuit_breakers,
                                 host,
                                 &circuit_config,
@@ -1073,7 +907,8 @@ async fn get_ollama_base_url(state: &AppState) -> Result<String, String> {
         std::env::var("OLLAMA_CLOUD_URL")
             .unwrap_or_else(|_| crate::infrastructure::core::OLLAMA_CLOUD_HOST_DEFAULT.into())
     } else {
-        std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into())
+        std::env::var("OLLAMA_BASE_URL")
+            .unwrap_or_else(|_| crate::infrastructure::core::OLLAMA_LOCAL_BASE_DEFAULT.into())
     };
     Ok(base)
 }
@@ -1118,11 +953,25 @@ fn normalize_model_name(raw: &str, use_cloud: bool) -> String {
 
     let normalize_base = |input: &str| {
         if input.contains(':') {
-            input.to_string()
+            if let Some((prefix, suffix)) = input.split_once(':') {
+                if suffix.contains('.') {
+                    // Convert colon to hyphen for dotted version tags like "glm:4.6" -> "glm-4.6"
+                    format!("{}-{}", prefix, suffix)
+                } else {
+                    input.to_string()
+                }
+            } else {
+                input.to_string()
+            }
         } else if let Some(idx) = input.rfind('-') {
             let (prefix, suffix) = input.split_at(idx);
             let suffix = suffix.trim_start_matches('-');
-            format!("{prefix}:{suffix}")
+            if suffix.contains('.') {
+                // Preserve hyphen for dotted tags like "glm-4.6"
+                input.to_string()
+            } else {
+                format!("{prefix}:{suffix}")
+            }
         } else {
             input.to_string()
         }

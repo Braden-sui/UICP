@@ -28,6 +28,13 @@ pub trait ProviderAdapter {
     /// Get the endpoint path for this provider
     fn endpoint_path(&self) -> &'static str;
 
+    /// Resolve the absolute endpoint URL using the given base URL.
+    /// Default implementation appends `endpoint_path()` to `base_url`.
+    fn resolve_endpoint(&self, base_url: &str, _use_cloud: bool) -> String {
+        let base = base_url.trim_end_matches('/');
+        format!("{}{}", base, self.endpoint_path())
+    }
+
     /// Normalize a stream event from this provider
     fn normalize_stream_event(&self, event: &Value) -> Option<Value>;
 

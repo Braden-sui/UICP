@@ -24,6 +24,21 @@ impl ProviderAdapter for OllamaAdapter {
         "/api/chat"
     }
 
+    fn resolve_endpoint(&self, base_url: &str, use_cloud: bool) -> String {
+        let base = base_url.trim_end_matches('/');
+        if use_cloud {
+            // Cloud: documented native API
+            format!("{}/api/chat", base)
+        } else {
+            // Local: prefer OpenAI-compatible path when base includes /v1 (our default)
+            if base.ends_with("/v1") {
+                format!("{}/chat/completions", base)
+            } else {
+                format!("{}/api/chat", base)
+            }
+        }
+    }
+
     fn normalize_stream_event(&self, _event: &Value) -> Option<Value> {
         // Ollama events are OpenAI-compatible
         None

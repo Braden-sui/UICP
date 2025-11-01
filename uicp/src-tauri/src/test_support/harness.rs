@@ -137,6 +137,7 @@ impl ComputeTestHarness {
                 matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
             }),
             debug_enabled: RwLock::new(false),
+            openai_shape: crate::config::openai_shape::OpenAIShapeConfig::from_env(),
             http: Client::builder()
                 .connect_timeout(Duration::from_secs(5))
                 .pool_idle_timeout(Some(Duration::from_secs(5)))
